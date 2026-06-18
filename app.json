@@ -1,0 +1,95 @@
+{
+  "expo": {
+    "name": "TopKingApp",
+    "slug": "TopKingApp",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "topkingapp",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/images/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.gufran.topkingapp",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.ACCESS_MEDIA_LOCATION",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/favicon.png",
+      "config": {
+        "firebase": {
+          "apiKey": "AIzaSyC-YNSr0thwC9_ZJ362sSF1xBFThUIESAo",
+          "authDomain": "top-king-58696.firebaseapp.com",
+          "projectId": "top-king-58696",
+          "storageBucket": "top-king-58696.firebasestorage.app",
+          "messagingSenderId": "707070487985",
+          "appId": "1:707070487985:web:54e595c0aa4ec65ece6190"
+        }
+      }
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Top King to access your camera.",
+          "microphonePermission": "Allow Top King to access your microphone."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Top King to access your photos."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow Top King to access your gallery for video thumbnails.",
+          "savePhotosPermission": "Allow Top King to save videos to your gallery.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ],
+      "expo-web-browser",
+      "@react-native-google-signin/google-signin",
+      "expo-video",
+      "expo-audio",
+      "expo-asset",
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "52c2fdc6-d21d-4ed3-8b9b-61c4571c6459"
+      }
+    }
+  }
+}

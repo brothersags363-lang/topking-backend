@@ -1,0 +1,607 @@
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  SafeAreaView,
+  ScrollView,
+  TextInput,
+  TouchableOpacity,
+  Dimensions,
+  Platform,
+  FlatList,
+  Image,
+  ActivityIndicator,
+  BackHandler
+} from 'react-native';
+import { useRouter, usePathname } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+
+// FIREBASE IMPORT
+import { db } from '../firebaseConfig';
+import { auth } from '../firebaseConfig';
+
+
+
+import {
+  collection,
+  query,
+  where,
+  getDocs,
+  limit,
+  doc,
+  getDoc
+} from 'firebase/firestore';
+
+
+
+const { width } = Dimensions.get('window');
+
+// FIXED: CORRECT PROJECT ROOT PATH FOR ASSETS
+const TRENDING_BANNERS_DATA = [
+  require('../../assets/images/banner1.jpeg'),
+  require('../../assets/images/banner2.jpeg'),
+  require('../../assets/images/banner3.jpeg'),
+];
+
+export default function ExplorePage() {
+  
+  const router = useRouter();
+  const pathname = usePathname();
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [profileImg, setProfileImg] = useState('');
+
+  // SLIDER STATES & REFS
+  const [activeBannerIndex, setActiveBannerIndex] = useState(0);
+  const bannerScrollRef = useRef(null);
+  const bannerWidthOffset = width - 32;
+ 
+
+  // FIXED: SECURE MOBILE HARDWARE BACK BUTTON LOGIC
+
+
+const getCurrentUserProfile = async () => {
+  try {
+
+    const user = auth.currentUser;
+
+    if (!user) return;
+
+    const userRef = doc(db, "users", user.uid);
+
+    const userSnap = await getDoc(userRef);
+
+    if (userSnap.exists()) {
+      setProfileImg(
+        userSnap.data().profileImg || ''
+      );
+    }
+
+  } catch (error) {
+    console.log(error);
+  }
+};
+
+
+useEffect(() => {
+  getCurrentUserProfile();
+}, []);
+
+  useEffect(() => {
+    const handleBackButton = () => {
+      try {
+        if (router.canGoBack()) {
+          router.back();
+        } else {
+          router.replace('/'); 
+        }
+      } catch (error) {
+        console.log("Navigation Error: ", error);
+        router.replace('/'); 
+      }
+      return true;
+    };
+
+    const backHandlerSubscription = BackHandler.addEventListener(
+      'hardwareBackPress', 
+      handleBackButton
+    );
+
+    return () => {
+      backHandlerSubscription.remove();
+    };
+  }, [router]);
+
+  // AUTOMATED AUTO-SCROLL SLIDER LOGIC
+  useEffect(() => {
+    if (searchQuery.length > 0) return;
+    const bannerTimer = setInterval(() => {
+      let nextBannerIndex = activeBannerIndex + 1;
+     if (nextBannerIndex >= TRENDING_BANNERS_DATA.length) {
+      nextBannerIndex = 0;
+      }
+    bannerScrollRef.current?.scrollTo({
+
+        x: nextBannerIndex * bannerWidthOffset,
+        animated: true,
+      });
+      setActiveBannerIndex(nextBannerIndex);
+    }, 3000);
+
+    return () => clearInterval(bannerTimer);
+  }, [activeBannerIndex, searchQuery]);
+
+  const handleBannerScrollEnd = (e: any) => {
+    const horizontalShift = e.nativeEvent.contentOffset.x;
+    const computedIndex = Math.round(horizontalShift / bannerWidthOffset);
+    setActiveBannerIndex(computedIndex);
+  };
+
+  // Search Logic
+  const handleSearch = async (text: string) => {
+    setSearchQuery(text);
+    if (text.trim().length > 0) {
+      setLoading(true);
+      try {
+        const q = query(
+          collection(db, "users"),
+          where("username", ">=", text.toLowerCase()),
+          where("username", "<=", text.toLowerCase() + '\uf8ff'),
+          limit(10)
+        );
+        const querySnapshot = await getDocs(q);
+        const users = querySnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+
+console.log("SEARCH USERS =", users);
+
+        setSearchResults(users);
+      } catch (error) {
+        console.error("Search Error:", error);
+      } finally {
+        setLoading(false);
+      }
+    } else {
+      setSearchResults([]);
+    }
+  };
+
+  // Dynamic Navigation Icon Color Handler matching messages.js style
+  const getIconColor = (path: string) => {
+    return pathname === path ? '#3498db' : '#fff';
+  };
+
+  return (
+    <SafeAreaView style={styles.container}>
+      {/* SEARCH HEADER */}
+     <View style={styles.header}>
+
+  {/* Profile Image Left Side */}
+
+  <TouchableOpacity
+    style={styles.profileButton}
+    onPress={() => router.push('/profile')}
+  >
+    <Image
+      source={{
+        uri:
+          profileImg ||
+          'https://avatar.iran.liara.run/public/65',
+      }}
+      style={styles.profileHeaderImage}
+    />
+  </TouchableOpacity>
+
+  {/* Search Box */}
+
+  <View style={styles.searchBarWrapper}>
+    <Ionicons
+      name="search-outline"
+      size={18}
+      color="rgba(255,255,255,0.4)"
+      style={styles.searchIconFrame}
+    />
+
+    <TextInput
+      style={styles.searchInput}
+      placeholder="Search username..."
+      placeholderTextColor="rgba(255,255,255,0.3)"
+      value={searchQuery}
+      onChangeText={handleSearch}
+      autoCapitalize="none"
+    />
+
+    {loading && (
+      <ActivityIndicator
+        size="small"
+        color="#f1c40f"
+        style={{ marginRight: 10 }}
+      />
+    )}
+  </View>
+
+</View>
+
+
+
+
+      {/* SEARCH RESULTS LIST */}
+      {searchQuery.length > 0 ? (
+  <FlatList
+    data={searchResults}
+    keyExtractor={(item: any) => item.id}
+    style={{ backgroundColor: '#08080a' }}
+    contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10 }}
+    renderItem={({ item }: any) => (
+
+<TouchableOpacity
+  style={styles.userCard}
+  onPress={() => {
+
+    console.log("CLICK USER =", item);
+    console.log("CLICK USER ID =", item.id);
+
+  console.log(
+    "SEARCH USER",
+    item.username,
+    item.id
+  );
+
+  console.log(
+    "LOGGED USER",
+    auth.currentUser?.uid
+  );
+
+
+    router.push({
+      pathname: '/userProfile',
+      params: {
+        userId: item.id,
+      },
+    });
+  }}
+>
+
+
+
+
+        <Image
+          source={{
+            uri:
+              item.profileImg ||
+              'https://avatar.iran.liara.run/public/65',
+          }}
+          style={styles.userAvatar}
+        />
+
+        <View style={styles.userTextInfo}>
+          <Text style={styles.userName}>@{item.username}</Text>
+          <Text style={styles.userSub}>
+            {item.name || 'User'}
+          </Text>
+        </View>
+
+        <Ionicons
+          name="chevron-forward"
+          size={16}
+          color="rgba(255,255,255,0.2)"
+        />
+      </TouchableOpacity>
+    )}
+    ListEmptyComponent={() =>
+      !loading ? (
+        <Text style={styles.emptyText}>
+          No users found
+        </Text>
+      ) : null
+    }
+  />
+) : (
+
+
+
+        /* PREMIUM LOOK ORIGINAL EXPLORE CONTENT */
+        <ScrollView
+          style={{ backgroundColor: '#08080a' }}
+          contentContainerStyle={{ paddingBottom: 140 }}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* THEMATIC AUDIO MIC BANNER BOX INTEGRATED WITH SLIDING LOGIC */}
+          <View style={styles.pinkSliderBannerContainer}>
+            <ScrollView
+              ref={bannerScrollRef}
+              horizontal
+              pagingEnabled
+              snapToInterval={bannerWidthOffset}
+              decelerationRate="fast"
+              showsHorizontalScrollIndicator={false}
+              onMomentumScrollEnd={handleBannerScrollEnd}
+              style={{ width: '100%', height: '100%' }}
+            >
+              {TRENDING_BANNERS_DATA.map((bannerSource, index) => (
+                <View key={index} style={styles.pinkSliderBanner}>
+                  <Image 
+                    source={bannerSource}
+                    style={styles.bannerImageMainElement}
+                    resizeMode="cover"
+                  />
+                </View>
+              ))}
+            </ScrollView>
+
+            {/* DYNAMIC SYNC DOT INDICATORS BAR */}
+            <View style={styles.sliderDotIndicatorRow}>
+              {TRENDING_BANNERS_DATA.map((_, dotIndex) => (
+                <View 
+                  key={dotIndex} 
+                  style={[
+                    styles.sliderDotMesh, 
+                    activeBannerIndex === dotIndex && styles.activeDot
+                  ]} 
+                />
+              ))}
+            </View>
+          </View>
+
+          {/* DYNAMIC SCROLLABLE PLATFORM ACCESS TOKENS ROW */}
+          <ScrollView horizontal style={styles.trophyRow} showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 12 }}>
+            {[
+              { label: 'Live', icon: 'mic-sharp', note: 'Go Live Now' },
+              { label: 'Family Ranking', icon: 'trophy-sharp', note: 'Top Families' },
+              { label: 'Meetup', icon: 'people-sharp', note: 'Join Events' },
+              { label: 'Creator', icon: 'ribbon-sharp', note: 'For Creators' }
+            ].map((t, i) => (
+              <View key={i} style={styles.trophyBox}>
+                <View style={styles.trophyIconContainer}>
+               <Ionicons name={t.icon as any} size={22} color="#f1c40f" />
+                </View>
+                <Text style={styles.trophyBoxLabelText}>{t.label}</Text>
+                <Text style={styles.trophyBoxSubLabelText}>{t.note}</Text>
+              </View>
+            ))}
+          </ScrollView>
+
+          {/* BRAND HEAD SECTIONS TRACKING */}
+          <View style={styles.sectionHead}>
+            <View style={styles.sectionHeadingWrapper}>
+              <Ionicons name="heart-sharp" size={16} color="#f1c40f" style={{ marginRight: 6 }} />
+              <Text style={styles.sectionTitle}>Lovestory</Text>
+            </View>
+            <Text style={styles.viewsText}>4.7M Views <Ionicons name="chevron-forward" size={12} color="#f1c40f" /></Text>
+          </View>
+
+          {/* DUAL STREAMERS POWER STATS ROW */}
+          <View style={styles.rankRow}>
+            <View style={styles.rankCard}>
+              <Text style={styles.rankTitle}>★ Top King Star</Text>
+              <View style={styles.rankCardRowLine}>
+                <View style={styles.rankNumberBadge}><Text style={styles.rankNumberText}>1</Text></View>
+                <Text style={styles.rankUserText} numberOfLines={1}>Aman 789 🔵</Text>
+              </View>
+            </View>
+            
+            <View style={styles.rankCard}>
+              <Text style={[styles.rankTitle, { color: '#ef4444', borderColor: 'rgba(239,68,68,0.15)' }]}>★ Rising Star</Text>
+              <View style={styles.rankCardRowLine}>
+                <View style={[styles.rankNumberBadge, { backgroundColor: 'rgba(239,68,68,0.1)' }]}><Text style={[styles.rankNumberText, { color: '#ef4444' }]}>1</Text></View>
+                <Text style={styles.rankUserText} numberOfLines={1}>madhu7</Text>
+              </View>
+            </View>
+          </View>
+        </ScrollView>
+      )}
+
+      {/* RESTORED & ALIGNED BOTTOM NAVBAR FROM MESSAGES.JS */}
+      <View style={styles.bottomSection}>
+        <View style={styles.bottomNav}>
+          
+          {/* HOME */}
+          <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/')}>
+            <Ionicons name="home-outline" size={26} color={getIconColor('/')} />
+          </TouchableOpacity>
+
+          {/* SEARCH (ACTIVE ON THIS PAGE) */}
+          <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/explore')}>
+            <Ionicons name="search" size={26} color="#3498db" />
+          </TouchableOpacity>
+
+          {/* PLUS */}
+          <TouchableOpacity style={styles.navItem} onPress={() => router.push('/camera')}>
+            <View style={styles.plusBtn}>
+              <Text style={styles.plusText}>+</Text>
+            </View>
+          </TouchableOpacity>
+
+          {/* MESSAGE */}
+          <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/messages')}>
+            <Ionicons name="chatbubble-ellipses-outline" size={26} color={getIconColor('/messages')} />
+          </TouchableOpacity>
+
+          {/* PROFILE */}
+<TouchableOpacity
+  style={styles.navItem}
+  onPress={() => {
+    const user = auth.currentUser;
+
+    if (!user) {
+      router.push('/login');
+      return;
+    }
+
+    router.replace('/profile');
+  }}
+>
+  <Ionicons
+    name="person-outline"
+    size={26}
+    color={getIconColor('/profile')}
+  />
+</TouchableOpacity>
+
+        </View>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#08080a' },
+  header: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    alignItems: 'center',
+    backgroundColor: '#08080a',
+    marginTop: Platform.OS === 'ios' ? 45 : 30,
+    borderBottomWidth: 1,
+    borderColor: 'rgba(255,255,255,0.03)'
+  },
+  
+  // CHANGED: SEARCH BOX WRAPPER ME GOLDEN MESH PARAT (BORDER OVERLAY) CHADHA DIYA HAI
+  searchBarWrapper: {
+    flex: 1,
+    height: 44,
+    backgroundColor: '#11121a',
+    borderRadius: 22,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    borderWidth: 1.5,                      // Thicker premium parat
+    borderColor: 'rgba(241,196,15,0.25)'  // Perfectly matches the trophyBox theme color
+  },
+  
+  searchIconFrame: { marginRight: 8 },
+  searchInput: {
+    flex: 1,
+    height: '100%',
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600'
+  },
+  userCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    backgroundColor: '#11121a',
+    borderRadius: 16,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.02)'
+  },
+  userAvatar: { width: 44, height: 44, borderRadius: 22, marginRight: 14, backgroundColor: '#1a1b24' },
+  userTextInfo: { flex: 1 },
+  userName: { color: '#ffffff', fontSize: 14, fontWeight: '700', letterSpacing: 0.1 },
+  userSub: { color: 'rgba(255,255,255,0.4)', fontSize: 11, marginTop: 2, fontWeight: '500' },
+  emptyText: { color: 'rgba(255,255,255,0.3)', textAlign: 'center', marginTop: 30, fontSize: 13, fontWeight: '500' },
+  
+  // SLIDER CONTAINMENT
+  pinkSliderBannerContainer: {
+    width: width - 32,
+    height: 180, 
+    alignSelf: 'center',
+    marginTop: 16,
+    position: 'relative',
+    backgroundColor: '#11121a',
+    borderRadius: 24,
+    overflow: 'hidden'
+  },
+  pinkSliderBanner: { 
+    width: width - 32, 
+    height: '100%', 
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden', 
+  },
+  bannerImageMainElement: {
+    width: '100%',
+    height: '100%',
+    alignSelf: 'center'
+  },
+  sliderDotIndicatorRow: { flexDirection: 'row', alignItems: 'center', position: 'absolute', bottom: 12, alignSelf: 'center', zIndex: 10, backgroundColor: 'rgba(0, 0, 0, 0.5)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 }, 
+  sliderDotMesh: { width: 6, height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.4)', marginHorizontal: 4 },
+  activeDot: { width: 14, backgroundColor: '#ebd500', borderRadius: 3 },
+  
+  trophyRow: { paddingVertical: 18 },
+
+  // TROPHY BOX PREMIUM PARAT
+  trophyBox: { 
+    alignItems: 'center', 
+    width: (width - 48) / 2.2, 
+    backgroundColor: '#11121a', 
+    marginRight: 10, 
+    padding: 14, 
+    borderRadius: 24,       
+    borderWidth: 1.5,       
+    borderColor: 'rgba(241,196,15,0.15)' 
+  },
+
+profileButton: {
+  marginRight: 10,
+},
+
+profileHeaderImage: {
+  width: 42,
+  height: 42,
+  borderRadius: 21,
+  borderWidth: 2,
+  borderColor: '#f1c40f',
+},
+
+  
+  trophyIconContainer: { 
+    width: 50, 
+    height: 50, 
+    borderRadius: 25, 
+    backgroundColor: 'rgba(241,196,15,0.05)', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    marginBottom: 10,
+    borderWidth: 1.5, 
+    borderColor: 'rgba(241,196,15,0.25)' 
+  },
+  
+  trophyBoxLabelText: { color: '#ffffff', fontSize: 13, fontWeight: '800' },
+  trophyBoxSubLabelText: { color: 'rgba(255,255,255,0.3)', fontSize: 10, fontWeight: '600', marginTop: 2 },
+  
+  sectionHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 4 },
+  sectionHeadingWrapper: { flexDirection: 'row', alignItems: 'center' },
+  sectionTitle: { color: '#ffffff', fontWeight: '900', fontSize: 15, letterSpacing: 0.2 },
+  viewsText: { color: '#f1c40f', fontSize: 12, fontWeight: '700', flexDirection: 'row', alignItems: 'center' },
+  
+  rankRow: { flexDirection: 'row', paddingHorizontal: 12, marginTop: 12 },
+  rankCard: { flex: 1, backgroundColor: '#11121a', marginHorizontal: 4, padding: 14, borderRadius: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.03)' },
+  rankTitle: { color: '#f1c40f', fontWeight: '800', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.04)', paddingBottom: 6, marginBottom: 10 },
+  rankCardRowLine: { flexDirection: 'row', alignItems: 'center' },
+  rankNumberBadge: { width: 18, height: 18, borderRadius: 9, backgroundColor: 'rgba(241,200,15,0.1)', justifyContent: 'center', alignItems: 'center', marginRight: 8 },
+  rankNumberText: { color: '#f1c40f', fontSize: 10, fontWeight: '900' },
+  rankUserText: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: '600', flex: 1 },
+  
+  bottomSection: {
+    position: 'absolute',
+    bottom: 0,
+    width: '100%',
+    backgroundColor: '#000',
+    paddingBottom: Platform.OS === 'ios' ? 40 : 25,
+    paddingTop: 5,
+  },
+  bottomNav: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    height: 90,
+  },
+  navItem: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  plusBtn: {
+    width: 48,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: '#f1c40f',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  plusText: { fontSize: 28, fontWeight: 'bold', color: '#000', marginTop: -4 },
+});     
