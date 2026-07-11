@@ -383,7 +383,10 @@ await userRef.update({
 );
 
 
+const PORT = process.env.PORT || 3000;
 
-app.listen(3000, "0.0.0.0", () => {
-  console.log("Server running on port 3000");
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server running on port ${PORT}`);
 });
+
+
