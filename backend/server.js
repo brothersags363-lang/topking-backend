@@ -188,8 +188,12 @@ if (!req.file || !audioUrl) {
     }
 
     
-    const audioPath = path.join(tempDir, "audio.mp3");
-    const outputPath = path.join(tempDir, "merged.mp4");
+const crypto = require("crypto");
+
+const fileId = crypto.randomUUID();
+
+const audioPath = path.join(tempDir, `${fileId}.mp3`);
+const outputPath = path.join(tempDir, `${fileId}.mp4`);
 
     // download video
 
