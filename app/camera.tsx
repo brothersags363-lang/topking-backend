@@ -13,14 +13,31 @@ import React, { useState, useRef, useEffect } from 'react';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library'; 
-import { Video, ResizeMode } from 'expo-av';
+import { VideoView, useVideoPlayer } from 'expo-video';
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera'; 
-import { useRouter } from 'expo-router'; 
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { Audio } from "expo-av";
+
+import { getDoc, doc } from "firebase/firestore";
+import { getAuth } from "firebase/auth";
+import { db } from "./firebaseConfig";
 
 export default function CameraPage() {
   const router = useRouter(); 
+ 
+const {
+  audioUrl,
+  musicName,
+  profile,
+  username,
+} = useLocalSearchParams();
+
+console.log("Camera audio =", audioUrl);
+
   const [videoUri, setVideoUri] = useState(null);
+const [canGoLive, setCanGoLive] = useState(false);
+
   const [showStickers, setShowStickers] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [facing, setFacing] = useState('back');
@@ -33,6 +50,9 @@ export default function CameraPage() {
   const [microphonePermission, requestMicrophonePermission] = useMicrophonePermissions();
   const cameraRef = useRef(null);
   
+const soundRef = useRef(null);
+
+
   const stickers = ['🔥', '😂', '❤️', '✨', '👑', '💯', '😎', '💀', '🎉', '🎸', '🌈', '🍕', '👀', '💡', '🚀', '⭐'];
 
 
@@ -40,7 +60,11 @@ useEffect(() => {
 
   const backAction = () => {
 
-    router.push('/(tabs)');
+    if (router.canGoBack()) {
+      router.back();      // jaha se aaye the wahi jayega
+    } else {
+      router.replace('/(tabs)'); // agar stack me kuch nahi hai
+    }
 
     return true;
   };
@@ -53,6 +77,75 @@ useEffect(() => {
   return () => subscription.remove();
 
 }, []);
+
+
+
+
+
+useEffect(()=>{
+
+const checkHostPermission = async()=>{
+
+try{
+
+const auth = getAuth();
+
+const user = auth.currentUser;
+
+if(!user) return;
+
+
+const userSnap = await getDoc(
+  doc(db,"users",user.uid)
+);
+
+
+if(userSnap.exists()){
+
+const data = userSnap.data();
+console.log("User Data =>", data);
+console.log("agencyId =", data.agencyId);
+console.log("agencyApproved =", data.agencyApproved);
+console.log("waitTick =", data.waitTick);
+console.log("verified =", data.verified);
+
+
+
+if (
+
+  data.agencyId ||
+
+  data.agencyApproved === true ||
+
+ data.verified === true
+
+) {
+
+  setCanGoLive(true);
+
+} else {
+
+  setCanGoLive(false);
+
+}
+
+
+}
+
+}catch(error){
+
+console.log(error);
+
+}
+
+};
+
+
+checkHostPermission();
+
+
+},[]);
+
 
 
 
@@ -107,13 +200,33 @@ useEffect(() => {
         allowsEditing: true,
         quality: 1,
       });
-      if (!result.canceled) {
-        // ✅ EditView page par bhej raha hai
-        router.push({
-          pathname: '/EditView',
-          params: { videoUri: result.assets[0].uri }
-        });
-      }
+  
+
+
+if (!result.canceled) {
+
+  if (soundRef.current) {
+    await soundRef.current.stopAsync();
+    await soundRef.current.unloadAsync();
+    soundRef.current = null;
+  }
+
+  router.push({
+    pathname: "/EditView",
+    params: {
+      videoUri: result.assets[0].uri,
+      audioUrl,
+      musicName,
+      musicImage: profile,
+      musicArtist: username,
+    },
+  });
+
+}
+
+
+
+
     } catch (e) {
       console.error("Gallery Error:", e);
     }
@@ -122,14 +235,33 @@ useEffect(() => {
   const handleRecord = async () => {
     if (!cameraRef.current) return;
 
-    if (isRecording) {
-      try {
-        setIsRecording(false); 
-        await cameraRef.current.stopRecording(); 
-      } catch (e) {
-        console.error("Stop Error:", e);
-      }
-    } else {
+if (isRecording) {
+
+  try {
+
+    setIsRecording(false);
+
+    await cameraRef.current.stopRecording();
+
+    if (soundRef.current) {
+
+      await soundRef.current.stopAsync();
+
+      await soundRef.current.unloadAsync();
+
+      soundRef.current = null;
+
+    }
+
+  } catch (e) {
+
+    console.error("Stop Error:", e);
+
+  }
+
+}
+    
+    else {
       if (!microphonePermission?.granted || !cameraPermission?.granted) {
         Alert.alert("Permission", "Camera aur Microphone allow karein");
         return;
@@ -142,17 +274,62 @@ useEffect(() => {
       }
 
       try {
+
+
+
+ if (audioUrl) {
+
+  const { sound } = await Audio.Sound.createAsync(
+
+    {
+      uri: audioUrl,
+   },
+
+   {
+      shouldPlay: true,
+      isLooping: true,
+   }
+
+  );
+
+  soundRef.current = sound;
+
+}
+
+
         setIsRecording(true);
+        
+
         cameraRef.current.recordAsync({
-          quality: '720p',
-          maxDuration: 60,
-        }).then((video) => {
-          if (video && video.uri) {
-            router.push({
-              pathname: '/EditView',
-              params: { videoUri: video.uri }
-            });
-          }
+  quality: "720p",
+  maxDuration: 60,
+}).then(async (video) => {
+
+  if (video && video.uri) {
+
+    if (soundRef.current) {
+      await soundRef.current.stopAsync();
+      await soundRef.current.unloadAsync();
+      soundRef.current = null;
+    }
+
+    router.push({
+      pathname: "/EditView",
+      params: {
+        videoUri: video.uri,
+        audioUrl,
+        musicName,
+        musicImage: profile,
+        musicArtist: username,
+      },
+    });
+
+  }
+
+
+
+          
+
         }).catch(err => {
           console.error("Async Record Error:", err);
           setIsRecording(false);
@@ -273,13 +450,44 @@ useEffect(() => {
       </View>
 
       {/* MODEBAR: Audio text par click trigger link kar diya hai */}
-      <View style={styles.modeBar}>
-        <Text style={styles.mTxt}>Live</Text>
-        <Text style={[styles.mTxt, {color: '#0056D2'}]}>Video</Text>
-        <TouchableOpacity onPress={() => router.push('/LiveStart')} activeOpacity={0.7}>
-          <Text style={styles.mTxt}>Audio</Text>
-        </TouchableOpacity>
-      </View>
+  {canGoLive && (
+
+<View style={styles.modeBar}>
+
+
+<TouchableOpacity
+activeOpacity={0.8}
+onPress={() => router.push('/livevideostart')}
+>
+<Text style={styles.mTxt}>
+Live
+</Text>
+</TouchableOpacity>
+
+
+
+<Text style={[styles.mTxt,{color:'#0056D2'}]}>
+Video
+</Text>
+
+
+
+<TouchableOpacity
+activeOpacity={0.8}
+onPress={() => router.push('/LiveStart')}
+>
+<Text style={styles.mTxt}>
+Audio
+</Text>
+</TouchableOpacity>
+
+
+
+</View>
+
+)}
+
+
 
       {showStickers && (
         <View style={styles.stickerPanel}>
@@ -350,9 +558,24 @@ mainRecOuter: {
 },
   
   // Adjusted 15 units up from bottom for clean spacing interface
-  modeBar: { position: 'absolute', bottom: 60, flexDirection: 'row', gap: 40, zIndex: 10,   left: 85,    },
+modeBar: {
+  position: 'absolute',
+  bottom: 60,
+  left: 0,
+  right: 0,
+  flexDirection: 'row',
+  justifyContent: 'space-evenly',
+  alignItems: 'center',
+  zIndex: 10,
+},
 
-  mTxt: { fontSize: 22, fontWeight: 'bold', color: '#fff' },
+mTxt: {
+  fontSize: 20,
+  fontWeight: 'bold',
+  color: '#fff',
+  textAlign: 'center',
+},
+
 
   stickerPanel: { position: 'absolute', bottom: 0, height: 350, width: '100%', backgroundColor: '#eee', borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 20, zIndex: 20 },
   stkGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center' },

@@ -18,14 +18,16 @@ import {
 } from 'react-native';
 
 import { Ionicons, Feather, MaterialIcons } from '@expo/vector-icons';
-import { Video, ResizeMode } from 'expo-av';
+import { VideoView, useVideoPlayer } from 'expo-video';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import axios from 'axios';
+
+
 
 import { BackHandler } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useCallback } from 'react';
-
+import { useNavigation } from "@react-navigation/native";
 
 // FIREBASE
 import { db, auth } from './firebaseConfig'; // 'auth' import kiya
@@ -35,45 +37,92 @@ import { collection, addDoc, serverTimestamp, doc, getDoc } from 'firebase/fires
 export default function PostPage() {
 
   
-const UPLOAD_PRESET = 'topking_upload';
+
 
   const router = useRouter();
+
+const navigation = useNavigation();
+
+
+
+  const params = useLocalSearchParams();
+
+const audioUrl =
+  Array.isArray(params.audioUrl)
+    ? params.audioUrl[0]
+    : params.audioUrl;
+
+console.log("POST audioUrl =", audioUrl);
+
+
+const musicName =
+  Array.isArray(params.musicName)
+    ? params.musicName[0]
+    : params.musicName;
+
+const musicArtist =
+  Array.isArray(params.musicArtist)
+    ? params.musicArtist[0]
+    : params.musicArtist;
+
+const musicImage =
+  Array.isArray(params.musicImage)
+    ? params.musicImage[0]
+    : params.musicImage;
+
+
 useFocusEffect(
   useCallback(() => {
-    const onBackPress = () => {
-      router.push({
-        pathname: '/EditView',
-        params: { videoUri }
-      });
+    const backAction = () => {
+
+      if (navigation.canGoBack()) {
+        navigation.goBack();
+      } else {
+        router.replace("/profile");
+      }
 
       return true;
     };
 
     const subscription = BackHandler.addEventListener(
-      'hardwareBackPress',
-      onBackPress
+      "hardwareBackPress",
+      backAction
     );
 
     return () => subscription.remove();
-  }, [videoUri])
+
+  }, [])
 );
 
 
-
-
-  const params = useLocalSearchParams();
-  const videoRef = useRef(null);
+  
 
   const videoUri = Array.isArray(params?.videoUri)
     ? params.videoUri[0]
     : params?.videoUri;
 
+const player = useVideoPlayer(videoUri ?? "", (player) => {
+  player.loop = true;
+  player.muted = true;
+  player.play();
+});
 
+
+useEffect(() => {
+  return () => {
+    try {
+      player.pause();
+    } catch (e) {
+      console.log("Player already released");
+    }
+  };
+}, []);
   // STATES
   const [caption, setCaption] = useState('');
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [visibility, setVisibility] = useState('public');
+
   const [selectedLanguage, setSelectedLanguage] = useState('English');
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [userData, setUserData] = useState(null); // User info store karne ke liye
@@ -99,13 +148,17 @@ useFocusEffect(
     getUserInfo();
   }, []);
 
-  // AUDIO & VIDEO CLEANUP
+  
+
+
+  
+
   
 
   // HANDLE POST
   const handlePostNow = async () => {
     const user = auth.currentUser;
-const CLOUD_NAME = 'dlal6yjxr';
+
 
     if (!user) {
       Alert.alert('Error', 'Pehle login karein');
@@ -126,39 +179,168 @@ const CLOUD_NAME = 'dlal6yjxr';
       setUploading(true);
       setProgress(0);
 
-      const formData = new FormData();
-      formData.append('file', {
-        uri: Platform.OS === 'android' ? videoUri : videoUri.replace('file://', ''),
-        type: 'video/mp4',
-        name: 'reel.mp4',
-      });
-    formData.append('upload_preset', UPLOAD_PRESET);
+      
 
-     const response = await axios.post(
-  `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/video/upload`,
-  formData,
+
+let finalVideo = videoUri;
+
+const token = await auth.currentUser.getIdToken();
+
+const API = "https://topking-backend.onrender.com";
+
+let mergeResponse = null;
+let uploadedVideo;
+let thumbnailUrl;
+
+
+// ✅ SONG HAI TO MERGE KARO
+if (audioUrl && audioUrl.trim() !== "") {
+
+  console.log("🎵 Song found, merging started");
+
+
+  const mergeForm = new FormData();
+
+  mergeForm.append("video", {
+    uri: videoUri,
+    type: "video/mp4",
+    name: "video.mp4",
+  });
+
+
+  mergeForm.append(
+    "audioUrl",
+    audioUrl
+  );
+
+
+mergeResponse = await axios.post(
+  `${API}/merge`,
+  mergeForm,
   {
-    headers: { 'Content-Type': 'multipart/form-data' },
-    onUploadProgress: (event) => {
-      const percent = Math.round((event.loaded * 100) / event.total);
-      setProgress(percent);
+    headers:{
+      "Content-Type":"multipart/form-data",
+      Authorization:`Bearer ${token}`,
     },
   }
 );
 
-      const uploadedVideo = response?.data?.secure_url;
 
-      console.log("VIDEO URL =", uploadedVideo);
+  
 
-const thumbnailUrl = uploadedVideo
-  .replace('/video/upload/', '/video/upload/so_1,f_jpg/');
 
-console.log("THUMB URL =", thumbnailUrl);
+  console.log(
+    "✅ Merge complete:",
+    finalVideo
+  );
+
+
+}
+
+
+// ✅ SONG NAHI HAI TO DIRECT UPLOAD
+else {
+
+  console.log(
+    "🎬 No song, direct upload"
+  );
+
+  finalVideo = videoUri;
+
+}
+
+
+
+
+const formData = new FormData();
+
+formData.append("video", {
+  uri:
+    Platform.OS === "android"
+      ? finalVideo
+      : finalVideo.replace("file://", ""),
+  type: "video/mp4",
+  name: "reel.mp4",
+});
+
+
+
+
+if (audioUrl && audioUrl.trim() !== "") {
+
+  uploadedVideo =
+    mergeResponse.data.video;
+
+  thumbnailUrl =
+    mergeResponse.data.thumbnailUrl;
+
+} else {
+
+  const response =
+    await axios.post(
+      `${API}/upload-video`,
+      formData,
+      {
+        headers: {
+          "Content-Type":
+            "multipart/form-data",
+          Authorization:
+            `Bearer ${token}`,
+        },
+      }
+    );
+
+  uploadedVideo =
+    response.data.videoUrl;
+
+  thumbnailUrl =
+    response.data.thumbnailUrl;
+}
+
+
+
+
+
+// Original Audio = Uploaded Video URL
+const originalAudioUrl = uploadedVideo;
+
+console.log("VIDEO URL =", uploadedVideo);
+
+// LOCAL THUMBNAIL
+
+
+
+
+
+
+console.log(
+  "THUMB URL =",
+  thumbnailUrl
+);
 
       if (uploadedVideo) {
         // AB DATA DYNAMIC HAI
-   const videoData = {
+ const videoData = {
+
   videoUrl: uploadedVideo,
+
+  audioUrl: audioUrl || originalAudioUrl,
+
+  musicName:
+    musicName ||
+    `${userData?.name}'s Original Audio`,
+
+  artist:
+    musicArtist ||
+    userData?.name,
+
+  image:
+    musicImage ||
+    userData?.profileImg,
+
+ 
+
+
   caption: caption,
   language: selectedLanguage,
   privacy: visibility,
@@ -183,45 +365,88 @@ console.log("THUMB URL =", thumbnailUrl);
   engagementScore: 0, // ADD THIS
 
   thumbnail: thumbnailUrl,
+
+  verified: userData?.verified || false,
 };
 
   await addDoc(collection(db, 'all_videos'), videoData);
 
+
+console.log("UPLOAD URL =", `${API}/upload-video`);
+
+
+await addDoc(collection(db, "songs"), {
+
+  title:
+    musicName ||
+    `${userData?.name}'s Original Audio`,
+
+  artist:
+    userData?.name,
+
+  audioUrl:
+    audioUrl || originalAudioUrl,
+
+  image:
+    userData?.profileImg,
+
+  videoUrl:
+    uploadedVideo,
+
+  thumbnail:
+    thumbnailUrl,
+
+  userId:
+    user.uid,
+
+  uses:0,
+
+  createdAt:
+    serverTimestamp(),
+
+});
+
+
 setUploading(false);
 
-Alert.alert('Success ✅', 'Reel Successfully Posted', [
-  {
-    text: 'OK',
-    onPress: () => {
-      console.log('Going to profile');
-      router.push('/profile');
+Alert.alert(
+  "Success ✅",
+  "Reel Successfully Posted",
+  [
+    {
+      text: "OK",
+      onPress: () => {
+
+        router.replace("/profile");
+
+      },
     },
-  },
-]);
+  ]
+);
 
 
       }
     } 
-    catch (error) {
-  console.log(
-    'UPLOAD ERROR =',
-    error?.response?.data
-  );
 
-  console.log(
-    'FULL ERROR =',
-    error
-  );
+catch (error) {
+
+  console.log("MESSAGE =", error.message);
+  console.log("CODE =", error.code);
+  console.log("CONFIG =", error.config?.url);
+  console.log("RESPONSE =", error.response?.data);
+  console.log("FULL ERROR =", error);
 
   setUploading(false);
 
   Alert.alert(
-    'Upload Error',
+    "Upload Error",
     JSON.stringify(
       error?.response?.data || error.message
     )
   );
+
 }
+
   };
 
   return (
@@ -232,15 +457,23 @@ Alert.alert('Success ✅', 'Reel Successfully Posted', [
         
         {/* HEADER AREA */}
         <View style={styles.header}>
-          <TouchableOpacity
+<TouchableOpacity
   style={styles.iconBtn}
-  onPress={() =>
-    router.push({
-      pathname: '/EditView',
-      params: { videoUri }
-    })
-  }
+  
+onPress={() => {
+
+   if (navigation.canGoBack()) {
+      navigation.goBack();
+   } else {
+      router.replace("/profile");
+   }
+
+}}
+
 >
+
+
+
             <Ionicons name="arrow-back" size={22} color="#fff" />
           </TouchableOpacity>
 
@@ -261,15 +494,12 @@ Alert.alert('Success ✅', 'Reel Successfully Posted', [
           <View style={styles.previewCard}>
             <View style={styles.topRow}>
               <View style={styles.videoWrapper}>
-                <Video
-                  ref={videoRef}
-                  source={{ uri: videoUri }}
-                  style={styles.video}
-                  resizeMode={ResizeMode.COVER}
-                  shouldPlay={true}
-                  isMuted={true}
-                  isLooping
-                />
+              <VideoView
+  player={player}
+  style={styles.video}
+  contentFit="cover"
+  nativeControls={false}
+/>
               </View>
 
               <View style={styles.rightContent}>
@@ -292,6 +522,29 @@ Alert.alert('Success ✅', 'Reel Successfully Posted', [
                   onChangeText={setCaption}
                   style={styles.captionInput}
                 />
+
+
+
+<View style={styles.hashContainer}>
+  <TouchableOpacity
+    style={styles.hashBtn}
+    onPress={() => {
+      setCaption((prev) => prev + " #");
+    }}
+  >
+    <Ionicons
+      name="pricetag"
+      size={18}
+      color="#FF5E00"
+    />
+    <Text style={styles.hashText}>
+      Hashtag 
+    </Text>
+  </TouchableOpacity>
+</View>
+
+
+
               </View>
             </View>
           </View>
@@ -420,5 +673,27 @@ const styles = StyleSheet.create({
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15 },
   modalTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   langItem: { paddingVertical: 15, borderBottomWidth: 0.5, borderBottomColor: '#333' },
-  langText: { color: '#fff', fontSize: 16 }
+  langText: { color: '#fff', fontSize: 16 },
+
+hashContainer: {
+  marginTop: 12,
+},
+
+hashBtn: {
+  flexDirection: "row",
+  alignItems: "center",
+  alignSelf: "flex-start",
+  backgroundColor: "#252525",
+  paddingHorizontal: 14,
+  paddingVertical: 8,
+  borderRadius: 20,
+},
+
+hashText: {
+  color: "#fff",
+  marginLeft: 8,
+  fontWeight: "600",
+},
+
+
 });

@@ -1,4 +1,9 @@
-import React, { useEffect, useState } from "react";
+import React, {
+  useEffect,
+  useState,
+  useRef,
+} from "react";
+
 import {
   View,
   Text,
@@ -10,9 +15,13 @@ import {
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
+    Keyboard,
 } from "react-native";
 
-import { Ionicons } from "@expo/vector-icons";
+import {
+  Ionicons,
+  MaterialCommunityIcons,
+} from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
 import { auth, db } from "./firebaseConfig";
@@ -27,6 +36,7 @@ import {
   setDoc,
   doc,
   getDoc,
+    increment,
 } from "firebase/firestore";
 
 export default function ChatScreen() {
@@ -48,6 +58,66 @@ export default function ChatScreen() {
 
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState([]);
+const [userLevel, setUserLevel] = useState(1);
+const flatListRef = useRef(null);
+const [verified, setVerified] = useState(false);
+
+
+const getLevelTheme = (level = 1) => {
+
+  if (level >= 50) {
+    return {
+      bg: "#7B1FFF",
+      border: "#FFD700",
+      text: "#fff",
+      icon: "#FFD700",
+    };
+  }
+
+  if (level >= 40) {
+    return {
+      bg: "#00BFFF",
+      border: "#9EF8FF",
+      text: "#fff",
+      icon: "#fff",
+    };
+  }
+
+  if (level >= 30) {
+    return {
+      bg: "#FF0066",
+      border: "#FFB6C1",
+      text: "#fff",
+      icon: "#fff",
+    };
+  }
+
+  if (level >= 20) {
+    return {
+      bg: "#FFC107",
+      border: "#FFE082",
+      text: "#000",
+      icon: "#fff",
+    };
+  }
+
+  if (level >= 10) {
+    return {
+      bg: "#BDBDBD",
+      border: "#fff",
+      text: "#fff",
+      icon: "#fff",
+    };
+  }
+
+  return {
+    bg: "#222",
+    border: "#555",
+    text: "#FFD700",
+    icon: "#00E5FF",
+  };
+};
+
 
   const currentUser = auth.currentUser;
 
@@ -74,6 +144,42 @@ export default function ChatScreen() {
       ? `${currentUid}_${userId}`
       : `${userId}_${currentUid}`;
 
+
+
+
+useEffect(() => {
+
+  const loadUser = async () => {
+
+    // Wallet
+    const walletSnap = await getDoc(
+      doc(db, "wallets", userId)
+    );
+
+    if (walletSnap.exists()) {
+      setUserLevel(
+        walletSnap.data().level || 1
+      );
+    }
+
+    // User
+    const userSnap = await getDoc(
+      doc(db, "users", userId)
+    );
+
+    if (userSnap.exists()) {
+      setVerified(
+        userSnap.data().verified === true
+      );
+    }
+
+  };
+
+  loadUser();
+
+}, [userId]);
+
+
   useEffect(() => {
     const q = query(
       collection(db, "chats", chatId, "messages"),
@@ -91,6 +197,52 @@ export default function ChatScreen() {
 
     return unsubscribe;
   }, [chatId]);
+
+
+
+
+useEffect(() => {
+
+  const clearNewMessage = async () => {
+
+    await setDoc(
+      doc(
+        db,
+        "userChats",
+        currentUser.uid,
+        "friends",
+        userId
+      ),
+      {
+        hasNewMessage: false,
+        unreadCount: 0,
+      },
+      {
+        merge: true,
+      }
+    );
+
+  };
+
+  clearNewMessage();
+
+}, []);
+
+
+
+useEffect(() => {
+
+  setTimeout(() => {
+
+    flatListRef.current?.scrollToEnd({
+      animated: true,
+    });
+
+  }, 100);
+
+}, [messages]);
+
+
 
   const sendMessage = async () => {
     if (!message.trim()) return;
@@ -112,47 +264,61 @@ export default function ChatScreen() {
         }
       );
 
-      await setDoc(
-        doc(
-          db,
-          "userChats",
-          currentUser.uid,
-          "friends",
-          userId
-        ),
-        {
-          userId,
-          username,
-          profileImg,
-          lastMessage: message,
-          updatedAt: serverTimestamp(),
-        }
-      );
+   await setDoc(
+  doc(
+    db,
+    "userChats",
+    currentUser.uid,
+    "friends",
+    userId
+  ),
+  {
+    userId,
+    username,
+    profileImg,
+    lastMessage: message,
+    updatedAt: serverTimestamp(),
+    unreadCount: 0,
+  },
+  { merge: true }
+);
 
-      await setDoc(
-        doc(
-          db,
-          "userChats",
-          userId,
-          "friends",
-          currentUser.uid
-        ),
-        {
-          userId: currentUser.uid,
-          username:
-            myData?.username ||
-            currentUser.displayName ||
-            "User",
-          profileImg:
-            myData?.profileImg ||
-            currentUser.photoURL ||
-            "",
-          lastMessage: message,
-          updatedAt: serverTimestamp(),
-        }
-      );
+
+
+    await setDoc(
+  doc(
+    db,
+    "userChats",
+    userId,
+    "friends",
+    currentUser.uid
+  ),
+  {
+    userId: currentUser.uid,
+    username:
+      myData?.username ||
+      currentUser.displayName ||
+      "User",
+    profileImg:
+      myData?.profileImg ||
+      currentUser.photoURL ||
+      "",
+    lastMessage: message,
+
+hasNewMessage: true,
+   unreadCount: increment(1),
+
+    updatedAt: serverTimestamp(),
+
+    
+  },
+  { merge: true }
+);
+
 
       setMessage("");
+Keyboard.dismiss();
+
     } catch (err) {
       console.log("SEND ERROR =", err);
     }
@@ -172,6 +338,8 @@ export default function ChatScreen() {
       ]}
     >
       {!mine && (
+
+
         <Image
           source={{
             uri:
@@ -180,20 +348,103 @@ export default function ChatScreen() {
           }}
           style={styles.chatAvatar}
         />
+
+
+
       )}
 
-      <View
-        style={[
-          styles.messageBox,
-          mine
-            ? styles.myMessage
-            : styles.otherMessage,
-        ]}
-      >
-        <Text style={styles.messageText}>
-          {String(item?.text || "")}
-        </Text>
-      </View>
+
+    <View
+  style={[
+    styles.messageBox,
+    mine
+      ? styles.myMessage
+      : styles.otherMessage,
+  ]}
+>
+
+  {item.type === "video" ? (
+
+    <TouchableOpacity
+
+     onPress={() => {
+
+const videoArray = [{
+  id: item.videoId,
+
+  videoUrl:
+    item.videoUrl || item.video,
+
+  video:
+    item.video,
+
+  thumbnail:
+    item.thumbnail,
+
+  profile:
+    item.profile,
+
+  username:
+    item.username,
+
+  caption:
+    item.caption,
+
+  userId:
+    item.userId,
+
+  likes:
+    item.likes || 0,
+
+  commentsCount:
+    item.commentsCount || 0,
+
+  shares:
+    item.shares || 0,
+
+  views:
+    item.views || 0,
+}];
+
+  router.push({
+    pathname: "/allvideo",
+    params: {
+      videos: JSON.stringify(videoArray),
+      index: 0,
+      userId: userId,
+    },
+  });
+
+}}
+
+    >
+
+      <Image
+        source={{
+          uri: item.thumbnail,
+        }}
+        style={styles.videoThumbnail}
+      />
+
+      <Ionicons
+        name="play-circle"
+        size={50}
+        color="#fff"
+        style={styles.playIcon}
+      />
+
+    </TouchableOpacity>
+
+  ) : (
+
+    <Text style={styles.messageText}>
+      {String(item?.text || "")}
+    </Text>
+
+  )}
+
+</View>
+
     </View>
   );
 };
@@ -218,41 +469,155 @@ export default function ChatScreen() {
           />
         </TouchableOpacity>
 
-        <Image
-          source={{
-            uri:
-              profileImg ||
-              "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
-          }}
-          style={styles.avatar}
-        />
+        
+<TouchableOpacity
+  onPress={() =>
+    router.push({
+      pathname: "./userProfile",
+      params: {
+        userId: userId,
+      },
+    })
+  }
+>
+  <Image
+    source={{
+      uri:
+        profileImg ||
+        "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
+    }}
+    style={styles.avatar}
+  />
+</TouchableOpacity>
 
-        <Text style={styles.username}>
-          {String(username)}
-        </Text>
+
+<View
+  style={{
+    flexDirection: "row",
+    alignItems: "center",
+    marginLeft: 10,
+  }}
+>
+
+  <Text style={styles.username}>
+    {String(username)}
+  </Text>
+
+  {verified && (
+
+<View
+  style={{
+    marginLeft: 5,
+    justifyContent: "center",
+    alignItems: "center",
+  }}
+>
+
+  <MaterialCommunityIcons
+    name="check-decagram"
+    size={18}
+    color="#ffffff"
+  />
+
+ 
+
+</View>
+
+)}
+
+  <View
+    style={[
+      styles.levelBadge,
+      {
+        backgroundColor:
+          getLevelTheme(userLevel).bg,
+
+        borderColor:
+          getLevelTheme(userLevel).border,
+      },
+    ]}
+  >
+    <MaterialCommunityIcons
+      name="diamond-stone"
+      size={12}
+      color={
+        getLevelTheme(userLevel).icon
+      }
+    />
+
+    <Text
+      style={{
+        color:
+          getLevelTheme(userLevel).text,
+        marginLeft: 3,
+        fontSize: 11,
+        fontWeight: "bold",
+      }}
+    >
+      LV {userLevel}
+    </Text>
+
+  </View>
+
+</View>
+
+        
       </View>
 
-      <FlatList
-        data={messages}
-        renderItem={renderItem}
-        keyExtractor={(item) =>
-          String(item.id)
-        }
-        contentContainerStyle={{
-          padding: 15,
-        }}
-      />
+    <FlatList
+  ref={flatListRef}
+
+  data={messages}
+
+  renderItem={renderItem}
+
+  keyExtractor={(item) =>
+    String(item.id)
+  }
+
+  contentContainerStyle={{
+    padding: 15,
+    paddingBottom: 20,
+  }}
+
+  onContentSizeChange={() =>
+    flatListRef.current?.scrollToEnd({
+      animated: true,
+    })
+  }
+
+  onLayout={() =>
+    flatListRef.current?.scrollToEnd({
+      animated: false,
+    })
+  }
+
+  showsVerticalScrollIndicator={false}
+/>
 
       <View style={styles.bottomBar}>
-        <TextInput
-          value={message}
-          onChangeText={setMessage}
-          placeholder={`Message.. ${String(
-            username
-          )}`}
-          placeholderTextColor="#ccc"
-          style={styles.input}
-        />
+       <TextInput
+  value={message}
+  onChangeText={setMessage}
+  placeholder={`Message.. ${String(
+    username
+  )}`}
+  placeholderTextColor="#ccc"
+  style={styles.input}
+
+  // Keyboard me Send button dikhayega
+  returnKeyType="send"
+
+  // Keyboard band nahi hoga
+  blurOnSubmit={false}
+
+  // Keyboard ke Send button par
+  onSubmitEditing={() => {
+    if (message.trim()) {
+      sendMessage();
+    }
+  }}
+/>
 
         <TouchableOpacity
           style={styles.sendBtn}
@@ -381,4 +746,28 @@ bottomBar: {
     alignItems: "center",
     marginLeft: 10,
   },
-});
+
+videoThumbnail:{
+  width:180,
+  height:240,
+  borderRadius:15,
+},
+
+playIcon:{
+  position:'absolute',
+  top:'40%',
+  left:'40%',
+},
+
+levelBadge: {
+  marginLeft: 6,
+  flexDirection: "row",
+  alignItems: "center",
+  borderWidth: 1,
+  paddingHorizontal: 8,
+  paddingVertical: 3,
+  borderRadius: 20,
+},
+
+
+});             

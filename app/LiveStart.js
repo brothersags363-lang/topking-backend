@@ -167,7 +167,8 @@ export default function LiveStart() {
         seatsCount: 10,
         seatsData: initialSeatsObject, 
         roomCover: finalCover, 
-        createdAt: new Date().toISOString()
+        createdAt: Date.now()
+        
       };
 
       if (db) {

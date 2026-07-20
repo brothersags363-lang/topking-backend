@@ -16,11 +16,19 @@ import {
   TouchableOpacity,
   Alert,
   Share,
-  TextInput
+  TextInput,
+  Keyboard,
 } from 'react-native';
 
-import { Ionicons } from '@expo/vector-icons';
-import { Video } from 'expo-av';
+import {
+  Ionicons,
+  MaterialCommunityIcons,
+} from "@expo/vector-icons";
+import {
+  VideoView,
+  useVideoPlayer,
+  createVideoPlayer,
+} from 'expo-video';
 
 import { db } from './firebaseConfig';
 
@@ -48,11 +56,122 @@ import {
 
 import { getAuth } from "firebase/auth";
 
-const { height, width } = Dimensions.get('window');
+
+
+const { height, width } = Dimensions.get('screen');
 
 const auth = getAuth();
 
+const getLevelTheme = (level = 1) => {
+
+  if (level >= 50) {
+    return {
+      bg: "#7B1FFF",
+      border: "#FFD700",
+      text: "#fff",
+      icon: "#FFD700",
+    };
+  }
+
+  if (level >= 40) {
+    return {
+      bg: "#00BFFF",
+      border: "#9EF8FF",
+      text: "#fff",
+      icon: "#fff",
+    };
+  }
+
+  if (level >= 30) {
+    return {
+      bg: "#FF0066",
+      border: "#FFB6C1",
+      text: "#fff",
+      icon: "#fff",
+    };
+  }
+
+  if (level >= 20) {
+    return {
+      bg: "#FFC107",
+      border: "#FFE082",
+      text: "#000",
+      icon: "#fff",
+    };
+  }
+
+  if (level >= 10) {
+    return {
+      bg: "#BDBDBD",
+      border: "#fff",
+      text: "#fff",
+      icon: "#fff",
+    };
+  }
+
+  return {
+    bg: "#222",
+    border: "#555",
+    text: "#FFD700",
+    icon: "#00E5FF",
+  };
+};
+
+
+const VideoPlayerItem = React.memo(({
+  uri,
+  active
+}) => {
+
+  const player = useVideoPlayer(uri, (player) => {
+
+    player.loop = true;
+
+    player.bufferOptions = {
+    preferredForwardBufferDuration: 10
+  };
+
+  });
+
+
+  useEffect(() => {
+
+  if (active) {
+
+    player.muted = false;
+
+    player.currentTime = 0;
+
+    player.play();
+
+  } else {
+
+    player.pause();
+
+    player.muted = true;
+
+  }
+
+}, [active]);
+
+  return (
+
+    <VideoView
+player={player}
+style={styles.video}
+contentFit="cover"
+nativeControls={false}
+allowsFullscreen={false}
+allowsPictureInPicture={false}
+    />
+
+  );
+
+});
+
 export default function App() {
+
+
 
 const router = useRouter();
 
@@ -65,23 +184,36 @@ const videoData = videos
 
 
 const flatListRef = useRef(null);
+const preloadRef = useRef(null);
+
+const viewabilityConfig = useRef({
+  itemVisiblePercentThreshold: 80,
+});
+
+
 
 useEffect(() => {
 
-console.log("VIDEOS =", videoData);
-
+  console.log("VIDEOS =", videoData);
 
   if (
     flatListRef.current &&
     Number(index) >= 0
   ) {
+
+    setActiveVideo(Number(index));
+
     setTimeout(() => {
+
       flatListRef.current.scrollToIndex({
         index: Number(index),
         animated: false,
       });
+
     }, 300);
+
   }
+
 }, []);
 
 
@@ -117,33 +249,39 @@ const [localLikes, setLocalLikes] =
 const [showComments, setShowComments] =
   useState(false);
 
-useEffect(() => {
 
-  const backAction = () => {
 
-    console.log("BACK");
-    console.log(showComments);
+useFocusEffect(
+  React.useCallback(() => {
 
-    if (showComments) {
+    const onBackPress = () => {
 
-      setShowComments(false);
+      if (showComments) {
+        setShowComments(false);
+        return true;
+      }
+
+      if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace("/(tabs)/profile");
+      }
 
       return true;
-    }
+    };
 
-    return false;
-  };
+    const subscription =
+      BackHandler.addEventListener(
+        "hardwareBackPress",
+        onBackPress
+      );
 
-  const backHandler =
-    BackHandler.addEventListener(
-      'hardwareBackPress',
-      backAction
-    );
+    return () => subscription.remove();
 
-  return () =>
-    backHandler.remove();
+  }, [showComments])
+);
 
-}, [showComments]);
+
 
 
 
@@ -467,6 +605,22 @@ const onViewableItemsChanged =
             .item.id
         );
 
+const nextIndex =
+  viewableItems[0].index + 1;
+
+if (videoData[nextIndex]) {
+
+  preloadRef.current?.release();
+
+  preloadRef.current =
+    createVideoPlayer(
+      videoData[nextIndex].videoUrl ||
+      videoData[nextIndex].video
+    );
+
+}
+
+
       }
 
     }
@@ -529,6 +683,7 @@ const postComment = async () => {
     );
 
     setCommentText('');
+    Keyboard.dismiss();
 
   } catch (error) {
 
@@ -538,28 +693,78 @@ const postComment = async () => {
 };
 
 
+const deleteComment = async (commentId) => {
+
+  Alert.alert(
+    "Delete Comment",
+    "Do you want to delete this comment?",
+    [
+      {
+        text: "Cancel",
+        style: "cancel",
+      },
+      {
+        text: "Delete",
+        style: "destructive",
+
+        onPress: async () => {
+
+          try {
+
+            await deleteDoc(
+              doc(
+                db,
+                "all_videos",
+                selectedVideoId,
+                "comments",
+                commentId
+              )
+            );
+
+            await updateDoc(
+              doc(
+                db,
+                "all_videos",
+                selectedVideoId
+              ),
+              {
+                commentsCount: increment(-1),
+              }
+            );
+
+          } catch (error) {
+
+            console.log(error);
+
+            Alert.alert(
+              "Error",
+              "Comment delete failed"
+            );
+          }
+        },
+      },
+    ]
+  );
+};
+
+
+
   const renderVideo = ({ item, index }) => (
 
     <View style={styles.videoContainer}>
-     <Video
-  key={item.id}
-        source={{
-  uri:
-    item.videoUrl ||
-    item.video,
-}}
-        style={styles.video}
-        resizeMode="cover"
-        isLooping
-        shouldPlay={
-  screenFocused &&
-  index === activeVideo
-}
-isMuted={
-  index !== activeVideo
-}
 
-      />
+
+
+ <VideoPlayerItem
+  key={item.id}
+  uri={item.videoUrl || item.video}
+  active={
+    screenFocused &&
+    index === activeVideo
+  }
+/>
+
+      
       {/* Side Overlay (Like/Comment buttons placeholders) */}
       <View style={styles.sideBar}>
 
@@ -697,9 +902,59 @@ isMuted={
       {/* Bottom Info */}
       <View style={styles.bottomInfo}>
 
-  <Text style={styles.username}>
-    @{item.username}
-  </Text>
+  
+
+
+<View
+  style={{
+    flexDirection: "row",
+    alignItems: "center",
+  }}
+>
+
+<Text style={styles.username}>
+  @{item.username}
+</Text>
+
+{item.verified === true && (
+
+<View
+  style={{
+    marginLeft: 5,
+    width: 18,
+    height: 18,
+    justifyContent: "center",
+    alignItems: "center",
+    position: "relative",
+  }}
+>
+
+<MaterialCommunityIcons
+  name="check-decagram"
+  size={18}
+  color="#fff"
+/>
+
+<Ionicons
+  name="checkmark"
+  size={10}
+  color="#000"
+  style={{
+    position: "absolute",
+    top: 4.6,
+    left: 4.2,
+  }}
+/>
+
+</View>
+
+)}
+
+
+
+
+</View>
+
 
   <Text style={styles.caption}>
     {item.caption}
@@ -742,10 +997,37 @@ onViewableItemsChanged={
   onViewableItemsChanged
 }
 
+viewabilityConfig={viewabilityConfig.current}
+
+snapToInterval={height - 81.2}
+
+decelerationRate="fast"
+
+disableIntervalMomentum={true}
+
  keyExtractor={(item, i) =>
   item.id + i
 }
         pagingEnabled
+
+
+extraData={activeVideo}
+
+snapToAlignment="start"
+
+showsVerticalScrollIndicator={false}
+
+
+
+        windowSize={3}
+
+initialNumToRender={3}
+
+maxToRenderPerBatch={3}
+
+updateCellsBatchingPeriod={50}
+
+removeClippedSubviews={true}
 
 getItemLayout={(data, index) => ({
   length: height - 81.2,
@@ -753,18 +1035,7 @@ getItemLayout={(data, index) => ({
   index,
 })}
 
-       
-      onViewableItemsChanged={({ viewableItems }) => {
-
-  if (
-    viewableItems.length > 0
-  ) {
-    setActiveVideo(
-      viewableItems[0].index
-    );
-  }
-
-}}
+      
       />
 
 
@@ -777,7 +1048,7 @@ showComments && (
     position: 'absolute',
     bottom: 0,
     width: '100%',
-    height: 400,
+    height: height * 0.65,
     backgroundColor: '#111',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
@@ -821,16 +1092,90 @@ showComments && (
 
 
 
+<View
+  style={{
+    flexDirection: "row",
+    alignItems: "center",
+  }}
+>
 
 
 <Text
   style={{
-    color: '#fff',
-    fontWeight: 'bold',
+    color: "#fff",
+    fontWeight: "bold",
   }}
 >
   @{selectedVideoData.username}
 </Text>
+
+{selectedVideoData?.verified === true && (
+
+<View
+  style={{
+    marginLeft: 5,
+    width: 18,
+    height: 18,
+    justifyContent: "center",
+    alignItems: "center",
+    position: "relative",
+  }}
+>
+
+<MaterialCommunityIcons
+  name="check-decagram"
+  size={18}
+  color="#fff"
+/>
+
+<Ionicons
+  name="checkmark"
+  size={10}
+  color="#000"
+  style={{
+    position: "absolute",
+    top: 4.5,
+    left: 4.2,
+  }}
+/>
+
+</View>
+
+)}
+
+
+<View
+  style={[
+    styles.levelBadge,
+    {
+      backgroundColor: getLevelTheme(selectedVideoData.level).bg,
+      borderColor: getLevelTheme(selectedVideoData.level).border,
+    },
+  ]}
+>
+
+<MaterialCommunityIcons
+  name="diamond-stone"
+  size={11}
+  color={getLevelTheme(selectedVideoData.level).icon}
+/>
+
+<Text
+  style={{
+    color: getLevelTheme(selectedVideoData.level).text,
+    fontWeight: "bold",
+    fontSize: 10,
+    marginLeft: 3,
+  }}
+>
+  LV {selectedVideoData.level || 1}
+</Text>
+
+</View>
+
+</View>
+
+
 
 <Text
   style={{
@@ -853,6 +1198,16 @@ showComments && (
 <FlatList
   data={comments}
   keyExtractor={(item) => item.id}
+
+  style={{
+    flex: 1,
+  }}
+  contentContainerStyle={{
+    paddingBottom: 100,
+  }}
+  showsVerticalScrollIndicator={false}
+  keyboardShouldPersistTaps="handled"
+
   renderItem={({ item }) => (
 
     <View
@@ -882,14 +1237,91 @@ showComments && (
 
 
 
- <Text
+ <View
   style={{
-    color: '#FFD700',
-    fontWeight: 'bold'
+    flexDirection: "row",
+    alignItems: "center",
   }}
 >
-        {item.username}
-      </Text>
+
+
+<Text
+  style={{
+    color:"#FFD700",
+    fontWeight:"bold",
+  }}
+>
+  {item.username}
+</Text>
+
+{item.verified === true && (
+
+<View
+  style={{
+    marginLeft:5,
+    width:16,
+    height:16,
+    justifyContent:"center",
+    alignItems:"center",
+    position:"relative",
+  }}
+>
+
+<MaterialCommunityIcons
+  name="check-decagram"
+  size={16}
+  color="#fff"
+/>
+
+<Ionicons
+  name="checkmark"
+  size={9}
+  color="#000"
+  style={{
+    position:"absolute",
+    top:4,
+    left:3.8,
+  }}
+/>
+
+</View>
+
+)}
+
+
+<View
+  style={[
+    styles.levelBadge,
+    {
+      backgroundColor: getLevelTheme(item.level).bg,
+      borderColor: getLevelTheme(item.level).border,
+    },
+  ]}
+>
+
+<MaterialCommunityIcons
+  name="diamond-stone"
+  size={11}
+  color={getLevelTheme(item.level).icon}
+/>
+
+<Text
+  style={{
+    color: getLevelTheme(item.level).text,
+    fontWeight: "bold",
+    fontSize: 10,
+    marginLeft: 3,
+  }}
+>
+  LV {item.level || 1}
+</Text>
+
+</View>
+
+</View>
+
+
+
 
       <Text
         style={{
@@ -899,6 +1331,22 @@ showComments && (
         {item.text}
       </Text>
       </View>
+
+  <TouchableOpacity
+    onPress={() =>
+      deleteComment(item.id)
+    }
+    style={{
+      padding: 8,
+    }}
+  >
+    <Ionicons
+      name="ellipsis-vertical"
+      size={22}
+      color="#fff"
+    />
+  </TouchableOpacity>
+
 
     </View>
 
@@ -920,6 +1368,12 @@ showComments && (
   onChangeText={setCommentText}
   placeholder="Add comment..."
   placeholderTextColor="#999"
+  returnKeyType="send"
+  blurOnSubmit={true}
+  onSubmitEditing={() => {
+    postComment();
+    Keyboard.dismiss();
+  }}
   style={{
     flex: 1,
     color: '#fff',
@@ -960,11 +1414,11 @@ showComments && (
     if (showComments) {
 
       setShowComments(false);
-
       return;
+
     }
 
-    router.push('/profile');
+    router.back();
 
   }}
 >
@@ -997,10 +1451,36 @@ const styles = StyleSheet.create({
   header: { height: 60, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000', paddingTop: 20 },
   headerText: { color: 'white', fontWeight: 'bold' },
   videoContainer: { height: height - 81.2, width: width }, // Header & Comment height minus
-  video: { width: '100%', height: '100%' },
-  sideBar: { position: 'absolute', right: 7, bottom: 30, alignItems: 'center' },
+
+
+  video: { width: '100%', height: '90%' },
+
+sideBar: {
+  position: 'absolute',
+
+  right: 10,
+
+  bottom: 140,   // video ke niche se kitna upar
+
+  alignItems: 'center',
+
+  zIndex: 999,
+},
+
   sideText: { color: 'white', fontSize: 24, marginBottom: 15 },
-  bottomInfo: { position: 'absolute', left: 10, bottom: 20 },
+
+bottomInfo: {
+  position: 'absolute',
+
+  left: 12,
+
+  bottom: 100,      // niche se kitna upar
+
+  width: width * 0.7,
+
+  zIndex: 999,
+},
+
   username: { color: 'white', fontWeight: 'bold' },
   caption: { color: 'white' },
 
@@ -1012,6 +1492,7 @@ commentBox: {
 },
 
   commentText: { color: '#888',    marginBottom: 40,  paddingLeft: 20,    },
+
 profileImage: {
   width: 50,
   height: 50,
@@ -1023,7 +1504,7 @@ profileImage: {
 
 iconBox: {
   alignItems: 'center',
-  marginBottom: 12,
+  marginBottom: 13,
 },
 
 iconText: {
@@ -1076,5 +1557,16 @@ yellowCircle: {
   top: 15,
   left: 20,
 },
+
+levelBadge: {
+  marginLeft: 6,
+  flexDirection: "row",
+  alignItems: "center",
+  borderWidth: 1,
+  paddingHorizontal: 8,
+  paddingVertical: 3,
+  borderRadius: 20,
+},
+
 
 });

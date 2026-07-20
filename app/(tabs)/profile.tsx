@@ -15,7 +15,8 @@ import {
   TextInput,
   ScrollView,
   Platform,
-  BackHandler
+  BackHandler,
+   Pressable,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { VideoView, useVideoPlayer } from 'expo-video';
@@ -32,17 +33,10 @@ import {
   CLOUDINARY_UPLOAD_PRESET
 } from "../config/cloudinary";
 
-import { collection, query, where, getDocs, doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, getDoc, setDoc, deleteDoc,  orderBy, limit,  onSnapshot, } from 'firebase/firestore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
-
-
-import {
-  ref,
-  uploadBytes,
-  getDownloadURL
-} from "firebase/storage";
 
 
 const { width } = Dimensions.get('window');
@@ -62,8 +56,16 @@ export default function ProfileScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [videos, setVideos] = useState([]);
+const [likedVideos, setLikedVideos] = useState([]);
+const [likedMeCount, setLikedMeCount] = useState(0);
 const [followersModalVisible, setFollowersModalVisible] =
   useState(false);
+
+  const [userProfileVisible, setUserProfileVisible] =
+useState(false);
+
+const [selectedUser, setSelectedUser] =
+useState(null);
 
 const [followersList, setFollowersList] =
   useState([]);
@@ -78,7 +80,7 @@ const [activeFollowTab, setActiveFollowTab] =
 
   
 
-
+const [userRank, setUserRank] = useState(null);
 
 
   const [activeTab, setActiveTab] = useState('Videos');
@@ -86,8 +88,21 @@ const [activeFollowTab, setActiveFollowTab] =
   const [genderModalVisible, setGenderModalVisible] = useState(false);
   const [categoryModalVisible, setCategoryModalVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+const [joinedAgency, setJoinedAgency] = useState(false);
+
+const [topGifters, setTopGifters] = useState([]);
+const [giftUserCount, setGiftUserCount] = useState(0);
   const [selectedVideo, setSelectedVideo] = useState(null);
+  const [hasAgency, setHasAgency] = useState(false);
   const [playModalVisible, setPlayModalVisible] = useState(false);
+const [commentMenuVisible, setCommentMenuVisible] =
+useState(false);
+
+const [selectedComment, setSelectedComment] =
+useState(null);
+
 
   const player = useVideoPlayer(
   selectedVideo?.videoUrl || '',
@@ -128,6 +143,7 @@ likes: '0',
   const [tempCategory, setTempCategory] = useState('');
   const [tempGender, setTempGender] = useState('');
   const [tempProfileImg, setTempProfileImg] = useState('');
+  const videoCount = videos.length;
   const categories = [
   'Video Creator',
   'Gaming',
@@ -186,11 +202,8 @@ if (categoryModalVisible) {
         setMenuVisible(false);
         return true;
       }
-      
-      Alert.alert("Exit App", "Kya aap app band karna chahte hain?", [
-        { text: "Nahi", style: "cancel" },
-        { text: "Haan", onPress: () => BackHandler.exitApp() }
-      ]);
+      router.replace("/");
+     
       return true;
     };
 
@@ -229,6 +242,7 @@ useEffect(() => {
 
       const userRef = doc(db, 'users', user.uid);
 
+
       const docSnap = await getDoc(userRef);
 
       // Agar Firestore me user nahi hai to naya banao
@@ -246,7 +260,7 @@ useEffect(() => {
           followers: '0',
           following: '0',
           likes: '0',
-
+  uploadStatus: false,  
           profileImg:
             user.photoURL ||
             'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
@@ -263,9 +277,18 @@ useEffect(() => {
 
       }
 
-      await fetchUserData(user.uid);
 
-      await loadVideos(user.uid);
+     
+Promise.all([
+  fetchUserData(user.uid),
+  loadVideos(user.uid),
+  loadLikedVideos(user.uid),
+  loadLikedMeCount(user.uid),
+  checkAdmin(user.uid),
+  checkJoinedAgency(user.uid),
+  loadUserRank(user.uid),
+]);
+
 
     } catch (e) {
 
@@ -283,33 +306,169 @@ useEffect(() => {
 
 }, []);
 
+
+
+
+useEffect(() => {
+
+  const uid = auth.currentUser?.uid;
+
+  if (!uid) return;
+
+  const unsub = onSnapshot(
+    doc(db, "users", uid),
+    (snap) => {
+
+      if (!snap.exists()) return;
+
+      const data = snap.data();
+
+      const gifters = Object.values(
+        data.topGifters || {}
+      );
+
+      gifters.sort(
+        (a, b) => b.stars - a.stars
+      );
+
+      setTopGifters(
+        gifters.slice(0, 3)
+      );
+
+      setGiftUserCount(
+        gifters.length
+      );
+
+    }
+  );
+
+  return () => unsub();
+
+}, []);
+
+
+
+
+
  // dynamically parameter update handling fix kiya
 
   // Logout Handler Function
   const handleLogout = async () => {
     setMenuVisible(false);
-    Alert.alert("Logout", "Kya aap logout karna chahte hain?", [
-      { text: "Nahi", style: "cancel" },
+    Alert.alert("Logout", "Do you want to log out??", [
+      { text: "no", style: "cancel" },
       { 
-        text: "Haan", 
+        text: "yes", 
         onPress: async () => { 
-          try { 
 
-             await GoogleSignin.revokeAccess();
 
-await GoogleSignin.signOut();
+        try {
 
-await signOut(auth);
+  // Firebase logout
+  await signOut(auth);
 
-router.replace('/login');
+  // Google logout
+  try {
 
-          } catch (e) { 
-            Alert.alert("Error", "Logout nahi ho saka. Kripya dobara koshish karein.");
-          } 
+    await GoogleSignin.signOut();
+
+  } catch (err) {
+
+    console.log(
+      "Google Signout Error =",
+      err
+    );
+
+  }
+
+  router.replace("/login");
+
+} catch (e) {
+
+  console.log(
+    "LOGOUT ERROR =",
+    e
+  );
+
+  Alert.alert(
+    "Error",
+    "Logout nahi ho saka"
+  );
+
+}
+
+
+
         } 
       }
     ]);
   };
+
+
+
+
+
+
+
+const checkVerifiedBadge = async (uid) => {
+  try {
+
+    // User already verified hai?
+    const userRef = doc(db, "users", uid);
+    const userSnap = await getDoc(userRef);
+
+    if (!userSnap.exists()) return;
+
+    const userData = userSnap.data();
+
+    // Agar pehle se verified hai to kuch mat karo
+    if (userData.verified === true) {
+      return;
+    }
+
+    // User ke videos lao
+    const q = query(
+      collection(db, "all_videos"),
+      where("userId", "==", uid)
+    );
+
+    const snap = await getDocs(q);
+
+    let count = 0;
+
+    snap.forEach((video) => {
+      const views = Number(video.data().views || 0);
+
+      if (views >= 300) {
+        count++;
+      }
+    });
+
+    console.log("300+ Videos =", count);
+
+    // Agar 5 ya usse jyada videos hain
+    if (count >= 5) {
+
+      await setDoc(
+        userRef,
+        {
+          verified: true,
+        },
+        { merge: true }
+      );
+
+      console.log("Verified Badge Given");
+
+    }
+
+  } catch (error) {
+    console.log(error);
+  }
+};
+
+
+
+
 
   const fetchUserData = async (uid) => {
 
@@ -318,8 +477,25 @@ router.replace('/login');
     try {
       const docRef = doc(db, "users", uid);
       const docSnap = await getDoc(docRef);
+
+const walletRef = doc(db, "wallets", uid);
+const walletSnap = await getDoc(walletRef);
+
+let userLevel = 1;
+
+if (walletSnap.exists()) {
+  userLevel = walletSnap.data().level || 1;
+
+
+  console.log("Wallet =", walletSnap.data());
+  console.log("Level =", userLevel);
+}
+
       if (docSnap.exists()) {
         const data = docSnap.data();
+        console.log("USER DATA =", data);
+console.log("AGENCY STATUS =", data.agencyApproved);
+setHasAgency(data.agencyApproved === true);
 
 // Followers Count
 const followersQuery = query(
@@ -378,6 +554,9 @@ videosSnap.forEach((videoDoc) => {
 following: followingCount.toString(),
 likes: totalLikes.toString(),
           profileImg: data.profileImg || 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
+          verified: data.verified || false,
+ level: userLevel,
+
         });
       }
     } catch (e) { 
@@ -387,16 +566,204 @@ likes: totalLikes.toString(),
     }
   };
 
+
+
+
   const loadVideos = async (uid) => {
-    try {
-      const q = query(collection(db, 'all_videos'), where('userId', '==', uid));
-      const querySnapshot = await getDocs(q);
-      const tempVideos = querySnapshot.docs.map((docItem) => ({ id: docItem.id, ...docItem.data() }));
-      setVideos(tempVideos);
-    } catch (e) {
-      console.log("Error fetching user media posts: ", e);
+  try {
+
+    const q = query(
+      collection(db, "all_videos"),
+      where("userId", "==", uid)
+    );
+
+    const querySnapshot = await getDocs(q);
+
+    const tempVideos = querySnapshot.docs.map(docItem => ({
+      id: docItem.id,
+      ...docItem.data(),
+    }));
+
+    // Newest First
+    tempVideos.sort((a, b) => {
+      const timeA = a.createdAt?.seconds || 0;
+      const timeB = b.createdAt?.seconds || 0;
+      return timeB - timeA;
+    });
+
+    setVideos(tempVideos);
+
+  } catch (e) {
+    console.log(e);
+  }
+};
+
+
+const loadUserRank = async (uid) => {
+
+  try {
+
+    const q = query(
+      collection(db, "wallets"),
+      orderBy("receivedStars", "desc")
+    );
+
+    const snap = await getDocs(q);
+
+    let rank = 1;
+
+    for (const item of snap.docs) {
+
+      if (item.id === uid) {
+        break;
+      }
+
+      rank++;
+
     }
-  };
+
+    setUserRank(rank);
+
+  } catch (e) {
+
+    console.log(e);
+
+  }
+
+};
+
+
+
+
+const checkAdmin = async (uid) => {
+
+  try {
+
+    const adminSnap = await getDoc(
+      doc(db,"admins",uid)
+    );
+
+    if (adminSnap.exists()) {
+
+      setIsAdmin(true);
+
+    } else {
+
+      setIsAdmin(false);
+
+    }
+
+  } catch(error){
+
+    console.log(error);
+
+  }
+
+};
+
+
+
+const checkJoinedAgency = async (uid) => {
+  try {
+    const userSnap = await getDoc(doc(db, "users", uid));
+
+    if (!userSnap.exists()) {
+      setJoinedAgency(false);
+      return;
+    }
+
+    const userData = userSnap.data();
+
+    // Agar user kisi agency me join hai
+    if (userData.agencyId) {
+      setJoinedAgency(true);
+    } else {
+      setJoinedAgency(false);
+    }
+
+  } catch (error) {
+    console.log(error);
+    setJoinedAgency(false);
+  }
+};
+
+
+
+
+const loadLikedVideos = async (uid) => {
+  try {
+ 
+const likedSnapshot = await getDocs(
+  collection(
+    db,
+    "userLikes",
+    uid,
+    "likedVideos"
+  )
+);
+
+
+   
+
+    const videosData = [];
+
+   for (const like of likedSnapshot.docs) {
+
+    const videoId = like.id; 
+
+      const videoSnap = await getDoc(
+        doc(db, "all_videos", videoId)
+      );
+
+      if (videoSnap.exists()) {
+        videosData.push({
+          id: videoSnap.id,
+          ...videoSnap.data(),
+        });
+      }
+    }
+
+    // Newest first
+    videosData.sort((a, b) => {
+      const aTime = a.createdAt?.seconds || 0;
+      const bTime = b.createdAt?.seconds || 0;
+      return bTime - aTime;
+    });
+
+    setLikedVideos(videosData);
+
+  } catch (error) {
+    console.log(error);
+  }
+};
+
+
+
+
+const loadLikedMeCount = async (uid) => {
+  try {
+    const q = query(
+      collection(db, "all_videos"),
+      where("userId", "==", uid)
+    );
+
+    const snap = await getDocs(q);
+
+    let total = 0;
+
+    snap.forEach((doc) => {
+      total += Number(doc.data().likes || 0);
+    });
+
+    setLikedMeCount(total);
+
+  } catch (error) {
+    console.log(error);
+  }
+};
+
+
+
 
   const handleDeleteVideo = async (videoId) => {
     Alert.alert("Delete Video", "Kya aap is video ko delete karna chahte hain?", [
@@ -461,18 +828,36 @@ const openFollowers = async () => {
       );
 
       if (userSnap.exists()) {
-        arr.push({
-          id: followerId,
-          ...userSnap.data(),
-        });
+
+      const walletSnap = await getDoc(
+  doc(db, "wallets", followerId)
+);
+
+let level = 1;
+
+if (walletSnap.exists()) {
+  level = walletSnap.data().level || 1;
+}
+
+const userData = userSnap.data();
+
+arr.push({
+  id: followerId,
+  ...userData,
+  verified: userData.verified || false,
+  level,
+});
+
       }
     }
 
     console.log("Followers Found:", arr);
 
-    setFollowersList(arr);
-    await loadFollowing();
-    setFollowersModalVisible(true);
+   setFollowersList(arr);
+
+  
+// popup turant open ho jayega
+
 
   } catch (error) {
     console.log("Followers Error:", error);
@@ -505,10 +890,26 @@ const loadFollowing = async () => {
       );
 
       if (userSnap.exists()) {
-        arr.push({
-          id: followingId,
-          ...userSnap.data(),
-        });
+
+     const walletSnap = await getDoc(
+  doc(db, "wallets", followingId)
+);
+
+let level = 1;
+
+if (walletSnap.exists()) {
+  level = walletSnap.data().level || 1;
+}
+
+const userData = userSnap.data();
+
+arr.push({
+  id: followingId,
+  ...userData,
+  verified: userData.verified || false,
+  level,
+});
+
       }
     }
 
@@ -565,13 +966,13 @@ const uploadProfileImage = async (imageUri) => {
 
   data.append(
     "upload_preset",
-    CLOUDINARY_UPLOAD_PRESET
+   'profile_upload'
   );
 
   try {
 
     const response = await fetch(
-      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,
+      `https://api.cloudinary.com/v1_1/${'dypsqkvw0'}/image/upload`,
       {
         method: "POST",
         body: data,
@@ -621,7 +1022,8 @@ const imageUrl =
       bioText: tempBioText,
       category: tempCategory,
       gender: tempGender,
-     profileImg: imageUrl
+     profileImg: imageUrl,
+     level: profileData.level || 1,
     };
 
     try {
@@ -679,7 +1081,80 @@ const selectCategory = (category) => {
 };
 
 
+
+const getLevelDiamond = (level) => {
+  if (level >= 1 && level < 9) return 1;
+  if (level >= 10 && level < 19) return 2;
+  if (level >= 20 && level < 29) return 3;
+  if (level >= 30 && level < 39) return 4;
+  if (level >= 40 && level < 49) return 5;
+
+  return 0;
+};
+
+
+const getLevelTheme = (level) => {
+
+  if(level>=50){
+    return{
+      bg:"#7B1FFF",
+      border:"#FFD700",
+      text:"#fff",
+      icon:"#FFD700"
+    };
+  }
+
+  if(level>=40){
+    return{
+      bg:"#00BFFF",
+      border:"#9EF8FF",
+      text:"#fff",
+      icon:"#fff"
+    };
+  }
+
+  if(level>=30){
+    return{
+      bg:"#FF0066",
+      border:"#FFB6C1",
+      text:"#fff",
+      icon:"#fff"
+    };
+  }
+
+  if(level>=20){
+    return{
+      bg:"#FFC107",
+      border:"#FFE082",
+      text:"#000",
+      icon:"#fff"
+    };
+  }
+
+  if(level>=10){
+    return{
+      bg:"#BDBDBD",
+      border:"#fff",
+      text:"#fff",
+      icon:"#fff"
+    };
+  }
+
+  return{
+    bg:"#222",
+    border:"#555",
+    text:"#FFD700",
+    icon:"#00E5FF"
+  };
+
+};
+
+
+
   const getIconColor = (path) => (pathname === path ? '#f1c40f' : '#ffffff');
+
+const levelTheme =
+getLevelTheme(profileData.level || 1);
 
   if (loading) return <View style={styles.loaderBox}><ActivityIndicator size="large" color="#FFD700" /></View>;
 
@@ -688,41 +1163,260 @@ const selectCategory = (category) => {
       <StatusBar backgroundColor="#000" barStyle="light-content" />
 
       {/* Top Navigation Bar */}
-      <View style={styles.topActionNavigation}>
-        <View style={styles.headerLeftPlaceholder} />
-        <View style={styles.headerRightActions}>
+  <View style={styles.topActionNavigation}>
 
-      <TouchableOpacity
-  onPress={() => router.push('/wallet')}
-  activeOpacity={0.7}
->
-  <Ionicons name="wallet-outline" size={28} color="#FFD700" />
-</TouchableOpacity>
+  {/* Left Side */}
+  <TouchableOpacity style={styles.starBox}>
+    <Ionicons
+      name="star"
+      size={22}
+      color="#FFD700"
+    />
 
-          <TouchableOpacity onPress={() => setMenuVisible(!menuVisible)} activeOpacity={0.7}>
-            <Ionicons name="menu" size={28} color="#fff" />
-          </TouchableOpacity>
-        </View>
-      </View>
+    <Text style={styles.starValue}>
+      2500
+    </Text>
+  </TouchableOpacity>
+
+  {/* Right Side */}
+  <View style={styles.headerRightActions}>
+
+    <TouchableOpacity
+      onPress={() => router.push('/wallet')}
+      activeOpacity={0.7}
+      style={{marginRight:15}}
+    >
+      <Ionicons
+        name="wallet-outline"
+        size={28}
+        color="#FFD700"
+      />
+    </TouchableOpacity>
+
+    <TouchableOpacity
+      onPress={() => setMenuVisible(!menuVisible)}
+      activeOpacity={0.7}
+    >
+      <Ionicons
+        name="menu"
+        size={28}
+        color="#fff"
+      />
+    </TouchableOpacity>
+
+  </View>
+
+</View>
 
 
       {/* Dropdown Menu Overlay */}
-      {menuVisible && (
-        <View style={styles.menuDropdown}>
-          <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); openEditModal(); }}>
-            <Ionicons name="settings-outline" size={18} color="#fff" />
-            <Text style={styles.menuItemText}>Settings</Text>
+
+
+{menuVisible && (
+  <>
+    {/* Background */}
+    <Pressable
+      style={styles.menuOverlay}
+      onPress={() => setMenuVisible(false)}
+    />
+
+    {/* Popup */}
+    <View style={styles.menuDropdown}>
+
+      <View style={styles.menuBox}>
+
+        <TouchableOpacity style={styles.menuItem}>
+          <Ionicons name="share-social-outline" size={22} color="#fff" />
+          <Text style={styles.menuItemText}>Share Profile</Text>
+        </TouchableOpacity>
+
+
+{hasAgency && (
+
+<TouchableOpacity
+  style={styles.menuItem}
+  onPress={() => {
+    setMenuVisible(false);
+    router.push("../agency");
+  }}
+>
+
+  <Ionicons
+    name="business-outline"
+    size={22}
+    color="#FFD700"
+  />
+
+  <Text style={styles.menuItemText}>
+    Agency
+  </Text>
+
+</TouchableOpacity>
+
+)}
+
+
+
+
+
+{joinedAgency && !hasAgency && (
+  <TouchableOpacity
+    style={styles.menuItem}
+    onPress={() => {
+      setMenuVisible(false);
+      router.push("../useragency");
+    }}
+  >
+    <Ionicons
+      name="people-outline"
+      size={22}
+      color="#00E5FF"
+    />
+
+    <Text style={styles.menuItemText}>
+      User Agency
+    </Text>
+  </TouchableOpacity>
+)}
+
+
+
+
+        <TouchableOpacity
+  style={styles.menuItem}
+  onPress={() => {
+    setMenuVisible(false);
+    router.push("../creator");
+  }}
+>
+  <Ionicons
+    name="person-circle-outline"
+    size={22}
+    color="#fff"
+  />
+  <Text style={styles.menuItemText}>
+    Creator
+  </Text>
+</TouchableOpacity>
+
+        <TouchableOpacity style={styles.menuItem}>
+          <Ionicons name="videocam-outline" size={22} color="#fff" />
+          <Text style={styles.menuItemText}>Video Quality</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.menuItem}>
+          <Ionicons name="language-outline" size={22} color="#fff" />
+          <Text style={styles.menuItemText}>Language</Text>
+        </TouchableOpacity>
+
+       <TouchableOpacity
+  style={styles.menuItem}
+  onPress={() => {
+    setMenuVisible(false);
+    router.push("/block");
+  }}
+>
+  <Ionicons
+    name="ban-outline"
+    size={22}
+    color="#ff4444"
+  />
+  <Text style={styles.menuItemText}>
+    Block
+  </Text>
+</TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.menuItem,{borderBottomWidth:0}]}
+        >
+          <Ionicons
+            name="chatbox-ellipses-outline"
+            size={22}
+            color="#fff"
+          />
+          <Text style={styles.menuItemText}>Feedback</Text>
+        </TouchableOpacity>
+
+      </View>
+
+      <View style={{height:12}} />
+
+      <View style={styles.menuBox}>
+
+        <TouchableOpacity
+          style={styles.menuItem}
+          onPress={()=>{
+            setMenuVisible(false);
+            openEditModal();
+          }}
+        >
+          <Ionicons
+            name="settings-outline"
+            size={22}
+            color="#fff"
+          />
+          <Text style={styles.menuItemText}>
+            Settings
+          </Text>
+        </TouchableOpacity>
+
+        {isAdmin && (
+          <TouchableOpacity
+            style={styles.menuItem}
+            onPress={()=>{
+              setMenuVisible(false);
+              router.push("../adminPanel");
+            }}
+          >
+            <Ionicons
+              name="shield-checkmark"
+              size={22}
+              color="#FFD700"
+            />
+            <Text style={styles.menuItemText}>
+              Admin Panel
+            </Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.menuItem, { borderBottomWidth: 0 }]} onPress={handleLogout}>
-            <Ionicons name="log-out-outline" size={18} color="#FF3B30" />
-            <Text style={[styles.menuItemText, { color: '#FF3B30' }]}>Logout</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+        )}
+
+        <TouchableOpacity
+          style={[styles.menuItem,{borderBottomWidth:0}]}
+          onPress={handleLogout}
+        >
+          <Ionicons
+            name="log-out-outline"
+            size={22}
+            color="#FF3B30"
+          />
+          <Text
+            style={[
+              styles.menuItemText,
+              {color:"#FF3B30"}
+            ]}
+          >
+            Logout
+          </Text>
+        </TouchableOpacity>
+
+      </View>
+
+    </View>
+  </>
+)}
+
+
 
       {/* Main Profile List Container */}
       <FlatList
-        data={videos}
+     data={
+
+
+    activeTab === "Videos"
+      ? videos
+      : likedVideos
+  }
+
+
         keyExtractor={(item) => item.id}
         numColumns={3}
         style={styles.videoList}
@@ -738,10 +1432,61 @@ const selectCategory = (category) => {
               </View>
               
               <View style={styles.profileMetaContainer}>
+
                 <View style={styles.usernameRow}>
-                  <Text style={styles.profileUserName}>@{profileData.username || 'user'}</Text>
-                  <MaterialCommunityIcons name="decagram" size={18} color="#FFD700" style={{ marginLeft: 5 }} />
-                </View>
+
+  <Text style={styles.profileUserName}>
+    @{profileData.username || "user"}
+  </Text>
+
+  {/* Verified Badge */}
+ {profileData.verified && (
+  <>
+    <MaterialCommunityIcons
+      name="check-decagram"
+      size={22}
+      color="#ffffff"
+      style={{ marginLeft: 5 }}
+    />
+
+  
+  </>
+)}
+
+
+
+<View
+  style={[
+    styles.levelBadge,
+    {
+      backgroundColor: levelTheme.bg,
+      borderColor: levelTheme.border,
+    },
+  ]}
+>
+  <MaterialCommunityIcons
+    name="diamond-stone"
+    size={14}
+    color={levelTheme.icon}
+  />
+
+  <Text
+    style={[
+      styles.levelBadgeText,
+      {
+        color: levelTheme.text,
+      },
+    ]}
+  >
+    LV {profileData.level}
+  </Text>
+</View>
+
+
+
+</View>
+
+
                <Text style={styles.categoryText}>
   {profileData.category}
 </Text>
@@ -750,9 +1495,19 @@ const selectCategory = (category) => {
 
 
 <TouchableOpacity
-  style={styles.statBox}
-  onPress={openFollowers}
+style={styles.statBox}
+onPress={async () => {
+
+  setActiveFollowTab("followers");
+
+  await openFollowers();
+
+  setFollowersModalVisible(true);
+
+}}
 >
+
+
   <Text style={styles.statNum}>
     {profileData.followers}
   </Text>
@@ -765,8 +1520,44 @@ const selectCategory = (category) => {
 
 
 
-                    <View style={styles.statBox}><Text style={styles.statNum}>{profileData.following}</Text><Text style={styles.statLab}>Following</Text></View>
-                  <View style={styles.statBox}><Text style={styles.statNum}>{profileData.likes}</Text><Text style={styles.statLab}>Likes</Text></View>
+<TouchableOpacity
+style={styles.statBox}
+onPress={async () => {
+
+  setActiveFollowTab("following");
+
+  await loadFollowing();
+
+  setFollowersModalVisible(true);
+
+}}
+>
+
+
+  <Text style={styles.statNum}>
+    {profileData.following}
+  </Text>
+
+  <Text style={styles.statLab}>
+    Following
+  </Text>
+</TouchableOpacity>
+
+                    
+
+
+                <View style={styles.statBox}>
+
+<Text style={styles.statNum}>
+{likedMeCount}
+</Text>
+
+<Text style={styles.statLab}>
+Likes
+</Text>
+
+</View>
+
                 </View>
               </View>
             </View>
@@ -788,74 +1579,224 @@ const selectCategory = (category) => {
               </TouchableOpacity>
             </View>
 
+
             {/* Badges/Rank Block */}
-            <View style={styles.highlightsContainer}>
-              <View style={styles.highlightLeft}>
-                <MaterialCommunityIcons name="star-outline" size={32} color="#FFD700" style={styles.starIconStyle} />
-                <View style={{ marginLeft: 12 }}>
-                  <Text style={styles.rankLabel}>Your Rank</Text>
-                  <Text style={styles.no1Text}>No.1 <Text style={styles.arrowLabel}>{'>'}</Text></Text>
-                </View>
-              </View>
-              <View style={styles.verticalDivider} />
-              <View style={styles.highlightRight}>
-                <Text style={styles.levelLabel}>Level</Text>
-                <View style={styles.circlesRow}>
-                  <View style={styles.circle}>
-                    <MaterialCommunityIcons name="crown" size={16} color="#FFD700" style={styles.crownPosition} />
-                  </View>
-                  <View style={styles.circle} />
-                  <View style={styles.circle} />
-                  <Text style={styles.arrowIcon}>{'>'}</Text>
-                  <MaterialCommunityIcons name="star" size={22} color="#FFD700" />
-                </View>
-              </View>
-            </View>
+     <View style={styles.premiumCard}>
+
+  {/* Rank */}
+  <TouchableOpacity
+    style={styles.premiumItem}
+    activeOpacity={0.8}
+  >
+    <MaterialCommunityIcons
+      name="star-four-points"
+      size={20}
+      color="#FFD700"
+    />
+
+    <View style={{ marginLeft: 8 }}>
+      <Text style={styles.premiumSmallText}>
+        Rank
+      </Text>
+
+     <Text style={styles.premiumTitle}>
+  {userRank == null
+    ? "--"
+    : userRank > 500
+    ? "500+"
+    : `No.${userRank}`}
+</Text>
+
+    </View>
+
+    <Ionicons
+      name="chevron-forward"
+      size={18}
+      color="#777"
+      style={{ marginLeft: 8 }}
+    />
+  </TouchableOpacity>
+
+  <View style={styles.premiumDivider} />
+
+
+
+{/* Angels */}
+<TouchableOpacity
+  style={styles.premiumItem}
+  activeOpacity={0.8}
+>
+
+  <View>
+
+    <Text style={styles.premiumTitle}>
+      Angels
+    </Text>
+
+    <View style={styles.memberRow}>
+
+    
+<View style={styles.memberRow}>
+
+  {topGifters.map((item, index) => (
+
+    <Image
+      key={item.uid}
+      source={{ uri: item.photo }}
+      style={[
+        styles.memberImg,
+        {
+          marginLeft: index === 0 ? 0 : -12,
+          zIndex: 3 - index,
+        },
+      ]}
+    />
+
+  ))}
+
+  <Text
+    style={{
+      color: "#FFD700",
+      fontSize: 15,
+      fontWeight: "bold",
+      marginLeft: 10,
+    }}
+  >
+    {giftUserCount}
+  </Text>
+
+</View>
+
+    </View>
+
+  </View>
+
+  <Ionicons
+    name="chevron-forward"
+    size={18}
+    color="#777"
+    style={{ marginLeft:10 }}
+  />
+
+</TouchableOpacity>
+
+
+  <View style={styles.premiumDivider} />
+
+  {/* Share */}
+  <TouchableOpacity
+    style={styles.shareButton}
+    activeOpacity={0.8}
+  >
+    <Ionicons
+      name="share-social"
+      size={18}
+      color="#FFD700"
+    />
+
+    <Text style={styles.shareText}>
+      Share
+    </Text>
+  </TouchableOpacity>
+
+</View>
 
             {/* Content Tabs */}
-            <View style={styles.tabBar}>
-              <TouchableOpacity style={activeTab === 'Videos' ? styles.tabItemActive : styles.tabItem} onPress={() => setActiveTab('Videos')}>
-                <MaterialCommunityIcons name="play-box" size={20} color={activeTab === 'Videos' ? "#FFD700" : "#fff"} />
-                <Text style={activeTab === 'Videos' ? styles.tabTextActive : styles.tabText}>Videos</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={activeTab === 'Likes' ? styles.tabItemActive : styles.tabItem} onPress={() => setActiveTab('Likes')}>
-                <Ionicons name="heart" size={18} color={activeTab === 'Likes' ? "#FFD700" : "#FF3B30"} />
-                <Text style={activeTab === 'Likes' ? styles.tabTextActive : styles.tabText}>Likes</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={activeTab === 'Saved' ? styles.tabItemActive : styles.tabItem} onPress={() => setActiveTab('Saved')}>
-                <Ionicons name="bookmark" size={18} color={activeTab === 'Saved' ? "#FFD700" : "#3498db"} />
-                <Text style={activeTab === 'Saved' ? styles.tabTextActive : styles.tabText}>Saved</Text>
-              </TouchableOpacity>
-            </View>
+            <View style={styles.tabContainer}>
+
+<TouchableOpacity
+style={activeTab==="Videos"
+? styles.activeTab
+: styles.tab}
+onPress={()=>setActiveTab("Videos")}
+>
+
+<Text
+style={activeTab==="Videos"
+? styles.activeTabText
+: styles.tabText}
+>
+Video ({videoCount})
+</Text>
+
+</TouchableOpacity>
+
+
+<TouchableOpacity
+style={activeTab==="Likes"
+? styles.activeTab
+: styles.tab}
+onPress={()=>setActiveTab("Likes")}
+>
+
+<Text
+style={activeTab==="Likes"
+? styles.activeTabText
+: styles.tabText}
+>
+Like ({likedVideos.length})
+</Text>
+
+</TouchableOpacity>
+
+</View>
+
+
           </View>
         }
         renderItem={({ item }) => (
           <TouchableOpacity
             style={styles.videoCard}
-  onPress={() =>
-  router.push({
-    pathname: "/videoedite",
-    params: {
-      videos: JSON.stringify(videos),
-      index: videos.findIndex(v => v.id === item.id),
-      userId: auth.currentUser?.uid,
-       
-    },
-  })
-}
+
+onPress={() => {
+
+  const currentVideos =
+    activeTab === "Videos"
+      ? videos
+      : likedVideos;
+
+  const currentIndex =
+    currentVideos.findIndex(v => v.id === item.id);
+
+  if (activeTab === "Videos") {
+
+    router.push({
+      pathname: "/videoedite",
+      params: {
+        videos: JSON.stringify(currentVideos),
+        index: currentIndex,
+        userId: auth.currentUser?.uid,
+      },
+    });
+
+  } else {
+
+    router.push({
+      pathname: "/allvideo",
+      params: {
+        videos: JSON.stringify(currentVideos),
+        index: currentIndex,
+        userId: auth.currentUser?.uid,
+      },
+    });
+
+  }
+
+}}
+
+
 
           >
             {isFocused && (
               <View style={{ flex: 1 }}>
-<Image
-  source={{
-    uri:
-      item.thumbnail ||
-      'https://via.placeholder.com/300x500.png?text=Video'
-  }}
-  style={styles.video}
-/>
 
+<Image
+ source={{
+ uri:item.thumbnail
+ }}
+ style={styles.video}
+ fadeDuration={0}
+/>
                 
                 <View style={styles.videoOverlayViews}>
                   <Ionicons name="eye-outline" size={12} color="#fff" />
@@ -1264,10 +2205,14 @@ const selectCategory = (category) => {
   }}
 >
 
-  <TouchableOpacity
+ <TouchableOpacity
+
     onPress={() =>
+
       setActiveFollowTab("followers")
+
     }
+
     style={{
       backgroundColor:
         activeFollowTab === "followers"
@@ -1294,9 +2239,10 @@ const selectCategory = (category) => {
   </TouchableOpacity>
 
   <TouchableOpacity
-    onPress={() =>
-      setActiveFollowTab("following")
-    }
+  onPress={async () => {
+    setActiveFollowTab("following");
+    await loadFollowing();
+  }}
     style={{
       backgroundColor:
         activeFollowTab === "following"
@@ -1325,12 +2271,21 @@ const selectCategory = (category) => {
 
 
 
+
+
+
+
 <FlatList
 data={
 activeFollowTab === "followers"
 ? followersList
 : followingList
 }
+
+initialNumToRender={9}
+maxToRenderPerBatch={6}
+windowSize={5}
+removeClippedSubviews={true}
 keyExtractor={(item) => item.id}
 renderItem={({ item }) => {
 const isFollowing = followingList.some(
@@ -1364,15 +2319,82 @@ return (
         }}
       />
 
-      <Text
+ 
+
+<View
+  style={{
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+    marginLeft: 10,
+  }}
+>
+  <Text
+    style={{
+      color: "#fff",
+      fontSize: 16,
+      fontWeight: "bold",
+    }}
+  >
+    @{item.username}
+  </Text>
+
+  {/* Verified Badge */}
+  {item.verified && (
+    <View
+      style={{
+        marginLeft: 5,
+        width: 20,
+        height: 20,
+        justifyContent: "center",
+        alignItems: "center",
+      }}
+    >
+      <MaterialCommunityIcons
+        name="check-decagram"
+        size={20}
+        color="#feffff"
         style={{
-          color: "#fff",
-          marginLeft: 10,
-          fontSize: 16,
+          position: "absolute",
         }}
-      >
-        {item.username}
-      </Text>
+      />
+
+  
+    </View>
+  )}
+
+  {/* Level Badge */}
+  <View
+    style={[
+      styles.levelBadge,
+      {
+        marginLeft: 6,
+        backgroundColor: getLevelTheme(item.level || 1).bg,
+        borderColor: getLevelTheme(item.level || 1).border,
+      },
+    ]}
+  >
+    <MaterialCommunityIcons
+      name="diamond-stone"
+      size={14}
+      color={getLevelTheme(item.level || 1).icon}
+    />
+
+    <Text
+      style={[
+        styles.levelBadgeText,
+        {
+          color: getLevelTheme(item.level || 1).text,
+        },
+      ]}
+    >
+      LV {item.level || 1}
+    </Text>
+  </View>
+</View>
+
+
+
     </View>
 
     {isFollowing ? (
@@ -1465,10 +2487,21 @@ const styles = StyleSheet.create({
   usernameRow: { flexDirection: 'row', alignItems: 'center' },
   profileUserName: { fontSize: 18, fontWeight: 'bold', color: '#fff' },
   categoryText: { color: '#FFD700', fontSize: 12, marginTop: 2, fontWeight: '500' },
-  statsRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 13, paddingRight: 5 },
-  statBox: { alignItems: 'center' },
+
+statsRow: {
+  flexDirection: "row",
+  justifyContent: "flex-start",
+  alignItems: "center",
+  marginTop: 20,
+},
+
+statBox: {
+  alignItems: "center",
+  marginRight: 34, // gap adjust kar sakte ho
+},
+
   statNum: { fontSize: 15, fontWeight: 'bold', color: '#fff' },
-  statLab: { fontSize: 12, color: '#888', marginTop: 3 },
+  statLab: { fontSize: 13.5, color: '#888', marginTop: 3 },
   bioSection: { marginTop: 15 },
   bioLabel: { color: '#888', fontSize: 13, fontWeight: '500' },
   bioText: { fontSize: 16, marginTop: 2, color: '#fff', fontWeight: 'bold' },
@@ -1489,13 +2522,43 @@ const styles = StyleSheet.create({
   circle: { width: 28, height: 28, borderRadius: 14, borderWidth: 1.5, borderColor: '#FFD700', justifyContent: 'center', alignItems: 'center', shadowColor: '#FFD700', shadowRadius: 3, elevation: 2 },
   crownPosition: { position: 'absolute', top: -11 },
   arrowIcon: { fontSize: 14, color: '#444', marginHorizontal: 2 },
-  tabBar: { flexDirection: 'row', justifyContent: 'space-around', marginTop: 25, backgroundColor: '#0a0a0a', paddingVertical: 10, borderRadius: 25, borderWidth: 1, borderColor: '#111' },
-  tabItemActive: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1c1c1c', paddingVertical: 6, paddingHorizontal: 16, borderRadius: 20 },
-  tabItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, paddingHorizontal: 16 },
+   
+ tabContainer:{
+flexDirection:"row",
+marginTop:20,
+borderBottomWidth:1,
+borderBottomColor:"#222"
+},
+
+activeTab:{
+flex:1,
+alignItems:"center",
+paddingBottom:10,
+borderBottomWidth:2,
+borderBottomColor:"#FFD700"
+},
+
+tab:{
+flex:1,
+alignItems:"center",
+paddingBottom:10
+},
+
+activeTabText:{
+color:"#FFD700",
+fontWeight:"bold",
+fontSize:16
+},
+
+tabText:{
+color:"#888",
+fontSize:16
+},
+ 
   tabTextActive: { color: '#FFD700', marginLeft: 6, fontWeight: 'bold', fontSize: 13 },
   tabText: { color: '#fff', marginLeft: 6, fontWeight: '500', fontSize: 13 },
   videoList: { flex: 1, marginTop: 10 }, 
-  videoCard: { width: ITEM_SIZE, height: ITEM_SIZE * 1.4, margin: 5, backgroundColor: '#111', borderRadius: 12, overflow: 'hidden' },
+  videoCard: { width: ITEM_SIZE, height: ITEM_SIZE * 1.5, margin: 5, backgroundColor: '#111', borderRadius: 5, overflow: 'hidden' },
   video: { width: '100%', height: '100%' },
   videoOverlayViews: { position: 'absolute', top: 10, left: 10, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.4)', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 8 },
   viewCountText: { color: '#fff', fontSize: 10, marginLeft: 4, fontWeight: 'bold' },
@@ -1566,24 +2629,65 @@ const styles = StyleSheet.create({
     fontWeight: 'bold'
   },
 
-  menuDropdown: { 
-    position: 'absolute', 
-    top: Platform.OS === 'ios' ? 80 : 90, 
-    right: 15, 
-    backgroundColor: '#161616', 
-    borderRadius: 12, 
-    elevation: 12, 
-    zIndex: 9999, 
-    width: 160, 
-    borderWidth: 1, 
-    borderColor: '#262626',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 5
-  },
-  menuItem: { flexDirection: 'row', alignItems: 'center', padding: 14, borderBottomWidth: 0.5, borderBottomColor: '#262626' },
-  menuItemText: { marginLeft: 12, fontSize: 15, fontWeight: '600', color: '#fff' },
+
+
+menuOverlay: {
+  position: "absolute",
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  backgroundColor: "transparent",
+  zIndex: 9998,
+},
+
+
+ menuDropdown: {
+  position: "absolute",
+
+  top: Platform.OS === "ios" ? 40 : 40,
+  right: 5,
+
+  width: 185,
+
+  backgroundColor: "#000000",
+
+  borderRadius: 14,
+
+  overflow: "hidden",
+
+  zIndex: 9999,
+  elevation: 20,
+
+  shadowColor: "#000000",
+  shadowOpacity: 0.4,
+  shadowRadius: 10,
+},
+
+menuItem: {
+  flexDirection: "row",
+  alignItems: "center",
+
+  paddingVertical: 13,
+  paddingHorizontal: 14,
+
+  borderBottomWidth: 0.5,
+  borderBottomColor: "#000000",
+
+  minHeight: 60,
+},
+
+menuItemText: {
+  color: "#fff",
+
+  fontSize: 15,
+
+  marginLeft: 18,
+
+  fontWeight: "600",
+},
+  
+
   reelsContainer: { flex: 1, backgroundColor: '#000' },
   reelsHeader: { position: 'absolute', top: 40, left: 0, right: 0, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 15, zIndex: 10 },
   reelsHeaderTitle: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
@@ -1677,4 +2781,130 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: 'bold',
   },
-});
+
+
+starBox: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  backgroundColor: '#1b1b1b',
+  paddingHorizontal: 15,
+  paddingVertical: 5,
+  borderRadius: 25,
+  borderWidth: 1,
+  borderColor: '#333',
+},
+
+starValue: {
+  color: '#fff',
+  fontSize: 15,
+  fontWeight: '700',
+  marginLeft: 6,
+ 
+},
+
+
+levelBadge: {
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "center",
+
+  paddingHorizontal: 10,
+  paddingVertical: 4,
+
+  borderRadius: 30,
+
+  marginLeft: 8,
+
+  borderWidth: 1.5,
+
+  shadowColor: "#FFD700",
+  shadowOpacity: 0.6,
+  shadowRadius: 6,
+  elevation: 8,
+},
+
+levelBadgeText: {
+  marginLeft: 5,
+  fontSize: 11,
+  fontWeight: "900",
+  letterSpacing: 0.5,
+},
+
+premiumCard:{
+    marginTop:20,
+    marginHorizontal:0,
+    backgroundColor:"#181818",
+    borderRadius:12,
+    flexDirection:"row",
+    alignItems:"center",
+    paddingVertical:5,
+
+    borderWidth:1,
+    borderColor:"#2c2c2c",
+
+    shadowColor:"#FFD700",
+    shadowOpacity:0.30,
+    shadowRadius:12,
+    shadowOffset:{
+        width:0,
+        height:4,
+    },
+
+    elevation:10,
+},
+
+premiumItem:{
+    flex:1,
+    flexDirection:"row",
+    alignItems:"center",
+    justifyContent:"center",
+},
+
+premiumSmallText:{
+    color:"#888",
+    fontSize:11,
+},
+
+premiumTitle:{
+    color:"#fff",
+    fontSize:15,
+    fontWeight:"700",
+},
+
+premiumDivider:{
+    width:1,
+    height:34,
+    backgroundColor:"#333",
+},
+
+shareButton:{
+    backgroundColor:"#3d3200",
+    paddingHorizontal:16,
+    paddingVertical:9,
+    borderRadius:12,
+    flexDirection:"row",
+    alignItems:"center",
+    marginHorizontal:10,
+},
+
+shareText:{
+    color:"#FFD700",
+    fontWeight:"bold",
+    marginLeft:6,
+},
+
+
+memberRow:{
+    flexDirection:"row",
+    marginTop:6,
+},
+
+memberImg:{
+    width:24,
+    height:24,
+    borderRadius:12,
+    borderWidth:2,
+    borderColor:"#181818",
+},
+
+});       

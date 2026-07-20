@@ -15,12 +15,16 @@ import {
   BackHandler
 } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import {
+  Ionicons,
+  MaterialCommunityIcons,
+} from '@expo/vector-icons';
 
 // FIREBASE IMPORT
 import { db } from '../firebaseConfig';
 import { auth } from '../firebaseConfig';
 
+import ReAnimated from "react-native-reanimated";
 
 
 import {
@@ -37,6 +41,87 @@ import {
 
 const { width } = Dimensions.get('window');
 
+
+const getLevelTheme = (level = 1) => {
+
+  if (level >= 50) {
+    return {
+      bg: "#7B1FFF",
+      border: "#FFD700",
+      text: "#fff",
+      icon: "#FFD700",
+    };
+  }
+
+  if (level >= 40) {
+    return {
+      bg: "#00BFFF",
+      border: "#9EF8FF",
+      text: "#fff",
+      icon: "#fff",
+    };
+  }
+
+  if (level >= 30) {
+    return {
+      bg: "#FF0066",
+      border: "#FFB6C1",
+      text: "#fff",
+      icon: "#fff",
+    };
+  }
+
+  if (level >= 20) {
+    return {
+      bg: "#FFC107",
+      border: "#FFE082",
+      text: "#000",
+      icon: "#fff",
+    };
+  }
+
+  if (level >= 10) {
+    return {
+      bg: "#BDBDBD",
+      border: "#fff",
+      text: "#fff",
+      icon: "#fff",
+    };
+  }
+
+  return {
+    bg: "#222",
+    border: "#555",
+    text: "#FFD700",
+    icon: "#00E5FF",
+  };
+};
+
+
+const getLevelFrame = (level = 1) => {
+  if (level >= 50) {
+    return require("../../assets/frames/lv50.png");
+  }
+
+  if (level >= 40) {
+    return require("../../assets/frames/lv40.png");
+  }
+
+  if (level >= 30) {
+    return require("../../assets/frames/lv30.png");
+  }
+
+  if (level >= 20) {
+    return require("../../assets/frames/lv20.png");
+  }
+
+  if (level >= 10) {
+    return require("../../assets/frames/lv10.png");
+  }
+
+  return null;
+};
+
 // FIXED: CORRECT PROJECT ROOT PATH FOR ASSETS
 const TRENDING_BANNERS_DATA = [
   require('../../assets/images/banner1.jpeg'),
@@ -52,7 +137,8 @@ export default function ExplorePage() {
   const [searchResults, setSearchResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [profileImg, setProfileImg] = useState('');
-
+  const [giftKings, setGiftKings] = useState([]);
+const [topVideos, setTopVideos] = useState([]);
   // SLIDER STATES & REFS
   const [activeBannerIndex, setActiveBannerIndex] = useState(0);
   const bannerScrollRef = useRef(null);
@@ -88,6 +174,17 @@ const getCurrentUserProfile = async () => {
 useEffect(() => {
   getCurrentUserProfile();
 }, []);
+
+useEffect(() => {
+  loadTopVideos();
+}, []);
+
+useEffect(()=>{
+
+loadGiftKing();
+
+},[]);
+
 
   useEffect(() => {
     const handleBackButton = () => {
@@ -139,6 +236,77 @@ useEffect(() => {
     setActiveBannerIndex(computedIndex);
   };
 
+
+
+
+const loadTopVideos = async () => {
+
+  try {
+
+    const snap = await getDocs(
+      collection(db,"all_videos")
+    );
+
+    const arr = snap.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+
+    arr.sort((a,b)=>(b.views||0)-(a.views||0));
+
+    setTopVideos(arr);
+
+  } catch(e){
+    console.log(e);
+  }
+
+};
+
+
+
+const loadGiftKing = async () => {
+  try {
+
+    const walletSnap = await getDocs(
+      collection(db, "wallets")
+    );
+
+    const users = await Promise.all(
+
+      walletSnap.docs.map(async (walletDoc) => {
+
+        const wallet = walletDoc.data();
+
+        const userSnap = await getDoc(
+          doc(db, "users", walletDoc.id)
+        );
+
+        if (!userSnap.exists()) return null;
+
+        return {
+          id: walletDoc.id,
+          gifts: wallet.receivedStars || 0,
+          level: wallet.level || 1,
+          ...userSnap.data(),
+        };
+
+      })
+
+    );
+
+    const result = users
+      .filter(Boolean)
+      .sort((a, b) => b.gifts - a.gifts)
+      .slice(0, 10);
+
+    setGiftKings(result);
+
+  } catch (e) {
+    console.log(e);
+  }
+};
+
+
   // Search Logic
   const handleSearch = async (text: string) => {
     setSearchQuery(text);
@@ -152,10 +320,25 @@ useEffect(() => {
           limit(10)
         );
         const querySnapshot = await getDocs(q);
-        const users = querySnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
+       const users = await Promise.all(
+  querySnapshot.docs.map(async (d) => {
+
+    const data = d.data();
+
+    const walletSnap = await getDoc(
+      doc(db, "wallets", d.id)
+    );
+
+    return {
+      id: d.id,
+      ...data,
+      level: walletSnap.exists()
+        ? walletSnap.data().level || 1
+        : 1,
+    };
+  })
+);
+
 
 console.log("SEARCH USERS =", users);
 
@@ -278,12 +461,65 @@ console.log("SEARCH USERS =", users);
           style={styles.userAvatar}
         />
 
-        <View style={styles.userTextInfo}>
-          <Text style={styles.userName}>@{item.username}</Text>
-          <Text style={styles.userSub}>
-            {item.name || 'User'}
-          </Text>
-        </View>
+       <View style={styles.userTextInfo}>
+
+<View
+  style={{
+    flexDirection: "row",
+    alignItems: "center",
+  }}
+>
+
+<Text style={styles.userName}>
+  @{item.username}
+</Text>
+
+{item.verified && (
+  <View style={styles.verifiedBadge}>
+    <MaterialCommunityIcons
+      name="check-decagram"
+      size={16}
+      color="#f8fbff"
+    />
+  </View>
+)}
+
+<View
+  style={[
+    styles.levelBadge,
+    {
+      backgroundColor: getLevelTheme(item.level).bg,
+      borderColor: getLevelTheme(item.level).border,
+    },
+  ]}
+>
+
+<MaterialCommunityIcons
+  name="diamond-stone"
+  size={12}
+  color={getLevelTheme(item.level).icon}
+/>
+
+<Text
+  style={{
+    color: getLevelTheme(item.level).text,
+    fontSize: 11,
+    fontWeight: "bold",
+    marginLeft: 3,
+  }}
+>
+  LV {item.level || 1}
+</Text>
+
+</View>
+
+</View>
+
+<Text style={styles.userSub}>
+  {item.name || "User"}
+</Text>
+
+</View>
 
         <Ionicons
           name="chevron-forward"
@@ -355,43 +591,247 @@ console.log("SEARCH USERS =", users);
               { label: 'Meetup', icon: 'people-sharp', note: 'Join Events' },
               { label: 'Creator', icon: 'ribbon-sharp', note: 'For Creators' }
             ].map((t, i) => (
-              <View key={i} style={styles.trophyBox}>
+
+              <TouchableOpacity
+  key={i}
+  style={styles.trophyBox}
+  activeOpacity={0.8}
+  onPress={() => {
+
+    if (t.label === "Live") {
+
+      router.push("/all-live");
+
+    }
+
+  }}
+>
+
                 <View style={styles.trophyIconContainer}>
                <Ionicons name={t.icon as any} size={22} color="#f1c40f" />
                 </View>
                 <Text style={styles.trophyBoxLabelText}>{t.label}</Text>
                 <Text style={styles.trophyBoxSubLabelText}>{t.note}</Text>
-              </View>
+              </TouchableOpacity>
             ))}
           </ScrollView>
 
           {/* BRAND HEAD SECTIONS TRACKING */}
+
+<View style={styles.sectionHead}>
+  <View style={styles.sectionHeadingWrapper}>
+
+    <Ionicons
+      name="heart"
+      size={18}
+      color="#FFD700"
+    />
+
+    <Text style={styles.sectionTitle}>
+      Top Video
+    </Text>
+
+  </View>
+
+  <Text style={styles.viewsText}>
+    {topVideos.length} Videos
+  </Text>
+
+</View>
+
+<FlatList
+  horizontal
+  data={topVideos}
+  keyExtractor={(item)=>item.id}
+  showsHorizontalScrollIndicator={false}
+  contentContainerStyle={{
+    paddingHorizontal:12
+  }}
+
+  renderItem={({item})=>(
+
+    <TouchableOpacity
+      style={styles.topVideoCard}
+
+      onPress={()=>
+
+        router.push({
+
+          pathname:"/allvideo",
+
+          params:{
+
+            videoId:item.id,
+
+            videos:JSON.stringify(topVideos),
+
+            index:topVideos.findIndex(
+              v=>v.id===item.id
+            )
+
+          }
+
+        })
+
+      }
+
+    >
+
+      <Image
+        source={{uri:item.thumbnail}}
+        style={styles.topVideoImage}
+      />
+
+      <View style={styles.viewBox}>
+        <Ionicons
+          name="eye"
+          size={12}
+          color="#fff"
+        />
+
+        <Text style={styles.viewText}>
+          {item.views||0}
+        </Text>
+      </View>
+
+    </TouchableOpacity>
+
+  )}
+/>
+
+
+
+
           <View style={styles.sectionHead}>
             <View style={styles.sectionHeadingWrapper}>
               <Ionicons name="heart-sharp" size={16} color="#f1c40f" style={{ marginRight: 6 }} />
-              <Text style={styles.sectionTitle}>Lovestory</Text>
-            </View>
-            <Text style={styles.viewsText}>4.7M Views <Ionicons name="chevron-forward" size={12} color="#f1c40f" /></Text>
+              
+
+  <Text style={styles.sectionTitle}>
+      Star Up Earning
+    </Text>
+
+  </View>
+
+
+
+            
+            <Text style={styles.viewsText}> Top 10 <Ionicons name="chevron-forward" size={13} color="#f1c40f" /></Text>
           </View>
 
           {/* DUAL STREAMERS POWER STATS ROW */}
-          <View style={styles.rankRow}>
-            <View style={styles.rankCard}>
-              <Text style={styles.rankTitle}>★ Top King Star</Text>
-              <View style={styles.rankCardRowLine}>
-                <View style={styles.rankNumberBadge}><Text style={styles.rankNumberText}>1</Text></View>
-                <Text style={styles.rankUserText} numberOfLines={1}>Aman 789 🔵</Text>
-              </View>
-            </View>
-            
-            <View style={styles.rankCard}>
-              <Text style={[styles.rankTitle, { color: '#ef4444', borderColor: 'rgba(239,68,68,0.15)' }]}>★ Rising Star</Text>
-              <View style={styles.rankCardRowLine}>
-                <View style={[styles.rankNumberBadge, { backgroundColor: 'rgba(239,68,68,0.1)' }]}><Text style={[styles.rankNumberText, { color: '#ef4444' }]}>1</Text></View>
-                <Text style={styles.rankUserText} numberOfLines={1}>madhu7</Text>
-              </View>
-            </View>
-          </View>
+         
+<FlatList
+  horizontal
+  data={giftKings}
+  keyExtractor={(item) => item.id}
+  showsHorizontalScrollIndicator={false}
+  contentContainerStyle={{ paddingHorizontal: 15 }}
+  renderItem={({ item, index }) => (
+
+    <TouchableOpacity
+      style={styles.giftKingCard}
+      onPress={() =>
+        router.push({
+          pathname: "/userProfile",
+          params: {
+            userId: item.id,
+          },
+        })
+      }
+    >
+
+      {/* Rank */}
+
+      <View style={styles.rankCircle}>
+        <Text style={styles.rankText}>
+          {index + 1}
+        </Text>
+      </View>
+
+      {/* Profile */}
+
+     <View
+  style={{
+    width: 90,
+    height: 90,
+    justifyContent: "center",
+    alignItems: "center",
+  }}
+>
+  <Image
+    source={{
+      uri:
+        item.profileImg ||
+        "https://avatar.iran.liara.run/public/65",
+    }}
+    style={styles.giftKingImage}
+  />
+
+  {getLevelFrame(item.level) && (
+    <Image
+      source={getLevelFrame(item.level)}
+      style={{
+        position: "absolute",
+        width: 110,
+        height: 110,
+        top: -15,
+      }}
+      resizeMode="contain"
+    />
+  )}
+</View>
+
+      {/* Username */}
+
+      <Text
+        style={styles.giftKingName}
+        numberOfLines={1}
+      >
+        @{item.username}
+      </Text>
+
+      {/* Level */}
+
+      <View
+        style={[
+          styles.levelBadge,
+          {
+            backgroundColor: getLevelTheme(item.level).bg,
+            borderColor: getLevelTheme(item.level).border,
+          },
+        ]}
+      >
+        <MaterialCommunityIcons
+          name="diamond-stone"
+          size={11}
+          color={getLevelTheme(item.level).icon}
+        />
+
+        <Text
+          style={{
+            color: getLevelTheme(item.level).text,
+            marginLeft: 3,
+            fontSize: 10,
+            fontWeight: "bold",
+          }}
+        >
+          LV {item.level}
+        </Text>
+      </View>
+
+      {/* Gifts */}
+
+      <Text style={styles.giftKingGift}>
+        🎁 {item.gifts}
+      </Text>
+
+    </TouchableOpacity>
+
+  )}
+/>
+
+
         </ScrollView>
       )}
 
@@ -604,4 +1044,99 @@ profileHeaderImage: {
     alignItems: 'center',
   },
   plusText: { fontSize: 28, fontWeight: 'bold', color: '#000', marginTop: -4 },
+
+
+verifiedBadge: {
+  marginLeft: 6,
+  justifyContent: "center",
+  alignItems: "center",
+},
+
+levelBadge: {
+  marginLeft: 6,
+  flexDirection: "row",
+  alignItems: "center",
+  borderWidth: 1,
+  paddingHorizontal: 8,
+  paddingVertical: 3,
+  borderRadius: 20,
+},
+
+topVideoCard:{
+width:120,
+height:180,
+marginRight:10,
+borderRadius:10,
+overflow:"hidden",
+backgroundColor:"#111",
+},
+
+topVideoImage:{
+width:"100%",
+height:"100%",
+},
+
+viewBox:{
+position:"absolute",
+top:8,
+left:8,
+flexDirection:"row",
+alignItems:"center",
+},
+
+viewText:{
+color:"#fff",
+marginLeft:4,
+fontWeight:"bold",
+},
+
+
+
+
+giftKingCard: {
+  width: 150,
+  backgroundColor: "#11121a",
+  borderRadius: 18,
+  borderWidth: 1,
+  borderColor: "#FFD700",
+  marginRight: 12,
+  padding: 12,
+  alignItems: "center",
+},
+
+rankCircle: {
+  width: 28,
+  height: 28,
+  borderRadius: 14,
+  backgroundColor: "#FFD700",
+  justifyContent: "center",
+  alignItems: "center",
+  marginBottom: 8,
+},
+
+rankText: {
+  color: "#000",
+  fontWeight: "bold",
+  fontSize: 14,
+},
+
+giftKingImage: {
+  width: 65,
+  height: 65,
+  borderRadius: 33,
+  marginBottom: 8,
+},
+
+giftKingName: {
+  color: "#fff",
+  fontWeight: "bold",
+  fontSize: 14,
+},
+
+giftKingGift: {
+  color: "#FFD700",
+  marginTop: 8,
+  fontWeight: "bold",
+},
+
 });     

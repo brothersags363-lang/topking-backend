@@ -16,7 +16,10 @@ import {
 } from 'react-native';
 
 
-import { Ionicons } from '@expo/vector-icons';
+import {
+  Ionicons,
+  MaterialCommunityIcons,
+} from "@expo/vector-icons";
 import { useRouter, usePathname } from 'expo-router';
 
 
@@ -69,6 +72,64 @@ const [hiddenFriends, setHiddenFriends] = useState([]);
 const [selectedType, setSelectedType] = useState('comment');
 
 const [modalVisible, setModalVisible] = useState(false);
+
+
+const getLevelTheme = (level = 1) => {
+
+  if(level>=50){
+    return{
+      bg:"#7B1FFF",
+      border:"#FFD700",
+      text:"#fff",
+      icon:"#FFD700"
+    };
+  }
+
+  if(level>=40){
+    return{
+      bg:"#00BFFF",
+      border:"#9EF8FF",
+      text:"#fff",
+      icon:"#fff"
+    };
+  }
+
+  if(level>=30){
+    return{
+      bg:"#FF0066",
+      border:"#FFB6C1",
+      text:"#fff",
+      icon:"#fff"
+    };
+  }
+
+  if(level>=20){
+    return{
+      bg:"#FFC107",
+      border:"#FFE082",
+      text:"#000",
+      icon:"#fff"
+    };
+  }
+
+  if(level>=10){
+    return{
+      bg:"#BDBDBD",
+      border:"#fff",
+      text:"#fff",
+      icon:"#fff"
+    };
+  }
+
+  return{
+    bg:"#222",
+    border:"#555",
+    text:"#FFD700",
+    icon:"#00E5FF"
+  };
+
+};
+
 
 
   // MOBILE HARDWARE BACK BUTTON LISTENERS + AUTH + FIRESTORE SYNC
@@ -130,6 +191,8 @@ const [modalVisible, setModalVisible] = useState(false);
     };
   }, []);
 
+
+
 useEffect(() => {
   if (!currentUser) return;
 
@@ -164,6 +227,8 @@ console.log("Notifications:", data);
 }, [currentUser]);
 
 
+
+
 useEffect(() => {
   if (!currentUser) return;
 
@@ -174,25 +239,63 @@ useEffect(() => {
       currentUser.uid,
       "friends"
     ),
-    orderBy(
-      "updatedAt",
-      "desc"
-    )
+    orderBy("updatedAt", "desc")
   );
 
-  const unsubscribe =
-    onSnapshot(q, (snapshot) => {
+  const unsubscribe = onSnapshot(
+    q,
+    async (snapshot) => {
 
-      const list =
-        snapshot.docs.map(
-          (doc) => ({
-            id: doc.id,
-            ...doc.data(),
-          })
-        );
+      const list = await Promise.all(
+
+        snapshot.docs.map(async (d) => {
+
+          const data = d.data();
+
+
+
+ let level = 1;
+let verified = false;
+
+try {
+
+  const walletSnap = await getDoc(
+    doc(db, "wallets", data.userId)
+  );
+
+  if (walletSnap.exists()) {
+    level = walletSnap.data().level || 1;
+  }
+
+  const userSnap = await getDoc(
+    doc(db, "users", data.userId)
+  );
+
+  if (userSnap.exists()) {
+    verified = userSnap.data().verified === true;
+  }
+
+} catch (e) {
+  console.log(e);
+}
+
+return {
+  id: d.id,
+  ...data,
+  level,
+  verified,
+};
+
+
+
+        })
+
+      );
 
       setFriends(list);
-    });
+
+    }
+  );
 
   return unsubscribe;
 
@@ -211,22 +314,61 @@ useEffect(() => {
       currentUser.uid,
       "hiddenFriends"
     ),
-    orderBy(
-      "updatedAt",
-      "desc"
-    )
+    orderBy("updatedAt", "desc")
   );
 
   const unsubscribe = onSnapshot(
     q,
-    (snapshot) => {
+    async (snapshot) => {
 
-      const list = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
+      const list = await Promise.all(
+
+        snapshot.docs.map(async (d) => {
+
+          const data = d.data();
+
+
+
+ let level = 1;
+let verified = false;
+
+try {
+
+  const walletSnap = await getDoc(
+    doc(db, "wallets", data.userId)
+  );
+
+  if (walletSnap.exists()) {
+    level = walletSnap.data().level || 1;
+  }
+
+  const userSnap = await getDoc(
+    doc(db, "users", data.userId)
+  );
+
+  if (userSnap.exists()) {
+    verified = userSnap.data().verified === true;
+  }
+
+} catch (e) {
+  console.log(e);
+}
+
+return {
+  id: d.id,
+  ...data,
+  level,
+  verified,
+};
+
+
+
+        })
+
+      );
 
       setHiddenFriends(list);
+
     }
   );
 
@@ -550,15 +692,67 @@ onPress={async () => {
           marginLeft: 12,
         }}
       >
-        <Text
-          style={{
-            color: "#fff",
-            fontSize: 16,
-            fontWeight: "bold",
-          }}
-        >
-          {item.username}
-        </Text>
+
+
+        <View
+  style={{
+    flexDirection: "row",
+    alignItems: "center",
+  }}
+>
+
+  <Text
+    style={{
+      color: "#fff",
+      fontSize: 16,
+      fontWeight: "bold",
+    }}
+  >
+    {item.username}
+  </Text>
+
+  {/* Verified */}
+ {item.verified && (
+  <View style={styles.verifiedBadge}>
+    <MaterialCommunityIcons
+      name="check-decagram"
+      size={16}
+      color="#fafafa"
+    />
+
+   
+  </View>
+)}
+
+  {/* Premium */}
+  <View
+    style={[
+      styles.levelBadge,
+      {
+        backgroundColor: getLevelTheme(item.level).bg,
+        borderColor: getLevelTheme(item.level).border,
+      },
+    ]}
+  >
+    <MaterialCommunityIcons
+      name="diamond-stone"
+      size={12}
+      color={getLevelTheme(item.level).icon}
+    />
+
+    <Text
+      style={{
+        color: getLevelTheme(item.level).text,
+        fontSize: 11,
+        fontWeight: "bold",
+        marginLeft: 3,
+      }}
+    >
+      LV {item.level || 1}
+    </Text>
+  </View>
+
+</View>
 
         <Text
           numberOfLines={1}
@@ -569,6 +763,59 @@ onPress={async () => {
         >
           {item.lastMessage}
         </Text>
+
+{item.hasNewMessage && (
+
+<View
+  style={{
+    backgroundColor:"#00C853",
+    paddingHorizontal:10,
+    paddingVertical:3,
+    borderRadius:20,
+    marginTop:5,
+    alignSelf:"flex-start",
+  }}
+>
+  <Text
+    style={{
+      color:"#fff",
+      fontWeight:"bold",
+      fontSize:12,
+    }}
+  >
+    NEW
+  </Text>
+</View>
+
+)}
+
+
+{item.unreadCount > 0 && (
+  <View
+    style={{
+      backgroundColor: "#00c853",
+      minWidth: 22,
+      height: 22,
+      borderRadius: 11,
+      justifyContent: "center",
+      alignItems: "center",
+      marginTop: 5,
+      alignSelf: "flex-start",
+      paddingHorizontal: 6,
+    }}
+  >
+    <Text
+      style={{
+        color: "#fff",
+        fontWeight: "bold",
+      }}
+    >
+      {item.unreadCount}
+    </Text>
+  </View>
+)}
+
+
       </View>
 
 
@@ -631,14 +878,67 @@ onPress={async () => {
     marginLeft: 12,
   }}
 >
+
+<View
+  style={{
+    flexDirection: "row",
+    alignItems: "center",
+  }}
+>
+
   <Text
     style={{
       color: "#fff",
+      fontSize: 16,
       fontWeight: "bold",
     }}
   >
     {item.username}
   </Text>
+
+  {/* Verified */}
+ {item.verified && (
+  <View style={styles.verifiedBadge}>
+    <MaterialCommunityIcons
+      name="check-decagram"
+      size={16}
+      color="#edf2f6"
+    />
+
+   
+  </View>
+)}
+
+  {/* Premium */}
+  <View
+    style={[
+      styles.levelBadge,
+      {
+        backgroundColor: getLevelTheme(item.level).bg,
+        borderColor: getLevelTheme(item.level).border,
+      },
+    ]}
+  >
+    <MaterialCommunityIcons
+      name="diamond-stone"
+      size={12}
+      color={getLevelTheme(item.level).icon}
+    />
+
+    <Text
+      style={{
+        color: getLevelTheme(item.level).text,
+        fontSize: 11,
+        fontWeight: "bold",
+        marginLeft: 3,
+      }}
+    >
+      LV {item.level || 1}
+    </Text>
+  </View>
+
+</View>
+
 </View>
 
 <TouchableOpacity
@@ -1272,7 +1572,25 @@ countText: {
   fontWeight: 'bold',
 },
 
+verifiedBadge: {
+  marginLeft: 6,
+  justifyContent: "center",
+  alignItems: "center",
+},
 
+verifiedTick: {
+  position: "absolute",
+},
+
+levelBadge: {
+  marginLeft: 6,
+  flexDirection: "row",
+  alignItems: "center",
+  borderWidth: 1,
+  paddingHorizontal: 8,
+  paddingVertical: 3,
+  borderRadius: 20,
+},
 
 
 });

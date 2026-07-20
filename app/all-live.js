@@ -170,9 +170,6 @@ try {
 
       const streams = [];
 
-      const now = Date.now();
-
-      const absoluteTimeCutoff = now - (3 * 60 * 1000);
 
       snapshot.forEach((docItem) => {
 
@@ -184,6 +181,30 @@ try {
             ? String(rawData.status).toLowerCase().trim()
             : '';
 
+
+
+let roomTime = 0;
+
+if (rawData.createdAt) {
+
+  if (typeof rawData.createdAt === "number") {
+
+    roomTime = rawData.createdAt;
+
+  } else if (rawData.createdAt.seconds) {
+
+    roomTime = rawData.createdAt.seconds * 1000;
+
+  } else {
+
+    roomTime = new Date(rawData.createdAt).getTime();
+
+  }
+
+}
+
+
+
           if (
             currentStatus === 'ended' ||
             currentStatus === 'inactive' ||
@@ -191,6 +212,13 @@ try {
           ) {
             return;
           }
+
+const sevenDays = 1 * 24 * 60 * 60 * 1000;
+
+if (Date.now() - roomTime > sevenDays) {
+    return;
+}
+
 
           if (
             rawData.status !== undefined &&
@@ -200,21 +228,9 @@ try {
             return;
           }
 
-          let nodeCreationTimestamp = 0;
 
-          if (rawData.createdAt) {
 
-            nodeCreationTimestamp = rawData.createdAt.seconds
-              ? rawData.createdAt.seconds * 1000
-              : new Date(rawData.createdAt).getTime();
-          }
-
-          if (
-            nodeCreationTimestamp > 0 &&
-            nodeCreationTimestamp < absoluteTimeCutoff
-          ) {
-            return;
-          }
+      
 
           const dbCover =
             rawData.roomCover ||
@@ -264,10 +280,9 @@ try {
 
             type: String(rawData.type || 'audio').toLowerCase(),
 
-            users:
-              rawData.audienceCount !== undefined
-                ? String(rawData.audienceCount)
-                : '0',
+         users: rawData.joinedUsers
+  ? rawData.joinedUsers.length
+  : 0,   
 
             category: rawData.category || 'LIVE',
 
@@ -618,174 +633,90 @@ return (
                     </Text>
 
                   </View>
-                );
-              }
+            
 
-              return filteredStreams.map((stream) => {
+    );
+             
+     }
 
-                const streamTitle =
-                  stream.title || 'Live Broadcast';
 
-                const hostName =
-                  stream.host || 'User';
+     return (
+<View style={styles.gridContainer}>
 
-                const resolvedBannerUri =
-                  imageErrors[stream.id]
-                    ? STABLE_DEFAULT_BANNER
-                    : stream.roomCover;
+{filteredStreams.map((stream) => (
 
-                return (
+<TouchableOpacity
+key={stream.id}
+style={styles.liveCard}
+activeOpacity={0.9}
+onPress={() => {
 
-                  <TouchableOpacity
-                    key={stream.id}
-                    style={styles.streamFeedCard}
-                    activeOpacity={0.85}
+addViewerToRoom(stream.id);
 
-                    onPress={() => {
+router.push({
+  pathname: '/LiveRoom',
+  params: {
+    id: stream.id,
+    from: "alllive"
+  }
+});
 
-                      addViewerToRoom(stream.id);
+}}
+>
 
-                      router.push({
+<Image
+source={{ uri: stream.roomCover }}
+style={styles.cardImage}
+/>
 
-                        pathname: '/LiveRoom',
+<View style={styles.viewerBox}>
+<Ionicons name="eye-outline" size={16} color="#999" />
 
-                        params: {
+<Text style={styles.viewerText}>
+  {stream.users}
+</Text>
 
-                          id: stream.id,
+</View>
 
-                          roomId: stream.id,
+<Ionicons
+name="mic"
+size={50}
+color="#1200ff"
+style={styles.micIcon}
+/>
 
-                          title: streamTitle,
+<View style={styles.bottomUser}>
 
-                          host: hostName,
+<Image
+source={{ uri: stream.hostImg }}
+style={styles.profilePic}
+/>
 
-                          hostImg: stream.hostImg,
+<Text style={styles.hostName}>
+{stream.host}
+</Text>
 
-                          seats: stream.seats || '6',
+</View>
 
-                          roomCover: stream.roomCover,
+</TouchableOpacity>
 
-                          users: stream.users,
+))}
 
-                          category: stream.category,
+</View>
+);
 
-                          hostId: stream.hostId || '',
 
-                          joinedUsers: JSON.stringify(
-                            stream.joinedUsers || []
-                          )
-                        }
-                      });
-                    }}
-                  >
 
-                    {/* LEFT IMAGE */}
-                    <View style={styles.cardInternalPinkBlock}>
+})()
+)
+}
+       
 
-                      <Image
-                        source={{ uri: resolvedBannerUri }}
-                        style={styles.bannerImageElement}
-                        resizeMode="cover"
-
-                        onError={() => {
-
-                          setImageErrors(prev => ({
-                            ...prev,
-                            [stream.id]: true
-                          }));
-
-                        }}
-                      />
-
-                      <View style={styles.cardSeatsIndicator}>
-                        <Text style={styles.cardSeatsTextLabel}>
-                          {stream.seats || '6'} Seats
-                        </Text>
-                      </View>
-
-                    </View>
-
-                    {/* RIGHT */}
-                    <View style={styles.cardRightInfoDeck}>
-
-                      <View style={styles.cardRowTopMeta}>
-
-                        <Text style={styles.categoryPillText}>
-                          {stream.category || 'LIVE'}
-                        </Text>
-
-                        <View style={styles.cardStatsBadgeRow}>
-
-                          <Ionicons
-                            name="pulse-sharp"
-                            size={12}
-                            color="#ebd500"
-                            style={{ marginRight: 4 }}
-                          />
-
-                          <Text style={styles.cardStatsText}>
-                            {stream.users || '0'}
-                          </Text>
-
-                        </View>
-
-                      </View>
-
-                      <Text
-                        style={styles.cardStreamTitle}
-                        numberOfLines={1}
-                      >
-                        {streamTitle}
-                      </Text>
-
-                      <View style={styles.hostProfileSubRow}>
-
-                        <View style={styles.avatarLetterCircle}>
-
-                          <Image
-                            source={{ uri: stream.hostImg }}
-                            style={{
-                              width: '100%',
-                              height: '100%',
-                              borderRadius: 10
-                            }}
-                            resizeMode="cover"
-                          />
-
-                        </View>
-
-                        <Text
-                          style={styles.cardHostLabel}
-                          numberOfLines={1}
-                        >
-                          by {hostName}
-                        </Text>
-
-                      </View>
-
-                    </View>
-
-                    {/* ARROW */}
-                    <View style={styles.entryActionNode}>
-
-                      <Ionicons
-                        name="arrow-forward"
-                        size={18}
-                        color="#ebd500"
-                      />
-
-                    </View>
-
-                  </TouchableOpacity>
-                );
-              });
-
-            })()
-          )
-      }
 
     </View>
 
+                 
+         
   </ScrollView>
 
 
@@ -1097,5 +1028,77 @@ fontSize: 13,
 marginTop: 12,
 fontWeight: '600',
 textAlign: 'center'
+},
+
+gridContainer:{
+flexDirection:'row',
+flexWrap:'wrap',
+justifyContent:'space-between'
+},
+
+liveCard:{
+width:'48%',
+height:200,
+backgroundColor:'#111',
+borderRadius:12,
+overflow:'hidden',
+borderWidth:3,
+borderColor:'#ffd400',
+marginBottom:15
+},
+
+cardImage:{
+width:'100%',
+height:'100%'
+},
+
+viewerBox:{
+position:'absolute',
+top:10,
+left:10,
+backgroundColor:'#fff',
+paddingHorizontal:4,
+paddingVertical:0,
+borderRadius:10,
+flexDirection:'row',
+alignItems:'center'
+},
+
+viewerText:{
+color:'#999',
+fontSize:15,
+marginLeft:5
+},
+
+micIcon:{
+position:'absolute',
+right:10,
+top:10
+},
+
+bottomUser:{
+position:'absolute',
+bottom:15,
+left:10,
+flexDirection:'row',
+alignItems:'center'
+},
+
+profilePic:{
+width:30,
+height:30,
+borderRadius:25,
+borderWidth:2,
+borderColor:'#fff'
+},
+
+hostName:{
+color:'#fff',
+fontSize:18,
+fontWeight:'bold',
+marginLeft:10
 }
-});
+
+
+
+});          

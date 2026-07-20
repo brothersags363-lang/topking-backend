@@ -29,8 +29,13 @@ import {
   Ionicons,
   Feather,
 } from '@expo/vector-icons';
+import { Audio } from "expo-av";
+
+
 
 import { LinearGradient } from 'expo-linear-gradient';
+
+
 
 const { width, height } = Dimensions.get('window');
 
@@ -40,32 +45,84 @@ export default function EditView() {
 
   const params = useLocalSearchParams();
 
+  useEffect(() => {
+  console.log("EditView Params =", params);
+}, []);
+
   const videoUri = params.videoUri;
 
+const musicTitle = params.musicName;
+const musicArtist = params.musicArtist;
+const musicImage = params.musicImage;
+const musicId = params.musicId;
+const audioUrl = params.audioUrl;
+console.log("EditView audioUrl =", audioUrl);
+
+
+
   const isFocused = useIsFocused();
-
-useEffect(() => {
-
-  const backAction = () => {
-
-    router.push('/camera');
-
-    return true;
-  };
-
-  const subscription = BackHandler.addEventListener(
-    'hardwareBackPress',
-    backAction
-  );
-
-  return () => subscription.remove();
-
-}, []);
 
 
   const [showMusic, setShowMusic] = useState(false);
 
   const [sound, setSound] = useState(null);
+
+useEffect(() => {
+  return () => {
+    if (sound) {
+      sound.stopAsync().catch(() => {});
+      sound.unloadAsync().catch(() => {});
+    }
+  };
+}, [sound]);
+
+
+useEffect(() => {
+
+  if (!audioUrl) return;
+
+  let newSound;
+
+  const loadMusic = async () => {
+
+    try {
+
+      console.log("Playing Audio =", audioUrl);
+
+      const { sound } =
+        await Audio.Sound.createAsync(
+          {
+            uri: audioUrl,
+          },
+          {
+            shouldPlay: false,
+            isLooping: true,
+          }
+        );
+
+      newSound = sound;
+
+      setSound(sound);
+
+    } catch (e) {
+
+      console.log("Audio Error =", e);
+
+    }
+
+  };
+
+  loadMusic();
+
+  return () => {
+
+    if (newSound) {
+      newSound.unloadAsync();
+    }
+
+  };
+
+}, [audioUrl]);
 
   // ==========================
   // VIDEO PLAYER
@@ -75,7 +132,7 @@ useEffect(() => {
     (player) => {
 
       player.loop = true;
-      player.muted = false;
+       player.muted = !!musicTitle;
 
       if (isFocused) {
         player.play();
@@ -84,6 +141,10 @@ useEffect(() => {
       }
     }
   );
+
+
+
+
 
   // ==========================
   // AUDIO SETUP
@@ -95,37 +156,46 @@ useEffect(() => {
   // ==========================
   useEffect(() => {
 
+  const syncPlayer = async () => {
+
     if (isFocused) {
+
       player.play();
+
+      if (sound) {
+        await sound.playAsync();
+      }
+
     } else {
+
       player.pause();
+
+      if (sound) {
+        await sound.pauseAsync();
+      }
+
     }
 
-  }, [isFocused]);
+  };
+
+  syncPlayer();
+
+}, [isFocused, sound]);
+
+
+
+
+
 
   // ==========================
   // STOP MUSIC ON UNFOCUS
   // ==========================
-  useEffect(() => {
-
-    if (!isFocused && sound) {
-      sound.stopAsync();
-    }
-
-  }, [isFocused, sound]);
+ 
 
   // ==========================
   // CLEANUP MUSIC
   // ==========================
-  useEffect(() => {
 
-    return sound
-      ? () => {
-          sound.unloadAsync();
-        }
-      : undefined;
-
-  }, [sound]);
 
   // ==========================
   // PLAY SELECTED MUSIC
@@ -140,7 +210,7 @@ useEffect(() => {
 
       const { sound: newSound } =
         await Audio.Sound.createAsync(musicUrl);
-
+await newSound.setIsLoopingAsync(true);
       setSound(newSound);
 
       await newSound.playAsync();
@@ -165,11 +235,28 @@ useEffect(() => {
   // BOTTOM MENU
   // ==========================
   const bottomMenu = [
-    {
-      icon: 'music',
-      label: 'Music',
-      action: () => setShowMusic(true),
-    },
+   
+{
+  icon: "music",
+  label: "Music",
+
+  action: () =>
+
+    router.push({
+
+      pathname: "/MusicSelect",
+
+      params: {
+
+        videoUri,
+
+      },
+
+    }),
+
+},
+
+
     {
       icon: 'scissors',
       label: 'Edit',
@@ -198,27 +285,58 @@ useEffect(() => {
       />
 
       {/* VIDEO BACKGROUND */}
-      <View style={styles.videoContainer}>
 
-        {videoUri ? (
+<View style={styles.videoContainer}>
 
-          <VideoView
-            player={player}
-            style={styles.fullVideo}
-            contentFit="cover"
-            nativeControls={false}
-          />
+  {videoUri ? (
 
-        ) : (
+    <VideoView
+      player={player}
+      style={styles.fullVideo}
+      contentFit="cover"
+      nativeControls={false}
+    />
 
-          <View style={styles.placeholder}>
-            <Text style={styles.placeholderText}>
-              Select Video
-            </Text>
-          </View>
+  ) : (
 
-        )}
+    <View style={styles.placeholder}>
+      <Text style={styles.placeholderText}>
+        Select Video
+      </Text>
+    </View>
+
+  )}
+
+  {musicTitle && (
+
+    <View style={styles.musicBar}>
+
+      <Text style={styles.musicIcon}>
+        🎵
+      </Text>
+
+      <View style={{ flex: 1 }}>
+
+        <Text style={styles.musicTitle}>
+          {musicTitle}
+        </Text>
+
+        <Text style={styles.musicArtist}>
+          {musicArtist}
+        </Text>
+
       </View>
+
+    </View>
+
+  )}
+
+</View>
+
+
+
+
+    
 
       {/* TOP BLACK BAR */}
       <LinearGradient
@@ -236,7 +354,21 @@ useEffect(() => {
         {/* BACK BUTTON */}
 <TouchableOpacity
   style={styles.iconBtn}
-  onPress={() => router.push('/camera')}
+
+
+
+
+
+onPress={async () => {
+
+  if (sound) {
+    await sound.stopAsync();
+    await sound.unloadAsync();
+  }
+
+  router.back();
+}}
+
 >
 
           <Ionicons
@@ -251,14 +383,24 @@ useEffect(() => {
           style={styles.nextBtn}
           onPress={() => {
 
-            if (sound) {
-              sound.stopAsync();
-            }
+          if (sound) {
+  sound.stopAsync();
+}
 
-            router.push({
-              pathname: '/post',
-              params: { videoUri },
-            });
+console.log("Sending audioUrl =", audioUrl);
+
+router.push({
+  pathname: "/post",
+  params: {
+    videoUri,
+    audioUrl,
+    musicName: musicTitle,
+    musicArtist,
+    musicImage,
+  },
+});
+
+
           }}
         >
           <Text style={styles.nextTxt}>
@@ -320,91 +462,13 @@ useEffect(() => {
         </ScrollView>
       </View>
 
-      {/* MUSIC MODAL */}
-      <Modal
-        visible={showMusic}
-        animationType="slide"
-        transparent={true}
-      >
 
-        <View style={styles.modalOverlay}>
 
-          <View style={styles.musicSheet}>
 
-            {/* MODAL HEADER */}
-            <View style={styles.sheetHeader}>
 
-              <Text style={styles.sheetTitle}>
-                Select Music
-              </Text>
 
-              <TouchableOpacity
-                onPress={() =>
-                  setShowMusic(false)
-                }
-              >
-                <Ionicons
-                  name="close"
-                  size={28}
-                  color="#fff"
-                />
-              </TouchableOpacity>
 
-            </View>
 
-            {/* MUSIC LIST */}
-            <ScrollView>
-
-              {musicData.map((item) => (
-
-                <TouchableOpacity
-                  key={item.id}
-                  style={styles.songRow}
-                  onPress={() =>
-                    playSelectedMusic(item.url)
-                  }
-                >
-
-                  <View style={styles.songIconBox}>
-
-                    <Ionicons
-                      name="musical-note"
-                      size={22}
-                      color="#FF5E00"
-                    />
-
-                  </View>
-
-                  <View
-                    style={{
-                      flex: 1,
-                      marginLeft: 15,
-                    }}
-                  >
-
-                    <Text style={styles.songName}>
-                      {item.title}
-                    </Text>
-
-                    <Text style={styles.songCat}>
-                      {item.category}
-                    </Text>
-
-                  </View>
-
-                  <Ionicons
-                    name="add-circle"
-                    size={28}
-                    color="#FF5E00"
-                  />
-
-                </TouchableOpacity>
-
-              ))}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 }
@@ -587,4 +651,41 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 2,
   },
+
+
+musicBar: {
+  position: "absolute",
+  top: -100,
+  left: 15,
+  right: 15,
+
+  zIndex: 999,
+
+  flexDirection: "row",
+  alignItems: "center",
+
+  backgroundColor: "rgba(0,0,0,0.6)",
+
+  padding: 12,
+  borderRadius: 12,
+},
+
+musicIcon: {
+  fontSize: 22,
+  marginRight: 10,
+},
+
+musicTitle: {
+  color: "#fff",
+  fontSize: 16,
+  fontWeight: "bold",
+},
+
+musicArtist: {
+  color: "#ccc",
+  fontSize: 13,
+},
+
+
+
 });

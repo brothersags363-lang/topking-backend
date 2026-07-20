@@ -16,11 +16,18 @@ import {
   TouchableOpacity,
   Share,
   Alert,
-  TextInput
+  TextInput,
+    Keyboard,
+    Animated,
+    ActivityIndicator,
+      Easing,
 } from 'react-native';
 
-import { Ionicons } from '@expo/vector-icons';
-import { Video } from 'expo-av';
+import {
+  Ionicons,
+  MaterialCommunityIcons,
+} from "@expo/vector-icons";
+import { VideoView, useVideoPlayer } from "expo-video";
 
 import {
   collection,
@@ -31,6 +38,8 @@ import {
   updateDoc,
   increment,
   getDoc,
+  getDocs,
+  where,
   setDoc,
   deleteDoc,
   serverTimestamp,
@@ -50,27 +59,114 @@ import {
   useFocusEffect,
 } from "expo-router";
 
-const { height, width } = Dimensions.get('window');
+const { height, width } = Dimensions.get('screen');
+
+
+
 const auth = getAuth();
+
+
+
+
+const VideoPlayerItem = React.memo(({ uri, active }) => {
+
+  const player = useVideoPlayer(uri, (player) => {
+    player.loop = true;
+  });
+
+  
+useEffect(() => {
+
+    if (!player) return;
+
+    if (active) {
+
+        player.muted = false;
+        player.play();
+
+    } else {
+
+        player.pause();
+        player.currentTime = 0;
+        player.muted = true;
+
+    }
+
+}, [active, player]);
+
+
+  return (
+
+ <VideoView
+player={player}
+style={styles.video}
+contentFit="cover"
+nativeControls={false}
+allowsFullscreen={false}
+allowsPictureInPicture={false}
+showsTimecodes={false}
+/>
+
+  );
+
+}, (prev, next) => {
+    return (
+        prev.uri === next.uri &&
+        prev.active === next.active
+    );
+});
 
 
 export default function App() {
 
 const router = useRouter();
 
-const { videos, index, userId } =
-  useLocalSearchParams();
+const rotateAnim = useRef(
+  new Animated.Value(0)
+).current;
 
-const videoData = videos
-  ? JSON.parse(videos)
-  : [];
+const textAnim = useRef(
+  new Animated.Value(0)
+).current;
+
+
+const {
+  videos,
+  index,
+  userId,
+  from,
+} = useLocalSearchParams();
+
+const profileUserId = userId;
+
+
+const [allVideos, setAllVideos] = useState(
+  videos ? JSON.parse(videos) : []
+);
+
 
 
 const flatListRef = useRef(null);
 
+const viewabilityConfig = {
+    itemVisiblePercentThreshold: 70,
+};
+
+const onViewRef = useRef(({ viewableItems }) => {
+
+  if (viewableItems.length > 0) {
+
+    setActiveVideo(viewableItems[0].index);
+
+  }
+
+});
+
+
+
 useEffect(() => {
 
-console.log("VIDEOS =", videoData);
+
 
 
   if (
@@ -87,9 +183,92 @@ console.log("VIDEOS =", videoData);
 }, []);
 
 
+useEffect(() => {
+
+Animated.loop(
+
+Animated.timing(
+
+rotateAnim,
+
+{
+toValue:1,
+duration:2200,
+easing:Easing.linear,
+useNativeDriver:true,
+}
+
+)
+
+).start();
+
+},[]);
 
 
+useEffect(() => {
 
+Animated.loop(
+
+Animated.sequence([
+
+Animated.timing(
+textAnim,
+{
+toValue:-180,
+duration:5000,
+useNativeDriver:true,
+}
+),
+
+Animated.timing(
+textAnim,
+{
+toValue:0,
+duration:0,
+useNativeDriver:true,
+}
+),
+
+])
+
+).start();
+
+},[]);
+
+useEffect(() => {
+
+  const show = Keyboard.addListener(
+    "keyboardDidShow",
+    (e) => {
+
+      Animated.timing(keyboardHeight,{
+        toValue:e.endCoordinates.height,
+        duration:250,
+        useNativeDriver:false,
+      }).start();
+
+    }
+  );
+
+  const hide = Keyboard.addListener(
+    "keyboardDidHide",
+    ()=>{
+
+      Animated.timing(keyboardHeight,{
+        toValue:0,
+        duration:250,
+        useNativeDriver:false,
+      }).start();
+
+    }
+  );
+
+  return ()=>{
+    show.remove();
+    hide.remove();
+  };
+
+},[]);
 
 useFocusEffect(
   React.useCallback(() => {
@@ -137,6 +316,8 @@ useEffect(() => {
             photo:
               data.profileImg ||
               'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
+
+              verified: data.verified || false,
           });
         }
 
@@ -154,57 +335,91 @@ const handleLike = async (videoId) => {
 
   const user = auth.currentUser;
 
-  if (!user) {
-    Alert.alert('Login Required');
-    return;
-  }
+  if (!user) return;
+
+  const liked = localLikes[videoId];
 
   const likeRef = doc(
     db,
-    'all_videos',
+    "all_videos",
     videoId,
-    'likes',
+    "likes",
     user.uid
   );
 
   const videoRef = doc(
     db,
-    'all_videos',
+    "all_videos",
     videoId
   );
 
-  const snap = await getDoc(likeRef);
+  // UI turant update
+  setLocalLikes(prev => ({
+    ...prev,
+    [videoId]: !liked
+  }));
 
-  if (snap.exists()) {
+  setAllVideos(prev =>
+    prev.map(item =>
+      item.id === videoId
+        ? {
+            ...item,
+            likes: liked
+              ? Math.max((item.likes || 0) - 1, 0)
+              : (item.likes || 0) + 1,
+          }
+        : item
+    )
+  );
 
-    await deleteDoc(likeRef);
+  try {
 
-    await updateDoc(videoRef, {
-      likes: increment(-1)
-    });
+    if (liked) {
 
+      await deleteDoc(likeRef);
+
+      await updateDoc(videoRef, {
+        likes: increment(-1),
+      });
+
+    } else {
+
+      await setDoc(likeRef, {
+        userId: user.uid,
+        createdAt: serverTimestamp(),
+      });
+
+      await updateDoc(videoRef, {
+        likes: increment(1),
+      });
+
+    }
+
+  } catch (e) {
+
+    // Error aaye to UI rollback
     setLocalLikes(prev => ({
       ...prev,
-      [videoId]: false
+      [videoId]: liked
     }));
 
-  } else {
+    setAllVideos(prev =>
+      prev.map(item =>
+        item.id === videoId
+          ? {
+              ...item,
+              likes: liked
+                ? (item.likes || 0) + 1
+                : Math.max((item.likes || 0) - 1, 0),
+            }
+          : item
+      )
+    );
 
-    await setDoc(likeRef, {
-      userId: user.uid,
-      createdAt: serverTimestamp()
-    });
-
-    await updateDoc(videoRef, {
-      likes: increment(1)
-    });
-
-    setLocalLikes(prev => ({
-      ...prev,
-      [videoId]: true
-    }));
+    console.log(e);
 
   }
+
 };
 
 
@@ -267,6 +482,13 @@ const postComment =
     )
       return;
 
+
+const text = commentText.trim();
+
+setCommentText("");
+Keyboard.dismiss();
+
+
     await addDoc(
       collection(
         db,
@@ -287,6 +509,8 @@ const postComment =
         userId:
           user.uid,
 
+verified: currentUserData.verified || false,
+
         createdAt:
           serverTimestamp(),
       }
@@ -304,11 +528,61 @@ const postComment =
       }
     );
 
-    setCommentText('');
+
+
 
 };
 
 
+
+const deleteComment = async (commentId) => {
+
+  Alert.alert(
+    "Delete Comment",
+    "Do you want to delete this comment?",
+    [
+      {
+        text: "Cancel",
+        style: "cancel",
+      },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+
+          try {
+
+            await deleteDoc(
+              doc(
+                db,
+                "all_videos",
+                selectedVideoId,
+                "comments",
+                commentId
+              )
+            );
+
+            await updateDoc(
+              doc(
+                db,
+                "all_videos",
+                selectedVideoId
+              ),
+              {
+                commentsCount: increment(-1),
+              }
+            );
+
+          } catch (e) {
+            console.log(e);
+          }
+
+        },
+      },
+    ]
+  );
+
+};
 
 
  const [activeVideo, setActiveVideo] =
@@ -322,6 +596,8 @@ const [localLikes, setLocalLikes] = useState({});
 const [showComments, setShowComments] =
   useState(false);
 
+const keyboardHeight = useRef(new Animated.Value(0)).current;
+
 const [selectedVideoId, setSelectedVideoId] =
   useState(null);
 
@@ -331,35 +607,168 @@ const [commentText, setCommentText] =
 const [comments, setComments] =
   useState([]);
 
+const [commentsLoading, setCommentsLoading] = useState(false);
+
 const [showStarPopup, setShowStarPopup] =
   useState(false);
 
 const [selectedStar, setSelectedStar] =
   useState(null);
 
+const [showSharePopup, setShowSharePopup] =
+  useState(false);
 
-  useEffect(() => {
+const [selectedShareVideo, setSelectedShareVideo] =
+  useState(null);
+
+
+  const [myStars, setMyStars] =
+  useState(0);
+
+const [starAnimationVideoId, setStarAnimationVideoId] = useState(null);
+
+const starScale = useRef(new Animated.Value(0)).current;
+
+const starRotate = useRef(new Animated.Value(0)).current;
+
+const starOpacity = useRef(new Animated.Value(0)).current;
+
+const starJump = useRef(new Animated.Value(0)).current;
+
+const starTilt = useRef(new Animated.Value(0)).current;
+
+const [blockedUsers, setBlockedUsers] = useState([]);
+
+const videoData = allVideos.filter(
+  item => !blockedUsers.includes(item.userId)
+);
+
+
+useEffect(() => {
+
+  const user = auth.currentUser;
+
+  if (!user) return;
+
+  const loadLikes = async () => {
+
+    let liked = {};
+
+    for (const video of allVideos) {
+
+      const snap = await getDoc(
+        doc(
+          db,
+          "all_videos",
+          video.id,
+          "likes",
+          user.uid
+        )
+      );
+
+      liked[video.id] = snap.exists();
+
+    }
+
+    setLocalLikes(liked);
+
+  };
+
+  loadLikes();
+
+}, [allVideos]);
+
+
+
+useEffect(() => {
+
+  const user = auth.currentUser;
+
+  if (!user) return;
+
+  const walletRef = doc(db, "wallets", user.uid);
+
+  // Pehle ek baar direct read
+  getDoc(walletRef).then((snap) => {
+    if (snap.exists()) {
+      setMyStars(snap.data().stars || 0);
+    }
+  });
+
+  // Fir realtime update
+  const unsubscribe = onSnapshot(walletRef, (snap) => {
+    if (snap.exists()) {
+      setMyStars(snap.data().stars || 0);
+    }
+  });
+
+  return () => unsubscribe();
+
+}, []);
+
+
+
+
+useEffect(() => {
+
+  const user = auth.currentUser;
+
+  if (!user) return;
+
+  const q = query(
+    collection(db, "blockedUsers")
+  );
+
+  const unsubscribe = onSnapshot(q, (snapshot) => {
+
+    let arr = [];
+
+    snapshot.forEach(doc => {
+
+      const data = doc.data();
+
+      if (data.blockerId === user.uid) {
+
+        arr.push(data.blockedUserId);
+
+      }
+
+    });
+
+    setBlockedUsers(arr);
+
+  });
+
+  return () => unsubscribe();
+
+}, []);
+
+
+
+useEffect(() => {
 
   const backAction = () => {
 
-    if (showStarPopup) {
 
+if (showSharePopup) {
+  setShowSharePopup(false);
+  return true;
+}
+
+    if (showStarPopup) {
       setShowStarPopup(false);
       return true;
-
     }
 
     if (showComments) {
-
       setShowComments(false);
       return true;
-
     }
 
-    router.push({
-      pathname: '/userProfile',
+    router.replace({
+      pathname: "/userProfile",
       params: {
-        userId,
+        userId: profileUserId,
       },
     });
 
@@ -368,20 +777,20 @@ const [selectedStar, setSelectedStar] =
 
   const backHandler =
     BackHandler.addEventListener(
-      'hardwareBackPress',
+      "hardwareBackPress",
       backAction
     );
 
-  return () =>
-    backHandler.remove();
+  return () => backHandler.remove();
 
-}, [showComments, showStarPopup]);
-
+}, [showComments, showStarPopup, showSharePopup]);
 
 
 
 const [selectedVideoData, setSelectedVideoData] =
   useState(null);
+
+
 
 useEffect(() => {
 
@@ -414,6 +823,8 @@ useEffect(() => {
           );
 
         setComments(data);
+
+          setCommentsLoading(false);
       }
     );
 
@@ -425,45 +836,199 @@ useEffect(() => {
 
 
 const [currentUserData, setCurrentUserData] =
+
+
+
   useState({
     name: 'User',
     photo:
       'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
   });
 
-console.log(
-  "ACTIVE VIDEO =",
-  activeVideo
-);
-
-console.log(
-  "CURRENT INDEX =",
-  index
-);
 
 
-  const renderVideo = ({ item, index }) => (
+
+const playStarAnimation = () => {
+
+  starScale.setValue(0.2);
+  starOpacity.setValue(0);
+  starRotate.setValue(0);
+  starJump.setValue(40);
+  starTilt.setValue(0);
+
+  Animated.parallel([
+
+    Animated.spring(starScale,{
+      toValue:1.3,
+      friction:3,
+      tension:120,
+      useNativeDriver:true,
+    }),
+
+    Animated.timing(starOpacity,{
+      toValue:1,
+      duration:150,
+      useNativeDriver:true,
+    }),
+
+    Animated.timing(starRotate,{
+      toValue:1,
+      duration:1200,
+      easing:Easing.out(Easing.exp),
+      useNativeDriver:true,
+    }),
+
+    Animated.timing(starTilt,{
+      toValue:1,
+      duration:1200,
+      useNativeDriver:true,
+    }),
+
+    Animated.spring(starJump,{
+      toValue:-50,
+      friction:4,
+      useNativeDriver:true,
+    })
+
+  ]).start(()=>{
+
+      Animated.sequence([
+
+        Animated.spring(starScale,{
+          toValue:1.6,
+          friction:3,
+          useNativeDriver:true,
+        }),
+
+        Animated.delay(700),
+
+        Animated.parallel([
+
+          Animated.timing(starOpacity,{
+            toValue:0,
+            duration:500,
+            useNativeDriver:true,
+          }),
+
+          Animated.timing(starScale,{
+            toValue:2,
+            duration:500,
+            useNativeDriver:true,
+          })
+
+        ])
+
+      ]).start(()=>{
+
+          setStarAnimationVideoId(null);
+
+      });
+
+  });
+
+};
+
+
+  const renderVideo = React.useCallback(({ item, index }) => (
 
     <View style={styles.videoContainer}>
-     <Video
+<VideoPlayerItem
+
   key={item.id}
-        source={{
-  uri:
-    item.videoUrl ||
-    item.video,
-}}
-        style={styles.video}
-        resizeMode="cover"
-        isLooping
-        shouldPlay={
-  screenFocused &&
-  index === activeVideo
-}
-isMuted={
-  index !== activeVideo
+  uri={item.videoUrl || item.video}
+  active={
+    screenFocused &&
+    index === activeVideo
+  }
+/>
+ 
+
+
+{
+  starAnimationVideoId === item.id && (
+
+    <View
+      style={{
+        position: "absolute",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+
+        justifyContent: "center",
+        alignItems: "center",
+
+        zIndex: 99999,
+        elevation: 99999,
+      }}
+      pointerEvents="none"
+    >
+
+      <Animated.Image
+
+source={require("../../assets/star-logo.png")}
+
+style={{
+
+width:170,
+
+height:170,
+
+opacity:starOpacity,
+
+transform:[
+
+{
+translateY:starJump
+},
+
+{
+scale:starScale
+},
+
+{
+rotateZ:starRotate.interpolate({
+inputRange:[0,1],
+outputRange:["0deg","720deg"]
+})
+},
+
+{
+rotateY:starTilt.interpolate({
+inputRange:[0,0.5,1],
+outputRange:["0deg","180deg","360deg"]
+})
+},
+
+{
+rotateX:starTilt.interpolate({
+inputRange:[0,0.5,1],
+outputRange:["0deg","25deg","0deg"]
+})
 }
 
-      />
+],
+
+shadowColor:"#FFD700",
+
+shadowOpacity:1,
+
+shadowRadius:35,
+
+elevation:35,
+
+resizeMode:"contain",
+
+}}
+
+ />
+
+    </View>
+
+  )
+}
+
+
       {/* Side Overlay (Like/Comment buttons placeholders) */}
       <View style={styles.sideBar}>
 
@@ -515,7 +1080,13 @@ isMuted={
 
   <TouchableOpacity
   style={styles.iconBox}
-  onPress={() => {
+onPress={() => {
+
+    // Purane comments hata do
+    setComments([]);
+
+    // Loader dikhao
+    setCommentsLoading(true);
 
     setSelectedVideoId(item.id);
 
@@ -523,7 +1094,9 @@ isMuted={
 
     setShowComments(true);
 
-  }}
+
+
+}}
 >
 
   <Ionicons
@@ -539,15 +1112,17 @@ isMuted={
 </TouchableOpacity>
 
 
-  <TouchableOpacity
-  style={styles.iconBox}
-  onPress={() =>
-    handleShare(
-      item.videoUrl,
-      item.id
-    )
-  }
+ <TouchableOpacity
+style={styles.iconBox}
+onPress={() => {
+
+  setSelectedShareVideo(item);
+
+  setShowSharePopup(true);
+
+}}
 >
+
     <Ionicons
       name="arrow-redo"
       size={35}
@@ -558,16 +1133,7 @@ isMuted={
     </Text>
   </TouchableOpacity>
 
-  <View style={styles.iconBox}>
-    <Ionicons
-      name="eye"
-      size={35}
-      color="#fff"
-    />
-    <Text style={styles.iconText}>
-      {item.views || 0}
-    </Text>
-  </View>
+ 
 
  <TouchableOpacity
   style={styles.iconBox}
@@ -576,6 +1142,7 @@ isMuted={
     setSelectedVideoId(item.id);
 
     setShowStarPopup(true);
+
 
   }}
 >
@@ -595,29 +1162,170 @@ StarUp
       {/* Bottom Info */}
       <View style={styles.bottomInfo}>
 
-  <Text style={styles.username}>
-    @{item.username}
+<View style={styles.userRow}>
+  <Text style={styles.userName}>
+    {item.username || "@user"}
   </Text>
+
+  {item.verified && (
+    <View style={styles.badge}>
+      <MaterialCommunityIcons
+        name="check-decagram"
+        size={18}
+        color="#ffffff"
+      />
+
+      <Ionicons
+        name="checkmark"
+        size={10}
+        color="#131212"
+        style={styles.badgeTick}
+      />
+    </View>
+  )}
+</View>
 
   <Text style={styles.caption}>
     {item.caption}
   </Text>
 
-  <View style={styles.musicRow}>
-    <Ionicons
-      name="musical-notes"
-      size={16}
-      color="#fff"
-    />
 
-    <Text style={styles.musicText}>
-      Original Audio - @{item.username}
-    </Text>
-  </View>
+<TouchableOpacity
+  style={styles.musicRow}
+  activeOpacity={0.8}
+  onPress={() => {
+
+    console.log("AllVideo Audio =", item.audioUrl);
+    console.log("Song Url =", item.songUrl);
+    console.log("Music Url =", item.musicUrl);
+    console.log("Music Id =", item.musicId);
+
+    router.push({
+      pathname: "/musicDetails",
+      params: {
+        musicId: item.musicId || item.id,
+        musicName: item.songName || "Original Audio",
+        username: item.username,
+        profile: item.profile,
+        audioUrl: item.audioUrl || item.songUrl || item.musicUrl,
+      },
+    });
+
+  }}
+>
+
+
+<Animated.View
+
+style={[
+
+styles.musicDiscOuter,
+
+{
+
+transform:[
+
+{
+
+rotate:
+
+rotateAnim.interpolate({
+
+inputRange:[0,1],
+
+outputRange:[
+"0deg",
+"360deg"
+]
+
+})
+
+}
+
+]
+
+}
+
+]}
+
+>
+
+<View style={styles.vinylDisc}>
+
+<Image
+
+source={{
+
+uri:
+
+item.profile ||
+
+"https://cdn-icons-png.flaticon.com/512/3135/3135715.png"
+
+}}
+
+style={styles.musicCenterImage}
+
+/>
+
+<View style={styles.musicDot}/>
+
+</View>
+
+</Animated.View>
+
+<View style={styles.musicTextContainer}>
+
+<Animated.Text
+
+numberOfLines={1}
+
+style={[
+
+styles.musicText,
+
+{
+
+transform:[
+
+{
+
+translateX:textAnim
+
+}
+
+]
+
+}
+
+]}
+
+>
+
+🎵 Music • {item.username} • Original Audio
+
+</Animated.Text>
+
+</View>
+
+</TouchableOpacity>
+
+
+
+
 
 </View>
     </View>
-  );
+
+
+),[
+activeVideo,
+screenFocused,
+localLikes,
+comments,
+starAnimationVideoId
+]);
+
 
   return (
     <View style={styles.container}>
@@ -626,9 +1334,7 @@ StarUp
       {/* Top Black Header */}
     
 <View style={styles.header}>
-  <Text style={styles.headerText}>
-    TopKing | Video
-  </Text>
+
 </View>
 
       {/* Scrollable Video List */}
@@ -636,6 +1342,10 @@ StarUp
        ref={flatListRef}
         data={videoData}
         renderItem={renderVideo}
+        extraData={{
+  activeVideo,
+  starAnimationVideoId,
+}}
  keyExtractor={(item, i) =>
   item.id + i
 }
@@ -648,17 +1358,18 @@ getItemLayout={(data, index) => ({
 })}
 
        
-      onViewableItemsChanged={({ viewableItems }) => {
+viewabilityConfig={viewabilityConfig}
+onViewableItemsChanged={onViewRef.current}
 
-  if (
-    viewableItems.length > 0
-  ) {
-    setActiveVideo(
-      viewableItems[0].index
-    );
-  }
-
-}}
+initialNumToRender={2}
+maxToRenderPerBatch={2}
+windowSize={3}
+removeClippedSubviews={true}
+updateCellsBatchingPeriod={16}
+decelerationRate="fast"
+snapToAlignment="start"
+disableIntervalMomentum={true}
+scrollEventThrottle={8}
       />
 
 
@@ -673,9 +1384,10 @@ showComments && (
 <View
 style={{
 position:'absolute',
-bottom:0,
-width:'100%',
-height:'50%',
+bottom:32,
+left:0,
+right:0,
+height:height*0.6,
 backgroundColor:'#000',
 borderTopLeftRadius:20,
 borderTopRightRadius:20,
@@ -718,14 +1430,55 @@ flex:1
 }}
 >
 
-<Text
-style={{
-color:'#fff',
-fontWeight:'bold'
-}}
+<View
+  style={{
+    flexDirection: "row",
+    alignItems: "center",
+  }}
 >
-@{selectedVideoData.username}
-</Text>
+  <Text
+    style={{
+      color: "#fff",
+      fontWeight: "bold",
+      fontSize: 15,
+    }}
+  >
+    @{selectedVideoData.username}
+  </Text>
+
+
+
+ {selectedVideoData?.verified && (
+  <View
+    style={{
+      marginLeft: 5,
+      width: 18,
+      height: 18,
+      justifyContent: "center",
+      alignItems: "center",
+      position: "relative",
+    }}
+  >
+    <MaterialCommunityIcons
+      name="check-decagram"
+      size={18}
+      color="#ffffff"
+    />
+
+    <Ionicons
+      name="checkmark"
+      size={10}
+      color="#131212"
+      style={{
+        position: "absolute",
+        top: 4.6,
+        left: 4.2,
+      }}
+    />
+  </View>
+)}
+
+</View>
 
 <Text
 style={{
@@ -744,18 +1497,58 @@ numberOfLines={2}
 )
 }
 
+
+
+
+{
+commentsLoading ? (
+
+<View
+style={{
+flex:1,
+justifyContent:"center",
+alignItems:"center"
+}}
+>
+
+<ActivityIndicator
+size="large"
+color="#FFD700"
+/>
+
+</View>
+
+) : (
+
+
+
+
 <FlatList
 data={comments}
+
 style={{
-marginTop:10
+marginTop:10,
+flex:1,
 }}
+
+contentContainerStyle={{
+paddingBottom:90,
+}}
+
+keyboardShouldPersistTaps="handled"
+
+showsVerticalScrollIndicator={false}
+removeClippedSubviews={false}
 keyExtractor={(item)=>item.id}
+keyboardDismissMode="interactive"
 renderItem={({item})=>(
 
 <View
 style={{
 flexDirection:'row',
-padding:12
+padding:12,
+alignItems:'flex-start',
+justifyContent:'space-between',
 }}
 >
 
@@ -772,18 +1565,58 @@ borderRadius:20
 
 <View
 style={{
-marginLeft:10
+marginLeft:10,
+flex:1,
 }}
 >
 
-<Text
-style={{
-color:'#fff',
-fontWeight:'bold'
-}}
+<View
+  style={{
+    flexDirection: "row",
+    alignItems: "center",
+  }}
 >
-{item.username}
-</Text>
+  <Text
+    style={{
+      color: "#fff",
+      fontWeight: "bold",
+    }}
+  >
+    {item.username}
+  </Text>
+
+
+{item.verified && (
+  <View
+    style={{
+      marginLeft: 5,
+      width: 16,
+      height: 16,
+      justifyContent: "center",
+      alignItems: "center",
+      position: "relative",
+    }}
+  >
+    <MaterialCommunityIcons
+      name="check-decagram"
+      size={16}
+      color="#ffffff"
+    />
+
+    <Ionicons
+      name="checkmark"
+      size={9}
+      color="#131212"
+      style={{
+        position: "absolute",
+        top: 4,
+        left: 3.8,
+      }}
+    />
+  </View>
+)}
+
+</View>
 
 <Text
 style={{
@@ -795,18 +1628,58 @@ color:'#fff'
 
 </View>
 
+
+
+{
+auth.currentUser?.uid === item.userId && (
+
+<TouchableOpacity
+onPress={() => deleteComment(item.id)}
+style={{
+paddingLeft:10,
+paddingTop:5,
+}}
+>
+
+<Ionicons
+name="ellipsis-vertical"
+size={20}
+color="#fff"
+/>
+
+</TouchableOpacity>
+
+)
+}
+
+
+
 </View>
 
 )}
 />
 
-<View
+)
+}
+
+
+<Animated.View
 style={{
 position:'absolute',
-bottom:45,
 left:10,
 right:10,
 
+transform:[
+{
+translateY:
+Animated.multiply(
+keyboardHeight,
+-1
+
+)
+}
+],
+bottom:15,
 flexDirection:'row',
 alignItems:'center',
 
@@ -837,6 +1710,14 @@ value={commentText}
 onChangeText={setCommentText}
 placeholder="Comment..."
 placeholderTextColor="#999"
+
+returnKeyType="send"
+blurOnSubmit={true}
+
+onSubmitEditing={()=>{
+  postComment();
+}}
+
 style={{
 flex:1,
 color:'#fff'
@@ -855,6 +1736,137 @@ color="#FFD700"
 
 </TouchableOpacity>
 
+
+</Animated.View>
+
+</View>
+
+
+
+)
+}
+
+
+
+
+{
+showSharePopup && (
+
+<View style={styles.sharePopupContainer}>
+
+<TouchableOpacity
+style={StyleSheet.absoluteFill}
+activeOpacity={1}
+onPress={() => setShowSharePopup(false)}
+/>
+
+<View style={styles.sharePopup}>
+
+<View style={styles.actionRow}>
+
+{/* REPORT */}
+
+<TouchableOpacity
+style={styles.reportBtn}
+onPress={() => {
+
+setShowSharePopup(false);
+
+router.push({
+pathname: "/report",
+params: {
+videoId: selectedShareVideo?.id
+}
+});
+
+}}
+>
+
+<Text style={styles.reportText}>
+Report Video
+</Text>
+
+</TouchableOpacity>
+
+
+{/* SAVE */}
+
+<TouchableOpacity
+style={styles.saveBtn}
+onPress={() => {
+
+setShowSharePopup(false);
+
+// Save Logic
+
+}}
+>
+
+<Text style={styles.saveText}>
+Video Save
+</Text>
+
+</TouchableOpacity>
+
+</View>
+
+
+{/* SHARE */}
+
+<View style={styles.shareRow}>
+
+  {/* Share Video */}
+  <TouchableOpacity
+    style={styles.shareBtn}
+    onPress={() => {
+
+      setShowSharePopup(false);
+
+      handleShare(
+        selectedShareVideo.videoUrl,
+        selectedShareVideo.id
+      );
+
+    }}
+  >
+    <Text style={styles.shareText}>
+      Share Video
+    </Text>
+  </TouchableOpacity>
+
+
+  {/* TopKing Logo */}
+  <TouchableOpacity
+    style={styles.logoBtn}
+    onPress={() => {
+
+      setShowSharePopup(false);
+
+      router.push({
+        pathname: "../ShareVideo",
+        params: {
+          videoId: selectedShareVideo?.id,
+
+          videoUrl:
+            selectedShareVideo?.videoUrl ||
+            selectedShareVideo?.video,
+
+          thumbnail:
+            selectedShareVideo?.thumbnail,
+        },
+      });
+
+    }}
+  >
+
+    <Image
+      source={require('../../assets/logo.png')}
+      style={styles.shareLogo}
+    />
+
+  </TouchableOpacity>
+</View>
+
 </View>
 
 </View>
@@ -864,160 +1876,90 @@ color="#FFD700"
 
 
 
+
+
 {
 showStarPopup && (
 
-<View
-style={{
-position:'absolute',
-left:0,
-right:0,
-bottom:0,
-top:0,
+<View style={styles.starPopupContainer}>
 
-backgroundColor:'rgba(0,0,0,0.4)',
+<View style={styles.starPopup}>
 
-justifyContent:'flex-end',
 
-zIndex:9999
-}}
->
+{/* MY STARS */}
+<View style={styles.myStarBox}>
 
-<View
-style={{
-height:260,
-backgroundColor:'#111',
+<Image
+source={require('../../assets/star-logo.png')}
+style={styles.myStarImage}
+/>
 
-borderTopLeftRadius:25,
-borderTopRightRadius:25,
+<Text style={styles.myStarText}>
+{myStars}
+</Text>
 
-paddingTop:20,
-paddingHorizontal:20
-}}
->
+</View>
 
-<View
-style={{
-flexDirection:'row',
-justifyContent:'space-around'
-}}
->
+
+{/* STAR CARDS */}
+<View style={styles.starRow}>
 
 <TouchableOpacity
 style={[
-{
-width:90,
-height:100,
-backgroundColor:'#222',
-borderRadius:20,
-
-justifyContent:'center',
-alignItems:'center'
-},
-selectedStar===1 && {
-borderWidth:3,
-borderColor:'#FFD700'
-}
+styles.starCard,
+selectedStar===1 && styles.activeStar
 ]}
 onPress={()=>setSelectedStar(1)}
 >
 
 <Image
 source={require('../../assets/star-logo.png')}
-style={{
-width:90,
-height:90,
-resizeMode:'contain'
-}}
+style={styles.popupStarImage}
 />
 
-<Text
-style={{
-color:'#FFD700',
-fontWeight:'bold',
-marginTop:-20
-}}
->
+<Text style={styles.starValue}>
 x1
 </Text>
 
 </TouchableOpacity>
 
+
+
 <TouchableOpacity
 style={[
-{
-width:90,
-height:100,
-backgroundColor:'#222',
-borderRadius:20,
-
-justifyContent:'center',
-alignItems:'center'
-},
-selectedStar===3 && {
-borderWidth:3,
-borderColor:'#FFD700'
-}
+styles.starCard,
+selectedStar===3 && styles.activeStar
 ]}
 onPress={()=>setSelectedStar(3)}
 >
 
 <Image
 source={require('../../assets/star-logo.png')}
-style={{
-width:90,
-height:90,
-resizeMode:'contain'
-}}
+style={styles.popupStarImage}
 />
 
-<Text
-style={{
-color:'#FFD700',
-fontWeight:'bold',
-marginTop:-20
-}}
->
+<Text style={styles.starValue}>
 x3
 </Text>
 
 </TouchableOpacity>
 
+
+
 <TouchableOpacity
 style={[
-{
-width:90,
-height:100,
-backgroundColor:'#222',
-borderRadius:20,
-
-justifyContent:'center',
-alignItems:'center'
-},
-selectedStar===10 && {
-borderWidth:3,
-borderColor:'#FFD700'
-}
+styles.starCard,
+selectedStar===10 && styles.activeStar
 ]}
 onPress={()=>setSelectedStar(10)}
 >
 
 <Image
 source={require('../../assets/star-logo.png')}
-style={{
-width:90,
-height:90,
-resizeMode:'contain'
-}}
+style={styles.popupStarImage}
 />
 
-<Text
-style={{
-color:'#FFD700',
-fontWeight:'bold',
-marginTop:-20
-}}
->
+<Text style={styles.starValue}>
 x10
 </Text>
 
@@ -1025,41 +1967,93 @@ x10
 
 </View>
 
+
+
+
 <TouchableOpacity
-style={{
-backgroundColor:'#FFD700',
-paddingVertical:14,
-borderRadius:30,
+  style={styles.starSubmitBtn}
+  onPress={async()=>{
 
-marginTop:30,
+const user = auth.currentUser;
 
-alignSelf:'center',
-width:180
-}}
-onPress={()=>{
+if(!user) return;
 
-console.log(
-"Video:",
-selectedVideoId,
-"Stars:",
-selectedStar
-);
+if(!selectedStar){
+  Alert.alert("Select Star");
+  return;
+}
 
-setShowStarPopup(false);
+if(myStars < selectedStar){
+  Alert.alert("Not enough Stars");
+  return;
+}
+
+try{
+
+  setShowStarPopup(false);
+
+setStarAnimationVideoId(selectedVideoId);
+
+  playStarAnimation();
+
+  
+
+
+  const senderWallet = doc(
+    db,
+    "wallets",
+    user.uid
+  );
+
+  await updateDoc(senderWallet,{
+    stars: increment(-selectedStar)
+  });
+
+  const videoRef = doc(
+    db,
+    "all_videos",
+    selectedVideoId
+  );
+
+  const videoSnap = await getDoc(videoRef);
+
+  if(videoSnap.exists()){
+
+    const videoData = videoSnap.data();
+
+    const receiverWallet = doc(
+      db,
+      "wallets",
+      videoData.userId
+    );
+
+    await setDoc(
+      receiverWallet,
+      {
+        receivedStars: increment(selectedStar)
+      },
+      { merge:true }
+    );
+
+    await updateDoc(videoRef,{
+      stars: increment(selectedStar)
+    });
+
+  }
+
+  setMyStars(prev=>prev-selectedStar);
+
+}catch(e){
+
+  console.log(e);
+
+}
 
 }}
 >
-
-<Text
-style={{
-color:'#000',
-fontWeight:'bold',
-textAlign:'center'
-}}
->
-StarUp
-</Text>
-
+  <Text style={styles.starSubmitText}>
+    StarUp
+  </Text>
 </TouchableOpacity>
 
 </View>
@@ -1070,17 +2064,24 @@ StarUp
 }
 
 
+
+
+
+
 <TouchableOpacity
-  style={styles.backButton}
-  onPress={() =>
-  router.push({
-    pathname: '/userProfile',
+style={styles.backButton}
+onPress={() => {
+
+  router.replace({
+    pathname: "/userProfile",
     params: {
-      userId,
+      userId: profileUserId,
     },
-  })
-}
+  });
+
+}}
 >
+
   <Ionicons
     name="arrow-back"
     size={30}
@@ -1105,24 +2106,61 @@ StarUp
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: 'black' },
-  header: { height: 60, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000', paddingTop: 20 },
+  header: { height: 40, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000', paddingTop: 10 },
   headerText: { color: 'white', fontWeight: 'bold' },
-  videoContainer: { height: height - 81.2, width: width }, // Header & Comment height minus
-  video: { width: '100%', height: '100%' },
-  sideBar: { position: 'absolute', right: -7, bottom: 25, alignItems: 'center' },
+  videoContainer: { height: height - 77.2, width: width }, // Header & Comment height minus
+
+  video: { width: '100%', height: '93%' },
+
+
+sideBar: {
+  position: 'absolute',
+
+  right: -5,
+
+  bottom: 65,   // video ke niche se kitna upar
+
+  alignItems: 'center',
+
+  zIndex: 999,
+},
+
   sideText: { color: 'white', fontSize: 24, marginBottom: 15 },
-  bottomInfo: { position: 'absolute', left: 10, bottom: 20 },
-  username: { color: 'white', fontWeight: 'bold' },
+  
+bottomInfo: {
+  position: 'absolute',
+
+  left: 12,
+
+  bottom: 65,      // niche se kitna upar
+
+  width: width * 0.7,
+
+  zIndex: 999,
+},
+
+  userName: {
+  color: "#fff",
+  fontSize: 18,
+  fontWeight: "bold",
+  textShadowColor: "rgba(0,0,0,0.6)",
+  textShadowOffset: {
+    width: 1,
+    height: 1,
+  },
+  textShadowRadius: 3,
+},
+
   caption: { color: 'white' },
 
 commentBox: {
-  height: 104.2,
+  height: 95.2,
   backgroundColor: '#111',
   justifyContent: 'center',
   paddingLeft: 20,
 },
 
-  commentText: { color: '#888',    marginBottom: 40,  paddingLeft: 20,    },
+  commentText: { color: '#888',    marginBottom: 45,  paddingLeft: 20,    },
 profileImage: {
   width: 50,
   height: 50,
@@ -1134,7 +2172,7 @@ profileImage: {
 
 iconBox: {
   alignItems: 'center',
-  marginBottom: 12,
+  marginBottom: 4,
 },
 
 iconText: {
@@ -1146,7 +2184,7 @@ iconText: {
 musicRow: {
   flexDirection: 'row',
   alignItems: 'center',
-  marginTop: 10,
+  marginTop: 15,
   backgroundColor: 'rgba(255,255,255,0.15)',
   paddingHorizontal: 10,
   paddingVertical: 6,
@@ -1157,6 +2195,7 @@ musicRow: {
 musicText: {
   color: '#fff',
   marginLeft: 8,
+  
 },
 
 starImage: {
@@ -1173,7 +2212,7 @@ starText: {
 
 backButton: {
   position: 'absolute',
-  top: 70,
+  top: 50,
   left: 15,
   zIndex: 999,
 },
@@ -1306,4 +2345,274 @@ heartPopup: {
 },
 
 
-});
+
+
+starPopupContainer:{
+position:'absolute',
+left:0,
+right:0,
+bottom:0,
+height:height,
+backgroundColor:'rgba(0,0,0,0.4)',
+justifyContent:'flex-end',
+zIndex:9999,
+},
+
+starPopup:{
+width:'100%',
+height:290,
+backgroundColor:'#111',
+
+borderTopLeftRadius:25,
+borderTopRightRadius:25,
+
+paddingTop:20,
+paddingHorizontal:20,
+},
+
+
+myStarBox:{
+flexDirection:'row',
+alignItems:'center',
+top:-10,
+left:0,
+marginBottom:20,
+},
+
+myStarImage:{
+width:45,
+height:45,
+resizeMode:'contain',
+},
+
+myStarText:{
+color:'#FFD700',
+fontSize:24,
+fontWeight:'bold',
+marginLeft:-5,
+},
+
+
+starRow:{
+flexDirection:'row',
+justifyContent:'space-around',
+marginTop:-23,
+},
+
+starCard:{
+width:90,
+height:100,
+backgroundColor:'#222',
+borderRadius:20,
+
+justifyContent:'center',
+alignItems:'center',
+},
+
+activeStar:{
+borderWidth:3,
+borderColor:'#FFD700',
+
+shadowColor:'#FFD700',
+shadowOpacity:1,
+shadowRadius:15,
+elevation:15,
+},
+
+
+popupStarImage:{
+width:90,
+height:90,
+resizeMode:'contain',
+marginTop:-15,
+},
+
+starValue:{
+color:'#FFD700',
+fontWeight:'bold',
+fontSize:15,
+marginTop:-20,
+},
+
+
+starSubmitBtn:{
+backgroundColor:'#FFD700',
+paddingVertical:14,
+borderRadius:30,
+marginTop:30,
+alignSelf:'center',
+width:180,
+},
+
+starSubmitText:{
+color:'#000',
+fontWeight:'bold',
+textAlign:'center',
+},
+
+
+sharePopupContainer:{
+position:'absolute',
+left:0,
+right:0,
+bottom:25,
+height:height,
+backgroundColor:'rgba(0,0,0,0.5)',
+justifyContent:'flex-end',
+zIndex:9999,
+},
+
+sharePopup:{
+backgroundColor:'#111',
+borderTopLeftRadius:20,
+borderTopRightRadius:20,
+padding:30,
+},
+
+actionRow:{
+flexDirection:'row',
+justifyContent:'space-between',
+marginBottom:15,
+},
+
+reportBtn:{
+backgroundColor:'#ff3333',
+width:'48%',
+paddingVertical:10,
+borderRadius:12,
+},
+
+saveBtn:{
+backgroundColor:'#3498db',
+width:'48%',
+paddingVertical:10,
+borderRadius:12,
+},
+
+reportText:{
+color:'#fff',
+fontWeight:'bold',
+textAlign:'center',
+fontSize:14,
+},
+
+saveText:{
+color:'#fff',
+fontWeight:'bold',
+textAlign:'center',
+fontSize:14,
+},
+
+shareBtn:{
+  backgroundColor:'#FFD700',
+
+  width:230,
+  height:45,
+
+  borderRadius:20,
+
+  justifyContent:'center',
+  alignItems:'center',
+
+  marginLeft:5,
+  marginRight:0,
+
+  marginTop:0,
+  marginBottom:0,
+},
+
+shareRow:{
+  flexDirection:'row',
+  alignItems:'center',
+  justifyContent:'space-between',
+  marginTop:10,
+},
+
+logoBtn:{
+  width:60,
+  height:60,
+  borderRadius:45,
+  overflow:'hidden',
+  justifyContent:'center',
+  alignItems:'center',
+  backgroundColor:'#000',
+},
+
+shareLogo:{
+  width:100,
+  height:100,
+  borderRadius:25,
+  resizeMode:'cover',
+},
+
+shareText:{
+color:'#000',
+fontWeight:'bold',
+fontSize:18,
+textAlign:'center',
+},
+
+userRow: {
+  flexDirection: "row",
+  alignItems: "center",
+},
+
+badge: {
+  marginLeft: 5,
+  width: 18,
+  height: 18,
+  justifyContent: "center",
+  alignItems: "center",
+  position: "relative",
+},
+
+badgeTick: {
+  position: "absolute",
+  top: 4.6,
+  left: 4.2,
+},
+
+musicRow:{
+flexDirection:"row",
+alignItems:"center",
+marginTop:10,
+},
+
+musicDiscOuter:{
+marginRight:10,
+},
+
+vinylDisc:{
+width:42,
+height:42,
+borderRadius:21,
+backgroundColor:"#000",
+justifyContent:"center",
+alignItems:"center",
+},
+
+musicCenterImage:{
+width:22,
+height:22,
+borderRadius:11,
+},
+
+musicDot:{
+position:"absolute",
+width:6,
+height:6,
+borderRadius:3,
+backgroundColor:"#fff",
+},
+
+musicTextContainer:{
+width:180,
+overflow:"hidden",
+},
+
+musicText:{
+color:"#fff",
+fontSize:13,
+},
+
+});          
