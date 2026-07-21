@@ -27,7 +27,10 @@ getDocs,
 increment,
 } from "firebase/firestore";
 
-
+import {
+  CLOUDINARY_CLOUD_NAME,
+  CLOUDINARY_UPLOAD_PRESET,
+} from "../backend/config/cloudinary";
 
 import * as ImagePicker from "expo-image-picker";
 
@@ -385,24 +388,19 @@ const changeLogo = async () => {
       name: "agency_logo.jpg",
     });
 
-    
+    formData.append("upload_preset", "profile_upload");
 
-  const token = await auth.currentUser.getIdToken();
+    const response = await fetch(
+      "https://api.cloudinary.com/v1_1/lkqk0rps/image/upload",
+      {
+        method: "POST",
+        body: formData,
+      }
+    );
 
-const response = await fetch(
-  "https://topking-backend.onrender.com/upload-image",
-  {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-    body: formData,
-  }
-);
+    const data = await response.json();
 
-const data = await response.json();
-
-    if (!data.imageUrl){
+    if (!data.secure_url) {
       console.log(data);
       Alert.alert("Upload Failed");
       return;
@@ -411,13 +409,13 @@ const data = await response.json();
     await updateDoc(
       doc(db, "agencies", agency.id),
       {
-       logo: data.imageUrl,
+        logo: data.secure_url,
       }
     );
 
     setAgency({
       ...agency,
-      logo: data.imageUrl,
+      logo: data.secure_url,
     });
 
     setNewLogo("");

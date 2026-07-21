@@ -37,7 +37,7 @@ import { collection, addDoc, serverTimestamp, doc, getDoc } from 'firebase/fires
 export default function PostPage() {
 
   
-
+const UPLOAD_PRESET = 'topking_upload';
 
   const router = useRouter();
 
@@ -158,7 +158,7 @@ useEffect(() => {
   // HANDLE POST
   const handlePostNow = async () => {
     const user = auth.currentUser;
-
+const CLOUD_NAME = 'lkqk0rps';
 
     if (!user) {
       Alert.alert('Error', 'Pehle login karein');
@@ -188,10 +188,6 @@ const token = await auth.currentUser.getIdToken();
 
 const API = "https://topking-backend.onrender.com";
 
-let mergeResponse = null;
-let uploadedVideo;
-let thumbnailUrl;
-
 
 // ✅ SONG HAI TO MERGE KARO
 if (audioUrl && audioUrl.trim() !== "") {
@@ -214,19 +210,19 @@ if (audioUrl && audioUrl.trim() !== "") {
   );
 
 
-mergeResponse = await axios.post(
-  `${API}/merge`,
-  mergeForm,
-  {
-    headers:{
-      "Content-Type":"multipart/form-data",
-      Authorization:`Bearer ${token}`,
-    },
-  }
-);
+  const mergeResponse = await axios.post(
+    `${API}/merge`,
+    mergeForm,
+    {
+      headers:{
+        "Content-Type":"multipart/form-data",
+        Authorization:`Bearer ${token}`,
+      },
+    }
+  );
 
 
-  
+  finalVideo = mergeResponse.data.video;
 
 
   console.log(
@@ -264,59 +260,34 @@ formData.append("video", {
 });
 
 
+const response = await axios.post(
+  `${API}/upload-video`,
+  formData,
+  {
+    headers: {
+      "Content-Type": "multipart/form-data",
+      Authorization: `Bearer ${token}`,
+    },
+
+    onUploadProgress: (event) => {
+      const percent = Math.round(
+        (event.loaded * 100) / event.total
+      );
+      setProgress(percent);
+    },
+  }
+);
 
 
-if (audioUrl && audioUrl.trim() !== "") {
-
-  uploadedVideo =
-    mergeResponse.data.video;
-
-  thumbnailUrl =
-    mergeResponse.data.thumbnailUrl;
-
-} else {
-
-  const response =
-    await axios.post(
-      `${API}/upload-video`,
-      formData,
-      {
-        headers: {
-          "Content-Type":
-            "multipart/form-data",
-          Authorization:
-            `Bearer ${token}`,
-        },
-      }
-    );
-
-  uploadedVideo =
-    response.data.videoUrl;
-
-  thumbnailUrl =
-    response.data.thumbnailUrl;
-}
-
-
-
-
-
+const uploadedVideo = response.data.videoUrl;
 // Original Audio = Uploaded Video URL
 const originalAudioUrl = uploadedVideo;
+      console.log("VIDEO URL =", uploadedVideo);
 
-console.log("VIDEO URL =", uploadedVideo);
+const thumbnailUrl = uploadedVideo
+  .replace('/video/upload/', '/video/upload/so_1,f_jpg/');
 
-// LOCAL THUMBNAIL
-
-
-
-
-
-
-console.log(
-  "THUMB URL =",
-  thumbnailUrl
-);
+console.log("THUMB URL =", thumbnailUrl);
 
       if (uploadedVideo) {
         // AB DATA DYNAMIC HAI

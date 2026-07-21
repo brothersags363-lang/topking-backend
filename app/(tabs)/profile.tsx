@@ -31,7 +31,7 @@ import { db, auth, storage } from '../firebaseConfig';
 import {
   CLOUDINARY_CLOUD_NAME,
   CLOUDINARY_UPLOAD_PRESET
-} from "../config/cloudinary";
+} from "../../backend/config/cloudinary";
 
 import { collection, query, where, getDocs, doc, getDoc, setDoc, deleteDoc,  orderBy, limit,  onSnapshot, } from 'firebase/firestore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
@@ -972,7 +972,7 @@ const uploadProfileImage = async (imageUri) => {
   try {
 
     const response = await fetch(
-      `https://api.cloudinary.com/v1_1/${'dypsqkvw0'}/image/upload`,
+      `https://api.cloudinary.com/v1_1/${'lkqk0rps'}/image/upload`,
       {
         method: "POST",
         body: data,

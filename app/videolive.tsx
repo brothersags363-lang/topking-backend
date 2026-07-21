@@ -34,7 +34,7 @@ import { db } from "./firebaseConfig";
 import {
  ZEGO_APP_ID,
  ZEGO_APP_SIGN
-} from "./config/zegoConfig";
+} from "../backend/config/zegoConfig";
 
 import { useLocalSearchParams } from "expo-router";
 
