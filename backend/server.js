@@ -17,14 +17,6 @@ admin.initializeApp({
 });
 const db = admin.firestore();
 
-const token =
-  userSnap.data().fcmToken;
-
-console.log(
-  "FCM TOKEN =",
-  token
-);
-
 async function sendPushNotification(
   targetUid,
   title,
@@ -37,44 +29,66 @@ async function sendPushNotification(
       .doc(targetUid)
       .get();
 
-    if (!userSnap.exists) return;
+    if (!userSnap.exists) {
+      console.log(
+        "USER NOT FOUND =",
+        targetUid
+      );
+      return;
+    }
 
     const token =
       userSnap.data().fcmToken;
 
-    if (!token) return;
+    console.log(
+      "FCM TOKEN =",
+      token
+    );
 
-console.log(
-  "SENDING PUSH..."
-);
+    console.log(
+      "SENDING PUSH TO UID =",
+      targetUid
+    );
 
-    await admin.messaging().send({
-      token,
+    if (!token) {
+      console.log(
+        "TOKEN MISSING"
+      );
+      return;
+    }
 
-      notification: {
-        title,
-        body,
-      },
+    const response =
+      await admin.messaging().send({
+        token,
 
-      android: {
-        priority: "high",
-      },
-    });
+        notification: {
+          title,
+          body,
+        },
+
+        android: {
+          priority: "high",
+        },
+      });
 
     console.log(
       "NOTIFICATION SENT"
     );
 
+    console.log(
+      "FCM RESPONSE =",
+      response
+    );
+
   } catch (e) {
 
     console.log(
-      "PUSH ERROR",
+      "PUSH ERROR =",
       e
     );
 
   }
 }
-
 
 
 const ffmpeg = require("fluent-ffmpeg");
@@ -471,16 +485,18 @@ if (req.file?.path && fs.existsSync(req.file.path)) {
   }
 );
 
-console.log(
-  "NOTIFICATION BODY =",
-  req.body
-);
+
 
 app.post(
   "/send-message-notification",
   async (req, res) => {
 
     try {
+
+console.log(
+  "NOTIFICATION BODY =",
+  req.body
+);
 
       const {
         receiverUid,
