@@ -8,6 +8,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
+import messaging from '@react-native-firebase/messaging';
+
+
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 
 GoogleSignin.configure({
@@ -41,5 +44,25 @@ try {
 export { auth };
 export const db = getFirestore(app);
 export const storage = getStorage(app);
+
+export const getFCMToken = async () => {
+  try {
+    await messaging().requestPermission();
+
+    const token = await messaging().getToken();
+
+    console.log("FCM TOKEN =", token);
+
+    return token;
+  } catch (e) {
+    console.log(e);
+    return null;
+  }
+};
+
+
+
+
+
 
 export default app;

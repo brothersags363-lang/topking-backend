@@ -738,23 +738,25 @@ if(videoSnap.exists()){
 
         if (videoData.userId !== user.uid) {
 
-          await addDoc(
-            collection(
-              db,
-              "users",
-              videoData.userId,
-              "notifications"
-            ),
-            {
-              type: "like",
-              senderId: user.uid,
-              senderName: currentUserData.name,
-              senderPhoto: currentUserData.photo,
-              videoCaption: videoData.caption || "",
-              videoThumbnail: videoData.thumbnail || "",
-              createdAt: serverTimestamp()
-            }
-          );
+        await addDoc(
+  collection(db, "users", videoData.userId, "notifications"),
+  {
+    type: "like",
+    senderId: user.uid,
+    senderName: currentUserData.name,
+    senderPhoto: currentUserData.photo,
+
+    videoId: videoId, // IMPORTANT
+
+    videoCaption: videoData.caption || "",
+    videoThumbnail:
+      videoData.thumbnail ||
+      videoData.videoThumbnail ||
+      "",
+
+    createdAt: serverTimestamp()
+  }
+);
 
         }
 
@@ -1100,30 +1102,33 @@ if (videoSnap.exists()) {
   if (videoData.userId !== user.uid) {
 
     await addDoc(
-      collection(
-        db,
-        "users",
-        videoData.userId,
-        "notifications"
-      ),
-      {
-        type: "comment",
+  collection(
+    db,
+    "users",
+    videoData.userId,
+    "notifications"
+  ),
+  {
+    type: "comment",
 
-        senderId: user.uid,
+    senderId: user.uid,
+    senderName: currentUserData.name,
+    senderPhoto: currentUserData.photo,
 
-        senderName: currentUserData.name,
+    videoId: selectedVideoId, // IMPORTANT
 
-        senderPhoto: currentUserData.photo,
+    text: text,
 
-        text: text,
+    videoCaption: videoData.caption || "",
 
-        videoCaption: videoData.caption || "",
+    videoThumbnail:
+      videoData.thumbnail ||
+      videoData.videoThumbnail ||
+      "",
 
-        videoThumbnail: videoData.thumbnail || "",
-
-        createdAt: serverTimestamp(),
-      }
-    );
+    createdAt: serverTimestamp(),
+  }
+);
 
   }
 

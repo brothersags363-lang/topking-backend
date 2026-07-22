@@ -17,6 +17,66 @@ admin.initializeApp({
 });
 const db = admin.firestore();
 
+const token =
+  userSnap.data().fcmToken;
+
+console.log(
+  "FCM TOKEN =",
+  token
+);
+
+async function sendPushNotification(
+  targetUid,
+  title,
+  body
+) {
+  try {
+
+    const userSnap = await db
+      .collection("users")
+      .doc(targetUid)
+      .get();
+
+    if (!userSnap.exists) return;
+
+    const token =
+      userSnap.data().fcmToken;
+
+    if (!token) return;
+
+console.log(
+  "SENDING PUSH..."
+);
+
+    await admin.messaging().send({
+      token,
+
+      notification: {
+        title,
+        body,
+      },
+
+      android: {
+        priority: "high",
+      },
+    });
+
+    console.log(
+      "NOTIFICATION SENT"
+    );
+
+  } catch (e) {
+
+    console.log(
+      "PUSH ERROR",
+      e
+    );
+
+  }
+}
+
+
+
 const ffmpeg = require("fluent-ffmpeg");
 const ffmpegPath = require("ffmpeg-static");
 const fs = require("fs");
@@ -34,7 +94,7 @@ const cors = require("cors");
 const rateLimit = require("express-rate-limit");
 
 const app = express();
-app.set("trust proxy", 1);
+app.set("trust proxy", true);
 app.use(express.json());
 
 app.use(helmet());
@@ -411,6 +471,45 @@ if (req.file?.path && fs.existsSync(req.file.path)) {
   }
 );
 
+console.log(
+  "NOTIFICATION BODY =",
+  req.body
+);
+
+app.post(
+  "/send-message-notification",
+  async (req, res) => {
+
+    try {
+
+      const {
+        receiverUid,
+        senderName,
+        message,
+      } = req.body;
+
+      await sendPushNotification(
+        receiverUid,
+        senderName,
+        message
+      );
+
+      return res.json({
+        success: true,
+      });
+
+    } catch (e) {
+
+      console.log(e);
+
+      return res.status(500).json({
+        success: false,
+      });
+
+    }
+
+  }
+);
 
 const PORT = process.env.PORT || 3000;
 

@@ -36,7 +36,8 @@ import {
   setDoc,
   doc,
   getDoc,
-    increment,
+  increment,
+  deleteDoc,
 } from "firebase/firestore";
 
 export default function ChatScreen() {
@@ -180,23 +181,70 @@ useEffect(() => {
 }, [userId]);
 
 
-  useEffect(() => {
-    const q = query(
-      collection(db, "chats", chatId, "messages"),
-      orderBy("createdAt", "asc")
-    );
+useEffect(() => {
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs.map((d) => ({
-        id: d.id,
-        ...d.data(),
-      }));
+  const q = query(
+    collection(
+      db,
+      "chats",
+      chatId,
+      "messages"
+    ),
+    orderBy("createdAt", "asc")
+  );
+
+  const unsubscribe = onSnapshot(
+    q,
+    async (snapshot) => {
+
+      let deletedAt = null;
+
+      const deletedSnap = await getDoc(
+        doc(
+          db,
+          "deletedChats",
+          currentUser.uid,
+          "users",
+          userId
+        )
+      );
+
+      if (deletedSnap.exists()) {
+        deletedAt =
+          deletedSnap.data().deletedAt;
+      }
+
+      let list = snapshot.docs.map(
+        (d) => ({
+          id: d.id,
+          ...d.data(),
+        })
+      );
+
+      if (deletedAt) {
+
+        list = list.filter((msg) => {
+
+          if (!msg.createdAt)
+            return false;
+
+          return (
+            msg.createdAt.toMillis() >
+            deletedAt.toMillis()
+          );
+
+        });
+
+      }
 
       setMessages(list);
-    });
 
-    return unsubscribe;
-  }, [chatId]);
+    }
+  );
+
+  return unsubscribe;
+
+}, [chatId]);
 
 
 
@@ -317,6 +365,35 @@ hasNewMessage: true,
 
 
       setMessage("");
+
+
+
+      try {
+
+  await fetch(
+    "https://topking-backend.onrender.com/send-message-notification",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        receiverUid: userId,
+        senderName:
+          myData?.username ||
+          currentUser.displayName ||
+          "User",
+        message: message,
+      }),
+    }
+  );
+
+} catch (e) {
+  console.log(e);
+}
+  
+
+
 Keyboard.dismiss();
 
     } catch (err) {

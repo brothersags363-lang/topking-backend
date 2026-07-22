@@ -437,10 +437,27 @@ const unreadComments = notifications.filter(
 
 
 
+
+
 const deleteChat = async (friend) => {
 
   try {
 
+    // Save delete timestamp
+    await setDoc(
+      doc(
+        db,
+        "deletedChats",
+        currentUser.uid,
+        "users",
+        friend.userId
+      ),
+      {
+        deletedAt: serverTimestamp(),
+      }
+    );
+
+    // Remove from friend list
     await deleteDoc(
       doc(
         db,
@@ -1160,18 +1177,33 @@ filteredNotifications.map(item => (
   }}
 >
 
-              <Image
-                source={{
-                  uri:
-                    item.senderPhoto ||
-                    DEFAULT_AVATAR,
-                }}
-                style={{
-                  width: 50,
-                  height: 50,
-                  borderRadius: 25,
-                }}
-              />
+             <TouchableOpacity
+  onPress={() => {
+
+    setModalVisible(false);
+
+    router.push({
+      pathname: "/userProfile",
+      params: {
+        userId: item.senderId,
+      },
+    });
+
+  }}
+>
+  <Image
+    source={{
+      uri:
+        item.senderPhoto ||
+        DEFAULT_AVATAR,
+    }}
+    style={{
+      width: 50,
+      height: 50,
+      borderRadius: 25,
+    }}
+  />
+</TouchableOpacity>
 
               <View
                 style={{
@@ -1192,7 +1224,87 @@ filteredNotifications.map(item => (
 
 <View>
 
+
+
+
 {item.videoThumbnail ? (
+
+<TouchableOpacity
+  onPress={async () => {
+
+console.log(
+  "FULL ITEM =",
+  JSON.stringify(item, null, 2)
+);
+
+    console.log("VIDEO ID =", item.videoId);
+
+    if (!item.videoId) {
+      console.log("No videoId found");
+      return;
+    }
+
+    try {
+
+      const videoSnap = await getDoc(
+        doc(db, "all_videos", item.videoId)
+      );
+
+      console.log(
+        "Video Exists =",
+        videoSnap.exists()
+      );
+
+console.log(
+  "Firestore Video ID =",
+  videoSnap.id
+);
+
+      if (!videoSnap.exists()) {
+        return;
+      }
+
+      const videoData = {
+        id: videoSnap.id,
+        ...videoSnap.data(),
+      };
+
+      console.log(
+        "Video Data =",
+        videoData
+      );
+
+      setModalVisible(false);
+
+      setTimeout(() => {
+
+console.log(
+  "OPENING ALLVIDEO",
+  JSON.stringify([videoData], null, 2)
+);
+
+        router.push({
+          pathname: "/allvideo",
+          params: {
+            videos: JSON.stringify([videoData]),
+            index: "0",
+            userId: auth.currentUser?.uid || "",
+          },
+        });
+
+      }, 300);
+
+    } catch (error) {
+
+      console.log(
+        "OPEN VIDEO ERROR =",
+        error
+      );
+
+    }
+
+  }}
+>
   <Image
     source={{
       uri: item.videoThumbnail,
@@ -1203,7 +1315,11 @@ filteredNotifications.map(item => (
       borderRadius: 8,
     }}
   />
+</TouchableOpacity>
+
 ) : null}
+
+
 
 
 

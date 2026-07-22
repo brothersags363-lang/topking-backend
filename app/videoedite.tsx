@@ -983,9 +983,7 @@ const deleteComment = async (commentId) => {
       {/* Top Black Header */}
     
 <View style={styles.header}>
-  <Text style={styles.headerText}>
-    TopKing | Video
-  </Text>
+ 
 </View>
 
       {/* Scrollable Video List */}
@@ -1448,12 +1446,12 @@ showComments && (
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: 'black' },
-  header: { height: 60, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000', paddingTop: 20 },
+  header: { height: 40, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000', paddingTop: 20 },
   headerText: { color: 'white', fontWeight: 'bold' },
-  videoContainer: { height: height - 81.2, width: width }, // Header & Comment height minus
+  videoContainer: { height: height - 80, width: width }, // Header & Comment height minus
 
 
-  video: { width: '100%', height: '90%' },
+  video: { width: '100%', height: '92.5%' },
 
 sideBar: {
   position: 'absolute',
@@ -1485,7 +1483,7 @@ bottomInfo: {
   caption: { color: 'white' },
 
 commentBox: {
-  height: 104.2,
+  height: 90,
   backgroundColor: '#111',
   justifyContent: 'center',
   paddingLeft: 20,

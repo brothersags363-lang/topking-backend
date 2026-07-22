@@ -825,17 +825,19 @@ line:{
 
   claimBtn:{
     backgroundColor:"#FF7A00",
-    marginTop:25,
+    marginTop:20,
     paddingVertical:16,
     borderRadius:30,
     alignItems:"center",
   },
 
-  claimText:{
-    color:"#fff",
-    fontWeight:"bold",
-    fontSize:18,
-  },
+ claimText:{
+  color:"#fff",
+  fontWeight:"700",
+  fontSize:15,
+  textAlign:"center",
+  paddingHorizontal:10,
+},
 
 });
 

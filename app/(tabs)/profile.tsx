@@ -31,7 +31,7 @@ import { db, auth, storage } from '../firebaseConfig';
 import {
   CLOUDINARY_CLOUD_NAME,
   CLOUDINARY_UPLOAD_PRESET
-} from "../../backend/config/cloudinary";
+} from "../backend/config/cloudinary";
 
 import { collection, query, where, getDocs, doc, getDoc, setDoc, deleteDoc,  orderBy, limit,  onSnapshot, } from 'firebase/firestore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
@@ -1343,6 +1343,29 @@ getLevelTheme(profileData.level || 1);
 
       <View style={styles.menuBox}>
 
+
+
+
+<TouchableOpacity
+  style={styles.menuItem}
+  onPress={() => {
+    setMenuVisible(false);
+    router.push("../reward");
+  }}
+>
+  <Ionicons
+    name="gift-outline"
+    size={22}
+    color="#FFD700"
+  />
+
+  <Text style={styles.menuItemText}>
+    Rewards
+  </Text>
+</TouchableOpacity>
+
+
+
         <TouchableOpacity
           style={styles.menuItem}
           onPress={()=>{
@@ -1782,7 +1805,7 @@ onPress={() => {
 
   }
 
-}}
+}}a
 
 
 

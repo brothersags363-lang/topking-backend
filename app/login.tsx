@@ -23,8 +23,14 @@ signInWithCredential,
 onAuthStateChanged,
 } from 'firebase/auth';
 
-import { auth } from './firebaseConfig';
+import { auth, db, getFCMToken } from './firebaseConfig';
 
+import {
+  doc,
+  setDoc,
+} from 'firebase/firestore';
+
+import TopKingLogo from '../assets/images/topking-logo.png';
 export default function LoginScreen() {
 const router = useRouter();
 
@@ -87,6 +93,27 @@ await AsyncStorage.setItem(
   uid
 );
 
+
+const fcmToken = await getFCMToken();
+
+console.log("FCM =", fcmToken);
+
+if (fcmToken) {
+
+  await setDoc(
+    doc(db, "users", uid),
+    {
+      fcmToken: fcmToken,
+    },
+    {
+      merge: true,
+    }
+  );
+
+}
+
+
+
 Alert.alert(
   'Success',
   'Login Successful'
@@ -126,12 +153,19 @@ router.replace('/profile');
 };
 
 return ( <View style={styles.container}>
+
+<Text style={styles.appName}>
+  TOP KING
+</Text>
+
 <Image
-source={{
-uri: 'https://cdn-icons-png.flaticon.com/512/300/300221.png',
-}}
-style={styles.logo}
+  source={TopKingLogo}
+  style={styles.logo}
 />
+
+<Text style={styles.welcome}>
+  Welcome Back
+</Text>
 
 
   <Text style={styles.title}>
@@ -142,16 +176,16 @@ style={styles.logo}
     style={styles.googleBtn}
     onPress={signIn}
   >
-    <Image
-      source={{
-        uri: 'https://cdn-icons-png.flaticon.com/512/281/281764.png',
-      }}
-      style={styles.googleIcon}
-    />
+   
+<Image
+  source={TopKingLogo}
+  style={styles.buttonLogo}
+/>
 
-    <Text style={styles.googleText}>
-      Sign in with Google
-    </Text>
+<Text style={styles.googleText}>
+  Continue with Google
+</Text>
+
   </TouchableOpacity>
 </View>
 
@@ -202,4 +236,81 @@ color: '#000',
 fontSize: 18,
 fontWeight: 'bold',
 },
+
+
+container: {
+  flex: 1,
+  backgroundColor: '#0F0F0F',
+  justifyContent: 'center',
+  alignItems: 'center',
+  padding: 25,
+},
+
+crown: {
+  fontSize: 50,
+},
+
+appName: {
+  color: '#FFD700',
+  fontSize: 35,
+  fontWeight: '900',
+  letterSpacing: 3,
+  marginBottom: 45,
+},
+
+tagline: {
+  color: '#888',
+  marginTop: 5,
+  marginBottom: 30,
+},
+
+logo: {
+  width: 140,
+  height: 140,
+  borderRadius: 70,
+  marginBottom: 45,
+},
+
+welcome: {
+  color: '#FFF',
+  fontSize: 25,
+  fontWeight: 'bold',
+  marginTop: 15,
+},
+
+subtitle: {
+  color: '#888',
+  marginTop: 10,
+  marginBottom: 40,
+},
+
+googleBtn: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  backgroundColor: '#1E1E1E',
+  paddingVertical: 15,
+  paddingHorizontal: 25,
+  borderRadius: 30,
+},
+
+buttonLogo: {
+  width: 35,
+  height: 35,
+},
+
+googleText: {
+  color: '#FFF',
+  fontSize: 16,
+  fontWeight: '700',
+  marginLeft: 12,
+},
+
+footer: {
+  position: 'absolute',
+  bottom: 40,
+  color: '#666',
+},
+
+
+
 });
