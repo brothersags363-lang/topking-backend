@@ -228,6 +228,38 @@ console.log("Notifications:", data);
 
 
 
+useEffect(() => {
+
+  if (!currentUser) return;
+
+  const setMessagesScreen = async () => {
+
+    await setDoc(
+      doc(db, "users", currentUser.uid),
+      {
+        activeScreen: "messages",
+      },
+      { merge: true }
+    );
+
+  };
+
+  setMessagesScreen();
+
+  return async () => {
+
+    await setDoc(
+      doc(db, "users", currentUser.uid),
+      {
+        activeScreen: null,
+      },
+      { merge: true }
+    );
+
+  };
+
+}, [currentUser]);
+
 
 useEffect(() => {
   if (!currentUser) return;

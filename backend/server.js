@@ -19,9 +19,12 @@ const db = admin.firestore();
 
 async function sendPushNotification(
   targetUid,
+  senderUid,
   title,
   body
-) {
+)
+
+{
   try {
 
     const userSnap = await db
@@ -36,6 +39,29 @@ async function sendPushNotification(
       );
       return;
     }
+
+
+
+const userData =
+  userSnap.data();
+
+
+const activeScreen =
+  userData.activeScreen;
+
+if (
+  activeScreen === "messages" ||
+  activeScreen === "chat"
+) {
+
+  console.log(
+    "NOTIFICATION BLOCKED - USER IS IN APP MESSAGE AREA"
+  );
+
+  return;
+}
+
+
 
     const token =
       userSnap.data().fcmToken;
@@ -499,16 +525,18 @@ console.log(
 );
 
       const {
-        receiverUid,
-        senderName,
-        message,
-      } = req.body;
+  receiverUid,
+  senderUid,
+  senderName,
+  message,
+} = req.body;
 
-      await sendPushNotification(
-        receiverUid,
-        senderName,
-        message
-      );
+     await sendPushNotification(
+  receiverUid,
+  senderUid,
+  senderName,
+  message
+);
 
       return res.json({
         success: true,

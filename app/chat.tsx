@@ -278,6 +278,41 @@ useEffect(() => {
 
 
 
+
+useEffect(() => {
+
+  const setChatScreen = async () => {
+
+    await setDoc(
+      doc(db, "users", currentUser.uid),
+      {
+        activeScreen: "chat",
+        activeChatUser: userId,
+      },
+      { merge: true }
+    );
+
+  };
+
+  setChatScreen();
+
+  return async () => {
+
+    await setDoc(
+      doc(db, "users", currentUser.uid),
+      {
+        activeScreen: null,
+        activeChatUser: null,
+      },
+      { merge: true }
+    );
+
+  };
+
+}, []);
+
+
+
 useEffect(() => {
 
   setTimeout(() => {
@@ -377,14 +412,17 @@ hasNewMessage: true,
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        receiverUid: userId,
-        senderName:
-          myData?.username ||
-          currentUser.displayName ||
-          "User",
-        message: message,
-      }),
+     
+body: JSON.stringify({
+  receiverUid: userId,
+  senderUid: currentUser.uid,
+  senderName:
+    myData?.username ||
+    currentUser.displayName ||
+    "User",
+  message: message,
+}),
+
     }
   );
 
