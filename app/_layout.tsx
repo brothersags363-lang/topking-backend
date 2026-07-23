@@ -19,11 +19,7 @@ export default function RootLayout() {
 
           console.log("FCM MESSAGE =", remoteMessage);
 
-          Alert.alert(
-            remoteMessage?.notification?.title || "Notification",
-            remoteMessage?.notification?.body || ""
-          );
-
+         
         }
       );
 

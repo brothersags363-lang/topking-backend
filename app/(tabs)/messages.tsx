@@ -73,6 +73,40 @@ const [selectedType, setSelectedType] = useState('comment');
 
 const [modalVisible, setModalVisible] = useState(false);
 
+useEffect(() => {
+
+  if (!currentUser) return;
+
+  const setMessagesScreen = async () => {
+
+    await setDoc(
+      doc(db, "users", currentUser.uid),
+      {
+        activeScreen: "messages",
+      },
+      { merge: true }
+    );
+
+    console.log("ACTIVE = MESSAGES");
+
+  };
+
+  setMessagesScreen();
+
+  return () => {
+
+    setDoc(
+      doc(db, "users", currentUser.uid),
+      {
+        activeScreen: null,
+      },
+      { merge: true }
+    );
+
+  };
+
+}, [currentUser]);
+
 
 const getLevelTheme = (level = 1) => {
 
@@ -228,37 +262,6 @@ console.log("Notifications:", data);
 
 
 
-useEffect(() => {
-
-  if (!currentUser) return;
-
-  const setMessagesScreen = async () => {
-
-    await setDoc(
-      doc(db, "users", currentUser.uid),
-      {
-        activeScreen: "messages",
-      },
-      { merge: true }
-    );
-
-  };
-
-  setMessagesScreen();
-
-  return async () => {
-
-    await setDoc(
-      doc(db, "users", currentUser.uid),
-      {
-        activeScreen: null,
-      },
-      { merge: true }
-    );
-
-  };
-
-}, [currentUser]);
 
 
 useEffect(() => {
