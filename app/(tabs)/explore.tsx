@@ -12,7 +12,8 @@ import {
   FlatList,
   Image,
   ActivityIndicator,
-  BackHandler
+  BackHandler,
+  RefreshControl,
 } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import {
@@ -139,6 +140,7 @@ export default function ExplorePage() {
   const [profileImg, setProfileImg] = useState('');
   const [giftKings, setGiftKings] = useState([]);
 const [topVideos, setTopVideos] = useState([]);
+const [refreshing, setRefreshing] = useState(false);
   // SLIDER STATES & REFS
   const [activeBannerIndex, setActiveBannerIndex] = useState(0);
   const bannerScrollRef = useRef(null);
@@ -307,6 +309,25 @@ const loadGiftKing = async () => {
 };
 
 
+const onRefresh = async () => {
+  try {
+    setRefreshing(true);
+
+    await Promise.all([
+      loadTopVideos(),
+      loadGiftKing(),
+      getCurrentUserProfile(),
+    ]);
+
+    console.log("REFRESH DONE");
+  } catch (e) {
+    console.log(e);
+  } finally {
+    setRefreshing(false);
+  }
+};
+
+
   // Search Logic
   const handleSearch = async (text: string) => {
     setSearchQuery(text);
@@ -416,6 +437,8 @@ console.log("SEARCH USERS =", users);
       {searchQuery.length > 0 ? (
   <FlatList
     data={searchResults}
+
+
     keyExtractor={(item: any) => item.id}
     style={{ backgroundColor: '#08080a' }}
     contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10 }}
@@ -479,7 +502,11 @@ console.log("SEARCH USERS =", users);
     <MaterialCommunityIcons
       name="check-decagram"
       size={16}
-      color="#f8fbff"
+      color={
+        item.verifiedColor === "yellow"
+          ? "#FFD700"
+          : "#f8fbff"
+      }
     />
   </View>
 )}
@@ -545,6 +572,15 @@ console.log("SEARCH USERS =", users);
           style={{ backgroundColor: '#08080a' }}
           contentContainerStyle={{ paddingBottom: 140 }}
           showsVerticalScrollIndicator={false}
+          alwaysBounceVertical={true}
+           refreshControl={
+    <RefreshControl
+      refreshing={refreshing}
+      onRefresh={onRefresh}
+      tintColor="#FFD700"
+      colors={["#FFD700"]}
+    />
+  }
         >
           {/* THEMATIC AUDIO MIC BANNER BOX INTEGRATED WITH SLIDING LOGIC */}
           <View style={styles.pinkSliderBannerContainer}>
@@ -941,12 +977,12 @@ const styles = StyleSheet.create({
   // SLIDER CONTAINMENT
   pinkSliderBannerContainer: {
     width: width - 32,
-    height: 180, 
+    height: 160, 
     alignSelf: 'center',
     marginTop: 16,
     position: 'relative',
     backgroundColor: '#11121a',
-    borderRadius: 24,
+    borderRadius: 12,
     overflow: 'hidden'
   },
   pinkSliderBanner: { 
@@ -963,20 +999,21 @@ const styles = StyleSheet.create({
   },
   sliderDotIndicatorRow: { flexDirection: 'row', alignItems: 'center', position: 'absolute', bottom: 12, alignSelf: 'center', zIndex: 10, backgroundColor: 'rgba(0, 0, 0, 0.5)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 }, 
   sliderDotMesh: { width: 6, height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.4)', marginHorizontal: 4 },
-  activeDot: { width: 14, backgroundColor: '#ebd500', borderRadius: 3 },
+  activeDot: { width: 12, backgroundColor: '#ebd500', borderRadius: 3 },
   
-  trophyRow: { paddingVertical: 18 },
+  trophyRow: { paddingVertical: 10 },
 
   // TROPHY BOX PREMIUM PARAT
   trophyBox: { 
     alignItems: 'center', 
-    width: (width - 48) / 2.2, 
+    width: (width - 90) / 2.5, 
+    height: 100,
     backgroundColor: '#11121a', 
-    marginRight: 10, 
-    padding: 14, 
-    borderRadius: 24,       
-    borderWidth: 1.5,       
-    borderColor: 'rgba(241,196,15,0.15)' 
+    marginRight: 7, 
+    padding: 14.5, 
+    borderRadius: 20,       
+    borderWidth: 1.3,
+borderColor: "#FFD700",
   },
 
 profileButton: {
@@ -993,19 +1030,19 @@ profileHeaderImage: {
 
   
   trophyIconContainer: { 
-    width: 50, 
-    height: 50, 
-    borderRadius: 25, 
+    width: 34, 
+    height: 34, 
+    borderRadius: 17, 
     backgroundColor: 'rgba(241,196,15,0.05)', 
     justifyContent: 'center', 
     alignItems: 'center', 
-    marginBottom: 10,
-    borderWidth: 1.5, 
-    borderColor: 'rgba(241,196,15,0.25)' 
+    marginBottom: 6,
+    borderWidth: 2, 
+    borderColor: 'rgba(255, 230, 0, 0.25)' 
   },
   
-  trophyBoxLabelText: { color: '#ffffff', fontSize: 13, fontWeight: '800' },
-  trophyBoxSubLabelText: { color: 'rgba(255,255,255,0.3)', fontSize: 10, fontWeight: '600', marginTop: 2 },
+  trophyBoxLabelText: { color: '#ffffff', fontSize: 11, fontWeight: '800' },
+  trophyBoxSubLabelText: { color: 'rgba(255,255,255,0.3)', fontSize: 9, fontWeight: '600', marginTop: 2 },
   
   sectionHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 4 },
   sectionHeadingWrapper: { flexDirection: 'row', alignItems: 'center' },
@@ -1063,10 +1100,10 @@ levelBadge: {
 },
 
 topVideoCard:{
-width:120,
-height:180,
+width:115,
+height:165,
 marginRight:10,
-borderRadius:10,
+borderRadius:8,
 overflow:"hidden",
 backgroundColor:"#111",
 },
@@ -1078,7 +1115,7 @@ height:"100%",
 
 viewBox:{
 position:"absolute",
-top:8,
+top:138,
 left:8,
 flexDirection:"row",
 alignItems:"center",
@@ -1094,9 +1131,9 @@ fontWeight:"bold",
 
 
 giftKingCard: {
-  width: 150,
+  width: 140,
   backgroundColor: "#11121a",
-  borderRadius: 18,
+  borderRadius: 16,
   borderWidth: 1,
   borderColor: "#FFD700",
   marginRight: 12,
@@ -1105,9 +1142,9 @@ giftKingCard: {
 },
 
 rankCircle: {
-  width: 28,
-  height: 28,
-  borderRadius: 14,
+  width: 20,
+  height: 20,
+  borderRadius: 12,
   backgroundColor: "#FFD700",
   justifyContent: "center",
   alignItems: "center",
@@ -1117,7 +1154,7 @@ rankCircle: {
 rankText: {
   color: "#000",
   fontWeight: "bold",
-  fontSize: 14,
+  fontSize: 12,
 },
 
 giftKingImage: {
@@ -1130,7 +1167,7 @@ giftKingImage: {
 giftKingName: {
   color: "#fff",
   fontWeight: "bold",
-  fontSize: 14,
+  fontSize: 12,
 },
 
 giftKingGift: {

@@ -17,6 +17,10 @@ doc,
 getDoc,
 updateDoc,
 increment,
+collection,
+query,
+where,
+getDocs,
 } from "firebase/firestore";
 
 import { db } from "./firebaseConfig";
@@ -122,11 +126,11 @@ Withdrawal Details
 <View style={styles.card}>
 
 <Text style={styles.label}>
-Name
+User Name
 </Text>
 
 <Text style={styles.value}>
-{data.name}
+{data.name || data.username}
 </Text>
 
 <Text style={styles.label}>
@@ -217,6 +221,35 @@ status:"Success"
 );
 
 
+const historyQuery = query(
+collection(
+db,
+"wallets",
+data.userId,
+"withdrawHistory"
+),
+where(
+"withdrawId",
+"==",
+data.withdrawId
+)
+);
+
+const historySnap =
+await getDocs(historyQuery);
+
+for (const item of historySnap.docs) {
+
+await updateDoc(
+item.ref,
+{
+status:"Success"
+}
+);
+
+}
+
+
 await updateDoc(
 
 doc(db,"wallets",data.userId),
@@ -281,6 +314,37 @@ doc(db,"withdrawals",id as string),
 status:"Failed"
 }
 );
+
+
+const historyQuery = query(
+collection(
+db,
+"wallets",
+data.userId,
+"withdrawHistory"
+),
+where(
+"withdrawId",
+"==",
+data.withdrawId
+)
+);
+
+const historySnap =
+await getDocs(historyQuery);
+
+for (const item of historySnap.docs) {
+
+await updateDoc(
+item.ref,
+{
+status:"Failed"
+}
+);
+
+}
+
+
 
 Alert.alert(
 "Done",

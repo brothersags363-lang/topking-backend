@@ -205,6 +205,9 @@ for (const docItem of snap.docs) {
     level: walletSnap.exists()
       ? walletSnap.data().level || 1
       : 1,
+verifiedColor:
+    docItem.data().verifiedColor || "white",
+
   });
 
 }
@@ -666,6 +669,9 @@ justifyContent:"center",
     {item.username}
   </Text>
 
+
+
+
   {item.verified && (
 
     <View
@@ -680,10 +686,14 @@ justifyContent:"center",
     >
 
       <MaterialCommunityIcons
-        name="check-decagram"
-        size={18}
-        color="#ffffff"
-      />
+      name="check-decagram"
+      size={18}
+      color={
+        item.verifiedColor === "yellow"
+          ? "#FFD700"
+          : "#ffffff"
+      }
+    />
 
       <Ionicons
         name="checkmark"

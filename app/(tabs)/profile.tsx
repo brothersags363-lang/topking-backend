@@ -17,6 +17,7 @@ import {
   Platform,
   BackHandler,
    Pressable,
+    RefreshControl,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { VideoView, useVideoPlayer } from 'expo-video';
@@ -24,7 +25,7 @@ import { useRouter, usePathname, useLocalSearchParams } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import { useIsFocused } from '@react-navigation/native';
-
+import TopKingLogo from "../../assets/images/topking-logo.png";
 // FIREBASE CONFIG
 import { db, auth, storage } from '../firebaseConfig';
 
@@ -94,6 +95,7 @@ const [joinedAgency, setJoinedAgency] = useState(false);
 
 const [topGifters, setTopGifters] = useState([]);
 const [giftUserCount, setGiftUserCount] = useState(0);
+const [refreshing, setRefreshing] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [hasAgency, setHasAgency] = useState(false);
   const [playModalVisible, setPlayModalVisible] = useState(false);
@@ -288,6 +290,8 @@ Promise.all([
   checkJoinedAgency(user.uid),
   loadUserRank(user.uid),
 ]);
+await checkYellowBadge(uid);
+
 
 
     } catch (e) {
@@ -469,6 +473,55 @@ const checkVerifiedBadge = async (uid) => {
 
 
 
+const checkYellowBadge = async (uid) => {
+  try {
+
+    const userRef = doc(db, "users", uid);
+    const userSnap = await getDoc(userRef);
+
+    if (!userSnap.exists()) return;
+
+    const userData = userSnap.data();
+
+    if (!userData.verified) return;
+
+    let totalViews = 0;
+
+    const q = query(
+      collection(db, "all_videos"),
+      where("userId", "==", uid)
+    );
+
+    const snap = await getDocs(q);
+
+    snap.forEach((videoDoc) => {
+      totalViews += Number(
+        videoDoc.data().views || 0
+      );
+    });
+
+    if (totalViews >= 4500) {
+
+      await setDoc(
+        userRef,
+        {
+          verifiedColor: "yellow",
+        },
+        { merge: true }
+      );
+
+      console.log(
+        "Yellow Badge Given"
+      );
+    }
+
+  } catch (error) {
+    console.log(error);
+  }
+};
+
+
+
 
   const fetchUserData = async (uid) => {
 
@@ -539,7 +592,7 @@ videosSnap.forEach((videoDoc) => {
         setProfileData({
 
 
-          name: data.name || 'AGS BROTHERS',
+          name: data.name || 'Top King ',
 
           username:
   data.username ||
@@ -556,6 +609,8 @@ likes: totalLikes.toString(),
           profileImg: data.profileImg || 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
           verified: data.verified || false,
  level: userLevel,
+verifiedColor: data.verifiedColor || "white",
+
 
         });
       }
@@ -597,6 +652,38 @@ likes: totalLikes.toString(),
     console.log(e);
   }
 };
+
+
+
+const onRefresh = async () => {
+
+  try {
+
+    setRefreshing(true);
+
+    getCurrentUser();
+
+    await Promise.all([
+      fetchUser(),
+      fetchVideos(),
+      loadLikedVideos(),
+      fetchFollowCounts(),
+    ]);
+
+    await checkFollowStatus();
+
+  } catch (error) {
+
+    console.log("REFRESH ERROR =", error);
+
+  } finally {
+
+    setRefreshing(false);
+
+  }
+
+};
+
 
 
 const loadUserRank = async (uid) => {
@@ -845,6 +932,8 @@ arr.push({
   id: followerId,
   ...userData,
   verified: userData.verified || false,
+  verifiedColor:
+    userData.verifiedColor || "white",
   level,
 });
 
@@ -907,6 +996,8 @@ arr.push({
   id: followingId,
   ...userData,
   verified: userData.verified || false,
+  verifiedColor:
+    userData.verifiedColor || "white",
   level,
 });
 
@@ -1295,7 +1386,7 @@ getLevelTheme(profileData.level || 1);
     color="#fff"
   />
   <Text style={styles.menuItemText}>
-    Creator
+    Creator Verified
   </Text>
 </TouchableOpacity>
 
@@ -1327,15 +1418,21 @@ getLevelTheme(profileData.level || 1);
 </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.menuItem,{borderBottomWidth:0}]}
-        >
-          <Ionicons
-            name="chatbox-ellipses-outline"
-            size={22}
-            color="#fff"
-          />
-          <Text style={styles.menuItemText}>Feedback</Text>
-        </TouchableOpacity>
+  style={[styles.menuItem, { borderBottomWidth: 0 }]}
+  onPress={() => {
+    setMenuVisible(false);
+    router.push("../Feedback");
+  }}
+>
+  <Ionicons
+    name="chatbox-ellipses-outline"
+    size={22}
+    color="#fff"
+  />
+  <Text style={styles.menuItemText}>
+    Feedback
+  </Text>
+</TouchableOpacity>
 
       </View>
 
@@ -1439,6 +1536,15 @@ getLevelTheme(profileData.level || 1);
       : likedVideos
   }
 
+refreshControl={
+  <RefreshControl
+    refreshing={refreshing}
+    onRefresh={onRefresh}
+    colors={["#FFD700"]}
+    tintColor="#FFD700"
+  />
+}
+
 
         keyExtractor={(item) => item.id}
         numColumns={3}
@@ -1458,24 +1564,28 @@ getLevelTheme(profileData.level || 1);
 
                 <View style={styles.usernameRow}>
 
-  <Text style={styles.profileUserName}>
-    @{profileData.username || "user"}
-  </Text>
+  <Text
+  numberOfLines={1}
+  ellipsizeMode="tail"
+  style={styles.profileUserName}
+>
+  @{profileData.username || "user"}
+</Text>
 
   {/* Verified Badge */}
- {profileData.verified && (
-  <>
-    <MaterialCommunityIcons
-      name="check-decagram"
-      size={22}
-      color="#ffffff"
-      style={{ marginLeft: 5 }}
-    />
 
-  
-  </>
+{profileData.verified && (
+  <MaterialCommunityIcons
+    name="check-decagram"
+    size={22}
+    color={
+      profileData.verifiedColor === "yellow"
+        ? "#FFD700"
+        : "#ffffff"
+    }
+    style={{ marginLeft: 5 }}
+  />
 )}
-
 
 
 <View
@@ -1489,7 +1599,7 @@ getLevelTheme(profileData.level || 1);
 >
   <MaterialCommunityIcons
     name="diamond-stone"
-    size={14}
+    size={10}
     color={levelTheme.icon}
   />
 
@@ -1598,8 +1708,15 @@ Likes
                 <Text style={styles.editBtnText}>Edit Profile</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.instaBtn}>
-                <Ionicons name="logo-instagram" size={22} color="#FFD700" />
-              </TouchableOpacity>
+  <Image
+    source={TopKingLogo}
+    style={{
+      width: 40,
+      height: 40,
+      resizeMode: "contain",
+    }}
+  />
+</TouchableOpacity>
             </View>
 
 
@@ -2317,28 +2434,46 @@ const isFollowing = followingList.some(
 
 
 return (
-  <View
-    style={{
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      padding: 15,
-    }}
-  >
-    <View
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-      }}
-    >
+  
+<View
+  style={{
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    width: "100%",
+  }}
+>
+
+   <TouchableOpacity
+  activeOpacity={0.8}
+  onPress={() => {
+
+    setFollowersModalVisible(false);
+
+    router.push({
+      pathname: "/userProfile",
+      params: {
+        userId: item.id,
+      },
+    });
+
+  }}
+  style={{
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  }}
+>
       <Image
         source={{
           uri: item.profileImg,
         }}
         style={{
-          width: 50,
-          height: 50,
-          borderRadius: 25,
+          width: 42,
+          height: 42,
+          borderRadius: 21,
         }}
       />
 
@@ -2348,19 +2483,25 @@ return (
   style={{
     flexDirection: "row",
     alignItems: "center",
-    flex: 1,
-    marginLeft: 10,
+    marginLeft: 8,
+    flexShrink: 1,
+    maxWidth: 150,
   }}
 >
+
+
   <Text
-    style={{
-      color: "#fff",
-      fontSize: 16,
-      fontWeight: "bold",
-    }}
-  >
-    @{item.username}
-  </Text>
+  numberOfLines={1}
+  ellipsizeMode="tail"
+  style={{
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "bold",
+    maxWidth: 90,
+  }}
+>
+  @{item.username}
+</Text>
 
   {/* Verified Badge */}
   {item.verified && (
@@ -2374,13 +2515,14 @@ return (
       }}
     >
       <MaterialCommunityIcons
-        name="check-decagram"
-        size={20}
-        color="#feffff"
-        style={{
-          position: "absolute",
-        }}
-      />
+  name="check-decagram"
+  size={20}
+  color={
+    item.verifiedColor === "yellow"
+      ? "#FFD700"
+      : "#ffffff"
+  }
+/>
 
   
     </View>
@@ -2388,10 +2530,11 @@ return (
 
   {/* Level Badge */}
   <View
-    style={[
-      styles.levelBadge,
-      {
-        marginLeft: 6,
+  style={[
+    styles.levelBadge,
+    {
+      marginLeft: 4,
+      transform: [{ scale: 0.85 }],
         backgroundColor: getLevelTheme(item.level || 1).bg,
         borderColor: getLevelTheme(item.level || 1).border,
       },
@@ -2418,15 +2561,16 @@ return (
 
 
 
-    </View>
+    </TouchableOpacity>
 
     {isFollowing ? (
       <TouchableOpacity
         style={{
           backgroundColor: "#222",
-          paddingHorizontal: 15,
-          paddingVertical: 8,
-          borderRadius: 20,
+          width: 100,
+paddingVertical: 8,
+borderRadius: 20,
+alignItems: "center",
         }}
       onPress={() =>
   router.push({
@@ -2452,9 +2596,10 @@ return (
       <TouchableOpacity
         style={{
           backgroundColor: "#FFD700",
-          paddingHorizontal: 15,
-          paddingVertical: 8,
-          borderRadius: 20,
+          width: 100,
+paddingVertical: 8,
+borderRadius: 20,
+alignItems: "center",
         }}
         onPress={() => handleFollowBack(item)}
       >
@@ -2507,8 +2652,20 @@ const styles = StyleSheet.create({
   avatarContainer: { width: 90, height: 90, borderRadius: 50, borderWidth: 2, borderColor: '#FFD700', justifyContent: 'center', alignItems: 'center', shadowColor: '#FFD700', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.6, shadowRadius: 8, elevation: 5 },
   avatar: { width: 88, height: 88, borderRadius: 45, backgroundColor: '#222' },
   profileMetaContainer: { flex: 1, marginLeft: 20 },
-  usernameRow: { flexDirection: 'row', alignItems: 'center' },
-  profileUserName: { fontSize: 18, fontWeight: 'bold', color: '#fff' },
+  usernameRow: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  flexWrap: 'nowrap',
+  width: '100%',
+},
+  
+profileUserName: {
+  fontSize: 18,
+  fontWeight: 'bold',
+  color: '#fff',
+  maxWidth: 120,
+},
+
   categoryText: { color: '#FFD700', fontSize: 12, marginTop: 2, fontWeight: '500' },
 
 statsRow: {
@@ -2831,26 +2988,20 @@ levelBadge: {
   alignItems: "center",
   justifyContent: "center",
 
-  paddingHorizontal: 10,
-  paddingVertical: 4,
+  paddingHorizontal: 6,
+  paddingVertical: 2,
 
-  borderRadius: 30,
+  borderRadius: 20,
 
-  marginLeft: 8,
+  marginLeft: 4,
 
-  borderWidth: 1.5,
-
-  shadowColor: "#FFD700",
-  shadowOpacity: 0.6,
-  shadowRadius: 6,
-  elevation: 8,
+  borderWidth: 1,
 },
 
 levelBadgeText: {
-  marginLeft: 5,
-  fontSize: 11,
-  fontWeight: "900",
-  letterSpacing: 0.5,
+  marginLeft: 3,
+  fontSize: 9,
+  fontWeight: "bold",
 },
 
 premiumCard:{

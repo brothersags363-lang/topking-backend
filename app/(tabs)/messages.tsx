@@ -39,7 +39,8 @@ import {
   setDoc,
   addDoc,
   getDoc,
-  serverTimestamp
+  serverTimestamp,
+  updateDoc,
 } from 'firebase/firestore';
 
 
@@ -252,7 +253,10 @@ useEffect(() => {
 
 console.log("Current UID:", currentUser.uid);
 console.log("Notifications:", data);
-
+console.log(
+  "FIRST NOTIFICATION =",
+  JSON.stringify(data[0], null, 2)
+);
 
     setNotifications(data);
   });
@@ -291,6 +295,8 @@ useEffect(() => {
 
  let level = 1;
 let verified = false;
+let verifiedColor = "white";
+
 
 try {
 
@@ -303,12 +309,19 @@ try {
   }
 
   const userSnap = await getDoc(
-    doc(db, "users", data.userId)
-  );
+  doc(db, "users", data.userId)
+);
 
-  if (userSnap.exists()) {
-    verified = userSnap.data().verified === true;
-  }
+if (userSnap.exists()) {
+
+  verified =
+    userSnap.data().verified === true;
+
+  verifiedColor =
+    userSnap.data().verifiedColor ||
+    "white";
+
+}
 
 } catch (e) {
   console.log(e);
@@ -319,6 +332,7 @@ return {
   ...data,
   level,
   verified,
+  verifiedColor,
 };
 
 
@@ -424,7 +438,33 @@ useEffect(() => {
   const getIconColor = (path) => (pathname === path ? '#3498db' : '#fff');
 
   // Top Horizontal Badges
+
+
+  // Tabs layout
+  const tabs = ['Friends', 'Except', 'Hid.Sms'];
+
+const filteredNotifications = notifications.filter(
+  item => item.type === selectedType
+);
+
+
+
+
+const unreadFollowers = notifications.filter(
+  item => item.type === "follow" && !item.isRead
+).length;
+
+const unreadLikes = notifications.filter(
+  item => item.type === "like" && !item.isRead
+).length;
+
+const unreadComments = notifications.filter(
+  item => item.type === "comment" && !item.isRead
+).length;
+
+
 const topBadges = [
+
 {
   id: 'follow',
   title: 'Follower',
@@ -447,31 +487,6 @@ const topBadges = [
   count: unreadComments,
 },
 ];
-
-  // Tabs layout
-  const tabs = ['Friends', 'Except', 'Hid.Sms'];
-
-const filteredNotifications = notifications.filter(
-  item => item.type === selectedType
-);
-
-
-const unreadFollowers = notifications.filter(
-  item => item.type === "follow" && !item.isRead
-).length;
-
-const unreadLikes = notifications.filter(
-  item => item.type === "like" && !item.isRead
-).length;
-
-const unreadComments = notifications.filter(
-  item => item.type === "comment" && !item.isRead
-).length;
-
-
-
-
-
 
 
 const deleteChat = async (friend) => {
@@ -641,6 +656,29 @@ onPress={async () => {
 
   setModalVisible(true);
 
+ const unreadDocs = notifications.filter(
+  item =>
+    item.type === badge.id &&
+    !item.isRead
+);
+
+await Promise.all(
+  unreadDocs.map(item =>
+    updateDoc(
+      doc(
+        db,
+        "users",
+        currentUser.uid,
+        "notifications",
+        item.id
+      ),
+      {
+        isRead: true,
+      }
+    )
+  )
+);
+
 }}
 
     style={[
@@ -654,13 +692,12 @@ onPress={async () => {
 
 
 {badge.count > 0 && (
-<View style={styles.countBadge}>
-<Text style={styles.countText}>
-{badge.count > 9 ? "9+" : badge.count}
-</Text>
-</View>
+  <View style={styles.countBadge}>
+    <Text style={styles.countText}>
+      {badge.count > 99 ? "99+" : badge.count}
+    </Text>
+  </View>
 )}
-
 
 
                   <View style={styles.badgeIconBox}>
@@ -765,14 +802,25 @@ onPress={async () => {
 
   {/* Verified */}
  {item.verified && (
-  <View style={styles.verifiedBadge}>
+  <View
+    style={{
+      marginLeft: 5,
+      justifyContent: "center",
+      alignItems: "center",
+      position: "relative",
+    }}
+  >
+
     <MaterialCommunityIcons
       name="check-decagram"
       size={16}
-      color="#fafafa"
+      color={
+        item.verifiedColor === "yellow"
+          ? "#FFD700"
+          : "#ffffff"
+      }
     />
 
-   
   </View>
 )}
 
@@ -807,14 +855,18 @@ onPress={async () => {
 </View>
 
         <Text
-          numberOfLines={1}
-          style={{
-            color: "#aaa",
-            marginTop: 3,
-          }}
-        >
-          {item.lastMessage}
-        </Text>
+  numberOfLines={1}
+  style={{
+    color:"#aaa",
+    marginTop:3,
+  }}
+>
+  {item.lastMessage === "🎙 Live Invite"
+    ? "🎙 Sent you a live invite"
+    : item.lastMessage === "🎥 Video"
+    ? "🎥 Sent a video"
+    : item.lastMessage}
+</Text>
 
 {item.hasNewMessage && (
 
@@ -949,15 +1001,35 @@ onPress={async () => {
   </Text>
 
   {/* Verified */}
- {item.verified && (
-  <View style={styles.verifiedBadge}>
+{item.verified && (
+  <View
+    style={{
+      marginLeft: 5,
+      justifyContent: "center",
+      alignItems: "center",
+      position: "relative",
+    }}
+  >
+
     <MaterialCommunityIcons
       name="check-decagram"
       size={16}
-      color="#edf2f6"
+      color={
+        item.verifiedColor === "yellow"
+          ? "#FFD700"
+          : "#ffffff"
+      }
     />
 
-   
+    <Ionicons
+      name="checkmark"
+      size={9}
+      color="#131212"
+      style={{
+        position: "absolute",
+      }}
+    />
+
   </View>
 )}
 
@@ -1319,7 +1391,7 @@ console.log(
 );
 
         router.push({
-          pathname: "/allvideo",
+          pathname: "/videoedite",
           params: {
             videos: JSON.stringify([videoData]),
             index: "0",
@@ -1742,6 +1814,10 @@ levelBadge: {
   paddingVertical: 3,
   borderRadius: 20,
 },
+
+
+
+
 
 
 });

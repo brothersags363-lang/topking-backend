@@ -318,6 +318,9 @@ useEffect(() => {
               'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
 
               verified: data.verified || false,
+
+               verifiedColor:
+    data.verifiedColor || "white",
           });
         }
 
@@ -511,6 +514,9 @@ Keyboard.dismiss();
 
 verified: currentUserData.verified || false,
 
+verifiedColor:
+      currentUserData.verifiedColor || "white",
+
         createdAt:
           serverTimestamp(),
       }
@@ -532,6 +538,65 @@ verified: currentUserData.verified || false,
 
 
 };
+
+
+
+
+
+
+
+const postReply = async () => {
+
+ const user = auth.currentUser;
+
+ if(!user) return;
+
+ if(!replyText.trim()) return;
+
+
+ await addDoc(
+   collection(
+    db,
+    "all_videos",
+    selectedVideoId,
+    "comments",
+    replyCommentId,
+    "replies"
+   ),
+   {
+
+    text: replyText.trim(),
+
+    username:
+    currentUserData.name,
+
+    profilePic:
+    currentUserData.photo,
+
+    userId:user.uid,
+
+    verified:
+    currentUserData.verified || false,
+
+    verifiedColor:
+    currentUserData.verifiedColor || "white",
+
+    createdAt:
+    serverTimestamp()
+
+   }
+ );
+
+
+ setReplyText("");
+
+setReplyCommentId(null);
+
+Keyboard.dismiss();
+replyInputRef.current?.blur();
+
+};
+
 
 
 
@@ -562,6 +627,12 @@ const deleteComment = async (commentId) => {
               )
             );
 
+setComments(prev =>
+ prev.filter(
+  item=>item.id !== commentId
+ )
+);
+
             await updateDoc(
               doc(
                 db,
@@ -581,6 +652,54 @@ const deleteComment = async (commentId) => {
       },
     ]
   );
+
+};
+
+
+const deleteReply = async (
+  videoId,
+  commentId,
+  replyId
+) => {
+
+  try {
+
+    await deleteDoc(
+      doc(
+        db,
+        "all_videos",
+        videoId,
+        "comments",
+        commentId,
+        "replies",
+        replyId
+      )
+    );
+
+
+    setReplies(prev => ({
+
+      ...prev,
+
+      [commentId]:
+      prev[commentId]?.filter(
+        item => item.id !== replyId
+      )
+
+    }));
+
+
+    console.log("Reply Deleted");
+
+
+  } catch(e){
+
+    console.log(
+      "Delete Reply Error",
+      e
+    );
+
+  }
 
 };
 
@@ -608,6 +727,16 @@ const [comments, setComments] =
   useState([]);
 
 const [commentsLoading, setCommentsLoading] = useState(false);
+
+const [replyCommentId, setReplyCommentId] = useState(null);
+
+const [replyText, setReplyText] = useState("");
+
+const [replies, setReplies] = useState({});
+
+const [showReplies, setShowReplies] = useState({});
+
+const replyInputRef = useRef(null);
 
 const [showStarPopup, setShowStarPopup] =
   useState(false);
@@ -832,6 +961,77 @@ useEffect(() => {
     unsubscribe();
 
 }, [selectedVideoId]);
+
+
+
+useEffect(()=>{
+
+if(!selectedVideoId) return;
+
+
+comments.forEach((comment)=>{
+
+
+const q = query(
+
+collection(
+db,
+"all_videos",
+selectedVideoId,
+"comments",
+comment.id,
+"replies"
+),
+
+orderBy(
+"createdAt",
+"asc"
+)
+
+);
+
+
+
+const unsub = onSnapshot(q,(snap)=>{
+
+
+let arr=[];
+
+
+snap.forEach((doc)=>{
+
+arr.push({
+
+id:doc.id,
+
+...doc.data()
+
+});
+
+
+});
+
+
+setReplies(prev=>({
+
+...prev,
+
+[comment.id]:arr
+
+
+}));
+
+
+});
+
+
+return ()=>unsub();
+
+
+});
+
+
+},[comments,selectedVideoId]);
 
 
 
@@ -1169,11 +1369,15 @@ StarUp
 
   {item.verified && (
     <View style={styles.badge}>
-      <MaterialCommunityIcons
-        name="check-decagram"
-        size={18}
-        color="#ffffff"
-      />
+     <MaterialCommunityIcons
+  name="check-decagram"
+  size={18}
+  color={
+    selectedVideoData?.verifiedColor === "yellow"
+      ? "#FFD700"
+      : "#ffffff"
+  }
+/>
 
       <Ionicons
         name="checkmark"
@@ -1459,11 +1663,15 @@ flex:1
       position: "relative",
     }}
   >
-    <MaterialCommunityIcons
-      name="check-decagram"
-      size={18}
-      color="#ffffff"
-    />
+   <MaterialCommunityIcons
+  name="check-decagram"
+  size={16}
+  color={
+    item.verifiedColor === "yellow"
+      ? "#FFD700"
+      : "#ffffff"
+  }
+/>
 
     <Ionicons
       name="checkmark"
@@ -1552,16 +1760,27 @@ justifyContent:'space-between',
 }}
 >
 
-<Image
-source={{
-uri:item.profilePic
-}}
-style={{
-width:40,
-height:40,
-borderRadius:20
-}}
-/>
+<TouchableOpacity
+  onPress={() => {
+    setShowComments(false);
+
+    router.push({
+      pathname: "/userProfile",
+      params: {
+        userId: item.userId,
+      },
+    });
+  }}
+>
+  <Image
+    source={{ uri: item.profilePic }}
+    style={{
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+    }}
+  />
+</TouchableOpacity>
 
 <View
 style={{
@@ -1598,10 +1817,14 @@ flex:1,
     }}
   >
     <MaterialCommunityIcons
-      name="check-decagram"
-      size={16}
-      color="#ffffff"
-    />
+  name="check-decagram"
+  size={16}
+  color={
+    item.verifiedColor === "yellow"
+      ? "#FFD700"
+      : "#ffffff"
+  }
+/>
 
     <Ionicons
       name="checkmark"
@@ -1625,6 +1848,216 @@ color:'#fff'
 >
 {item.text}
 </Text>
+
+
+
+<TouchableOpacity
+onPress={()=>{
+
+setShowReplies(prev => ({
+  ...prev,
+  [item.id]: !prev[item.id]
+}));
+
+}}
+>
+
+<Text
+
+style={{
+
+color:"#c3c2be",
+
+fontSize:13,
+
+marginTop:5
+
+}}
+
+>
+
+{
+showReplies[item.id]
+?
+"Hides"
+:
+`View ${replies[item.id]?.length || 0} Replies`
+}
+
+</Text>
+
+</TouchableOpacity>
+
+
+
+<Text
+
+style={{
+
+color:"#c3c2be",
+
+fontSize:13,
+
+marginTop:5
+
+}}
+
+>
+
+Reply
+
+</Text>
+
+
+
+
+
+
+{
+showReplies[item.id] &&
+replies[item.id]?.map((reply)=>(
+
+<View
+key={reply.id}
+
+
+style={{
+
+flexDirection:"row",
+
+marginTop:10,
+
+marginLeft:35
+
+}}
+
+>
+
+
+<Image
+
+source={{
+
+uri:reply.profilePic
+
+}}
+
+style={{
+
+width:30,
+
+height:30,
+
+borderRadius:15
+
+}}
+
+/>
+
+
+
+<View
+
+style={{
+
+marginLeft:8
+
+}}
+
+>
+
+
+<Text
+
+style={{
+
+color:"#fff",
+
+fontWeight:"bold",
+
+fontSize:13
+
+}}
+
+>
+
+{reply.username}
+
+</Text>
+
+
+
+<Text
+
+style={{
+
+color:"#ddd"
+
+}}
+
+>
+
+{reply.text}
+
+</Text>
+
+
+{
+auth.currentUser?.uid === reply.userId && (
+
+<TouchableOpacity
+style={{
+position:"absolute",
+right:-190,
+top:5,
+padding:5,
+}}
+onPress={()=>{
+
+Alert.alert(
+"Delete Reply",
+"Do you want to delete this reply?",
+[
+{
+text:"Cancel",
+style:"cancel"
+},
+{
+text:"Delete",
+style:"destructive",
+onPress:()=>deleteReply(
+selectedVideoId,
+item.id,
+reply.id
+)
+}
+]
+)
+
+}}
+>
+
+<Ionicons
+name="ellipsis-vertical"
+size={20}
+color="#fff"
+/>
+
+</TouchableOpacity>
+
+)
+}
+
+
+</View>
+
+
+</View>
+
+
+))
+}
+
 
 </View>
 
@@ -1663,11 +2096,15 @@ color="#fff"
 }
 
 
+
 <Animated.View
 style={{
-position:'absolute',
+position:"absolute",
+
 left:10,
 right:10,
+
+bottom:15,
 
 transform:[
 {
@@ -1675,22 +2112,29 @@ translateY:
 Animated.multiply(
 keyboardHeight,
 -1
-
 )
 }
 ],
-bottom:15,
+
 flexDirection:'row',
+
 alignItems:'center',
 
 backgroundColor:'#111',
 
 paddingHorizontal:12,
+
 paddingVertical:8,
 
-borderRadius:30
+borderRadius:30,
+
+zIndex:99999,
+
+elevation:99999,
+
 }}
 >
+
 
 <Image
 source={{
@@ -1705,27 +2149,84 @@ style={{
 />
 
 
+
+
 <TextInput
-value={commentText}
-onChangeText={setCommentText}
-placeholder="Comment..."
+
+ref={replyInputRef}
+
+value={
+replyCommentId
+?
+replyText
+:
+commentText
+}
+
+
+onChangeText={
+
+replyCommentId
+
+?
+
+setReplyText
+
+:
+
+setCommentText
+
+}
+
+
+placeholder={
+
+replyCommentId
+
+?
+
+"Write reply..."
+
+:
+
+"Comment..."
+
+}
+
+
 placeholderTextColor="#999"
 
-returnKeyType="send"
-blurOnSubmit={true}
-
-onSubmitEditing={()=>{
-  postComment();
-}}
 
 style={{
+
 flex:1,
+
 color:'#fff'
+
 }}
+
 />
 
 <TouchableOpacity
-onPress={postComment}
+
+onPress={()=>{
+
+
+if(replyCommentId){
+
+postReply();
+
+}
+
+else{
+
+postComment();
+
+}
+
+
+}}
+
 >
 
 <Ionicons

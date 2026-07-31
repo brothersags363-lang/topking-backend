@@ -19,19 +19,21 @@ import RazorpayCheckout from 'react-native-razorpay';
 
 import { auth, db } from "./firebaseConfig";
 
+
 import {
   doc,
   getDoc,
+  getDocs,
   setDoc,
   updateDoc,
   increment,
   onSnapshot,
-    addDoc,
+  addDoc,
   collection,
   serverTimestamp,
   query,
-orderBy,
-Timestamp,
+  orderBy,
+  Timestamp,
 } from "firebase/firestore";
 
 
@@ -434,6 +436,60 @@ const uid = auth.currentUser?.uid;
 
 if(!uid) return;
 
+
+const lastWithdrawQuery = query(
+  collection(
+    db,
+    "wallets",
+    uid,
+    "withdrawHistory"
+  ),
+  orderBy("createdAt", "desc")
+);
+
+const lastWithdrawSnap = await getDocs(
+  lastWithdrawQuery
+);
+
+if (!lastWithdrawSnap.empty) {
+
+  const lastData =
+    lastWithdrawSnap.docs[0].data();
+
+  if (lastData.createdAt) {
+
+    const lastDate =
+      lastData.createdAt.toDate();
+
+    const now = new Date();
+
+    const diffDays =
+      (now - lastDate) /
+      (1000 * 60 * 60 * 24);
+
+    if (diffDays < 7) {
+
+      alert(
+        `You can withdraw again after ${Math.ceil(
+          7 - diffDays
+        )} days`
+      );
+
+      return;
+    }
+  }
+}
+
+
+const userSnap = await getDoc(
+  doc(db, "users", uid)
+);
+
+const userData = userSnap.exists()
+  ? userSnap.data()
+  : {};
+
+
 await addDoc(
 
 collection(
@@ -473,6 +529,14 @@ collection(db,"withdrawals"),
 {
 
 userId: uid,
+
+
+name: userData.name || "",
+
+username: userData.username || "",
+
+profileImg: userData.profileImg || "",
+
 
 accountName,
 

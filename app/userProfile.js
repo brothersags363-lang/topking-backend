@@ -11,6 +11,7 @@ import {
   Modal,
   Alert,
    Share,
+   RefreshControl,
 } from "react-native";
 
 
@@ -53,7 +54,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { BackHandler } from "react-native";
 
-
+import TopKingLogo from "../assets/images/topking-logo.png";
 
 import BottomNav from "../components/BottomNav";
 
@@ -111,7 +112,7 @@ const [topGifters,setTopGifters] = useState([]);
 const [giftUserCount,setGiftUserCount] = useState(0);
 
 const [isBlocked, setIsBlocked] = useState(false);
-
+const [refreshing, setRefreshing] = useState(false);
 
 const { userId } = useLocalSearchParams();
 console.log("USER PROFILE PARAM =", userId);
@@ -152,6 +153,11 @@ useEffect(() => {
 }, [userId]);
 
 const router = useRouter();
+const verifiedTickColor =
+  userData?.verifiedColor === "yellow"
+    ? "#FFD700"
+    : "#f9fdff";
+
 
 const getLevelColor = (level) => {
   if (level >= 31) return "#FFD700";
@@ -608,6 +614,18 @@ const loadFollowers = async () => {
 
       if (userSnap.exists()) {
 
+
+const myId = auth.currentUser?.uid;
+
+const iFollowSnap = await getDoc(
+  doc(db, "follows", `${myId}_${followerId}`)
+);
+
+const followsMeSnap = await getDoc(
+  doc(db, "follows", `${followerId}_${myId}`)
+);
+
+
       const walletSnap = await getDoc(doc(db, "wallets", followerId));
 
 const verifiedSnap = await getDoc(
@@ -616,11 +634,18 @@ doc(db,"verifiedUsers",followerId)
 
 arr.push({
 id:followerId,
+
+iFollow: iFollowSnap.exists(),
+followsMe: followsMeSnap.exists(),
+
 level:walletSnap.exists()
 ? walletSnap.data().level || 1
 :1,
 
 verified: verifiedSnap.exists(),
+
+verifiedColor:
+userSnap.data().verifiedColor || "",
 
 ...userSnap.data(),
 });
@@ -665,6 +690,18 @@ const loadFollowing = async () => {
 
       if (userSnap.exists()) {
 
+
+const myId = auth.currentUser?.uid;
+
+const iFollowSnap = await getDoc(
+  doc(db, "follows", `${myId}_${followingId}`)
+);
+
+const followsMeSnap = await getDoc(
+  doc(db, "follows", `${followingId}_${myId}`)
+);
+
+
        const walletSnap = await getDoc(doc(db, "wallets", followingId));
 
 const verifiedSnap = await getDoc(
@@ -673,11 +710,18 @@ doc(db,"verifiedUsers",followingId)
 
 arr.push({
 id:followingId,
+
+iFollow: iFollowSnap.exists(),
+followsMe: followsMeSnap.exists(),
+
 level:walletSnap.exists()
 ? walletSnap.data().level || 1
 :1,
 
 verified: verifiedSnap.exists(),
+
+verifiedColor:
+userSnap.data().verifiedColor || "",
 
 ...userSnap.data(),
 });
@@ -853,7 +897,12 @@ const handleBlockUser = async () => {
 
           try {
 
-            const myId = auth.currentUser.uid;
+            const myId = auth.currentUser?.uid;
+
+if (!myId) {
+  router.push("/login");
+  return;
+}
 
 
 const userSnap = await getDoc(
@@ -972,25 +1021,40 @@ const handleShareProfile = async () => {
 
   const openChat = async () => {
 
-  const myId = auth.currentUser.uid;
 
-  const block1 = await getDoc(
+
+const myId = auth.currentUser?.uid;
+
+if (!myId) {
+  router.push("/login");
+  return;
+}
+
+if (myId) {
+
+  const blockMe = await getDoc(
     doc(db, "blockedUsers", `${myId}_${userId}`)
   );
 
-  const block2 = await getDoc(
+  const blockedByUser = await getDoc(
     doc(db, "blockedUsers", `${userId}_${myId}`)
   );
 
-  if (block1.exists() || block2.exists()) {
+  if (blockMe.exists() || blockedByUser.exists()) {
+
+    setIsBlocked(true);
 
     Alert.alert(
       "Blocked",
-      "You can't chat with this user."
+      "This profile is unavailable."
     );
 
+    router.back();
     return;
   }
+
+}
+  
 
   router.push({
     pathname: "/chat",
@@ -1013,7 +1077,7 @@ setLoading(true);
     if (!userId) return;
 
 
-const myId = auth.currentUser.uid;
+const myId = auth.currentUser?.uid;
 
 const blockMe = await getDoc(
   doc(db, "blockedUsers", `${myId}_${userId}`)
@@ -1085,6 +1149,38 @@ setIsVerified(userSnap.data().verified === true);
 };
 
 
+const onRefresh = async () => {
+
+  try {
+
+    setRefreshing(true);
+
+    getCurrentUser();
+
+    await Promise.all([
+      fetchUser(),
+      fetchVideos(),
+      loadLikedVideos(),
+      fetchFollowCounts(),
+    ]);
+
+    await checkFollowStatus();
+
+  } catch (error) {
+
+    console.log("REFRESH ERROR =", error);
+
+  } finally {
+
+    setRefreshing(false);
+
+  }
+
+};
+
+
+
+
 console.log("USER UID =", userId);
 
 
@@ -1125,8 +1221,8 @@ marginLeft:5
 
 <MaterialCommunityIcons
 name="check-decagram"
-size={22}
-color="#f5f7f8"
+size={18}
+color={verifiedTickColor}
 />
 
 
@@ -1153,6 +1249,15 @@ onPress={() => setMenuVisible(true)}
 
       <FlatList
   data={activeTab === "Videos" ? videos : likedVideos}
+
+refreshControl={
+  <RefreshControl
+    refreshing={refreshing}
+    onRefresh={onRefresh}
+    colors={["#FFD700"]}
+    tintColor="#FFD700"
+  />
+}
 
         keyExtractor={(item, index) => index.toString()}
         numColumns={3}
@@ -1186,69 +1291,74 @@ contentContainerStyle={{
 >
 
 
-<View
-  style={{
-    flexDirection: "row",
-    alignItems: "center",
-  }}
->
-  <Text style={styles.username}>
-    @{userData?.username}
-  </Text>
-
-{isVerified && (
-<View
-style={{
-marginLeft:5
-}}
->
-
-<MaterialCommunityIcons
-name="check-decagram"
-size={22}
-color="#f9fdff"
-/>
-
-
-
-</View>
-)}
-
-
-</View>
 
 
 
 <View
   style={{
-    marginLeft: 8,
-    backgroundColor: levelTheme.bg,
-    borderColor: levelTheme.border,
-    borderWidth: 1,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 20,
     flexDirection: "row",
     alignItems: "center",
+    width: "100%",
   }}
 >
-  <MaterialCommunityIcons
-    name="diamond-stone"
-    size={14}
-    color={levelTheme.icon}
-  />
 
   <Text
     style={{
-      color: levelTheme.text,
+      color: "#fff",
+      fontSize: 17,
       fontWeight: "bold",
-      marginLeft: 5,
-      fontSize: 13,
+      flexShrink: 1,
+    }}
+    numberOfLines={1}
+    ellipsizeMode="tail"
+  >
+    @{userData?.username}
+  </Text>
+
+  {isVerified && (
+   <MaterialCommunityIcons
+  name="check-decagram"
+  size={18}
+  color={verifiedTickColor}
+  style={{
+    marginLeft: 3,
+  }}
+/>
+  )}
+
+  <View
+    style={{
+      marginLeft: 4,
+      backgroundColor: levelTheme.bg,
+      borderColor: levelTheme.border,
+      borderWidth: 1,
+      paddingHorizontal: 8,
+      paddingVertical: 2,
+      borderRadius: 15,
+      flexDirection: "row",
+      alignItems: "center",
     }}
   >
-    LV {userLevel}
-  </Text>
+    <MaterialCommunityIcons
+      name="diamond-stone"
+      size={11}
+      color={levelTheme.icon}
+    />
+
+    <Text
+      style={{
+        color: levelTheme.text,
+        fontWeight: "bold",
+        marginLeft: 2,
+        fontSize: 10,
+      }}
+    >
+      LV {userLevel}
+    </Text>
+  </View>
+
 </View>
+
 
 
 
@@ -1387,11 +1497,14 @@ Follow
 )}
 
 <TouchableOpacity style={styles.instaBtn}>
-<Ionicons
-name="logo-instagram"
-size={30}
-color="#FFD700"
-/>
+  <Image
+    source={TopKingLogo}
+    style={{
+      width: 40,
+      height: 40,
+      resizeMode: "contain",
+    }}
+  />
 </TouchableOpacity>
 
 </View>
@@ -1708,6 +1821,32 @@ Unfollow
 )}
 
 
+
+
+<TouchableOpacity
+  style={styles.menuItem}
+  onPress={() => {
+
+    setMenuVisible(false);
+
+    router.push({
+      pathname: "/chat",
+      params: {
+        userId: userId,
+        username: userData?.username,
+        profileImg: userData?.profileImg,
+      },
+    });
+
+  }}
+>
+  <Text style={styles.menuText}>
+    Message
+  </Text>
+</TouchableOpacity>
+
+
+
 <TouchableOpacity
   style={styles.menuItem}
   onPress={handleBlockUser}
@@ -1889,63 +2028,114 @@ return(
 style={{
 flexDirection:"row",
 alignItems:"center",
-justifyContent:"space-between",
-padding:15
+padding:15,
 }}
 >
 
-<View
+<TouchableOpacity
 style={{
 flexDirection:"row",
-alignItems:"center"
+alignItems:"center",
+flex:1,
+}}
+onPress={() => {
+
+setFollowersModalVisible(false);
+
+router.push({
+pathname:"/userProfile",
+params:{
+userId:item.id,
+},
+});
+
 }}
 >
 
-<Image
-source={{uri:item.profileImg}}
-style={{
-width:50,
-height:50,
-borderRadius:25
-}}
-/>
+<TouchableOpacity
+  onPress={() => {
+    setFollowersModalVisible(false);
+
+    router.push({
+      pathname: "/userProfile",
+      params: {
+        userId: item.id,
+      },
+    });
+  }}
+>
+  <Image
+    source={{ uri: item.profileImg }}
+    style={{
+      width: 50,
+      height: 50,
+      borderRadius: 25,
+    }}
+  />
+</TouchableOpacity>
 
 
 <View
   style={{
     marginLeft: 10,
+    flex: 1, // important
     flexDirection: "row",
     alignItems: "center",
+    marginRight: 10,
   }}
 >
 
+  
+
+
+<TouchableOpacity
+  onPress={() => {
+    setFollowersModalVisible(false);
+
+    router.push({
+      pathname: "/userProfile",
+      params: {
+        userId: item.id,
+      },
+    });
+  }}
+>
   <Text
     style={{
       color: "#fff",
-      fontSize: 16,
+      fontSize: 14,
       fontWeight: "bold",
     }}
+    numberOfLines={1}
   >
     {item.username}
   </Text>
+</TouchableOpacity>
+
+
 
   {/* Verified */}
 {item.verified && (
 <View
 style={{
-marginLeft:5
+marginLeft:2
 }}
 >
 
 <MaterialCommunityIcons
 name="check-decagram"
-size={18}
-color="#f9fdff"
+size={14}
+color={
+item.verifiedColor === "yellow"
+? "#FFD700"
+: "#f9fdff"
+}
 />
 
 
 
 </View>
+
 )}
 
   {/* Premium Level */}
@@ -1960,38 +2150,47 @@ color="#f9fdff"
   >
     <MaterialCommunityIcons
       name="diamond-stone"
-      size={12}
+      size={9}
       color={getLevelTheme(item.level).icon}
     />
 
     <Text
       style={{
         color: getLevelTheme(item.level).text,
-        fontSize: 11,
+        fontSize: 9,
         fontWeight: "bold",
         marginLeft: 3,
       }}
     >
       LV {item.level}
     </Text>
-  </View>
 
 </View>
 
-
-
 </View>
 
-{alreadyFollowing ? (
+  </TouchableOpacity>
+
+
+
+
+
+
+
+
+
+{item.iFollow && item.followsMe ? (
 
 <TouchableOpacity
 style={{
 backgroundColor:"#222",
-paddingHorizontal:15,
-paddingVertical:8,
-borderRadius:20
+width:95,
+height:36,
+borderRadius:20,
+justifyContent:"center",
+alignItems:"center"
 }}
-onPress={()=>
+onPress={() =>
 router.push({
 pathname:"/chat",
 params:{
@@ -2014,14 +2213,16 @@ Message
 
 </TouchableOpacity>
 
-) : (
+) : item.followsMe ? (
 
 <TouchableOpacity
 style={{
 backgroundColor:"#FFD700",
-paddingHorizontal:15,
-paddingVertical:8,
-borderRadius:20
+width:95,
+height:36,
+borderRadius:20,
+justifyContent:"center",
+alignItems:"center"
 }}
 onPress={()=>handleFollowBack(item)}
 >
@@ -2037,7 +2238,57 @@ Follow Back
 
 </TouchableOpacity>
 
+) : item.iFollow ? (
+
+<TouchableOpacity
+style={{
+backgroundColor:"#222",
+width:95,
+height:36,
+borderRadius:20,
+justifyContent:"center",
+alignItems:"center"
+}}
+>
+
+<Text
+style={{
+color:"#fff",
+fontWeight:"bold"
+}}
+>
+Following
+</Text>
+
+</TouchableOpacity>
+
+) : (
+
+<TouchableOpacity
+style={{
+backgroundColor:"#FFD700",
+width:95,
+height:36,
+borderRadius:20,
+justifyContent:"center",
+alignItems:"center"
+}}
+onPress={()=>handleFollowBack(item)}
+>
+
+<Text
+style={{
+color:"#000",
+fontWeight:"bold"
+}}
+>
+Follow
+</Text>
+
+</TouchableOpacity>
+
 )}
+
 
 </View>
 
@@ -2113,7 +2364,7 @@ const styles = StyleSheet.create({
 
   username: {
     color: "#fff",
-    fontSize: 20,
+    fontSize: 17,
     fontWeight: "bold",
   },
 
@@ -2376,11 +2627,11 @@ videoItemTitle: {
 },
 
 levelBadge: {
-  marginLeft: 8,
+  marginLeft: 5,
   borderWidth: 1,
-  paddingHorizontal: 8,
-  paddingVertical: 3,
-  borderRadius: 20,
+  paddingHorizontal: 5,
+  paddingVertical: 2,
+  borderRadius: 12,
   flexDirection: "row",
   alignItems: "center",
 },

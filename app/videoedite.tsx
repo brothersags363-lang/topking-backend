@@ -18,6 +18,9 @@ import {
   Share,
   TextInput,
   Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+   Animated,
 } from 'react-native';
 
 import {
@@ -185,7 +188,7 @@ const videoData = videos
 
 const flatListRef = useRef(null);
 const preloadRef = useRef(null);
-
+const inputRef = useRef(null);
 const viewabilityConfig = useRef({
   itemVisiblePercentThreshold: 80,
 });
@@ -296,6 +299,27 @@ const [comments, setComments] =
 
 const [commentText, setCommentText] =
   useState('');
+
+// ===========================
+// REPLY STATES
+// ===========================
+
+const [replyCommentId, setReplyCommentId] =
+  useState(null);
+
+const [replyText, setReplyText] =
+  useState("");
+
+const [replies, setReplies] =
+  useState({});
+
+const keyboardHeight =
+  useRef(
+    new Animated.Value(0)
+  ).current;
+
+const [showReplies, setShowReplies] =
+  useState({});
 
 const [currentUserData, setCurrentUserData] =
   useState({
@@ -588,6 +612,127 @@ useEffect(() => {
 
 
 
+
+useEffect(() => {
+
+  const show = Keyboard.addListener(
+    "keyboardDidShow",
+    (e) => {
+
+      Animated.timing(
+        keyboardHeight,
+        {
+          toValue:
+            e.endCoordinates.height,
+          duration: 250,
+          useNativeDriver: false,
+        }
+      ).start();
+
+    }
+  );
+
+  const hide = Keyboard.addListener(
+    "keyboardDidHide",
+    () => {
+
+      Animated.timing(
+        keyboardHeight,
+        {
+          toValue: 0,
+          duration: 250,
+          useNativeDriver: false,
+        }
+      ).start();
+
+    }
+  );
+
+  return () => {
+
+    show.remove();
+
+    hide.remove();
+
+  };
+
+}, []);
+
+
+
+
+useEffect(() => {
+
+  if (!selectedVideoId) return;
+
+  const unsubscribers = [];
+
+  comments.forEach((comment) => {
+
+    const q = query(
+
+      collection(
+        db,
+        "all_videos",
+        selectedVideoId,
+        "comments",
+        comment.id,
+        "replies"
+      ),
+
+      orderBy("createdAt", "asc")
+
+    );
+
+    const unsubscribe = onSnapshot(
+
+      q,
+
+      (snapshot) => {
+
+        const arr = [];
+
+        snapshot.forEach((doc) => {
+
+          arr.push({
+
+            id: doc.id,
+
+            ...doc.data(),
+
+          });
+
+        });
+
+        setReplies((prev) => ({
+
+          ...prev,
+
+          [comment.id]: arr,
+
+        }));
+
+      }
+
+    );
+
+    unsubscribers.push(unsubscribe);
+
+  });
+
+  return () => {
+
+    unsubscribers.forEach((unsubscribe) => {
+
+      unsubscribe();
+
+    });
+
+  };
+
+}, [comments, selectedVideoId]);
+
+
 const onViewableItemsChanged =
   useRef(
     ({ viewableItems }) => {
@@ -691,6 +836,69 @@ const postComment = async () => {
 
   }
 };
+
+
+
+// ===========================
+// POST REPLY
+// ===========================
+
+const postReply = async () => {
+
+  const user = auth.currentUser;
+
+  if (!user) {
+    Alert.alert("Login Required");
+    return;
+  }
+
+  if (!replyText.trim()) {
+    return;
+  }
+
+  try {
+
+    await addDoc(
+
+      collection(
+        db,
+        "all_videos",
+        selectedVideoId,
+        "comments",
+        replyCommentId,
+        "replies"
+      ),
+
+      {
+
+        text: replyText.trim(),
+
+        username: currentUserData.username,
+
+        profilePic: currentUserData.profileImg,
+
+        userId: user.uid,
+
+        createdAt: serverTimestamp(),
+
+      }
+
+    );
+
+    setReplyText("");
+
+    setReplyCommentId(null);
+
+    Keyboard.dismiss();
+
+  } catch (error) {
+
+    console.log(error);
+
+  }
+
+};
+
 
 
 const deleteComment = async (commentId) => {
@@ -802,21 +1010,29 @@ const deleteComment = async (commentId) => {
 
   <TouchableOpacity
   style={styles.iconBox}
-  onPress={() => {
+  
 
+onPress={() => {
 
-    setSelectedVideoId(item.id);
+  setSelectedVideoId(item.id);
 
-    setSelectedVideoData({
-      username: item.username,
-      profile: item.profile,
-      caption: item.caption,
-      userId: item.userId,
-    });
+  setSelectedVideoData({
+    username: item.username,
+    profile: item.profile,
+    caption: item.caption,
+    userId: item.userId,
+  });
 
-    setShowComments(true);
+  setShowComments(true);
 
-  }}
+  setTimeout(() => {
+
+    inputRef.current?.focus();
+
+  }, 300);
+
+}}
+
 >
 
   <Ionicons
@@ -1328,6 +1544,195 @@ showComments && (
       >
         {item.text}
       </Text>
+
+<TouchableOpacity
+  onPress={() => {
+
+  setReplyCommentId(item.id);
+
+  setReplyText("");
+
+  setTimeout(() => {
+    inputRef.current?.focus();
+  }, 100);
+
+}}
+>
+
+  <Text
+    style={{
+      color: "#999",
+      fontSize: 13,
+      marginTop: 6,
+      fontWeight: "600",
+    }}
+  >
+    Reply
+  </Text>
+
+</TouchableOpacity>
+
+{
+  replies[item.id]?.length > 0 && (
+
+    <TouchableOpacity
+      onPress={() => {
+
+        setShowReplies(prev => ({
+
+          ...prev,
+
+          [item.id]: !prev[item.id],
+
+        }));
+
+      }}
+    >
+
+      <Text
+        style={{
+          color: "#999",
+          fontSize: 13,
+          marginTop: 6,
+          fontWeight: "600",
+        }}
+      >
+
+        {
+          showReplies[item.id]
+
+            ? "Hide replies"
+
+            : `View ${replies[item.id].length} replies`
+
+        }
+
+      </Text>
+
+    </TouchableOpacity>
+
+  )
+}
+
+
+{
+  showReplies[item.id] &&
+
+  replies[item.id]?.map((reply) => (
+
+    <View
+      key={reply.id}
+      style={{
+        flexDirection: "row",
+        marginTop: 12,
+        marginLeft: 35,
+      }}
+    >
+
+      <Image
+        source={{
+          uri:
+            reply.profilePic ||
+            "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
+        }}
+        style={{
+          width: 30,
+          height: 30,
+          borderRadius: 15,
+        }}
+      />
+
+      <View
+        style={{
+          marginLeft: 8,
+          flex: 1,
+        }}
+      >
+
+        <Text
+          style={{
+            color: "#FFD700",
+            fontWeight: "bold",
+            fontSize: 13,
+          }}
+        >
+          {reply.username}
+        </Text>
+
+        <Text
+          style={{
+            color: "#fff",
+            marginTop: 2,
+          }}
+        >
+          {reply.text}
+        </Text>
+
+      </View>
+
+
+
+<TouchableOpacity
+  onPress={() => {
+
+    Alert.alert(
+      "Delete Reply",
+      "Do you want to delete this reply?",
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Delete",
+          style: "destructive",
+
+          onPress: async () => {
+
+            try {
+
+              await deleteDoc(
+                doc(
+                  db,
+                  "all_videos",
+                  selectedVideoId,
+                  "comments",
+                  item.id,
+                  "replies",
+                  reply.id
+                )
+              );
+
+            } catch (e) {
+
+              console.log(e);
+
+            }
+
+          },
+        },
+      ]
+    );
+
+  }}
+>
+
+<Ionicons
+  name="ellipsis-vertical"
+  size={20}
+  color="#fff"
+/>
+
+</TouchableOpacity>
+
+
+
+    </View>
+
+  ))
+}
+
+
       </View>
 
   <TouchableOpacity
@@ -1353,38 +1758,118 @@ showComments && (
   )}
 />
 
-<View
-  style={{
-    flexDirection: 'row',
-    padding: 10,
-    marginBottom: 38,
-  }}
+
+<Animated.View
+style={{
+
+position:"absolute",
+
+left:10,
+right:10,
+
+bottom:35,
+
+transform:[
+{
+translateY:
+Animated.multiply(
+keyboardHeight,
+-1
+)
+}
+],
+
+flexDirection:"row",
+
+alignItems:"center",
+
+backgroundColor:"#111",
+
+paddingHorizontal:12,
+
+paddingVertical:8,
+
+borderRadius:30,
+
+zIndex:99999,
+
+elevation:99999,
+
+}}
 >
 
+
 <TextInput
-  value={commentText}
-  onChangeText={setCommentText}
-  placeholder="Add comment..."
+
+ref={inputRef}
+
+  value={
+    replyCommentId
+      ? replyText
+      : commentText
+  }
+
+  onChangeText={
+    replyCommentId
+      ? setReplyText
+      : setCommentText
+  }
+
+  placeholder={
+    replyCommentId
+      ? "Write a reply..."
+      : "Add comment..."
+  }
+
   placeholderTextColor="#999"
+
   returnKeyType="send"
+
   blurOnSubmit={true}
+
   onSubmitEditing={() => {
-    postComment();
+
+    if (replyCommentId) {
+
+      postReply();
+
+    } else {
+
+      postComment();
+
+    }
+
     Keyboard.dismiss();
+
   }}
+
   style={{
     flex: 1,
-    color: '#fff',
+    color: "#fff",
     borderWidth: 1,
-    borderColor: '#333',
+    borderColor: "#333",
     borderRadius: 20,
     paddingHorizontal: 15,
   }}
 />
 
+
 <TouchableOpacity
-  onPress={postComment}
+  onPress={() => {
+
+    if (replyCommentId) {
+
+      postReply();
+
+    } else {
+
+      postComment();
+
+    }
+
+  }}
 >
+
   <Text
     style={{
       color: '#FFD700',
@@ -1394,10 +1879,9 @@ showComments && (
     Send
   </Text>
 </TouchableOpacity>
-
+</Animated.View>
 </View>
 
-</View>
 
 )
 }
@@ -1458,21 +1942,22 @@ sideBar: {
 
   right: 10,
 
-  bottom: 140,   // video ke niche se kitna upar
+  bottom: 80,   // video ke niche se kitna upar
 
   alignItems: 'center',
 
   zIndex: 999,
+
 },
 
-  sideText: { color: 'white', fontSize: 24, marginBottom: 15 },
+  sideText: { color: 'white', fontSize: 24, marginBottom: 10 },
 
 bottomInfo: {
   position: 'absolute',
 
   left: 12,
 
-  bottom: 100,      // niche se kitna upar
+  bottom: 70,      // niche se kitna upar
 
   width: width * 0.7,
 

@@ -143,46 +143,62 @@ const {
 
 
 
-    let friendUsers = [];
+const friendUsers =
+  await Promise.all(
 
-    for (let uid of friendIds) {
+    friendIds.map(
+      async (uid) => {
 
-      const userSnap =
-        await getDoc(
-          doc(
-            db,
-            "users",
-            uid
-          )
-        );
+        const userSnap =
+          await getDoc(
+            doc(
+              db,
+              "users",
+              uid
+            )
+          );
 
-      if (
-        userSnap.exists()
-      ) {
+        if (
+          userSnap.exists()
+        ) {
+          return {
+            id: uid,
+            friendId: uid,
+            username:
+              userSnap.data()
+                .username,
+            profile:
+              userSnap.data()
+                .profileImg,
+            fullData:
+              userSnap.data(),
+          };
+        }
 
-        friendUsers.push({
-          id: uid,
-          friendId: uid,
-          username:
-            userSnap.data()
-              .username,
-          profile:
-            userSnap.data()
-              .profileImg,
-        });
-
+        return null;
       }
+    )
+  );
 
-    }
+setFriends(
+  friendUsers.filter(Boolean)
+);
 
-    console.log(
-      "FRIENDS =",
-      friendUsers
-    );
+  
 
-    setFriends(
-      friendUsers
-    );
+    const finalFriends =
+  friendUsers.filter(Boolean);
+
+console.log(
+  "FRIENDS =",
+  finalFriends
+);
+
+setFriends(
+  finalFriends
+);
+
+    
 
   } catch (error) {
 
@@ -259,14 +275,11 @@ const senderData = senderSnap.exists()
       for (let uid of selectedUsers) {
 
   // ADD HERE
-  const receiverSnap = await getDoc(
-    doc(db, "users", uid)
-  );
-
   const receiverData =
-    receiverSnap.exists()
-      ? receiverSnap.data()
-      : {};
+  friends.find(
+    item =>
+      item.friendId === uid
+  )?.fullData || {};
 
   const chatId =
     [me.uid, uid]
@@ -275,15 +288,6 @@ const senderData = senderSnap.exists()
 
 
 // original video ka data lao
-const videoSnap = await getDoc(
-  doc(db, "all_videos", videoId)
-);
-
-const videoData =
-  videoSnap.exists()
-    ? videoSnap.data()
-    : {};
-
 
 
 

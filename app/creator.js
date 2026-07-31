@@ -188,34 +188,79 @@ export default function Creator() {
 
 <View style={styles.infoBox}>
 
- 
 <Text style={styles.point}>
-  ✓ Complete <Text style={styles.yellow}>10,000 Views</Text> on your first <Text style={styles.yellow}>5 Videos</Text> to unlock the <Text style={styles.yellow}>Yellow Verified Tick</Text>.
+✓ Complete <Text style={styles.yellow}>5 Videos</Text> and get <Text style={styles.yellow}>4500+ Views</Text> to unlock the <Text style={styles.yellow}>Yellow Verified Tick</Text>.
 </Text>
 
 <Text style={styles.point}>
-  ✓ Your reports will have <Text style={styles.yellow}>higher priority</Text>. One report from a verified creator will be treated like <Text style={styles.yellow}>5 normal reports</Text>.
+✓ Unlock the <Text style={styles.yellow}>Family Creator</Text> feature and create your own family in the app.
 </Text>
 
 <Text style={styles.point}>
-  ✓ Enjoy <Text style={styles.yellow}>faster earnings</Text> and receive more opportunities as a verified creator.
+✓ Your <Text style={styles.yellow}>Reports & Feedback</Text> will receive priority review and you will get a reply within <Text style={styles.yellow}>24 Hours</Text>.
 </Text>
 
 <Text style={styles.point}>
-  ✓ Your account and videos will receive <Text style={styles.yellow}>higher visibility</Text>, helping you grow faster on the platform.
+✓ Your profile and videos will receive <Text style={styles.yellow}>more visibility</Text>, helping your ID grow faster.
 </Text>
 
 <Text style={styles.point}>
-  ✓ Gain <Text style={styles.yellow}>more trust and credibility</Text> with the Yellow Verified Tick.
+✓ Verified creators can <Text style={styles.yellow}>earn more</Text> than normal users through higher reach and engagement.
 </Text>
 
-<Text style={styles.point}>
-  ✓ Your <Text style={styles.yellow}>feedback and support requests</Text> will receive higher priority, helping you get faster responses.
-</Text>
+
 
 </View>
 
 
+
+{/* ================= BLUE VERIFIED BADGE ================= */}
+
+<View style={styles.verifyCircle}>
+  <MaterialIcons
+    name="verified"
+    size={75}
+    color="#1E90FF"
+  />
+</View>
+
+<Text style={styles.title}>BLUE TICK</Text>
+
+<Text style={styles.subTitle}>
+Exclusive Creator Benefits
+</Text>
+
+<View style={styles.infoBox}>
+
+<Text style={styles.point}>
+✓ Receive <Text style={styles.yellow}>Full Support</Text> directly from the TopKing Team.
+</Text>
+
+<Text style={styles.point}>
+✓ Get invited to <Text style={styles.yellow}>Major Events, Creator Programs, Competitions, and Special Functions</Text> organized by TopKing.
+</Text>
+
+<Text style={styles.point}>
+✓ Enjoy <Text style={styles.yellow}>Priority Assistance</Text> for all account, content, and creator-related issues.
+</Text>
+
+<Text style={styles.point}>
+✓ Build a stronger creator identity with the <Text style={styles.yellow}>Official Blue Verified Tick</Text>.
+</Text>
+
+<Text style={styles.point}>
+✓ Receive <Text style={styles.yellow}>Monthly Salary Opportunities</Text> based on performance, activity, and contribution to the platform.
+</Text>
+
+<Text style={styles.point}>
+✓ Get access to <Text style={styles.yellow}>Exclusive Features and Future Creator Programs</Text> before regular users.
+</Text>
+
+<Text style={styles.point}>
+✓ Your profile will be recognized as a <Text style={styles.yellow}>Premium Creator Account</Text> on TopKing.
+</Text>
+
+</View>
 
 
 

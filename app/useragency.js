@@ -103,6 +103,32 @@ const getLevelTheme = (level) => {
 
 
 
+
+const getVerifiedColor = (color) => {
+
+  switch (color) {
+
+    case "yellow":
+      return "#FFD700";
+
+    case "red":
+      return "#ff1744";
+
+    case "green":
+      return "#00E676";
+
+    case "purple":
+      return "#B388FF";
+
+    default:
+      return "#2196F3";
+  }
+
+};
+
+
+
+
 useEffect(()=>{
 
 loadAgency();
@@ -204,13 +230,26 @@ const arr = await Promise.all(
       doc(db, "wallets", docItem.id)
     );
 
+console.log(
+  "USER:",
+  docItem.data().username,
+  "COLOR:",
+  docItem.data().verifiedColor
+);
+
     return {
-      id: docItem.id,
-      ...docItem.data(),
-      level: walletSnap.exists()
-        ? walletSnap.data().level || 1
-        : 1,
-    };
+  id: docItem.id,
+  ...docItem.data(),
+
+  level: walletSnap.exists()
+    ? walletSnap.data().level || 1
+    : 1,
+
+  verified: docItem.data().verified || false,
+
+  verifiedColor:
+    docItem.data().verifiedColor || "blue",
+};
 
   })
 
@@ -423,6 +462,7 @@ const addHost = async () => {
 
     // User update
     await updateDoc(userDoc.ref, {
+      
       agencyId: agency.id,
       agencyName: agency.agencyName,
       agencyHost: true,
@@ -586,22 +626,17 @@ justifyContent:"center",
       }}
     >
 
-      <MaterialCommunityIcons
-        name="check-decagram"
-        size={18}
-        color="#ffffff"
-      />
+       <MaterialCommunityIcons
+  name="check-decagram"
+  size={18}
+  color={
+    item.verifiedColor === "yellow"
+      ? "#FFD700"
+      : "#ffffff"
+  }
+/>
 
-      <Ionicons
-        name="checkmark"
-        size={10}
-        color="#131212"
-        style={{
-          position: "absolute",
-          top: 4.5,
-          left: 4.2,
-        }}
-      />
+      
 
     </View>
 

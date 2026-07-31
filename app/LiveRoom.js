@@ -48,6 +48,8 @@ import {
   increment,
   setDoc,
   deleteField,
+  addDoc,
+serverTimestamp,
 } from 'firebase/firestore';
 
 import {
@@ -136,6 +138,8 @@ const getLevelTheme = (level = 1) => {
   };
 
 };
+
+
 
 
 const getLevelFrame=(level=1)=>{
@@ -265,6 +269,11 @@ const [requestModalVisible, setRequestModalVisible] = useState(false);
 
 const [giftModalVisible, setGiftModalVisible] = useState(false);
 
+const giftModalAnim = useRef(
+new Animated.Value(400)
+).current;
+
+
 const [speakerModalVisible, setSpeakerModalVisible] = useState(false);
 
 const [selectedSeatKey, setSelectedSeatKey] = useState(null);
@@ -281,6 +290,9 @@ const [profileVisible, setProfileVisible] = useState(false);
 
 
 const [hostLevel,setHostLevel]=useState(1);
+
+const [hostVerifiedColor, setHostVerifiedColor] = useState("white");
+
 const [hostVerified,setHostVerified]=useState(false);
 
 
@@ -350,25 +362,25 @@ const giftScale = useRef(new Animated.Value(1)).current;
 
 const giftShake = useRef(new Animated.Value(0)).current;
 
-
+const giftOpacity = useRef(
+  new Animated.Value(0)
+).current;
 
 const chatScrollRef = useRef(null);
 
-useEffect(()=>{
 
-    if(roomData?.chats?.length){
+useEffect(() => {
 
-        setTimeout(()=>{
+  if (!roomData?.chats?.length) return;
 
-            chatScrollRef.current?.scrollToEnd({
-                animated:true
-            });
+  requestAnimationFrame(() => {
+    chatScrollRef.current?.scrollToEnd({
+      animated: false,
+    });
+  });
 
-        },300);
+}, [roomData?.chats?.length]);
 
-    }
-
-},[roomData?.chats?.length]);
 
 
 const [currentName, setCurrentName] = useState("User");
@@ -448,6 +460,10 @@ if (snap.exists()) {
 const data = snap.data();
 
  setHostVerified(data.verified || false);
+setHostVerifiedColor(
+  data.verifiedColor || "white"
+);
+
 
 setCurrentName(
   data.username ||
@@ -529,6 +545,28 @@ useEffect(() => {
 
 
 
+useEffect(()=>{
+
+if(giftModalVisible){
+
+giftModalAnim.setValue(400);
+
+Animated.spring(
+giftModalAnim,
+{
+toValue:0,
+speed:18,
+bounciness:4,
+useNativeDriver:true,
+}
+).start();
+
+}
+
+},[giftModalVisible]);
+
+
+
 
 useEffect(() => {
 
@@ -565,6 +603,9 @@ list.push({
 
   verified:
     userSnap.data()?.verified || false,
+
+verifiedColor:
+  userSnap.data()?.verifiedColor || "white",
 
   level:
     walletSnap.exists()
@@ -780,6 +821,8 @@ updates[`audienceList.${currentUid}`] = {
   img: currentAvatar,
   level: currentLevel,
 verified: userData.verified || false,
+verifiedColor:
+  userData.verifiedColor || "#ffffff",
   joinedAt: Date.now(),
   online: true
 };
@@ -796,6 +839,10 @@ if (data?.hostId === currentUid) {
 level: hostLevel,
 
 verified: userData.verified || false,
+
+verifiedColor:
+userData.verifiedColor || "white",
+
  isMuted:false,
  roleTag:'HOST'
 };
@@ -829,6 +876,8 @@ senderName: currentRealName,
 username: currentName,
 userImg: currentAvatar,
  verified: userData.verified || false,
+ verifiedColor:
+userData.verifiedColor || "white",
   level: hostLevel,
 };
 
@@ -855,7 +904,7 @@ chats: updatedChats
       if (snapshot.exists()) {
         const data = snapshot.data();
 
-console.log("Audience List =", data.audienceList);
+
 
         setRoomData(data);
         setLoading(false);
@@ -1147,23 +1196,29 @@ useEffect(() => {
   giftScale.setValue(0.8);
   giftGlow.setValue(0.3);
   giftShake.setValue(-1);
+giftOpacity.setValue(0);
+
 
   Animated.parallel([
     Animated.spring(giftTranslateX, {
-      toValue: 0,
-      useNativeDriver: false,
-    }),
+  toValue: 0,
+  speed: 12,
+  bounciness: 6,
+  useNativeDriver: true,
+}),
 
-    Animated.spring(giftScale, {
-      toValue: 1,
-      useNativeDriver: false,
-    }),
+Animated.spring(giftScale, {
+  toValue: 1,
+  speed: 12,
+  bounciness: 6,
+  useNativeDriver: true,
+}),
 
-    Animated.timing(giftGlow, {
-      toValue: 1,
-      duration: 300,
-      useNativeDriver: false,
-    }),
+Animated.timing(giftOpacity,{
+  toValue:1,
+  duration:250,
+  useNativeDriver:true,
+}),
 
     Animated.sequence([
       Animated.timing(giftShake, {
@@ -1371,6 +1426,9 @@ realName:currentRealName,
 img:currentAvatar,
 
 verified: hostVerified,
+verifiedColor:
+hostVerifiedColor,
+
 level: hostLevel,
 
 seatKey:seatKey,
@@ -1573,7 +1631,7 @@ await engine.enableLocalAudio(true);
 await engine.setEnableSpeakerphone(true);
 
 engine.enableAudioVolumeIndication(
-200,
+500,
 3,
 true
 );
@@ -1620,7 +1678,7 @@ await engine.muteLocalAudioStream(false);
 }
 
 const response = await fetch(
-`https://canned-deflate-elude.ngrok-free.dev/token?channel=${roomId}&uid=${agoraUid}`
+`https://topking-backend.onrender.com/token?channel=${roomId}&uid=${agoraUid}`
 );
 
 const data = await response.json();
@@ -1684,10 +1742,14 @@ username: currentName,
 message: chatMessage,
 userImg: currentAvatar,
   verified: hostVerified,
+verifiedColor:
+  hostVerifiedColor || "white",
+
   level: hostLevel,
 };
 
       const updatedChats = [...(roomData.chats || []), newChat].slice(-30);
+      Keyboard.dismiss();
       setChatMessage('');
       await updateDoc(roomRef, { chats: updatedChats });
     } catch (e) { console.log(e); }
@@ -1739,36 +1801,120 @@ id
 
 
 
-const sendInvite=async()=>{
+const sendInvite = async () => {
+  try {
 
-for(const uid of selectedFriends){
+    for (const uid of selectedFriends) {
+
+      const chatId =
+        currentUid < uid
+          ? `${currentUid}_${uid}`
+          : `${uid}_${currentUid}`;
+
+      // Chat message
+      await addDoc(
+        collection(
+          db,
+          "chats",
+          chatId,
+          "messages"
+        ),
+        {
+          type: "liveInvite",
+
+          senderId: currentUid,
+          receiverId: uid,
+
+          roomId: roomId,
+
+          roomLink:
+            `https://topking.app/live/${roomId}`,
+
+          text:
+            `${currentName} invited you to join live`,
+
+          createdAt: serverTimestamp(),
+        }
+      );
 
 await setDoc(
+  doc(
+    db,
+    "userChats",
+    uid,
+    "friends",
+    currentUid
+  ),
+  {
+    userId: currentUid,
 
-doc(db,"notifications",Date.now()+uid),
+    username: currentName,
 
-{
+    lastMessage: "🎙 Live Invite",
 
-to:uid,
+    hasNewMessage: true,
 
-senderId:currentUid,
+    unreadCount: increment(1),
 
-roomId:roomId,
-
-type:"liveInvite",
-
-createdAt:Date.now()
-
-}
-
+    updatedAt: serverTimestamp(),
+  },
+  { merge: true }
 );
 
-}
 
-alert("Invite Sent");
+await setDoc(
+  doc(
+    db,
+    "userChats",
+    currentUid,
+    "friends",
+    uid
+  ),
+  {
+    userId: uid,
 
-setFriendShareVisible(false);
+    lastMessage: "🎙 Live Invite",
 
+    updatedAt: serverTimestamp(),
+  },
+  { merge: true }
+);
+
+
+
+      console.log("LIVE INVITE SAVED =", docRef.id);
+
+      // Notification
+      await setDoc(
+        doc(
+          db,
+          "notifications",
+          Date.now().toString() + uid
+        ),
+        {
+          to: uid,
+          senderId: currentUid,
+          roomId: roomId,
+          type: "liveInvite",
+          createdAt: Date.now(),
+        }
+      );
+
+    }
+
+    alert("Invite Sent");
+
+    setSelectedFriends([]);
+    setFriendShareVisible(false);
+
+  } catch (e) {
+
+    console.log(
+      "INVITE ERROR =",
+      e
+    );
+
+  }
 };
 
 
@@ -1843,6 +1989,8 @@ await updateDoc(roomRef,{
   realName: user.realName,
   userImg: user.img,
   verified: user.verified || false,
+  verifiedColor:
+user.verifiedColor || "white",
   level: user.level || 1,
   isMuted: false,
   roleTag: "SPEAKER"
@@ -2058,8 +2206,14 @@ const leaveOwnSeat = async () => {
   const audienceArray =
 roomData?.audienceList
 ? Object.values(roomData.audienceList)
-    .filter(user => user && user.uid)
+    .filter(
+      user =>
+        user &&
+        user.uid &&
+        user.uid !== roomData?.hostId
+    )
 : [];
+
 const topUsers = audienceArray.slice(0,3);
 
 const onlineUsers = audienceArray.filter(
@@ -2078,8 +2232,6 @@ const topSeatUsers = Object.values(
   item => item?.userId
 );
 
-console.log("ONLINE USERS =", onlineUsers);
-console.log("TOTAL VIEWERS =", totalViewers);
 
 const giftUsers = [];
 
@@ -2185,10 +2337,15 @@ frameAnimation
   {roomData?.seatsData?.seat_1?.verified && (
   <View style={styles.verifiedBadge}>
     <MaterialCommunityIcons
-      name="check-decagram"
-      size={17}
-      color="#ffffff"
-    />
+    name="check-decagram"
+    size={17}
+    color={
+roomData?.seatsData?.seat_1?.verifiedColor
+=== "yellow"
+? "#FFD700"
+: "#ffffff"
+}
+  />
   </View>
 )}
 
@@ -2561,7 +2718,9 @@ marginLeft:3
     initialNumToRender={10}
     maxToRenderPerBatch={20}
     windowSize={10}
-    removeClippedSubviews={false}
+   removeClippedSubviews={true}
+   windowSize={5}
+updateCellsBatchingPeriod={50}
     keyExtractor={(item,index)=>
         item.id || index.toString()
     }
@@ -2640,13 +2799,16 @@ marginLeft:3
                         </Text>
 
                         {chat.verified && (
-                            <MaterialCommunityIcons
-                                name="check-decagram"
-                                size={15}
-                                color="#fff"
-                                style={{ marginLeft: 4 }}
-                            />
-                        )}
+  <MaterialCommunityIcons
+  name="check-decagram"
+  size={17}
+  color={
+    chat?.verifiedColor === "yellow"
+      ? "#FFD700"
+      : "#ffffff"
+  }
+/>
+)}
 
                         <View
                             style={[
@@ -2765,11 +2927,19 @@ marginLeft:3
 
                         {chat.verified && (
                             <View style={styles.verifiedBadge}>
-                                <MaterialCommunityIcons
-                                    name="check-decagram"
-                                    size={17}
-                                    color="#fdfeff"
-                                />
+                                
+<MaterialCommunityIcons
+  name="check-decagram"
+  size={15}
+  color={
+    chat?.verifiedColor === "yellow"
+      ? "#FFD700"
+      : "#ffffff"
+  }
+/>
+
+
+
                             </View>
                         )}
 
@@ -2879,11 +3049,11 @@ source={activeGift}
 
 autoPlay
 loop={false}
+speed={2}
+hardwareAccelerationAndroid={true}
 
-hardwareAccelerationAndroid={false}
-
-renderMode="SOFTWARE"
-
+renderMode="HARDWARE"
+cacheComposition={true}
 resizeMode="contain"
 
 style={{
@@ -2930,11 +3100,9 @@ backgroundColor:"rgba(255,20,147,0.95)",
 
 borderColor:"#FFD700",
 
-shadowColor:"#FFD700",
+shadowOpacity:0.4,
 
-shadowOpacity:giftGlow,
 
-shadowRadius:20,
 
 elevation:20,
 
@@ -3302,7 +3470,7 @@ user?.seatKey
 <Modal
 visible={giftModalVisible}
 transparent
-animationType="slide"
+animationType="fade"
 onRequestClose={() => setGiftModalVisible(false)}
 >
 <View style={styles.giftOverlay}>
@@ -3315,7 +3483,18 @@ onPress={() => setGiftModalVisible(false)}
 
 
 
-<View style={styles.giftSheet}>
+<Animated.View
+style={[
+styles.giftSheet,
+{
+transform:[
+{
+translateY:giftModalAnim
+}
+]
+}
+]}
+>
 
 
 <View
@@ -3485,6 +3664,8 @@ gifts
 key={item.id}
 style={styles.giftCard}
 
+
+
 onPress={async () => {
 
 if(
@@ -3507,6 +3688,19 @@ return;
 }
 
 try{
+
+// INSTANT LOCAL ANIMATION
+if (item.animation) {
+
+  setActiveGift(item.animation);
+
+  setTimeout(() => {
+    setActiveGift(null);
+  }, item.duration || 5000);
+
+}
+
+
 
 await updateDoc(
 doc(db,"wallets",currentUid),
@@ -3698,7 +3892,7 @@ resizeMode:"contain"
 
 </View>
 
-</View>
+</Animated.View>
 
 </View>
 </Modal>
@@ -3876,10 +4070,14 @@ left:-10
  
 {selectedSpeaker?.verified && (
   <MaterialCommunityIcons
-      name="check-decagram"
-      size={18}
-      color="#fff"
-      style={{marginLeft:4}}
+    name="check-decagram"
+    size={18}
+    color={
+selectedSpeaker?.verifiedColor
+=== "yellow"
+? "#FFD700"
+: "#ffffff"
+}
   />
 )}
 
@@ -4064,11 +4262,18 @@ left:-10
   
     
      <View style={styles.verifiedBadge}>
-    <MaterialCommunityIcons
-      name="check-decagram"
-      size={17}
-      color="#ffffff"
-    />
+  
+<MaterialCommunityIcons
+    name="check-decagram"
+    size={18}
+    color={
+selectedSpeaker?.verifiedColor
+=== "yellow"
+? "#FFD700"
+: "#ffffff"
+}
+  />
+
   </View>
   
 
@@ -4411,11 +4616,18 @@ left:-17
     {/* Verified Tick - Sirf Verified User ko */}
     {item.verified && (
       <View style={styles.verifiedBadge}>
-        <MaterialCommunityIcons
-          name="check-decagram"
-          size={17}
-          color="#ffffff"
-        />
+        
+ <MaterialCommunityIcons
+      name="check-decagram"
+      size={17}
+      color={
+        item.verifiedColor === "yellow"
+          ? "#FFD700"
+          : "#ffffff"
+      }
+  />
+
+
       </View>
     )}
 

@@ -282,7 +282,7 @@ let outputPath;
 
   try {
 
-audioUrl = req.body.audioUrl;
+const audioUrl = req.body.audioUrl;
 
 videoPath = req.file.path;
 
@@ -304,8 +304,8 @@ if (!req.file || !audioUrl) {
 
 const fileId = crypto.randomUUID();
 
-const audioPath = path.join(tempDir, `${fileId}.mp3`);
-const outputPath = path.join(tempDir, `${fileId}.mp4`);
+audioPath = path.join(tempDir, `${fileId}.mp3`);
+outputPath = path.join(tempDir, `${fileId}.mp4`);
 
     // download video
 

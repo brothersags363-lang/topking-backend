@@ -16,6 +16,9 @@ import {
   Platform,
   SafeAreaView,
     Keyboard,
+    Alert,
+Modal,
+Pressable,
 } from "react-native";
 
 import {
@@ -38,6 +41,7 @@ import {
   getDoc,
   increment,
   deleteDoc,
+  updateDoc,
 } from "firebase/firestore";
 
 export default function ChatScreen() {
@@ -59,9 +63,27 @@ export default function ChatScreen() {
 
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState([]);
+
+const [menuVisible, setMenuVisible] = useState(false);
+
+const [selectedMessage, setSelectedMessage] =
+  useState(null);
+
+const [editModal, setEditModal] =
+  useState(false);
+
+const [editText, setEditText] =
+  useState("");
+
 const [userLevel, setUserLevel] = useState(1);
 const flatListRef = useRef(null);
 const [verified, setVerified] = useState(false);
+const [verifiedColor, setVerifiedColor] = useState("white");
+const [showPreview, setShowPreview] = useState(false);
+const [keyboardHeight, setKeyboardHeight] = useState(0);
+const [headerMenuVisible, setHeaderMenuVisible] = useState(false);
+const [isBlocked, setIsBlocked] = useState(false);
+const [blockedByOther, setBlockedByOther] = useState(false);
 
 
 const getLevelTheme = (level = 1) => {
@@ -169,10 +191,46 @@ useEffect(() => {
     );
 
     if (userSnap.exists()) {
-      setVerified(
-        userSnap.data().verified === true
-      );
-    }
+
+  const userData = userSnap.data();
+
+  setVerified(
+    userData.verified === true
+  );
+
+  setVerifiedColor(
+    userData.verifiedColor || "white"
+  );
+
+}
+
+const blockSnap = await getDoc(
+  doc(
+    db,
+    "blockedUsers",
+    currentUid,
+    "users",
+    userId
+  )
+);
+
+setIsBlocked(blockSnap.exists());
+
+const blockedByOtherSnap = await getDoc(
+  doc(
+    db,
+    "blockedUsers",
+    userId,
+    "users",
+    currentUid
+  )
+);
+
+setBlockedByOther(
+  blockedByOtherSnap.exists()
+);
+
+
 
   };
 
@@ -184,14 +242,14 @@ useEffect(() => {
 useEffect(() => {
 
   const q = query(
-    collection(
-      db,
-      "chats",
-      chatId,
-      "messages"
-    ),
-    orderBy("createdAt", "asc")
-  );
+  collection(
+    db,
+    "chats",
+    chatId,
+    "messages"
+  ),
+  orderBy("createdAt", "desc")
+);
 
   const unsubscribe = onSnapshot(
     q,
@@ -279,33 +337,34 @@ useEffect(() => {
 
 
 
+
+
 useEffect(() => {
 
-  const setChatScreen = async () => {
+  const showListener = Keyboard.addListener(
+    "keyboardDidShow",
+    (e) => {
 
-    await setDoc(
-      doc(db, "users", currentUser.uid),
-      {
-        activeScreen: "chat",
-        activeChatUser: userId,
-      },
-      { merge: true }
-    );
+      setKeyboardHeight(e.endCoordinates.height);
+      setShowPreview(true);
 
-  };
+    }
+  );
 
-  setChatScreen();
+  const hideListener = Keyboard.addListener(
+    "keyboardDidHide",
+    () => {
 
-  return async () => {
+      setShowPreview(false);
+      setKeyboardHeight(0);
 
-    await setDoc(
-      doc(db, "users", currentUser.uid),
-      {
-        activeScreen: null,
-        activeChatUser: null,
-      },
-      { merge: true }
-    );
+    }
+  );
+
+  return () => {
+
+    showListener.remove();
+    hideListener.remove();
 
   };
 
@@ -313,21 +372,32 @@ useEffect(() => {
 
 
 
-useEffect(() => {
-
-  setTimeout(() => {
-
-    flatListRef.current?.scrollToEnd({
-      animated: true,
-    });
-
-  }, 100);
-
-}, [messages]);
-
-
 
   const sendMessage = async () => {
+
+if (isBlocked) {
+
+  Alert.alert(
+    "Blocked",
+    "Please unblock this user first."
+  );
+
+  return;
+
+}
+
+if (blockedByOther) {
+
+  Alert.alert(
+    "Blocked",
+    "This user has blocked you."
+  );
+
+  return;
+
+}
+
+
     if (!message.trim()) return;
 
     try {
@@ -412,17 +482,14 @@ hasNewMessage: true,
       headers: {
         "Content-Type": "application/json",
       },
-     
-body: JSON.stringify({
-  receiverUid: userId,
-  senderUid: currentUser.uid,
-  senderName:
-    myData?.username ||
-    currentUser.displayName ||
-    "User",
-  message: message,
-}),
-
+      body: JSON.stringify({
+        receiverUid: userId,
+        senderName:
+          myData?.username ||
+          currentUser.displayName ||
+          "User",
+        message: message,
+      }),
     }
   );
 
@@ -430,7 +497,7 @@ body: JSON.stringify({
   console.log(e);
 }
   
-
+setShowPreview(false);
 
 Keyboard.dismiss();
 
@@ -439,9 +506,237 @@ Keyboard.dismiss();
     }
   };
 
+
+
+
+const deleteMessage = async () => {
+
+  try {
+
+   await deleteDoc(
+  doc(
+    db,
+    "chats",
+    chatId,
+    "messages",
+    selectedMessage.id
+  )
+);
+
+setSelectedMessage(null);
+
+setMenuVisible(false);
+
+  } catch (e) {
+
+    console.log(e);
+
+  }
+
+};
+
+
+const updateMessage = async () => {
+
+  try {
+
+    await updateDoc(
+      doc(
+        db,
+        "chats",
+        chatId,
+        "messages",
+        selectedMessage.id
+      ),
+      {
+        text: editText,
+        edited: true,
+      }
+    );
+
+    setEditModal(false);
+
+  } catch (e) {
+
+    console.log(e);
+
+  }
+
+};
+
+
+
+
+const blockUser = async () => {
+  try {
+
+    Alert.alert(
+      "Block User",
+      `Do you want to block ${username}?`,
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Block",
+          style: "destructive",
+          onPress: async () => {
+
+            await setDoc(
+              doc(
+                db,
+                "blockedUsers",
+                currentUid,
+                "users",
+                userId
+              ),
+              {
+                userId: userId,
+                username: username,
+                profileImg: profileImg,
+                blockedAt: serverTimestamp(),
+              }
+            );
+
+            setHeaderMenuVisible(false);
+setIsBlocked(true);
+            Alert.alert(
+              "Success",
+              "User Blocked Successfully"
+            );
+
+          },
+        },
+      ]
+    );
+
+  } catch (e) {
+    console.log(e);
+  }
+};
+
+
+
+const unblockUser = async () => {
+
+  try {
+
+    await deleteDoc(
+      doc(
+        db,
+        "blockedUsers",
+        currentUid,
+        "users",
+        userId
+      )
+    );
+
+    setIsBlocked(false);
+
+    setHeaderMenuVisible(false);
+
+    Alert.alert(
+      "Success",
+      "User Unblocked"
+    );
+
+  } catch (e) {
+
+    console.log(e);
+
+  }
+
+};
+
+
+
+
  const renderItem = ({ item }) => {
+
+console.log(
+    "MESSAGE TYPE =",
+    item.type,
+    item
+  );
+
   const mine =
     item?.senderId === currentUser.uid;
+
+
+if (item.type === "liveInvite") {
+
+  return (
+    <View
+      style={[
+        styles.row,
+        mine
+          ? styles.myRow
+          : styles.otherRow,
+      ]}
+    >
+
+      <TouchableOpacity
+
+delayLongPress={400}
+
+  onLongPress={() => {
+
+    if (item.senderId !== currentUser.uid)
+      return;
+
+    setSelectedMessage(item);
+
+    setMenuVisible(true);
+
+  }}
+
+        style={{
+          backgroundColor:"#1e1e1e",
+          padding:15,
+          borderRadius:15,
+          width:220,
+        }}
+
+        onPress={() => {
+
+          router.push({
+            pathname:"/LiveRoom",
+            params:{
+              id:item.roomId
+            }
+          });
+
+        }}
+      >
+
+        <Text
+          style={{
+            color:"#fff",
+            fontWeight:"bold",
+            fontSize:16,
+          }}
+        >
+          🎙 Live Invite
+        </Text>
+
+        <Text
+          style={{
+            color:"#ccc",
+            marginTop:5,
+          }}
+        >
+          Join Live Room
+        </Text>
+
+      </TouchableOpacity>
+
+    </View>
+  );
+}
+
+
+
 
   return (
     <View
@@ -469,18 +764,67 @@ Keyboard.dismiss();
       )}
 
 
-    <View
+
+
+
+<TouchableOpacity
+
+  delayLongPress={400}
+
+ onLongPress={() => {
+
+  if (item.senderId !== currentUser.uid)
+    return;
+
+  setSelectedMessage(item);
+
+  if (item.type === "video") {
+    setEditText("");
+  } else if (item.type === "liveInvite") {
+    setEditText("");
+  } else {
+    setEditText(item.text || "");
+  }
+
+  setMenuVisible(true);
+
+}}
+
   style={[
     styles.messageBox,
-    mine
-      ? styles.myMessage
-      : styles.otherMessage,
+
+
+
+    item.type !== "video" &&
+      (mine
+        ? styles.myMessage
+        : styles.otherMessage),
+
+    item.type === "video" && {
+      backgroundColor: "transparent",
+      padding: 0,
+    },
   ]}
 >
+    
 
   {item.type === "video" ? (
 
     <TouchableOpacity
+
+
+delayLongPress={400}
+
+ onLongPress={() => {
+
+   if (item.senderId !== currentUser.uid)
+     return;
+
+   setSelectedMessage(item);
+
+   setMenuVisible(true);
+
+ }}
 
      onPress={() => {
 
@@ -558,9 +902,27 @@ const videoArray = [{
 
   )}
 
+{item.edited && (
+
+<Text
+  style={{
+    color:"#aaa",
+    fontSize:10,
+    marginTop:3,
+  }}
+>
+  edited
+</Text>
+
+)}
+
+
+</TouchableOpacity>
+
+
 </View>
 
-    </View>
+    
   );
 };
 
@@ -618,27 +980,34 @@ const videoArray = [{
     {String(username)}
   </Text>
 
-  {verified && (
+ 
+{verified && (
 
 <View
   style={{
     marginLeft: 5,
+    width: 18,
+    height: 18,
     justifyContent: "center",
     alignItems: "center",
+    position: "relative",
   }}
 >
 
   <MaterialCommunityIcons
     name="check-decagram"
     size={18}
-    color="#ffffff"
+    color={
+      verifiedColor === "yellow"
+        ? "#FFD700"
+        : "#ffffff"
+    }
   />
-
- 
 
 </View>
 
 )}
+
 
   <View
     style={[
@@ -672,10 +1041,26 @@ const videoArray = [{
       LV {userLevel}
     </Text>
 
+
   </View>
 
-</View>
 
+
+
+</View>
+<View style={{ marginLeft: "auto" }}>
+
+  <TouchableOpacity
+    onPress={() => setHeaderMenuVisible(true)}
+  >
+    <Ionicons
+      name="ellipsis-vertical"
+      size={25}
+      color="#fff"
+    />
+  </TouchableOpacity>
+
+</View>
         
       </View>
 
@@ -683,7 +1068,7 @@ const videoArray = [{
   ref={flatListRef}
 
   data={messages}
-
+inverted
   renderItem={renderItem}
 
   keyExtractor={(item) =>
@@ -695,29 +1080,52 @@ const videoArray = [{
     paddingBottom: 20,
   }}
 
-  onContentSizeChange={() =>
-    flatListRef.current?.scrollToEnd({
-      animated: true,
-    })
-  }
-
-  onLayout={() =>
-    flatListRef.current?.scrollToEnd({
-      animated: false,
-    })
-  }
+  
 
   showsVerticalScrollIndicator={false}
 />
+
+
+{showPreview && (
+
+<View
+style={[
+styles.previewBox,
+{
+bottom: keyboardHeight,
+},
+]}
+>
+
+<Text
+style={styles.previewText}
+>
+
+{message || "Type message..."}
+
+</Text>
+
+</View>
+
+)}
+
+
 
       <View style={styles.bottomBar}>
        <TextInput
   value={message}
   onChangeText={setMessage}
-  placeholder={`Message.. ${String(
-    username
-  )}`}
+
+  placeholder={
+  isBlocked
+    ? "Unblock user to send message"
+    : blockedByOther
+    ? "You can't send messages to this user"
+    : `Message.. ${username}`
+}
+
   placeholderTextColor="#ccc"
+  editable={!(isBlocked || blockedByOther)}
   style={styles.input}
 
   // Keyboard me Send button dikhayega
@@ -734,10 +1142,25 @@ const videoArray = [{
   }}
 />
 
-        <TouchableOpacity
-          style={styles.sendBtn}
-          onPress={sendMessage}
-        >
+      
+
+<TouchableOpacity
+  disabled={isBlocked || blockedByOther}
+
+  style={[
+    styles.sendBtn,
+    {
+      opacity:
+        isBlocked || blockedByOther
+          ? 0.5
+          : 1,
+    },
+  ]}
+
+  onPress={sendMessage}
+>
+
+
           <Ionicons
             name="send"
             size={28}
@@ -745,6 +1168,211 @@ const videoArray = [{
           />
         </TouchableOpacity>
       </View>
+
+
+
+<Modal
+  visible={menuVisible}
+  transparent
+  animationType="fade"
+>
+
+<View
+  style={{
+    flex:1,
+    justifyContent:"center",
+    alignItems:"center",
+    backgroundColor:"rgba(0,0,0,0.6)",
+  }}
+>
+
+<View
+  style={{
+    width:250,
+    backgroundColor:"#111",
+    borderRadius:15,
+    padding:15,
+  }}
+>
+
+{selectedMessage?.type !== "video" &&
+ selectedMessage?.type !== "liveInvite" && (
+
+<TouchableOpacity
+  onPress={() => {
+
+    setMenuVisible(false);
+
+    setEditModal(true);
+
+  }}
+>
+
+<Text
+  style={{
+    color:"#fff",
+    fontSize:18,
+    padding:15,
+  }}
+>
+  Edit Message
+</Text>
+
+</TouchableOpacity>
+
+)}
+
+<TouchableOpacity
+  onPress={deleteMessage}
+>
+
+<Text
+  style={{
+    color:"red",
+    fontSize:18,
+    padding:15,
+  }}
+>
+  Delete
+</Text>
+
+</TouchableOpacity>
+
+</View>
+
+</View>
+
+</Modal>
+
+
+
+<Modal
+  visible={editModal}
+  transparent
+>
+
+<View
+  style={{
+    flex:1,
+    justifyContent:"center",
+    alignItems:"center",
+    backgroundColor:"rgba(0,0,0,0.6)",
+  }}
+>
+
+<View
+  style={{
+    width:"90%",
+    backgroundColor:"#111",
+    borderRadius:15,
+    padding:20,
+  }}
+>
+
+<TextInput
+  value={editText}
+  onChangeText={setEditText}
+  style={{
+    color:"#fff",
+    borderWidth:1,
+    borderColor:"#333",
+    borderRadius:10,
+    padding:12,
+  }}
+/>
+
+<TouchableOpacity
+  onPress={updateMessage}
+  style={{
+    backgroundColor:"#00C853",
+    padding:15,
+    borderRadius:10,
+    marginTop:15,
+  }}
+>
+
+<Text
+  style={{
+    color:"#fff",
+    textAlign:"center",
+    fontWeight:"bold",
+  }}
+>
+  Save
+</Text>
+
+</TouchableOpacity>
+
+</View>
+
+</View>
+
+</Modal>
+
+
+
+
+<Modal
+  visible={headerMenuVisible}
+  transparent
+  animationType="fade"
+>
+
+  <Pressable
+    style={{
+      flex: 1,
+      backgroundColor: "rgba(0,0,0,0.4)",
+    }}
+    onPress={() => setHeaderMenuVisible(false)}
+  >
+
+    <View
+      style={{
+        position: "absolute",
+        top: 70,
+        right: 15,
+        width: 180,
+        backgroundColor: "#111",
+        borderRadius: 12,
+        overflow: "hidden",
+      }}
+    >
+
+      <TouchableOpacity
+       onPress={
+ isBlocked
+   ? unblockUser
+   : blockUser
+}
+
+        style={{
+          padding: 16,
+        }}
+      >
+
+        <Text
+  style={{
+    color:isBlocked ? "#00E676" : "red",
+    fontSize:16,
+    fontWeight:"bold",
+  }}
+>
+
+{isBlocked
+ ? "✅ Unblock User"
+ : "🚫 Block User"}
+
+</Text>
+
+      </TouchableOpacity>
+
+    </View>
+
+  </Pressable>
+
+</Modal>
+
+
     </KeyboardAvoidingView>
   );
 }
@@ -785,8 +1413,8 @@ const styles = StyleSheet.create({
 
   username: {
     color: "#fff",
-    fontSize: 20,
-    marginLeft: 10,
+    fontSize: 17,
+    marginLeft: 0,
     fontWeight: "bold",
   },
 
@@ -863,15 +1491,15 @@ bottomBar: {
   },
 
 videoThumbnail:{
-  width:180,
-  height:240,
+  width:130,
+  height:190,
   borderRadius:15,
 },
 
 playIcon:{
   position:'absolute',
-  top:'40%',
-  left:'40%',
+  top:'37%',
+  left:'33%',
 },
 
 levelBadge: {
@@ -883,6 +1511,37 @@ levelBadge: {
   paddingVertical: 3,
   borderRadius: 20,
 },
+
+previewBox:{
+
+position:"absolute",
+
+left:0,
+
+right:0,
+
+padding:15,
+
+backgroundColor:"#222",
+
+borderTopWidth:1,
+
+borderTopColor:"#444",
+
+marginBottom: 45,
+
+},
+
+previewText:{
+
+color:"#fff",
+
+fontSize:16,
+
+},
+
+
+
 
 
 });             

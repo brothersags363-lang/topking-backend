@@ -310,6 +310,23 @@ Admin Panel
 
 
 
+<TouchableOpacity
+    style={styles.feedbackBtn}
+    onPress={() => router.push("/feedbackAdmin")}
+>
+
+    <Ionicons
+        name="chatbox-ellipses"
+        size={22}
+        color="#fff"
+    />
+
+    <Text style={styles.feedbackText}>
+        User Feedback
+    </Text>
+
+</TouchableOpacity>
+
 
 
 <FlatList
@@ -580,5 +597,26 @@ fontSize:18,
 fontWeight:"bold"
 
 },
+
+
+feedbackBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFD700",
+    marginHorizontal: 20,
+    marginTop: 12,
+    paddingVertical: 14,
+    borderRadius: 12,
+},
+
+feedbackText: {
+    color: "#000",
+    fontSize: 16,
+    fontWeight: "bold",
+    marginLeft: 10,
+},
+
+
 
 });

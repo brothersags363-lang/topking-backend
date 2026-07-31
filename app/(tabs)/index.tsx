@@ -146,6 +146,7 @@ const [selectedShareVideo, setSelectedShareVideo] = useState(null);
   const [currentIndex,setCurrentIndex]=useState(0);
 
 const scrollRef=useRef(null);
+const commentInputRef = useRef(null);
   const [isFocused, setIsFocused] = useState(true);
   const [localLikes, setLocalLikes] = useState({}); 
 
@@ -243,6 +244,17 @@ const [selectedVideoId, setSelectedVideoId] = useState(null);
 const [commentText, setCommentText] = useState('');
 const [comments, setComments] = useState([]);
 const [commentsLoading, setCommentsLoading] = useState(false);
+const replyUnsubscribers = useRef([]);
+const [replyingTo, setReplyingTo] = useState(null);
+
+const [replies, setReplies] = useState({});
+
+const [replyText, setReplyText] = useState("");
+
+const [expandedReplies, setExpandedReplies] = useState({});
+
+const [replyCounts, setReplyCounts] = useState({});
+
 const [currentUserData, setCurrentUserData] = useState({
   
   name: 'User',
@@ -372,10 +384,11 @@ if (
 ) {
 
     loadedVideos.push({
-        id: docItem.id,
-        ...data,
-        verified: data.verified || false,
-    });
+  id: docItem.id,
+  ...data,
+  verified: data.verified || false,
+  verifiedColor: data.verifiedColor || "",
+});
 
 }
 
@@ -415,6 +428,7 @@ if (
               data.profileImg ||
               'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
                verified: data.verified || false,
+               verifiedColor: data.verifiedColor || "",
           });
         }
       } catch (error) {
@@ -561,49 +575,140 @@ if (showSharePopup) {
 }, [showComments, showStarPopup, showSharePopup]);
 
 
- 
+
+
 useEffect(() => {
 
 if (!selectedVideoId) return;
 
+
 setComments([]);
+setReplies({});
 setCommentsLoading(true);
 
+
+// purane reply listeners band karo
+replyUnsubscribers.current.forEach(unsub => unsub());
+replyUnsubscribers.current = [];
+
+
 const q = query(
-collection(
-db,
-'all_videos',
-selectedVideoId,
-'comments'
-),
-orderBy(
-'createdAt',
-'desc'
-)
+  collection(
+    db,
+    "all_videos",
+    selectedVideoId,
+    "comments"
+  ),
+  orderBy("createdAt","desc")
 );
+
+
 
 const unsubscribe = onSnapshot(
 q,
 (snapshot)=>{
 
+
 const data = snapshot.docs.map(doc=>({
 id:doc.id,
-...doc.data(),
+...doc.data()
 }));
+
 
 setComments(data);
 
-setCommentsLoading(false);
 
-},
-()=>{
-setCommentsLoading(false);
-}
+
+data.forEach((comment)=>{
+
+
+const replyQuery = query(
+
+collection(
+db,
+"all_videos",
+selectedVideoId,
+"comments",
+comment.id,
+"replies"
+),
+
+orderBy(
+"createdAt",
+"asc"
+)
+
 );
 
-return ()=>unsubscribe();
+
+
+const replyUnsub = onSnapshot(
+replyQuery,
+(replySnap)=>{
+
+
+setReplies(prev=>({
+
+...prev,
+
+[comment.id]:
+
+replySnap.docs.map(doc=>({
+id:doc.id,
+...doc.data()
+}))
+
+}));
+
+
+});
+
+
+replyUnsubscribers.current.push(replyUnsub);
+
+
+
+});
+
+
+
+setCommentsLoading(false);
+
+
+},
+
+(error)=>{
+
+console.log("Comment Load Error",error);
+
+setCommentsLoading(false);
+
+}
+
+);
+
+
+
+return ()=>{
+
+
+unsubscribe();
+
+
+replyUnsubscribers.current.forEach(
+unsub=>unsub()
+);
+
+
+replyUnsubscribers.current=[];
+
+
+};
+
+
 
 },[selectedVideoId]);
+
   // INTERACTIONS
   
 
@@ -742,6 +847,7 @@ if(videoSnap.exists()){
   collection(db, "users", videoData.userId, "notifications"),
   {
     type: "like",
+    isRead: false,
     senderId: user.uid,
     senderName: currentUserData.name,
     senderPhoto: currentUserData.photo,
@@ -1042,7 +1148,74 @@ const deleteComment = async (commentId) => {
 
 
 
+const deleteReply = async (commentId, replyId) => {
+
+  Alert.alert(
+    "Delete Reply",
+    "Do you want to delete this reply?",
+    [
+      {
+        text:"Cancel",
+        style:"cancel",
+      },
+
+      {
+        text:"Delete",
+        style:"destructive",
+
+        onPress: async()=>{
+
+          try{
+
+
+            await deleteDoc(
+              doc(
+                db,
+                "all_videos",
+                selectedVideoId,
+                "comments",
+                commentId,
+                "replies",
+                replyId
+              )
+            );
+
+
+            await updateDoc(
+              doc(
+                db,
+                "all_videos",
+                selectedVideoId
+              ),
+              {
+                commentsCount: increment(-1),
+              }
+            );
+
+
+          }catch(e){
+
+            console.log("Reply delete error",e);
+
+          }
+
+        }
+
+      }
+
+    ]
+  );
+
+};
+
+
 const postComment = async () => {
+
+// Reply mode
+if (replyingTo) {
+  await postReply();
+  return;
+}
 
 console.log("Selected Video:", selectedVideoId);
 console.log("Comment:", commentText);
@@ -1078,6 +1251,8 @@ Keyboard.dismiss();
 profilePic: currentUserData.photo,
         userId: user.uid,
          verified: currentUserData?.verified || false,
+         verifiedColor:
+  currentUserData?.verifiedColor || "",
         createdAt: serverTimestamp(),
       }
     );
@@ -1110,7 +1285,7 @@ if (videoSnap.exists()) {
   ),
   {
     type: "comment",
-
+isRead: false,
     senderId: user.uid,
     senderName: currentUserData.name,
     senderPhoto: currentUserData.photo,
@@ -1142,6 +1317,69 @@ if (videoSnap.exists()) {
     console.log('Comment Error:', error);
   }
 };
+
+
+
+
+
+const postReply = async () => {
+
+  const user = auth.currentUser;
+
+  if (!user) return;
+
+  if (!commentText.trim()) return;
+
+  const text = commentText.trim();
+
+  setCommentText("");
+
+  Keyboard.dismiss();
+
+  try {
+
+    await addDoc(
+
+      collection(
+        db,
+        "all_videos",
+        selectedVideoId,
+        "comments",
+        replyingTo.id,
+        "replies"
+      ),
+
+      {
+        text: text,
+        username: currentUserData.name,
+        profilePic: currentUserData.photo,
+        userId: user.uid,
+        verified: currentUserData.verified || false,
+        verifiedColor:
+          currentUserData.verifiedColor || "",
+        createdAt: serverTimestamp(),
+      }
+
+    );
+
+await updateDoc(
+  doc(db, "all_videos", selectedVideoId),
+  {
+    commentsCount: increment(1),
+    engagementScore: increment(1),
+  }
+);
+
+    setReplyingTo(null);
+
+  } catch (error) {
+
+    console.log("Reply Error:", error);
+
+  }
+
+};
+
 
 
 
@@ -1367,11 +1605,17 @@ resizeMode:"contain",
 
   {item.verified && (
     <View style={styles.badge}>
-      <MaterialCommunityIcons
-        name="check-decagram"
-        size={18}
-        color="#ffffff"
-      />
+    
+<MaterialCommunityIcons
+  name="check-decagram"
+  size={17}
+  color={
+    item?.verifiedColor === "yellow"
+      ? "#FFD700"
+      : "#ffffff"
+  }
+/>
+
 
       <Ionicons
         name="checkmark"
@@ -1541,37 +1785,58 @@ numberOfLines={1}
 
           </TouchableOpacity>
 
+   
 
-            <TouchableOpacity
+<TouchableOpacity
   style={styles.iconBox}
 
-onPress={() => {
+  onPress={() => {
 
-setComments([]);            // Purane comments hata do
-setCommentsLoading(true); 
+    // पुराने comments साफ
+    setComments([]);
 
-InteractionManager.runAfterInteractions(() => {
+    // पुराने replies साफ
+    setReplies({});
 
-  // Purana data hata do
-  setComments([]);
+    // पुराने expanded replies साफ
+    setExpandedReplies({});
 
-  setSelectedVideoId(item.id);
+    // reply mode बंद
+    setReplyingTo(null);
 
-  setSelectedVideoData({
-    username: item.username,
-    profile: item.profile,
-    caption: item.caption,
-    userId: item.userId,
-    verified: item.verified || false,
-  });
+    // loading चालू
+    setCommentsLoading(true);
 
-  setShowComments(true);
 
-});
+    // नया video select
+    setSelectedVideoId(item.id);
 
-}}
 
->       
+    // comment header data
+    setSelectedVideoData({
+
+      username: item.username,
+
+      profile: item.profile,
+
+      caption: item.caption,
+
+      userId: item.userId,
+
+      verified: item.verified || false,
+
+      verifiedColor: item.verifiedColor || "",
+
+    });
+
+
+    // comment popup open
+    setShowComments(true);
+
+
+  }}
+>
+
 
             <Ionicons name="chatbubble" size={35} color="#ffffff" />
             <Text style={styles.iconText}>{item.commentsCount || 0}</Text>
@@ -2014,6 +2279,14 @@ useNativeDriver:true
 
 setShowComments(false);
 
+setSelectedVideoId(null);
+
+setComments([]);
+
+setReplies({});
+
+setCommentsLoading(false);
+
 });
 
 }}
@@ -2085,6 +2358,8 @@ translateY:commentAnim
   </Text>
 
 
+
+
 {selectedVideoData?.verified && (
 <View
   style={{
@@ -2097,21 +2372,16 @@ translateY:commentAnim
   }}
 >
   <MaterialCommunityIcons
-    name="check-decagram"
-    size={18}
-    color="#ffffff"
-  />
+  name="check-decagram"
+  size={17}
+  color={
+  selectedVideoData?.verifiedColor === "yellow"
+    ? "#FFD700"
+    : "#ffffff"
+}
+/>
 
-  <Ionicons
-    name="checkmark"
-    size={10}
-    color="#131212"
-    style={{
-      position: "absolute",
-      top: 4.6,
-      left: 4.2,
-    }}
-  />
+  
 
 </View>
 
@@ -2196,14 +2466,27 @@ keyboardShouldPersistTaps="handled"
   }}
 >
 
-          <Image
-            source={{ uri: item.profilePic }}
-            style={{
-              width: 40,
-              height: 40,
-              borderRadius: 20,
-            }}
-          />
+          <TouchableOpacity
+  onPress={() => {
+    setShowComments(false);
+
+    router.push({
+      pathname: "/userProfile",
+      params: {
+        userId: item.userId,
+      },
+    });
+  }}
+>
+  <Image
+    source={{ uri: item.profilePic }}
+    style={{
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+    }}
+  />
+</TouchableOpacity>
 
           <View
             style={{
@@ -2242,22 +2525,17 @@ keyboardShouldPersistTaps="handled"
 >
 
 
-  <MaterialCommunityIcons
-    name="check-decagram"
-    size={16}
-    color="#ffffff"
-  />
+ <MaterialCommunityIcons
+  name="check-decagram"
+  size={17}
+  color={
+    item?.verifiedColor === "yellow"
+      ? "#FFD700"
+      : "#ffffff"
+  }
+/>
 
-  <Ionicons
-    name="checkmark"
-    size={9}
-    color="#131212"
-    style={{
-      position: "absolute",
-      top: 4,
-      left: 3.8,
-    }}
-  />
+  
 </View>
 )}
 
@@ -2278,6 +2556,228 @@ keyboardShouldPersistTaps="handled"
             >
               {getTimeAgo(item.createdAt)}
             </Text>
+
+<View
+  style={{
+    flexDirection: "row",
+    marginTop: 8,
+  }}
+>
+
+  <TouchableOpacity
+    onPress={() => {
+
+  setReplyingTo({
+    id: item.id,
+    username: item.username,
+  });
+
+  setReplyText("");
+
+  setTimeout(() => {
+    commentInputRef.current?.focus();
+  }, 100);
+
+}}
+  >
+
+    <Text
+      style={{
+        color: "#999",
+        fontSize: 13,
+        fontWeight: "600",
+      }}
+    >
+      Reply
+    </Text>
+
+  </TouchableOpacity>
+
+</View>
+
+
+
+{
+  replies[item.id]?.length > 0 && (
+
+    <TouchableOpacity
+      onPress={() => {
+
+        setExpandedReplies(prev => ({
+          ...prev,
+          [item.id]: !prev[item.id],
+        }));
+
+      }}
+
+      style={{
+        marginTop: 8,
+        marginLeft: 15,
+      }}
+    >
+
+      <Text
+        style={{
+          color: "#999",
+          fontSize: 13,
+          fontWeight: "600",
+        }}
+      >
+
+        {
+          expandedReplies[item.id]
+            ? "Hide replies"
+            : `View ${replies[item.id].length} ${
+                replies[item.id].length === 1
+                  ? "reply"
+                  : "replies"
+              }`
+        }
+
+      </Text>
+
+    </TouchableOpacity>
+
+  )
+}
+
+
+
+{
+  replies[item.id]?.length > 0 &&
+expandedReplies[item.id] && (
+
+    <View
+      style={{
+        marginTop: 10,
+        marginLeft: 15,
+        borderLeftWidth: 1,
+        borderLeftColor: "#333",
+        paddingLeft: 12,
+      }}
+    >
+
+      {replies[item.id].map((reply) => (
+
+        <View
+          key={reply.id}
+          style={{
+            flexDirection: "row",
+            marginBottom: 12,
+            alignItems: "flex-start",
+          }}
+        >
+
+          <Image
+            source={{ uri: reply.profilePic }}
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: 15,
+            }}
+          />
+
+          <View
+            style={{
+              marginLeft: 8,
+              flex: 1,
+            }}
+          >
+
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+              }}
+            >
+
+              <Text
+                style={{
+                  color: "#fff",
+                  fontWeight: "bold",
+                  fontSize: 13,
+                }}
+              >
+                {reply.username}
+              </Text>
+
+              {reply.verified && (
+
+                <MaterialCommunityIcons
+                  name="check-decagram"
+                  size={15}
+                  color={
+                    reply.verifiedColor === "yellow"
+                      ? "#FFD700"
+                      : "#ffffff"
+                  }
+                  style={{ marginLeft: 5 }}
+                />
+
+              )}
+
+            </View>
+
+            <Text
+              style={{
+                color: "#fff",
+                marginTop: 2,
+              }}
+            >
+              {reply.text}
+            </Text>
+
+            <Text
+              style={{
+                color: "#888",
+                fontSize: 11,
+                marginTop: 3,
+              }}
+            >
+              {getTimeAgo(reply.createdAt)}
+            </Text>
+
+
+          </View>
+
+{
+auth.currentUser?.uid === reply.userId && (
+
+<TouchableOpacity
+
+onPress={()=>deleteReply(
+item.id,
+reply.id
+)}
+
+style={{
+  paddingLeft:10,
+  paddingTop:5,
+}}
+
+>
+
+<Ionicons
+  name="ellipsis-vertical"
+  size={20}
+  color="#fff"
+/>
+
+</TouchableOpacity>
+
+)
+}
+
+
+        </View>
+
+      ))}
+
+    </View>
+
+  )
+}
+
 
           </View>
 
@@ -2326,15 +2826,25 @@ translateY:Animated.multiply(keyboardHeight,-1)
 ]}
 >
 
+
+
+
+
+
       <Image
         source={{ uri: currentUserData.photo }}
         style={styles.commentProfile}
       />
 
     <TextInput
+    ref={commentInputRef}
   value={commentText}
   onChangeText={setCommentText}
-  placeholder={`Comment as ${currentUserData.name}...`}
+  placeholder={
+  replyingTo
+    ? `Reply to @${replyingTo.username}`
+    : `Comment as ${currentUserData.name}...`
+}
   placeholderTextColor="#999"
   style={styles.commentInput}
 
