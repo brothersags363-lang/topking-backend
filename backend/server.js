@@ -1,7 +1,21 @@
 require("dotenv").config();
 
-console.log("APP_ID =", process.env.APP_ID);
-console.log("Cloud =", process.env.CLOUDINARY_CLOUD_NAME);
+console.log(
+  "AGORA_APP_ID =",
+  process.env.AGORA_APP_ID
+);
+
+console.log(
+  "AGORA_APP_CERTIFICATE =",
+  process.env.AGORA_APP_CERTIFICATE
+    ? "Loaded"
+    : "Missing"
+);
+
+console.log(
+  "Cloud =",
+  process.env.CLOUDINARY_CLOUD_NAME
+);
 
 
 const multer = require("multer");
@@ -122,6 +136,7 @@ const ffmpegPath = require("ffmpeg-static");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 ffmpeg.setFfmpegPath(ffmpegPath);
 
 const express = require("express");
@@ -132,6 +147,7 @@ const helmet = require("helmet");
 const cors = require("cors");
 
 const rateLimit = require("express-rate-limit");
+const cron = require("node-cron");
 
 const app = express();
 app.set("trust proxy", true);
@@ -144,9 +160,9 @@ app.use(cors());
 
 const uploadLimiter = rateLimit({
 
-  windowMs: 60 * 1000,
+  windowMs: 60000,
 
-  max: 5,
+  max: 100,
 
   message: {
     success: false,
@@ -185,8 +201,11 @@ const upload = multer({
 
 });
 
-const APP_ID = process.env.APP_ID;
-const APP_CERTIFICATE = process.env.APP_CERTIFICATE;
+const APP_ID =
+  process.env.AGORA_APP_ID;
+
+const APP_CERTIFICATE =
+  process.env.AGORA_APP_CERTIFICATE;
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -194,7 +213,20 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+const r2 = new S3Client({
+  region: "auto",
+  endpoint: process.env.R2_ENDPOINT,
+  credentials: {
+    accessKeyId: process.env.R2_ACCESS_KEY_ID,
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+  },
+});
+
 console.log("Cloud =", process.env.CLOUDINARY_CLOUD_NAME);
+
+
+
+
 
 
 async function verifyUser(req, res, next) {
@@ -362,18 +394,28 @@ outputPath = path.join(tempDir, `${fileId}.mp4`);
 console.log("MERGE API HIT");
     // upload cloudinary
 
-    const upload = await cloudinary.uploader.upload(outputPath, {
+const stream = fs.createReadStream(outputPath);
 
-      resource_type: "video"
+const fileName = `${crypto.randomUUID()}.mp4`;
 
-    });
+await r2.send(
+  new PutObjectCommand({
+    Bucket: process.env.R2_BUCKET,
+    Key: fileName,
+    Body: stream,
+    ContentType: "video/mp4",
+  })
+);
+
+const videoUrl =
+`${process.env.R2_PUBLIC_URL}/${fileName}`;
 
     
-
 return res.json({
   success: true,
-  video: upload.secure_url,
+  video: videoUrl,
 });
+
 
   }
 
@@ -464,9 +506,23 @@ await userRef.update({
         });
       }
 
-      const result = await cloudinary.uploader.upload(req.file.path, {
-        resource_type: "video",
-      });
+      
+const fileName = `${crypto.randomUUID()}.mp4`;
+
+const stream = fs.createReadStream(req.file.path);
+
+await r2.send(
+  new PutObjectCommand({
+    Bucket: process.env.R2_BUCKET,
+    Key: fileName,
+    Body: stream,
+    ContentType: "video/mp4",
+  })
+);
+
+const videoUrl =
+`${process.env.R2_PUBLIC_URL}/${fileName}`;
+
 
 await userRef.update({
   uploadStatus: false,
@@ -476,7 +532,7 @@ await userRef.update({
 
       return res.json({
         success: true,
-        videoUrl: result.secure_url,
+        videoUrl: videoUrl,
       });
 
     } catch (e) {
@@ -554,6 +610,56 @@ console.log(
 
   }
 );
+
+
+
+async function resetAgencyMonthlyStars() {
+
+  try {
+
+    const agenciesSnap = await db
+      .collection("agencies")
+      .get();
+
+    const batch = db.batch();
+
+    agenciesSnap.forEach((agencyDoc) => {
+
+      batch.update(agencyDoc.ref, {
+
+        monthlyStars: 0,
+
+      });
+
+    });
+
+    await batch.commit();
+
+    console.log(
+      "All Agency Monthly Stars Reset Successfully"
+    );
+
+  } catch (e) {
+
+    console.log(e);
+
+  }
+
+}
+
+cron.schedule(
+  "0 0 1 * *",
+  async () => {
+
+    console.log(
+      "Running Monthly Agency Reset..."
+    );
+
+    await resetAgencyMonthlyStars();
+
+  }
+);
+
 
 const PORT = process.env.PORT || 3000;
 
