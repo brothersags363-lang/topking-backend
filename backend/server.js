@@ -59,7 +59,7 @@ async function sendPushNotification(
 const userData =
   userSnap.data();
 
-
+/*
 const activeScreen =
   userData.activeScreen;
 
@@ -74,7 +74,7 @@ if (
 
   return;
 }
-
+*/
 
 
     const token =

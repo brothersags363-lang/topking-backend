@@ -44,6 +44,8 @@ export default function LiveStart() {
   const [roomTitle, setRoomTitle] = useState('');
   const [roomDescription, setRoomDescription] = useState('');
   const [isUploading, setIsUploading] = useState(false); 
+const [loadingButton, setLoadingButton] = useState(null);
+
 
   // FIXED & ADDED: MOBILE HARDWARE BACK BUTTON LOGIC WITH MODERN CRASH PROTECTION
   useEffect(() => {
@@ -102,7 +104,8 @@ export default function LiveStart() {
     }
   };
 
-  const handleStartLive = async () => {
+  const handleStartLive = async (roomType = "public") => {
+    setLoadingButton(roomType);
     if (!roomTitle.trim()) {
       Alert.alert("Required", "Please provide a catchy room title first.");
       return;
@@ -157,6 +160,7 @@ export default function LiveStart() {
         hostImg: hostAvatar, 
         status: 'active', 
         type: 'audio', 
+        roomType: roomType,
         audienceList: {
           [currentUid]: { name: hostName, img: hostAvatar }
         }, 
@@ -176,13 +180,36 @@ export default function LiveStart() {
       }
 
       setIsUploading(false);
-      router.push({ 
-        pathname: '/LiveRoom', 
-        params: { id: roomUniqueId, hostName: hostName, hostProfilePic: hostAvatar } 
-      });
+      
+if (roomType === "private") {
+
+  router.push({
+    pathname: "/LivePrivate",
+    params: {
+      id: roomUniqueId,
+      hostName: hostName,
+      hostProfilePic: hostAvatar,
+    },
+  });
+
+} else {
+
+  router.push({
+    pathname: "/LiveRoom",
+    params: {
+      id: roomUniqueId,
+      hostName: hostName,
+      hostProfilePic: hostAvatar,
+    },
+  });
+
+}
+
+
 
     } catch (error) {
       setIsUploading(false);
+      setLoadingButton(null);
       Alert.alert("Error", "Could not create structural audio engine stream.");
     }
   };
@@ -244,21 +271,94 @@ export default function LiveStart() {
         </View>
 
         {/* SUBMIT LAUNCH ACTION BUTTON */}
-        <TouchableOpacity 
-          style={[styles.primaryLaunchActionButton, !roomTitle.trim() && styles.buttonDisabledState]} 
-          onPress={handleStartLive} 
-          activeOpacity={0.85}
-          disabled={isUploading}
-        >
-          {isUploading ? (
-            <ActivityIndicator size="small" color="#000000" />
-          ) : (
-            <View style={styles.buttonTextWrapper}>
-              <Ionicons name="mic-sharp" size={18} color="#000000" style={{ marginRight: 8 }} />
-              <Text style={styles.launchButtonLabelText}>Create Party Room</Text>
-            </View>
-          )}
-        </TouchableOpacity>
+        
+<View style={styles.roomButtonsContainer}>
+
+  {/* PUBLIC */}
+
+  <TouchableOpacity
+    style={[
+      styles.primaryLaunchActionButton,
+      !roomTitle.trim() && styles.buttonDisabledState
+    ]}
+    activeOpacity={0.85}
+    disabled={isUploading}
+    onPress={() => handleStartLive("public")}
+  >
+
+    {loadingButton === "public" ? (
+
+      <ActivityIndicator
+        size="small"
+        color="#000"
+      />
+
+    ) : (
+
+      <View style={styles.buttonTextWrapper}>
+
+        <Ionicons
+          name="globe-outline"
+          size={20}
+          color="#000"
+          style={{ marginRight: 8 }}
+        />
+
+        <Text style={styles.launchButtonLabelText}>
+          Audio Public Room
+        </Text>
+
+      </View>
+
+    )}
+
+  </TouchableOpacity>
+
+
+
+  {/* PRIVATE */}
+
+  <TouchableOpacity
+    style={[
+      styles.privateRoomButton,
+      !roomTitle.trim() && styles.buttonDisabledState
+    ]}
+    activeOpacity={0.85}
+    disabled={isUploading}
+    onPress={() => handleStartLive("private")}
+  >
+
+    {loadingButton === "private" ? (
+
+      <ActivityIndicator
+        size="small"
+        color="#fff"
+      />
+
+    ) : (
+
+      <View style={styles.buttonTextWrapper}>
+
+        <Ionicons
+          name="lock-closed"
+          size={20}
+          color="#fff"
+          style={{ marginRight: 8 }}
+        />
+
+        <Text style={styles.privateRoomText}>
+          Audio Private Room
+        </Text>
+
+      </View>
+
+    )}
+
+  </TouchableOpacity>
+
+</View>
+
+
       </ScrollView>
     </SafeAreaView>
   );
@@ -310,5 +410,28 @@ const styles = StyleSheet.create({
   primaryLaunchActionButton: { width: width - 32, height: 52, backgroundColor: '#ebd500', borderRadius: 16, justifyContent: 'center', alignItems: 'center', shadowColor: '#ebd500', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.2, shadowRadius: 10, elevation: 3 },
   buttonDisabledState: { opacity: 0.9 },
   buttonTextWrapper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
-  launchButtonLabelText: { fontSize: 15, fontWeight: '900', color: '#000000', letterSpacing: 0.3 }
+  launchButtonLabelText: { fontSize: 15, fontWeight: '900', color: '#000000', letterSpacing: 0.3 },
+
+
+roomButtonsContainer: {
+  marginTop: 20,
+},
+
+privateRoomButton: {
+  backgroundColor: "#1f1f1f",
+  height: 56,
+  borderRadius: 15,
+  justifyContent: "center",
+  alignItems: "center",
+  marginTop: 15,
+  borderWidth: 1,
+  borderColor: "#FFD700",
+},
+
+privateRoomText: {
+  color: "#fff",
+  fontSize: 16,
+  fontWeight: "700",
+},
+
 });

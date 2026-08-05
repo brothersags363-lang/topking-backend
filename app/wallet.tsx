@@ -489,6 +489,9 @@ const userData = userSnap.exists()
   ? userSnap.data()
   : {};
 
+const agencyId = userData.agencyId || "";
+const agencyName = userData.agencyName || "";
+
 
 await addDoc(
 
@@ -502,6 +505,9 @@ uid,
 {
 
 userId: uid,
+
+agencyId,
+agencyName,
 
 accountName,
 
@@ -537,6 +543,8 @@ username: userData.username || "",
 
 profileImg: userData.profileImg || "",
 
+agencyId,
+agencyName,
 
 accountName,
 

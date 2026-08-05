@@ -2338,7 +2338,7 @@ const styles = StyleSheet.create({
 
   topUsername: {
     color: "#fff",
-    fontSize: 15,
+    fontSize: 12,
     fontWeight: "bold",
     marginLeft: 10,
   },
@@ -2364,7 +2364,7 @@ const styles = StyleSheet.create({
 
   username: {
     color: "#fff",
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: "bold",
   },
 
@@ -2400,17 +2400,17 @@ statBox: {
 
   bioBox: {
     paddingHorizontal: 20,
-    marginTop: 12,
+    marginTop: 5,
   },
 
   bioTitle: {
     color: "#999",
-    fontSize: 15,
+    fontSize: 14,
   },
 
   bioText: {
     color: "#fff",
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "bold",
     marginTop: 5,
   },
@@ -2472,7 +2472,7 @@ messageText: {
     flexDirection: "row",
     
     marginHorizontal: 20,
-    marginTop: 15,
+    marginTop: 10,
     borderRadius: 0,
     paddingVertical: 12,
     justifyContent: "space-around",

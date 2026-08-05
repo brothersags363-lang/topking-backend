@@ -155,6 +155,7 @@ if (isHost) {
   console.log("STARTING CAMERA");
 
 
+  console.log("VIEW REF =", localViewRef.current);
  await engine.startPreview({
   view: localViewRef.current,
 });

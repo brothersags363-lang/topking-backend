@@ -1778,11 +1778,11 @@ const styles = StyleSheet.create({
 
 countBadge: {
   position: 'absolute',
-  top: -10,
+  top: -0,
   right: -5,
   backgroundColor: '#ff00aa',
-  minWidth: 28,
-  height: 28,
+  minWidth: 20,
+  height: 20,
   borderRadius: 14,
   justifyContent: 'center',
   alignItems: 'center',

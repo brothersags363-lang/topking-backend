@@ -25,6 +25,8 @@ query,
 where,
 getDocs,
 increment,
+setDoc,
+serverTimestamp,
 } from "firebase/firestore";
 
 import {
@@ -246,12 +248,51 @@ const calculateAgencyStars = async (agencyId) => {
 
     }
 
+
 await updateDoc(
   doc(db, "agencies", agencyId),
   {
     totalStars,
+    monthlyStars: totalStars,
   }
 );
+
+
+const now = new Date();
+
+const month =
+`${now.getFullYear()}-${now.getMonth()+1}`;
+
+if (totalStars >= 300000) {
+
+  const notifyRef = doc(
+    db,
+    "agencyNotifications",
+    agencyId + "_" + month
+  );
+
+  const notifySnap =
+    await getDoc(notifyRef);
+
+  if (!notifySnap.exists()) {
+
+    await setDoc(
+      notifyRef,
+      {
+        agencyId,
+        agencyName: agency.agencyName,
+        ownerUserId: agency.ownerUserId,
+        stars: totalStars,
+        month,
+        status: "pending",
+        createdAt:
+          serverTimestamp(),
+      }
+    );
+
+  }
+
+}
 
 
     setAgency(prev => ({
@@ -581,7 +622,7 @@ Members
 
 <View style={styles.statBox}>
 <Text style={styles.statNumber}>
-⭐ {agency.totalStars || 0}
+⭐ {agency.monthlyStars || 0}
 </Text>
 
 <Text style={styles.statTitle}>

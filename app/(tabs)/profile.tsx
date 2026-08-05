@@ -34,7 +34,7 @@ import {
   CLOUDINARY_UPLOAD_PRESET
 } from "../backend/config/cloudinary";
 
-import { collection, query, where, getDocs, doc, getDoc, setDoc, deleteDoc,  orderBy, limit,  onSnapshot, } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, getDoc, setDoc, deleteDoc,  orderBy, limit,  onSnapshot,  } from 'firebase/firestore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
@@ -275,13 +275,13 @@ useEffect(() => {
       } else {
 
         // Firestore se load karo
-        setProfileData(docSnap.data());
+        await fetchUserData(user.uid);
 
       }
 
 
      
-Promise.all([
+ await Promise.all([
   fetchUserData(user.uid),
   loadVideos(user.uid),
   loadLikedVideos(user.uid),
@@ -290,7 +290,7 @@ Promise.all([
   checkJoinedAgency(user.uid),
   loadUserRank(user.uid),
 ]);
-await checkYellowBadge(uid);
+await checkYellowBadge(user.uid);
 
 
 
@@ -1106,10 +1106,45 @@ const imageUrl =
   await uploadProfileImage(tempProfileImg);
 
 
+const cleanUsername = tempUsername
+  .trim()
+  .replace(/\s+/g, "_")
+  .toLowerCase();
+
+if (cleanUsername.length < 4) {
+
+  Alert.alert(
+    "Username Error",
+    "Username minimum 4 letters ka hona chahiye."
+  );
+
+  setSaving(false);
+
+  return;
+
+}
+
+if (!/^[a-z0-9_]+$/.test(cleanUsername)) {
+
+  Alert.alert(
+    "Username Error",
+    "Sirf letters, numbers aur _ use kar sakte ho."
+  );
+
+  setSaving(false);
+
+  return;
+
+}
+
+
+
+
+
     const updatedData = {
       ...profileData, // purane followers/likes details hold rakhne ke liye
       name: tempName,
-      username: tempUsername.toLowerCase().trim(),
+      username: cleanUsername,
       bioText: tempBioText,
       category: tempCategory,
       gender: tempGender,
@@ -1123,7 +1158,7 @@ const imageUrl =
       // Username unique check
 const usernameQuery = query(
   collection(db, "users"),
-  where("username", "==", tempUsername.toLowerCase())
+  where("username", "==", cleanUsername)
 );
 
 const usernameSnapshot = await getDocs(usernameQuery);

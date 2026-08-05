@@ -500,8 +500,7 @@ Keyboard.dismiss();
         'comments'
       ),
       {
-        text:
-          commentText,
+        text: text,
 
         username:
           currentUserData.name,
@@ -1281,7 +1280,7 @@ resizeMode:"contain",
   <TouchableOpacity
   style={styles.iconBox}
 onPress={() => {
-
+console.log("COMMENT OPEN", item.id);
     // Purane comments hata do
     setComments([]);
 
@@ -1667,7 +1666,7 @@ flex:1
   name="check-decagram"
   size={16}
   color={
-    item.verifiedColor === "yellow"
+    selectedVideoData?.verifiedColor === "yellow"
       ? "#FFD700"
       : "#ffffff"
   }
@@ -2535,6 +2534,29 @@ setStarAnimationVideoId(selectedVideoId);
       },
       { merge:true }
     );
+
+
+try {
+
+  await fetch(
+    "https://YOUR_RENDER_URL/update-agency-stars",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        receiverUid: selectedGiftUser,
+        stars: item.price,
+      }),
+    }
+  );
+
+} catch (e) {
+  console.log("Agency Update Error", e);
+}
+
+
 
     await updateDoc(videoRef,{
       stars: increment(selectedStar)

@@ -291,6 +291,24 @@ Admin Panel
 
 </TouchableOpacity>
 
+
+<TouchableOpacity
+    style={styles.withdrawBtn}
+    onPress={() => router.push("/agencyRewards")}
+>
+
+    <Ionicons
+        name="trophy"
+        size={22}
+        color="#fff"
+    />
+
+    <Text style={styles.withdrawText}>
+        Agency Rewards
+    </Text>
+
+</TouchableOpacity>
+
 <TouchableOpacity
     style={styles.withdrawBtn}
     onPress={() => router.push("/withdrawals")}

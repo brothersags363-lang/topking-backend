@@ -364,9 +364,8 @@ useEffect(() => {
   useEffect(() => {
     const q = query(
       collection(db, 'all_videos'), 
-      orderBy('engagementScore', 'desc'), 
       orderBy('createdAt', 'desc'),
-      limit(30) 
+      limit(100) 
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const loadedVideos = [];
@@ -2096,6 +2095,29 @@ await setDoc(
   },
   { merge: true }
 );
+
+
+
+try {
+
+  await fetch(
+    "https://YOUR_RENDER_URL/update-agency-stars",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        receiverUid: selectedGiftUser,
+        stars: item.price,
+      }),
+    }
+  );
+
+} catch (e) {
+  console.log("Agency Update Error", e);
+}
+
 
 await updateDoc(videoRef,{
 stars:increment(selectedStar)

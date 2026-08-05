@@ -483,13 +483,14 @@ hasNewMessage: true,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        receiverUid: userId,
-        senderName:
-          myData?.username ||
-          currentUser.displayName ||
-          "User",
-        message: message,
-      }),
+  receiverUid: userId,
+  senderUid: currentUser.uid,
+  senderName:
+    myData?.username ||
+    currentUser.displayName ||
+    "User",
+  message: message,
+}),
     }
   );
 

@@ -26,9 +26,14 @@ onAuthStateChanged,
 import { auth, db, getFCMToken } from './firebaseConfig';
 
 import {
-  doc,
-  setDoc,
-} from 'firebase/firestore';
+  collection,
+  query,
+  where,
+  getDocs,
+   doc,
+   getDoc,
+   setDoc,
+} from "firebase/firestore";
 
 import TopKingLogo from '../assets/images/topking-logo.png';
 export default function LoginScreen() {
@@ -83,6 +88,44 @@ await GoogleSignin.hasPlayServices();
 
 const uid = userCredential.user.uid;
 
+const createUniqueUsername = async (name) => {
+
+  let username = name
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "_")        // aman king -> aman_king
+    .replace(/[^a-z0-9_]/g, ""); // special characters hata do
+
+  if (!username) {
+    username = "user";
+  }
+
+  let finalUsername = username;
+  let count = 1;
+
+  while (true) {
+
+    const q = query(
+      collection(db, "users"),
+      where("username", "==", finalUsername)
+    );
+
+    const snap = await getDocs(q);
+
+    if (snap.empty) {
+      break;
+    }
+
+    finalUsername = `${username}${count}`;
+    count++;
+
+  }
+
+  return finalUsername;
+
+};
+
+
 console.log(
   "SAVING USER ID =",
   uid
@@ -92,6 +135,30 @@ await AsyncStorage.setItem(
   "userId",
   uid
 );
+
+const userRef = doc(db, "users", uid);
+
+const userSnap = await getDoc(userRef);
+
+if (!userSnap.exists()) {
+
+  const username =
+    await createUniqueUsername(
+      userCredential.user.displayName || "user"
+    );
+
+  await setDoc(userRef, {
+    name: userCredential.user.displayName || "User",
+    username: username,
+    profileImg: userCredential.user.photoURL || "",
+    bioText: "bio.........",
+    category: "Video Creator",
+    gender: "Male",
+  }, {
+    merge: true,
+  });
+
+}
 
 
 const fcmToken = await getFCMToken();

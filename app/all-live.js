@@ -228,7 +228,10 @@ if (Date.now() - roomTime > sevenDays) {
             return;
           }
 
-
+// Sirf Public Rooms dikhao
+if ((rawData.roomType || "public") !== "public") {
+  return;
+}
 
       
 

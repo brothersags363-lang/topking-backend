@@ -53,12 +53,11 @@ serverTimestamp,
 } from 'firebase/firestore';
 
 import {
-  createAgoraRtcEngine,
-  ChannelProfileType,
-  ClientRoleType,
-  AudioProfileType,
-  AudioScenarioType,
-} from "react-native-agora";
+RtcSurfaceView,
+createAgoraRtcEngine,
+ChannelProfileType,
+ClientRoleType
+} from 'react-native-agora';
 
 import { gifts } from "../assets/giftsData";
 
@@ -1536,19 +1535,6 @@ appId:'4e23c17b272f4a1c920c214be58486f4'
 });
 
 
-await engine.setAudioProfile(
-  AudioProfileType.AudioProfileSpeechStandard,
-  AudioScenarioType.AudioScenarioChatroom
-);
-
-await engine.setParameters(
-  JSON.stringify({
-    "che.audio.ans.enable": true,
-    "che.audio.agc.enable": true,
-    "che.audio.aec.enable": true
-  })
-);
-
 
 engine.registerEventHandler({
 
@@ -1645,8 +1631,8 @@ await engine.enableLocalAudio(true);
 await engine.setEnableSpeakerphone(true);
 
 engine.enableAudioVolumeIndication(
-200,
-1,
+500,
+3,
 true
 );
 
@@ -1673,7 +1659,9 @@ setMyAgoraUid(agoraUid);
 
 
 
+await engine.enableAudio();
 
+await engine.enableLocalAudio(true);
 
 await engine.setClientRole(role);
 
@@ -5271,4 +5259,4 @@ resizeMode:"contain"
 },
 
 
-});         
+});    

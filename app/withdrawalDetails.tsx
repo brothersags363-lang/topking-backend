@@ -134,6 +134,14 @@ User Name
 </Text>
 
 <Text style={styles.label}>
+Agency
+</Text>
+
+<Text style={styles.value}>
+{data.agencyName || "No Agency"}
+</Text>
+
+<Text style={styles.label}>
 Withdrawal TK
 </Text>
 
