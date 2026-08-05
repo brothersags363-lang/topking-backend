@@ -120,14 +120,31 @@ if (
       response
     );
 
-  } catch (e) {
+  
+} catch (e) {
+
+  console.log("PUSH ERROR =", e);
+
+  if (
+    e.code === "messaging/registration-token-not-registered"
+  ) {
 
     console.log(
-      "PUSH ERROR =",
-      e
+      "INVALID TOKEN REMOVED =",
+      targetUid
     );
 
+    await db
+      .collection("users")
+      .doc(targetUid)
+      .update({
+        fcmToken: admin.firestore.FieldValue.delete(),
+      });
+
   }
+
+}
+
 }
 
 
