@@ -1,2 +1,2 @@
-export const CLOUDINARY_CLOUD_NAME = "lkqk0rps";
-export const CLOUDINARY_UPLOAD_PRESET = "profile_upload";
+export const CLOUDINARY_CLOUD_NAME = "fzmrnrlz";
+export const CLOUDINARY_UPLOAD_PRESET = "topking_upload";

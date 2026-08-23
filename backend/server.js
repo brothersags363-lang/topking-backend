@@ -12,15 +12,11 @@ console.log(
     : "Missing"
 );
 
-console.log(
-  "Cloud =",
-  process.env.CLOUDINARY_CLOUD_NAME
-);
 
 
 const multer = require("multer");
 const axios = require("axios");
-const cloudinary = require("cloudinary").v2;
+
 
 const admin = require("firebase-admin");
 
@@ -98,18 +94,38 @@ if (
     }
 
     const response =
-      await admin.messaging().send({
-        token,
+  await admin.messaging().send({
 
-        notification: {
-          title,
-          body,
-        },
+    token,
 
-        android: {
-          priority: "high",
+    notification: {
+      title,
+      body,
+    },
+
+    data: {
+      type: "chat",
+      senderUid: senderUid || "",
+    },
+
+    android: {
+      priority: "high",
+
+      notification: {
+        channelId: "default",
+        sound: "default",
+      },
+    },
+
+    apns: {
+      payload: {
+        aps: {
+          sound: "default",
         },
-      });
+      },
+    },
+
+  });
 
     console.log(
       "NOTIFICATION SENT"
@@ -224,11 +240,7 @@ const APP_ID =
 const APP_CERTIFICATE =
   process.env.AGORA_APP_CERTIFICATE;
 
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-});
+
 
 const r2 = new S3Client({
   region: "auto",
@@ -476,45 +488,44 @@ finally {
 
 
 
-
 app.post(
   "/upload-video",
   uploadLimiter,
   verifyUser,
   upload.single("video"),
-  
 
   async (req, res) => {
+
+    let videoPath = null;
+    let thumbnailPath = null;
+
     try {
 
+      console.log("===== /upload-video HIT =====");
 
+      const uid = req.user.uid;
 
-const uid = req.user.uid;
+      const userRef = db
+        .collection("users")
+        .doc(uid);
 
-const userRef = db.collection("users").doc(uid);
+      const userSnap = await userRef.get();
 
-const userSnap = await userRef.get();
+      if (!userSnap.exists) {
+        return res.status(404).json({
+          success: false,
+          error: "User not found",
+        });
+      }
 
-if (!userSnap.exists) {
-  return res.status(404).json({
-    success: false,
-    error: "User not found",
-  });
-}
+      const userData = userSnap.data();
 
-const userData = userSnap.data();
-
-if (userData.uploadStatus === true) {
-  return res.status(400).json({
-    success: false,
-    error: "Another upload is already in progress.",
-  });
-}
-
-await userRef.update({
-  uploadStatus: true,
-});
-
+      if (userData.uploadStatus === true) {
+        return res.status(400).json({
+          success: false,
+          error: "Another upload is already in progress.",
+        });
+      }
 
       if (!req.file) {
         return res.status(400).json({
@@ -523,66 +534,335 @@ await userRef.update({
         });
       }
 
-      
-const fileName = `${crypto.randomUUID()}.mp4`;
+      // =========================
+      // UPLOAD LOCK ON
+      // =========================
 
-const stream = fs.createReadStream(req.file.path);
+      await userRef.update({
+        uploadStatus: true,
+      });
 
-await r2.send(
-  new PutObjectCommand({
-    Bucket: process.env.R2_BUCKET,
-    Key: fileName,
-    Body: stream,
-    ContentType: "video/mp4",
-  })
+      videoPath = req.file.path;
+
+      const fileId = crypto.randomUUID();
+
+      const videoFileName =
+        `${fileId}.mp4`;
+
+      const thumbnailFileName =
+        `${fileId}.jpg`;
+
+      const tempDir =
+        path.join(__dirname, "temp");
+
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, {
+          recursive: true,
+        });
+      }
+
+      thumbnailPath =
+        path.join(
+          tempDir,
+          thumbnailFileName
+        );
+
+
+      // =========================
+      // 1. VIDEO -> R2
+      // =========================
+
+      console.log(
+        "Uploading video to R2..."
+      );
+
+      await r2.send(
+        new PutObjectCommand({
+          Bucket:
+            process.env.R2_BUCKET,
+
+          Key:
+            videoFileName,
+
+          Body:
+            fs.createReadStream(
+              videoPath
+            ),
+
+          ContentType:
+            "video/mp4",
+        })
+      );
+
+      const videoUrl =
+        `${process.env.R2_PUBLIC_URL}/${videoFileName}`;
+
+      console.log(
+        "VIDEO R2 URL =",
+        videoUrl
+      );
+
+
+      // =========================
+      // 2. CREATE THUMBNAIL
+      // =========================
+
+      console.log(
+        "Creating thumbnail..."
+      );
+
+      await new Promise(
+        (resolve, reject) => {
+
+          ffmpeg(videoPath)
+
+            .screenshots({
+
+              timestamps: ["1"],
+
+              filename:
+                thumbnailFileName,
+
+              folder:
+                tempDir,
+
+              size:
+                "720x?",
+
+            })
+
+            .on("end", () => {
+
+              console.log(
+                "FFMPEG THUMBNAIL DONE"
+              );
+
+              resolve();
+
+            })
+
+            .on("error", (err) => {
+
+              console.log(
+                "FFMPEG THUMBNAIL ERROR =",
+                err
+              );
+
+              reject(err);
+
+            });
+
+        }
+      );
+
+
+      // =========================
+      // 3. CHECK THUMBNAIL
+      // =========================
+
+      console.log(
+        "THUMBNAIL PATH =",
+        thumbnailPath
+      );
+
+      if (!fs.existsSync(thumbnailPath)) {
+
+        throw new Error(
+          "Thumbnail file was not created"
+        );
+
+      }
+
+      console.log(
+        "THUMBNAIL FILE EXISTS = YES"
+      );
+
+
+      // =========================
+      // 4. THUMBNAIL -> R2
+      // =========================
+
+      console.log(
+        "Uploading thumbnail to R2..."
+      );
+
+      await r2.send(
+        new PutObjectCommand({
+
+          Bucket:
+            process.env.R2_BUCKET,
+
+          Key:
+            thumbnailFileName,
+
+          Body:
+            fs.createReadStream(
+              thumbnailPath
+            ),
+
+          ContentType:
+            "image/jpeg",
+
+        })
+      );
+
+console.log(
+  "🔥 FINAL UPLOAD RESPONSE =",
+  {
+    success: true,
+    videoUrl,
+    thumbnailUrl,
+  }
 );
 
-const videoUrl =
-`${process.env.R2_PUBLIC_URL}/${fileName}`;
 
+      const thumbnailUrl =
+        `${process.env.R2_PUBLIC_URL}/${thumbnailFileName}`;
 
-await userRef.update({
-  uploadStatus: false,
+  console.log(
+        "THUMBNAIL R2 URL =",
+        thumbnailUrl
+      ); 
+
+      
+        console.log("🔥 FINAL UPLOAD RESPONSE =", {
+  success: true,
+  videoUrl: videoUrl,
+  thumbnailUrl: thumbnailUrl,
 });
 
-      fs.unlinkSync(req.file.path);
+return res.json({
+  success: true,
+  videoUrl: videoUrl,
+  thumbnailUrl: thumbnailUrl,
+});
+
+    
+
+
+      // =========================
+      // 5. UPLOAD LOCK OFF
+      // =========================
+
+      await userRef.update({
+        uploadStatus: false,
+      });
+
+
+      // =========================
+      // 6. RESPONSE
+      // =========================
 
       return res.json({
+
         success: true,
-        videoUrl: videoUrl,
+
+        videoUrl:
+          videoUrl,
+
+        thumbnailUrl:
+          thumbnailUrl,
+
       });
 
-    } catch (e) {
-
-if (req.file?.path && fs.existsSync(req.file.path)) {
-  fs.unlinkSync(req.file.path);
-}
-// Upload lock remove
-  if (req.user?.uid) {
-    try {
-      await db
-        .collection("users")
-        .doc(req.user.uid)
-        .update({
-          uploadStatus: false,
-        });
-    } catch (err) {
-      console.log(err);
     }
-  }
 
 
+    catch (e) {
 
-      console.log(e);
+      console.log(
+        "UPLOAD ERROR =",
+        e
+      );
+
+
+      // =========================
+      // LOCK RESET
+      // =========================
+
+      if (req.user?.uid) {
+
+        try {
+
+          await db
+            .collection("users")
+            .doc(req.user.uid)
+            .update({
+              uploadStatus: false,
+            });
+
+        } catch (err) {
+
+          console.log(
+            "LOCK RESET ERROR =",
+            err
+          );
+
+        }
+
+      }
+
 
       return res.status(500).json({
+
         success: false,
-        error: e.message,
+
+        error:
+          e.message,
+
       });
 
     }
+
+
+    finally {
+
+      // =========================
+      // DELETE TEMP VIDEO
+      // =========================
+
+      if (
+        videoPath &&
+        fs.existsSync(videoPath)
+      ) {
+
+        fs.unlinkSync(
+          videoPath
+        );
+
+        console.log(
+          "TEMP VIDEO DELETED"
+        );
+
+      }
+
+
+      // =========================
+      // DELETE TEMP THUMBNAIL
+      // =========================
+
+      if (
+        thumbnailPath &&
+        fs.existsSync(thumbnailPath)
+      ) {
+
+        fs.unlinkSync(
+          thumbnailPath
+        );
+
+        console.log(
+          "TEMP THUMBNAIL DELETED"
+        );
+
+      }
+
+    }
+
   }
 );
+
+
+
 
 
 
