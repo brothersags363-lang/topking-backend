@@ -18,6 +18,7 @@ import {
   BackHandler,
    Pressable,
     RefreshControl,
+      Share,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { VideoView, useVideoPlayer } from 'expo-video';
@@ -33,6 +34,7 @@ import {
   CLOUDINARY_CLOUD_NAME,
   CLOUDINARY_UPLOAD_PRESET
 } from "../backend/config/cloudinary";
+
 
 import { collection, query, where, getDocs, doc, getDoc, setDoc, deleteDoc,  orderBy, limit,  onSnapshot,  } from 'firebase/firestore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
@@ -76,8 +78,14 @@ const [followersList, setFollowersList] =
 const [followingList, setFollowingList] =
   useState([]);
 
+
+const [followingIds, setFollowingIds] = useState(new Set());
+
 const [activeFollowTab, setActiveFollowTab] =
   useState("followers");
+
+const [followersLoading, setFollowersLoading] = useState(false);
+const [followingLoading, setFollowingLoading] = useState(false);
 
   
 
@@ -127,6 +135,7 @@ useEffect(() => {
 
   // Main UI State
   const [profileData, setProfileData] = useState({
+    
   name: 'User',
   username: 'user',
     bioText: 'bio.........',
@@ -138,6 +147,7 @@ likes: '0',
     profileImg: 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
   });
 
+  
   // Edit form inputs ke liye individual states
   const [tempName, setTempName] = useState('');
   const [tempUsername, setTempUsername] = useState('');
@@ -313,48 +323,145 @@ await checkYellowBadge(user.uid);
 
 
 
+
+
+
+// ==========================================
+// TOP GIFTERS REALTIME LISTENER
+// ==========================================
 useEffect(() => {
 
-  const uid = auth.currentUser?.uid;
+  let unsubscribeUser = null;
 
-  if (!uid) return;
+  const unsubscribeAuth = onAuthStateChanged(
+    auth,
+    (user) => {
 
-  const unsub = onSnapshot(
-    doc(db, "users", uid),
-    (snap) => {
+      // Logout / user available nahi
+      if (!user) {
 
-      if (!snap.exists()) return;
+        setTopGifters([]);
+        setGiftUserCount(0);
 
-      const data = snap.data();
+        if (unsubscribeUser) {
+          unsubscribeUser();
+          unsubscribeUser = null;
+        }
 
-      const gifters = Object.values(
-        data.topGifters || {}
+        return;
+      }
+
+      console.log(
+        "🔥 TOP GIFTERS LISTENER UID =",
+        user.uid
       );
 
-      gifters.sort(
-        (a, b) => b.stars - a.stars
-      );
+      // Purana listener remove
+      if (unsubscribeUser) {
+        unsubscribeUser();
+      }
 
-      setTopGifters(
-        gifters.slice(0, 3)
-      );
+      unsubscribeUser = onSnapshot(
+        doc(db, "users", user.uid),
+        (snap) => {
 
-      setGiftUserCount(
-        gifters.length
+          if (!snap.exists()) {
+
+            console.log(
+              "❌ USER DOC NOT FOUND =",
+              user.uid
+            );
+
+            setTopGifters([]);
+            setGiftUserCount(0);
+
+            return;
+          }
+
+          const data = snap.data();
+
+          console.log(
+            "🔥 USER TOP GIFTERS RAW =",
+            data.topGifters
+          );
+
+          const giftersObject =
+            data.topGifters || {};
+
+          const gifters =
+            Object.values(giftersObject)
+              .filter(Boolean)
+              .map((item) => ({
+                ...item,
+                stars: Number(item.stars || 0),
+              }))
+              .sort(
+                (a, b) => b.stars - a.stars
+              );
+
+          console.log(
+            "🔥 TOP GIFTERS FINAL =",
+            gifters
+          );
+
+          setTopGifters(
+            gifters.slice(0, 3)
+          );
+
+          setGiftUserCount(
+            gifters.length
+          );
+
+        },
+        (error) => {
+
+          console.log(
+            "❌ TOP GIFTERS LISTENER ERROR =",
+            error
+          );
+
+        }
       );
 
     }
   );
 
-  return () => unsub();
+  return () => {
+
+    unsubscribeAuth();
+
+    if (unsubscribeUser) {
+      unsubscribeUser();
+    }
+
+  };
 
 }, []);
 
 
 
+ 
 
 
- // dynamically parameter update handling fix kiya
+// ================= SHARE PROFILE =================
+const handleShareProfile = async () => {
+  try {
+    const username = profileData.username || "user";
+
+    await Share.share({
+      message: `Check out my profile on TopKing 👑
+
+@${username}
+
+${profileData.bioText || ""}
+
+Join me on TopKing!`,
+    });
+
+  } catch (error) {
+    console.log("SHARE PROFILE ERROR =", error);
+  }
+};
 
   // Logout Handler Function
   const handleLogout = async () => {
@@ -894,71 +1001,106 @@ const loadLikedMeCount = async (uid) => {
 
 
 
+
+
 const openFollowers = async () => {
   try {
+
     const uid = auth.currentUser?.uid;
 
+    if (!uid) return;
+
+    setFollowersLoading(true);
+
     const q = query(
-      collection(db, "follows"), // followers nahi, follows
+      collection(db, "follows"),
       where("followingId", "==", uid)
     );
 
     const snap = await getDocs(q);
 
-    let arr = [];
+    const arr = await Promise.all(
 
-    for (const item of snap.docs) {
-      const followerId = item.data().followerId;
+      snap.docs.map(async (item) => {
 
-      const userSnap = await getDoc(
-        doc(db, "users", followerId)
-      );
+        const followerId =
+          item.data().followerId;
 
-      if (userSnap.exists()) {
+        try {
 
-      const walletSnap = await getDoc(
-  doc(db, "wallets", followerId)
-);
+          const userSnap = await getDoc(
+            doc(db, "users", followerId)
+          );
 
-let level = 1;
+          if (!userSnap.exists()) {
+            return null;
+          }
 
-if (walletSnap.exists()) {
-  level = walletSnap.data().level || 1;
-}
+          const userData = userSnap.data();
 
-const userData = userSnap.data();
+          /*
+           * Level users document se hi lo.
+           * Isse har follower ke liye wallet read nahi hoga.
+           */
+          const level =
+            userData.level || 1;
 
-arr.push({
-  id: followerId,
-  ...userData,
-  verified: userData.verified || false,
-  verifiedColor:
-    userData.verifiedColor || "white",
-  level,
-});
+          return {
+            id: followerId,
+            ...userData,
+            verified:
+              userData.verified || false,
 
-      }
-    }
+            verifiedColor:
+              userData.verifiedColor || "white",
 
-    console.log("Followers Found:", arr);
+            level,
+          };
 
-   setFollowersList(arr);
+        } catch (error) {
 
-  
-// popup turant open ho jayega
+          console.log(
+            "Follower User Error:",
+            followerId,
+            error
+          );
 
+          return null;
+        }
+
+      })
+
+    );
+
+    setFollowersList(
+      arr.filter(Boolean)
+    );
 
   } catch (error) {
-    console.log("Followers Error:", error);
+
+    console.log(
+      "Followers Error:",
+      error
+    );
+
+  } finally {
+
+    setFollowersLoading(false);
+
   }
 };
-  
+
+
 
 
 const loadFollowing = async () => {
   try {
 
     const uid = auth.currentUser?.uid;
+
+    if (!uid) return;
+
+    setFollowingLoading(true);
 
     const q = query(
       collection(db, "follows"),
@@ -967,50 +1109,74 @@ const loadFollowing = async () => {
 
     const snap = await getDocs(q);
 
-    let arr = [];
+    const arr = await Promise.all(
 
-    for (const item of snap.docs) {
+      snap.docs.map(async (item) => {
 
-      const followingId =
-        item.data().followingId;
+        const followingId =
+          item.data().followingId;
 
-      const userSnap = await getDoc(
-        doc(db, "users", followingId)
-      );
+        try {
 
-      if (userSnap.exists()) {
+          const userSnap = await getDoc(
+            doc(db, "users", followingId)
+          );
 
-     const walletSnap = await getDoc(
-  doc(db, "wallets", followingId)
-);
+          if (!userSnap.exists()) {
+            return null;
+          }
 
-let level = 1;
+          const userData =
+            userSnap.data();
 
-if (walletSnap.exists()) {
-  level = walletSnap.data().level || 1;
-}
+          const level =
+            userData.level || 1;
 
-const userData = userSnap.data();
+          return {
+            id: followingId,
+            ...userData,
 
-arr.push({
-  id: followingId,
-  ...userData,
-  verified: userData.verified || false,
-  verifiedColor:
-    userData.verifiedColor || "white",
-  level,
-});
+            verified:
+              userData.verified || false,
 
-      }
-    }
+            verifiedColor:
+              userData.verifiedColor || "white",
 
-    setFollowingList(arr);
+            level,
+          };
+
+        } catch (error) {
+
+          console.log(
+            "Following User Error:",
+            followingId,
+            error
+          );
+
+          return null;
+        }
+
+      })
+
+    );
+
+    setFollowingList(
+      arr.filter(Boolean)
+    );
 
   } catch (error) {
-    console.log(error);
+
+    console.log(
+      "Following Error:",
+      error
+    );
+
+  } finally {
+
+    setFollowingLoading(false);
+
   }
 };
-
 
 
 const handleFollowBack = async (userData) => {
@@ -1057,13 +1223,13 @@ const uploadProfileImage = async (imageUri) => {
 
   data.append(
     "upload_preset",
-   'profile_upload'
+   'topking_upload'
   );
 
   try {
 
     const response = await fetch(
-      `https://api.cloudinary.com/v1_1/${'lkqk0rps'}/image/upload`,
+      `https://api.cloudinary.com/v1_1/${'fzmrnrlz'}/image/upload`,
       {
         method: "POST",
         body: data,
@@ -1351,10 +1517,25 @@ getLevelTheme(profileData.level || 1);
 
       <View style={styles.menuBox}>
 
-        <TouchableOpacity style={styles.menuItem}>
-          <Ionicons name="share-social-outline" size={22} color="#fff" />
-          <Text style={styles.menuItemText}>Share Profile</Text>
-        </TouchableOpacity>
+        
+
+        <TouchableOpacity
+  style={styles.menuItem}
+  onPress={() => {
+    setMenuVisible(false);
+    handleShareProfile();
+  }}
+>
+  <Ionicons
+    name="share-social-outline"
+    size={22}
+    color="#fff"
+  />
+
+  <Text style={styles.menuItemText}>
+    Share Profile
+  </Text>
+</TouchableOpacity>
 
 
 {hasAgency && (
@@ -1425,15 +1606,44 @@ getLevelTheme(profileData.level || 1);
   </Text>
 </TouchableOpacity>
 
-        <TouchableOpacity style={styles.menuItem}>
-          <Ionicons name="videocam-outline" size={22} color="#fff" />
-          <Text style={styles.menuItemText}>Video Quality</Text>
-        </TouchableOpacity>
+        
+<TouchableOpacity
+  style={styles.menuItem}
+  onPress={() => {
+    setMenuVisible(false);
+    router.push("../hdvideo");
+  }}
+>
+  <Ionicons
+    name="videocam-outline"
+    size={22}
+    color="#fff"
+  />
 
-        <TouchableOpacity style={styles.menuItem}>
-          <Ionicons name="language-outline" size={22} color="#fff" />
-          <Text style={styles.menuItemText}>Language</Text>
-        </TouchableOpacity>
+  <Text style={styles.menuItemText}>
+    Video Quality
+  </Text>
+</TouchableOpacity>
+
+
+
+        <TouchableOpacity
+  style={styles.menuItem}
+  onPress={() => {
+    setMenuVisible(false);
+    router.push("../language");
+  }}
+>
+  <Ionicons
+    name="language-outline"
+    size={22}
+    color="#fff"
+  />
+
+  <Text style={styles.menuItemText}>
+    Language
+  </Text>
+</TouchableOpacity>
 
        <TouchableOpacity
   style={styles.menuItem}
@@ -1499,21 +1709,22 @@ getLevelTheme(profileData.level || 1);
 
 
         <TouchableOpacity
-          style={styles.menuItem}
-          onPress={()=>{
-            setMenuVisible(false);
-            openEditModal();
-          }}
-        >
-          <Ionicons
-            name="settings-outline"
-            size={22}
-            color="#fff"
-          />
-          <Text style={styles.menuItemText}>
-            Settings
-          </Text>
-        </TouchableOpacity>
+  style={styles.menuItem}
+  onPress={() => {
+    setMenuVisible(false);
+    router.push("/settings");
+  }}
+>
+  <Ionicons
+    name="settings-outline"
+    size={22}
+    color="#fff"
+  />
+
+  <Text style={styles.menuItemText}>
+    Settings
+  </Text>
+</TouchableOpacity>
 
         {isAdmin && (
           <TouchableOpacity
@@ -1664,15 +1875,21 @@ refreshControl={
 
 <TouchableOpacity
 style={styles.statBox}
-onPress={async () => {
+ 
+
+    onPress={async () => {
 
   setActiveFollowTab("followers");
-
-  await openFollowers();
-
   setFollowersModalVisible(true);
 
+  await Promise.all([
+    openFollowers(),
+    loadFollowing(),
+  ]);
+
 }}
+
+
 >
 
 
@@ -1690,13 +1907,16 @@ onPress={async () => {
 
 <TouchableOpacity
 style={styles.statBox}
-onPress={async () => {
+onPress={() => {
 
-  setActiveFollowTab("following");
+    // 1. Following tab
+    setActiveFollowTab("following");
 
-  await loadFollowing();
+    // 2. Popup immediately
+    setFollowersModalVisible(true);
 
-  setFollowersModalVisible(true);
+    // 3. Data background mein load
+    loadFollowing();
 
 }}
 >
@@ -1737,22 +1957,42 @@ Likes
             </View>
 
             {/* Action Row */}
-            <View style={styles.buttonRow}>
-              <TouchableOpacity style={styles.editBtn} onPress={openEditModal}>
-                <MaterialCommunityIcons name="pencil" size={16} color="#000" style={{ marginRight: 6 }} />
-                <Text style={styles.editBtnText}>Edit Profile</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.instaBtn}>
-  <Image
-    source={TopKingLogo}
-    style={{
-      width: 40,
-      height: 40,
-      resizeMode: "contain",
-    }}
-  />
-</TouchableOpacity>
-            </View>
+          <View style={styles.buttonRow}>
+
+  <TouchableOpacity
+    style={styles.editBtn}
+    onPress={openEditModal}
+  >
+    <MaterialCommunityIcons
+      name="pencil"
+      size={16}
+      color="#000"
+      style={{ marginRight: 6 }}
+    />
+
+    <Text style={styles.editBtnText}>
+      Edit Profile
+    </Text>
+
+  </TouchableOpacity>
+
+  <TouchableOpacity
+    style={styles.instaBtn}
+    onPress={() => router.push("/Agency-Request")}
+  >
+
+    <Image
+      source={TopKingLogo}
+      style={{
+        width:40,
+        height:40,
+        resizeMode:"contain",
+      }}
+    />
+
+  </TouchableOpacity>
+
+</View>
 
 
             {/* Badges/Rank Block */}
@@ -1796,64 +2036,101 @@ Likes
 
 
 
-{/* Angels */}
+
+{/* ========================= */}
+{/* Angels / Top Gifters */}
+{/* ========================= */}
 <TouchableOpacity
   style={styles.premiumItem}
   activeOpacity={0.8}
+  onPress={() => {
+    router.push("../TopGifters");
+  }}
 >
 
-  <View>
 
+  {/* LEFT SIDE */}
+  <View style={{ flex: 1 }}>
+
+    {/* Title */}
     <Text style={styles.premiumTitle}>
       Angels
     </Text>
 
+
+    {/* Top Gifter Photos */}
     <View style={styles.memberRow}>
 
-    
-<View style={styles.memberRow}>
+  {topGifters.slice(0, 3).map((item, index) => {
 
-  {topGifters.map((item, index) => (
+    const imageUri =
+      item.photo ||
+      item.profileImg ||
+      item.profile ||
+      item.photoURL ||
+      item.avatar ||
+      "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 
-    <Image
-      key={item.uid}
-      source={{ uri: item.photo }}
-      style={[
-        styles.memberImg,
-        {
-          marginLeft: index === 0 ? 0 : -12,
-          zIndex: 3 - index,
-        },
-      ]}
-    />
+    return (
+      <Image
+        key={
+          item.uid ||
+          item.userId ||
+          `gifter-${index}`
+        }
+        source={{
+          uri: imageUri,
+        }}
+        style={[
+          styles.memberImg,
+          {
+            marginLeft:
+              index === 0 ? 0 : -12,
 
-  ))}
+            zIndex:
+              3 - index,
+          },
+        ]}
+      />
+    );
 
-  <Text
-    style={{
-      color: "#FFD700",
-      fontSize: 15,
-      fontWeight: "bold",
-      marginLeft: 10,
-    }}
-  >
-    {giftUserCount}
-  </Text>
+  })}
+
+
+  {giftUserCount > 0 && (
+
+    <Text
+      style={{
+        color: "#FFD700",
+        fontSize: 15,
+        fontWeight: "bold",
+        marginLeft: 10,
+      }}
+    >
+      {giftUserCount}
+    </Text>
+
+  )}
 
 </View>
 
-    </View>
-
   </View>
 
+
+  {/* RIGHT ARROW */}
   <Ionicons
     name="chevron-forward"
     size={18}
     color="#777"
-    style={{ marginLeft:10 }}
+    style={{
+      marginLeft: 10,
+    }}
   />
 
 </TouchableOpacity>
+ 
+
+
 
 
   <View style={styles.premiumDivider} />
@@ -2381,12 +2658,15 @@ onPress={() => {
 >
 
  <TouchableOpacity
+  onPress={() => {
 
-    onPress={() =>
+    setActiveFollowTab("followers");
 
-      setActiveFollowTab("followers")
-
+    if (followersList.length === 0) {
+      openFollowers();
     }
+
+  }}
 
     style={{
       backgroundColor:
@@ -2414,9 +2694,14 @@ onPress={() => {
   </TouchableOpacity>
 
   <TouchableOpacity
-  onPress={async () => {
+  onPress={() => {
+
     setActiveFollowTab("following");
-    await loadFollowing();
+
+    if (followingList.length === 0) {
+      loadFollowing();
+    }
+
   }}
     style={{
       backgroundColor:
@@ -2449,27 +2734,78 @@ onPress={() => {
 
 
 
+{(
+  activeFollowTab === "followers"
+    ? followersLoading
+    : followingLoading
+) ? (
 
-<FlatList
-data={
-activeFollowTab === "followers"
-? followersList
-: followingList
-}
+  <View
+    style={{
+      flex: 1,
+      justifyContent: "center",
+      alignItems: "center",
+      paddingTop: 60,
+    }}
+  >
+
+    <ActivityIndicator
+      size="large"
+      color="#FFD700"
+    />
+
+    <Text
+      style={{
+        color: "#888",
+        marginTop: 12,
+        fontSize: 14,
+      }}
+    >
+      Loading...
+    </Text>
+
+  </View>
+
+) : (
+
+  <FlatList
+    data={
+      activeFollowTab === "followers"
+        ? followersList
+        : followingList
+    }
+
+    initialNumToRender={9}
+    maxToRenderPerBatch={6}
+    windowSize={5}
+    removeClippedSubviews={true}
+
 
 initialNumToRender={9}
 maxToRenderPerBatch={6}
 windowSize={5}
 removeClippedSubviews={true}
 keyExtractor={(item) => item.id}
+
 renderItem={({ item }) => {
-const isFollowing = followingList.some(
-(u) => u.id === item.id
-);
+
+  // Kya main is user ko follow karta hoon?
+  const isFollowing = followingList.some(
+    (u) => u.id === item.id
+  );
+
+  // Kya ye user mujhe follow karta hai?
+  const followsMe = followersList.some(
+    (u) => u.id === item.id
+  );
+
+  // Dono ek-dusre ko follow karte hain = Friend / Mutual
+  const isFriend = isFollowing && followsMe;
+
+  return (
 
 
-return (
-  
+
 <View
   style={{
     flexDirection: "row",
@@ -2511,6 +2847,7 @@ return (
           borderRadius: 21,
         }}
       />
+      
 
  
 
@@ -2598,63 +2935,114 @@ return (
 
     </TouchableOpacity>
 
-    {isFollowing ? (
-      <TouchableOpacity
-        style={{
-          backgroundColor: "#222",
-          width: 100,
-paddingVertical: 8,
-borderRadius: 20,
-alignItems: "center",
-        }}
-      onPress={() =>
-  router.push({
-    pathname: "/chat",
-    params: {
-      userId: item.id,
-      username: item.username,
-      profileImg: item.profileImg,
-    },
-  })
-}
-      >
-        <Text
-          style={{
-            color: "#fff",
-            fontWeight: "bold",
-          }}
-        >
-          Message
-        </Text>
-      </TouchableOpacity>
-    ) : (
-      <TouchableOpacity
-        style={{
-          backgroundColor: "#FFD700",
-          width: 100,
-paddingVertical: 8,
-borderRadius: 20,
-alignItems: "center",
-        }}
-        onPress={() => handleFollowBack(item)}
-      >
-        <Text
-          style={{
-            color: "#000",
-            fontWeight: "bold",
-          }}
-        >
-          Follow Back
-        </Text>
-      </TouchableOpacity>
-    )}
+
+
+  {isFriend ? (
+
+  // =========================
+  // FRIEND / MUTUAL
+  // =========================
+  <TouchableOpacity
+    style={{
+      backgroundColor: "#222",
+      width: 100,
+      paddingVertical: 8,
+      borderRadius: 20,
+      alignItems: "center",
+    }}
+    onPress={() =>
+      router.push({
+        pathname: "/chat",
+        params: {
+          userId: item.id,
+          username: item.username,
+          profileImg: item.profileImg,
+        },
+      })
+    }
+  >
+    <Text
+      style={{
+        color: "#fff",
+        fontWeight: "bold",
+      }}
+    >
+      Message
+    </Text>
+  </TouchableOpacity>
+
+) : followsMe ? (
+
+  // =========================
+  // SIRF FOLLOWER
+  // USNE MUJHE FOLLOW KIYA
+  // MAINE USKO FOLLOW NAHI KIYA
+  // =========================
+  <TouchableOpacity
+    style={{
+      backgroundColor: "#FFD700",
+      width: 100,
+      paddingVertical: 8,
+      borderRadius: 20,
+      alignItems: "center",
+    }}
+    onPress={() => handleFollowBack(item)}
+  >
+    <Text
+      style={{
+        color: "#000",
+        fontWeight: "bold",
+      }}
+    >
+      Follow Back
+    </Text>
+  </TouchableOpacity>
+
+) : (
+
+  // =========================
+  // FOLLOWING TAB
+  // MAIN ISKO FOLLOW KARTA HOON
+  // =========================
+  <TouchableOpacity
+    style={{
+      backgroundColor: "#222",
+      width: 100,
+      paddingVertical: 8,
+      borderRadius: 20,
+      alignItems: "center",
+    }}
+    onPress={() =>
+      router.push({
+        pathname: "/chat",
+        params: {
+          userId: item.id,
+          username: item.username,
+          profileImg: item.profileImg,
+        },
+      })
+    }
+  >
+    <Text
+      style={{
+        color: "#fff",
+        fontWeight: "bold",
+      }}
+    >
+      Message
+    </Text>
+  </TouchableOpacity>
+
+)}
+
+
   </View>
 );
 
 
 }}
 />
-
+)}
 
 
 </SafeAreaView>
@@ -2686,7 +3074,7 @@ const styles = StyleSheet.create({
   mainInfoSection: { flexDirection: 'row', alignItems: 'center', marginTop: 10 },
   avatarContainer: { width: 90, height: 90, borderRadius: 50, borderWidth: 2, borderColor: '#FFD700', justifyContent: 'center', alignItems: 'center', shadowColor: '#FFD700', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.6, shadowRadius: 8, elevation: 5 },
   avatar: { width: 88, height: 88, borderRadius: 45, backgroundColor: '#222' },
-  profileMetaContainer: { flex: 1, marginLeft: 20 },
+  profileMetaContainer: { flex: 1, marginLeft: 15 },
   usernameRow: {
   flexDirection: 'row',
   alignItems: 'center',
@@ -2695,10 +3083,10 @@ const styles = StyleSheet.create({
 },
   
 profileUserName: {
-  fontSize: 18,
+  fontSize: 16,
   fontWeight: 'bold',
   color: '#fff',
-  maxWidth: 120,
+  maxWidth: 100,
 },
 
   categoryText: { color: '#FFD700', fontSize: 12, marginTop: 2, fontWeight: '500' },

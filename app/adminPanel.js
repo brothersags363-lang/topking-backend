@@ -75,26 +75,24 @@ checkAdmin();
 
 
 
+// Mobile hardware back button
 useEffect(() => {
 
-const backAction = () => {
+  const backAction = () => {
+    router.back();
+    return true;
+  };
 
-router.back();
+  const backHandler = BackHandler.addEventListener(
+    "hardwareBackPress",
+    backAction
+  );
 
-return true;
+  return () => {
+    backHandler.remove();
+  };
 
-};
-
-const backHandler =
-BackHandler.addEventListener(
-"hardwareBackPress",
-backAction
-);
-
-return () => backHandler.remove();
-
-}, []);
-
+}, [router]);
 
 
 useEffect(() => {
@@ -340,7 +338,7 @@ Admin Panel
     />
 
     <Text style={styles.feedbackText}>
-        User Feedback
+         Feedback
     </Text>
 
 </TouchableOpacity>

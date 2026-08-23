@@ -13,7 +13,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library'; 
-import { VideoView, useVideoPlayer } from 'expo-video';
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera'; 
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -25,7 +24,8 @@ import { db } from "./firebaseConfig";
 
 export default function CameraPage() {
   const router = useRouter(); 
- 
+
+
 const {
   audioUrl,
   musicName,

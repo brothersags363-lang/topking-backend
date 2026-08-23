@@ -129,5 +129,88 @@ animation: require("./gifts/diamond.json"),
 },
 
 
+{
+id:"bird.love",
+name:"bird.love",
+price:289,
+duration:2000,
+icon: require("./gifts/bird.love.png"),
+animation: require("./gifts/bird.love.json"),
+
+},
+
+
+{
+id:"Love",
+name:"Love",
+price:899,
+duration:1500,
+icon: require("./gifts/Love.png"),
+animation: require("./gifts/Love.json"),
+
+},
+
+{
+id:"Couple eating",
+name:"Couple eating",
+price:79,
+duration:2000,
+icon: require("./gifts/Couple eating.png"),
+animation: require("./gifts/Couple eating.json"),
+
+},
+
+
+{
+id:"Celebration",
+name:"Celebration",
+price:399,
+duration:1700,
+icon: require("./gifts/Celebration.png"),
+animation: require("./gifts/Celebration.json"),
+
+},
+
+
+{
+id:"love kiss",
+name:"kiss",
+price:459,
+duration:1700,
+icon: require("./gifts/love kiss.png"),
+animation: require("./gifts/love kiss.json"),
+
+},
+
+
+{
+id:"Love Proposal",
+name:"Proposal",
+price:699,
+duration:2200,
+icon: require("./gifts/Love Proposal.png"),
+animation: require("./gifts/Love Proposal.json"),
+
+},
+
+{
+id:"Aeroplane",
+name:"aeroplane",
+price:6999,
+duration:3500,
+icon: require("./gifts/aeroplane.png"),
+animation: require("./gifts/aeroplane.json"),
+
+},
+
+{
+id:"long drive",
+name:"long drive",
+price:2599,
+duration:2000,
+icon: require("./gifts/long drive.png"),
+animation: require("./gifts/long drive.json"),
+
+},
 
 ];

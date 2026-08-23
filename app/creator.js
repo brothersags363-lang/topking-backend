@@ -1,10 +1,13 @@
-import React from "react";
+import React, { useEffect } from "react";
+
+
 import {
   SafeAreaView,
   View,
   Text,
   StyleSheet,
   ScrollView,
+  BackHandler,
 } from "react-native";
 
 import {
@@ -13,8 +16,42 @@ import {
   Ionicons,
   MaterialCommunityIcons,
 } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+
 
 export default function Creator() {
+
+  const router = useRouter();
+
+
+  // =========================
+  // MOBILE HARDWARE BACK
+  // =========================
+
+  useEffect(() => {
+
+    const backAction = () => {
+
+      router.back();
+
+      return true;
+
+    };
+
+
+    const subscription =
+      BackHandler.addEventListener(
+        "hardwareBackPress",
+        backAction
+      );
+
+
+    return () => {
+      subscription.remove();
+    };
+
+  }, [router]);
+
 
   const cards = [
  

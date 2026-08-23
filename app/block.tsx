@@ -8,11 +8,12 @@ import {
   Image,
   SafeAreaView,
   Alert,
+  BackHandler
 } from "react-native";
 
 import { Ionicons } from "@expo/vector-icons";
 
-import { useRouter } from "expo-router";
+import { useRouter, } from "expo-router";
 
 import {
   collection,
@@ -28,6 +29,23 @@ import { auth, db } from "./firebaseConfig";
 export default function BlockScreen() {
 
   const router = useRouter();
+
+// Mobile hardware back button
+useEffect(() => {
+  const handleBackPress = () => {
+    router.back();
+    return true;
+  };
+
+  const subscription = BackHandler.addEventListener(
+    "hardwareBackPress",
+    handleBackPress
+  );
+
+  return () => {
+    subscription.remove();
+  };
+}, [router]);
 
   const [users,setUsers]=useState([]);
 

@@ -44,6 +44,9 @@ import {
   limit,
   addDoc,
   getDocs,
+  startAfter,
+  where,
+  documentId,
 } from 'firebase/firestore';
 
 
@@ -145,87 +148,217 @@ const [selectedShareVideo, setSelectedShareVideo] = useState(null);
   const [activeVideo, setActiveVideo] = useState(0);
   const [currentIndex,setCurrentIndex]=useState(0);
 
+const [loadingMoreVideos, setLoadingMoreVideos] = useState(false);
+const [hasMoreVideos, setHasMoreVideos] = useState(true);
+
+const lastVideoDocRef = useRef(null);
+const loadingMoreRef = useRef(false);
+
+
 const scrollRef=useRef(null);
 const commentInputRef = useRef(null);
   const [isFocused, setIsFocused] = useState(true);
   const [localLikes, setLocalLikes] = useState({}); 
 
 
-useEffect(() => {
 
-  const loadLikes = async () => {
+// ======================================================
+// SMART LIKE + FOLLOW LOADER
+// Sirf current video ke aas-paas ke videos check honge
+// ======================================================
 
-    const user = auth.currentUser;
-
-    if (!user || videos.length === 0) return;
-
-    let likesData = {};
-
-    for (const video of videos) {
-
-      const likeRef = doc(
-        db,
-        "all_videos",
-        video.id,
-        "likes",
-        user.uid
-      );
-
-      const likeSnap = await getDoc(likeRef);
-
-      if (likeSnap.exists()) {
-
-        likesData[video.id] = true;
-
-      }
-
-    }
-
-    setLocalLikes(likesData);
-
-  };
-
-  loadLikes();
-
-}, [videos]);
-
+const likeFollowWindowRef = useRef("");
 
 useEffect(() => {
 
   const user = auth.currentUser;
 
-  if (!user || videos.length === 0) return;
+  if (!user || videos.length === 0) {
+    return;
+  }
 
-  const loadFollowing = async () => {
+  // -----------------------------------------
+  // Current video ke aas-paas ke 5 videos
+  // currentIndex - 2 se currentIndex + 2
+  // -----------------------------------------
 
-    let data = {};
+  const startIndex = Math.max(0, currentIndex - 2);
 
-    for (const video of videos) {
+  const endIndex = Math.min(
+    videos.length - 1,
+    currentIndex + 2
+  );
 
-      const followRef = doc(
-        db,
-        "users",
-        user.uid,
-        "following",
-        video.userId
-      );
+  const nearbyVideos = videos.slice(
+    startIndex,
+    endIndex + 1
+  );
 
-      const snap = await getDoc(followRef);
+  if (nearbyVideos.length === 0) {
+    return;
+  }
 
-      if (snap.exists()) {
-        data[video.userId] = true;
+  // Same window ko baar-baar load mat karo
+  const windowKey = nearbyVideos
+    .map(video => video.id)
+    .join("|");
+
+  if (likeFollowWindowRef.current === windowKey) {
+    return;
+  }
+
+  likeFollowWindowRef.current = windowKey;
+
+
+  const loadNearbyLikesAndFollowing = async () => {
+
+    try {
+
+      // ==================================================
+      // 1. LIKES
+      // ==================================================
+
+      const videoIds = nearbyVideos
+        .map(video => video.id)
+        .filter(Boolean);
+
+      if (videoIds.length > 0) {
+
+        const likesQuery = query(
+          collection(
+            db,
+            "userLikes",
+            user.uid,
+            "likedVideos"
+          ),
+          where(
+            documentId(),
+            "in",
+            videoIds
+          )
+        );
+
+        const likesSnapshot = await getDocs(
+          likesQuery
+        );
+
+        const nearbyLikes = {};
+
+        likesSnapshot.forEach((likeDoc) => {
+
+          nearbyLikes[likeDoc.id] = true;
+
+        });
+
+        // Purane likes ko rakho
+        // aur nearby videos ka data update karo
+        setLocalLikes(prev => {
+
+          const updated = {
+            ...prev
+          };
+
+          videoIds.forEach(videoId => {
+
+            updated[videoId] =
+              nearbyLikes[videoId] === true;
+
+          });
+
+          return updated;
+
+        });
+
       }
+
+
+      // ==================================================
+      // 2. FOLLOWING
+      // ==================================================
+
+      const userIds = [
+        ...new Set(
+          nearbyVideos
+            .map(video => video.userId)
+            .filter(
+              userId =>
+                userId &&
+                userId !== user.uid
+            )
+        )
+      ];
+
+
+      if (userIds.length > 0) {
+
+        const followingQuery = query(
+          collection(
+            db,
+            "users",
+            user.uid,
+            "following"
+          ),
+          where(
+            documentId(),
+            "in",
+            userIds
+          )
+        );
+
+        const followingSnapshot =
+          await getDocs(
+            followingQuery
+          );
+
+        const nearbyFollowing = {};
+
+        followingSnapshot.forEach(
+          (followDoc) => {
+
+            nearbyFollowing[followDoc.id] = true;
+
+          }
+        );
+
+
+        setFollowingUsers(prev => {
+
+          const updated = {
+            ...prev
+          };
+
+          userIds.forEach(userId => {
+
+            updated[userId] =
+              nearbyFollowing[userId] === true;
+
+          });
+
+          return updated;
+
+        });
+
+      }
+
+    } catch (error) {
+
+      console.log(
+        "Nearby Like/Following Error:",
+        error
+      );
 
     }
 
-    setFollowingUsers(data);
-
   };
 
-  loadFollowing();
 
-}, [videos]);
+  loadNearbyLikesAndFollowing();
 
+
+}, [
+  currentIndex,
+  videos
+]);
 
 
 
@@ -360,53 +493,194 @@ useEffect(() => {
   // AUDIO SETUP
 
 
-  // FETCH VIDEOS
-  useEffect(() => {
-    const q = query(
-      collection(db, 'all_videos'), 
-      orderBy('createdAt', 'desc'),
-      limit(100) 
-    );
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+// FETCH FIRST 10 VIDEOS
+// ==========================
+
+// ==========================
+// FETCH FIRST 10 VIDEOS
+// ==========================
+useEffect(() => {
+
+  let cancelled = false;
+
+  const loadFirstVideos = async () => {
+
+    try {
+
+      const q = query(
+        collection(db, "all_videos"),
+        orderBy("createdAt", "desc"),
+        limit(10)
+      );
+
+      const snapshot = await getDocs(q);
+
+      if (cancelled) return;
+
       const loadedVideos = [];
 
-   
-snapshot.forEach((docItem) => {
+      snapshot.forEach((docItem) => {
 
-  const data = docItem.data();
+        const data = docItem.data();
 
+        if (
+          data.status !== "blocked" &&
+          data.hidden !== true &&
+          !blockedUsers.includes(data.userId)
+        ) {
 
-if (
-    data.status !== "blocked" &&
-    data.hidden !== true &&
-    !blockedUsers.includes(data.userId)
-) {
+          loadedVideos.push({
+            id: docItem.id,
+            ...data,
+            verified: data.verified || false,
+            verifiedColor: data.verifiedColor || "",
+          });
 
-    loadedVideos.push({
-  id: docItem.id,
-  ...data,
-  verified: data.verified || false,
-  verifiedColor: data.verifiedColor || "",
-});
+        }
 
-}
+      });
 
+      if (snapshot.docs.length > 0) {
 
+        lastVideoDocRef.current =
+          snapshot.docs[snapshot.docs.length - 1];
 
+      }
 
-});
-
+      setHasMoreVideos(snapshot.docs.length === 10);
 
       setVideos(loadedVideos);
-      setLoading(false);
-    }, (error) => {
-      console.log('Firebase Error:', error);
-      setLoading(false);
+
+    } catch (error) {
+
+      console.log("Firebase Video Error:", error);
+
+    } finally {
+
+      if (!cancelled) {
+        setLoading(false);
+      }
+
+    }
+
+  };
+
+  loadFirstVideos();
+
+  return () => {
+    cancelled = true;
+  };
+
+}, [blockedUsers]);
+
+
+
+
+// ==========================
+// LOAD NEXT 10 VIDEOS
+// ==========================
+const loadMoreVideos = useCallback(async () => {
+
+  if (loadingMoreRef.current) {
+    return;
+  }
+
+  if (!hasMoreVideos) {
+    return;
+  }
+
+  if (!lastVideoDocRef.current) {
+    return;
+  }
+
+  loadingMoreRef.current = true;
+
+  try {
+
+    const nextQuery = query(
+      collection(db, "all_videos"),
+      orderBy("createdAt", "desc"),
+      startAfter(lastVideoDocRef.current),
+      limit(10)
+    );
+
+    const snapshot = await getDocs(nextQuery);
+
+    if (snapshot.empty) {
+
+      setHasMoreVideos(false);
+
+      return;
+    }
+
+    const newVideos = [];
+
+    snapshot.forEach((docItem) => {
+
+      const data = docItem.data();
+
+      if (
+        data.status !== "blocked" &&
+        data.hidden !== true &&
+        !blockedUsers.includes(data.userId)
+      ) {
+
+        newVideos.push({
+          id: docItem.id,
+          ...data,
+          verified: data.verified || false,
+          verifiedColor: data.verifiedColor || "",
+        });
+
+      }
+
     });
-    return () => unsubscribe();
+
+    lastVideoDocRef.current =
+      snapshot.docs[snapshot.docs.length - 1];
+
+    if (snapshot.docs.length < 10) {
+      setHasMoreVideos(false);
+    }
+
+    if (newVideos.length > 0) {
+
+      setVideos(prevVideos => {
+
+        const existingIds = new Set(
+          prevVideos.map(video => video.id)
+        );
+
+        const uniqueNewVideos =
+          newVideos.filter(
+            video => !existingIds.has(video.id)
+          );
+
+        return [
+          ...prevVideos,
+          ...uniqueNewVideos
+        ];
+
+      });
+
+    }
+
+  } catch (error) {
+
+    console.log(
+      "Load More Videos Error:",
+      error
+    );
+
+  } finally {
+
+    loadingMoreRef.current = false;
+
+  }
+
+}, [hasMoreVideos, blockedUsers]);
 
 
-  }, [blockedUsers]);
 
 
 
@@ -1401,30 +1675,65 @@ await updateDoc(
 
   // SCROLL DETECTION
   const onViewableItemsChanged = useRef(({ viewableItems }) => {
-    if (viewableItems && viewableItems.length > 0) {
-      const index = viewableItems[0].index;
-      InteractionManager.runAfterInteractions(() => {
 
-setCurrentIndex(index);
+  if (viewableItems && viewableItems.length > 0) {
 
-setActiveVideo(index);
+    const index = viewableItems[0].index;
 
-});
-      if (viewableItems[0].item) {
+    InteractionManager.runAfterInteractions(() => {
 
-   if (viewTimeout.current) {
-  clearTimeout(viewTimeout.current);
-}
+      setCurrentIndex(index);
+      setActiveVideo(index);
 
-viewTimeout.current = setTimeout(() => {
+    });
 
-  trackView(viewableItems[0].item.id);
+    if (viewableItems[0].item) {
 
-}, 2000);
-
+      if (viewTimeout.current) {
+        clearTimeout(viewTimeout.current);
       }
+
+      viewTimeout.current = setTimeout(() => {
+
+        trackView(
+          viewableItems[0].item.id
+        );
+
+      }, 2000);
+
     }
-  }).current;
+
+  }
+
+}).current;
+
+// ==========================
+// PRELOAD NEXT 10 VIDEOS
+// ==========================
+useEffect(() => {
+
+  if (videos.length === 0) {
+    return;
+  }
+
+  // Last se 3 videos pehle next page load
+  if (
+    currentIndex >= videos.length - 3 &&
+    hasMoreVideos &&
+    !loadingMoreRef.current
+  ) {
+
+    loadMoreVideos();
+
+  }
+
+}, [
+  currentIndex,
+  videos.length,
+  hasMoreVideos,
+  loadMoreVideos
+]);
+
 
  const viewConfigRef = useRef({
   itemVisiblePercentThreshold: 80,
@@ -1918,10 +2227,17 @@ scrollEventThrottle={8}
 
 disableVirtualization={false}
 
+
+
+
+
+
         getItemLayout={(data, index) => (
           { length: height, offset: height * index, index }
         )}
       />
+
+
 
       {/* TOP TABS CONTAINER - LINKED WITH all-live SCREEN */}
       <View style={styles.topTabsContainer}>

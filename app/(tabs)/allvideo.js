@@ -68,53 +68,226 @@ const auth = getAuth();
 
 
 
+
+  
+
 const VideoPlayerItem = React.memo(({ uri, active }) => {
+
+  const [isLoading, setIsLoading] = useState(false);
+  const [hasError, setHasError] = useState(false);
 
   const player = useVideoPlayer(uri, (player) => {
     player.loop = true;
+    player.muted = true;
   });
 
-  
-useEffect(() => {
+
+  // Active / inactive video control
+  useEffect(() => {
 
     if (!player) return;
 
     if (active) {
 
-        player.muted = false;
-        player.play();
+  setHasError(false);
 
-    } else {
+  // Video start hone tak loader
+  setIsLoading(true);
 
-        player.pause();
-        player.currentTime = 0;
-        player.muted = true;
+  try {
+
+    player.muted = false;
+
+    player.play();
+
+  } catch (error) {
+
+    console.log("VIDEO PLAY ERROR =", error);
+
+    setIsLoading(false);
+    setHasError(true);
+
+  }
+
+} else {
+
+  setIsLoading(false);
+  setHasError(false);
+
+  try {
+
+    player.pause();
+    player.muted = true;
+
+  } catch (error) {
+
+    console.log("VIDEO PAUSE ERROR =", error);
+
+  }
+
+}
+
+  }, [active, player]);
+
+
+
+
+// Video loading / playing status
+useEffect(() => {
+
+  if (!player) return;
+
+  const statusSubscription = player.addListener(
+    "statusChange",
+    ({ status, error }) => {
+
+      // Inactive video par loader kabhi mat dikhao
+      if (!active) {
+        setIsLoading(false);
+        return;
+      }
+
+      if (status === "loading") {
+
+        setIsLoading(true);
+
+      }
+
+      else if (
+        status === "readyToPlay"
+      ) {
+
+        setIsLoading(false);
+        setHasError(false);
+
+      }
+
+      else if (status === "error") {
+
+        console.log(
+          "VIDEO ERROR =",
+          error
+        );
+
+        setIsLoading(false);
+        setHasError(true);
+
+      }
 
     }
+  );
 
-}, [active, player]);
+
+  // ⭐ IMPORTANT:
+  // Jaise hi video actually PLAYING ho,
+  // loading logo turant hata do.
+  const playingSubscription = player.addListener(
+    "playingChange",
+    ({ isPlaying }) => {
+
+      if (!active) {
+        setIsLoading(false);
+        return;
+      }
+
+      if (isPlaying) {
+
+        setIsLoading(false);
+        setHasError(false);
+
+      }
+
+    }
+  );
+
+
+  return () => {
+
+    statusSubscription.remove();
+    playingSubscription.remove();
+
+  };
+
+}, [player, active]);
 
 
   return (
 
- <VideoView
-player={player}
-style={styles.video}
-contentFit="cover"
-nativeControls={false}
-allowsFullscreen={false}
-allowsPictureInPicture={false}
-showsTimecodes={false}
-/>
+    <View
+      style={{
+        width: "100%",
+        height: "100%",
+        backgroundColor: "#000",
+      }}
+    >
+
+      <VideoView
+        player={player}
+        style={styles.video}
+        contentFit="cover"
+        nativeControls={false}
+        allowsFullscreen={false}
+        allowsPictureInPicture={false}
+        showsTimecodes={false}
+      />
+
+
+      {/* ONLY ACTIVE VIDEO LOADING */}
+
+      {active && isLoading && !hasError && (
+
+        <View
+          style={styles.videoLoading}
+          pointerEvents="none"
+        >
+
+          <ActivityIndicator
+            size="large"
+            color="#FFD700"
+          />
+
+        </View>
+
+      )}
+
+
+      {/* ONLY ACTIVE VIDEO ERROR */}
+
+      {active && hasError && (
+
+        <View
+          style={styles.videoError}
+          pointerEvents="none"
+        >
+
+          <Ionicons
+            name="cloud-offline-outline"
+            size={42}
+            color="#fff"
+          />
+
+          <Text style={styles.loadingText}>
+            Video load nahi ho pa raha
+          </Text>
+
+        </View>
+
+      )}
+
+    </View>
 
   );
 
 }, (prev, next) => {
-    return (
-        prev.uri === next.uri &&
-        prev.active === next.active
-    );
+
+  return (
+    prev.uri === next.uri &&
+    prev.active === next.active
+  );
+
 });
+
+
 
 
 export default function App() {
@@ -2696,6 +2869,44 @@ profileImage: {
 iconBox: {
   alignItems: 'center',
   marginBottom: 4,
+},
+
+
+videoLoading: {
+  position: "absolute",
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+
+  justifyContent: "center",
+  alignItems: "center",
+
+  backgroundColor: "rgba(0,0,0,0.35)",
+
+  zIndex: 9999,
+},
+
+videoError: {
+  position: "absolute",
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+
+  justifyContent: "center",
+  alignItems: "center",
+
+  backgroundColor: "#000",
+
+  zIndex: 9999,
+},
+
+loadingText: {
+  color: "#fff",
+  fontSize: 14,
+  marginTop: 12,
+  fontWeight: "500",
 },
 
 iconText: {

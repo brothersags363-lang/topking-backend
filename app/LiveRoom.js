@@ -33,6 +33,8 @@ import ReAnimated,{
 } from "react-native-reanimated";
 
 import { useLocalSearchParams, useRouter, useFocusEffect,  } from 'expo-router';
+import { useLive } from '../context/LiveContext';
+
 import { Ionicons, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 
 import {
@@ -210,6 +212,12 @@ const AvatarWithFrame = ({ uri, level, size = 70 }) => {
 
 export default function LiveRoom() {
 const insets = useSafeAreaInsets();
+
+const {
+  startLive,
+  stopLive,
+  currentLive,
+} = useLive();
 
 
 const glow=useSharedValue(1);
@@ -909,6 +917,24 @@ chats: updatedChats
 
         setRoomData(data);
         setLoading(false);
+
+startLive({
+  roomId: roomId,
+  roomName:
+    data?.roomName ||
+    data?.name ||
+    "Live Room",
+
+  hostName:
+    data?.seatsData?.seat_1?.userName ||
+    "Host",
+
+  hostAvatar:
+    data?.seatsData?.seat_1?.userImg ||
+    STABLE_AVATAR,
+});
+
+
 
 
 if (data.createdAt) {
@@ -3803,6 +3829,183 @@ const receiverWalletRef = doc(
 
 const receiverSnap = await getDoc(receiverWalletRef);
 
+
+
+// ================================
+// UPDATE RECEIVER TOP GIFTERS
+// ================================
+try {
+
+  // Sender
+  const senderId = currentUid;
+
+  // Receiver
+  const receiverId = selectedGiftUser;
+
+  // Gift
+  const gift = item;
+
+  // Sender name
+  const senderName = currentName;
+
+  console.log("========== TOP GIFTER DEBUG ==========");
+  console.log("SENDER ID =", senderId);
+  console.log("RECEIVER ID =", receiverId);
+  console.log("GIFT ID =", gift.id);
+  console.log("GIFT NAME =", gift.name);
+  console.log("GIFT PRICE =", gift.price);
+
+
+  // Safety check
+  if (!senderId) {
+    console.log("❌ SENDER ID MISSING");
+    return;
+  }
+
+  if (!receiverId) {
+    console.log("❌ RECEIVER ID MISSING");
+    return;
+  }
+
+  if (!gift?.price) {
+    console.log("❌ GIFT PRICE MISSING");
+    return;
+  }
+
+
+  // ================================
+  // RECEIVER USER DOCUMENT
+  // ================================
+
+  const receiverUserRef = doc(
+    db,
+    "users",
+    receiverId
+  );
+
+  const receiverUserSnap =
+    await getDoc(receiverUserRef);
+
+
+  if (!receiverUserSnap.exists()) {
+
+    console.log(
+      "❌ RECEIVER USER DOCUMENT NOT FOUND =",
+      receiverId
+    );
+
+  } else {
+
+    const receiverData =
+      receiverUserSnap.data();
+
+
+    // Existing top gifters
+    const currentTopGifters =
+      receiverData.topGifters || {};
+
+
+    // Existing sender
+    const oldGifter =
+      currentTopGifters[senderId] || {};
+
+
+    // Previous stars
+    const oldStars =
+      Number(oldGifter.stars || 0);
+
+
+    // Current gift price
+    const giftStars =
+      Number(gift.price || 0);
+
+
+    // New total
+    const newGifterStars =
+      oldStars + giftStars;
+
+
+    // ================================
+    // GET SENDER PROFILE
+    // ================================
+
+    const senderUserRef = doc(
+      db,
+      "users",
+      senderId
+    );
+
+    const senderUserSnap =
+      await getDoc(senderUserRef);
+
+
+    const senderData =
+      senderUserSnap.exists()
+        ? senderUserSnap.data()
+        : {};
+
+
+    // ================================
+    // UPDATE TOP GIFTER
+    // ================================
+
+    currentTopGifters[senderId] = {
+
+      uid: senderId,
+
+      username:
+        senderData.username ||
+        senderData.userName ||
+        "",
+
+      name:
+        senderData.name ||
+        senderData.username ||
+        senderName ||
+        "User",
+
+      profileImg:
+        senderData.profileImg ||
+        senderData.photo ||
+        senderData.photoURL ||
+        senderData.profile ||
+        "",
+
+      stars: newGifterStars,
+
+    };
+
+
+    // ================================
+    // SAVE
+    // ================================
+
+    await updateDoc(
+      receiverUserRef,
+      {
+        topGifters:
+          currentTopGifters,
+      }
+    );
+
+
+    console.log(
+      "🔥 TOP GIFTER UPDATED =",
+      currentTopGifters[senderId]
+    );
+
+  }
+
+} catch (error) {
+
+  console.log(
+    "❌ TOP GIFTER UPDATE ERROR =",
+    error
+  );
+
+}
+
+
 console.log(
   "RECEIVER WALLET EXISTS =",
   receiverSnap.exists()
@@ -3858,8 +4061,8 @@ increment(item.price)
 
 try {
 
-  await fetch(
-    "https://YOUR_RENDER_URL/update-agency-stars",
+  const response = await fetch(
+    "https://topking-backend.onrender.com/update-agency-stars",
     {
       method: "POST",
       headers: {
@@ -3872,8 +4075,14 @@ try {
     }
   );
 
+  const result = await response.json();
+
+  console.log("AGENCY UPDATE RESPONSE =", result);
+
 } catch (e) {
-  console.log("Agency Update Error", e);
+
+  console.log("Agency Update Error =", e);
+
 }
 
 

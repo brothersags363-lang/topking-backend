@@ -305,13 +305,7 @@ fontWeight: 'bold',
 },
 
 
-container: {
-  flex: 1,
-  backgroundColor: '#0F0F0F',
-  justifyContent: 'center',
-  alignItems: 'center',
-  padding: 25,
-},
+
 
 crown: {
   fontSize: 50,
@@ -331,12 +325,6 @@ tagline: {
   marginBottom: 30,
 },
 
-logo: {
-  width: 140,
-  height: 140,
-  borderRadius: 70,
-  marginBottom: 45,
-},
 
 welcome: {
   color: '#FFF',

@@ -12,6 +12,7 @@ import {
   Alert,
    Share,
    RefreshControl,
+   ActivityIndicator,
 } from "react-native";
 
 
@@ -104,6 +105,9 @@ useState([]);
 const [followingList, setFollowingList] =
 useState([]);
 
+const [followersLoading, setFollowersLoading] = useState(false);
+const [followingLoading, setFollowingLoading] = useState(false);
+
 const [friendMenuVisible, setFriendMenuVisible] = useState(false);
 
 const [followType, setFollowType] = useState("");
@@ -118,34 +122,178 @@ const { userId } = useLocalSearchParams();
 console.log("USER PROFILE PARAM =", userId);
 
 
+
 useEffect(() => {
 
-  if (!db || !userId) return;
+  if (!db || !userId) {
+    console.log("❌ TOP GIFTERS: userId nahi mila");
+    return;
+  }
 
-  const unsub = onSnapshot(
-    doc(db, "users", userId),
+  console.log(
+    "🔥 TOP GIFTERS LISTENING USER =",
+    userId
+  );
+
+  const userRef = doc(
+    db,
+    "users",
+    userId
+  );
+
+  const unsubscribe = onSnapshot(
+    userRef,
     (snap) => {
 
-      if (!snap.exists()) return;
+      if (!snap.exists()) {
+
+        console.log(
+          "❌ TOP GIFTERS: USER DOCUMENT NOT FOUND"
+        );
+
+        setTopGifters([]);
+        setGiftUserCount(0);
+
+        return;
+      }
 
       const data = snap.data();
 
-      const gifters = Object.values(
-        data.topGifters || {}
+      console.log(
+        "🔥 RAW TOP GIFTERS =",
+        data.topGifters
       );
 
-      gifters.sort((a, b) => b.stars - a.stars);
+      let gifters = [];
 
-      setTopGifters(gifters.slice(0, 3));
+      /*
+       * Array format:
+       *
+       * topGifters: [
+       *   {...},
+       *   {...}
+       * ]
+       */
+      if (Array.isArray(data.topGifters)) {
 
-      setGiftUserCount(gifters.length);
+        gifters = data.topGifters;
+
+      }
+
+      /*
+       * Object format:
+       *
+       * topGifters: {
+       *   uid1: {...},
+       *   uid2: {...}
+       * }
+       */
+      else if (
+        data.topGifters &&
+        typeof data.topGifters === "object"
+      ) {
+
+        gifters = Object.values(
+          data.topGifters
+        );
+
+      }
+
+      /*
+       * Remove invalid entries
+       */
+      gifters = gifters.filter(
+        item =>
+          item &&
+          (item.uid ||
+           item.userId ||
+           item.id)
+      );
+
+      /*
+       * Normalize data
+       */
+      gifters = gifters.map((item) => {
+
+        const uid =
+          item.uid ||
+          item.userId ||
+          item.id;
+
+        return {
+
+          ...item,
+
+          uid,
+
+          name:
+            item.name ||
+            item.username ||
+            "User",
+
+          username:
+            item.username ||
+            "",
+
+          profileImg:
+            item.profileImg ||
+            item.photoURL ||
+            item.photo ||
+            item.profile ||
+            item.avatar ||
+            "",
+
+          stars:
+            Number(item.stars || 0),
+
+        };
+
+      });
+
+      /*
+       * Highest stars first
+       */
+      gifters.sort(
+        (a, b) =>
+          Number(b.stars || 0) -
+          Number(a.stars || 0)
+      );
+
+      console.log(
+        "🔥 FINAL PROFILE TOP GIFTERS =",
+        gifters
+      );
+
+      /*
+       * Total unique gifters
+       */
+      setGiftUserCount(
+        gifters.length
+      );
+
+      /*
+       * Only top 3 images
+       */
+      setTopGifters(
+        gifters.slice(0, 3)
+      );
+
+    },
+
+    (error) => {
+
+      console.log(
+        "❌ TOP GIFTERS SNAPSHOT ERROR =",
+        error
+      );
 
     }
   );
 
-  return () => unsub();
+  return () => unsubscribe();
 
 }, [userId]);
+
 
 
 useEffect(() => {
@@ -237,35 +385,26 @@ const levelTheme = getLevelTheme(userLevel || 1);
 
 const navigation = useNavigation();
 
-useFocusEffect(
-  React.useCallback(() => {
+// Mobile hardware back button
+useEffect(() => {
 
-    const backAction = () => {
+  const backAction = () => {
+    router.back();
+    return true;
+  };
 
-      if (navigation.canGoBack()) {
+  const backHandler = BackHandler.addEventListener(
+    "hardwareBackPress",
+    backAction
+  );
 
-        navigation.goBack();
+  return () => {
+    backHandler.remove();
+  };
 
-      } else {
+}, [router]);
 
-       router.replace("/(tabs)");
-
-      }
-
-      return true;
-    };
-
-    const subscription =
-      BackHandler.addEventListener(
-        "hardwareBackPress",
-        backAction
-      );
-
-    return () =>
-      subscription.remove();
-
-  }, [])
-);
+    
 
 
 
@@ -589,9 +728,16 @@ const checkFollowStatus = async () => {
 };
 
 
+
+
+
 const loadFollowers = async () => {
 
+  if (!userId) return;
+
   try {
+
+    setFollowersLoading(true);
 
     const q = query(
       collection(db, "follows"),
@@ -600,57 +746,67 @@ const loadFollowers = async () => {
 
     const snap = await getDocs(q);
 
-    let arr = [];
+    const myId = auth.currentUser?.uid;
+
+    const arr = [];
 
     for (const item of snap.docs) {
 
-      const followerId =
-      item.data().followerId;
+      const followerId = item.data().followerId;
 
-      const userSnap =
-      await getDoc(
+      const userSnap = await getDoc(
         doc(db, "users", followerId)
       );
 
-      if (userSnap.exists()) {
+      if (!userSnap.exists()) continue;
 
+      const user = userSnap.data();
 
-const myId = auth.currentUser?.uid;
+      const iFollowSnap = myId
+        ? await getDoc(
+            doc(
+              db,
+              "follows",
+              `${myId}_${followerId}`
+            )
+          )
+        : { exists: () => false };
 
-const iFollowSnap = await getDoc(
-  doc(db, "follows", `${myId}_${followerId}`)
-);
+      const followsMeSnap = myId
+        ? await getDoc(
+            doc(
+              db,
+              "follows",
+              `${followerId}_${myId}`
+            )
+          )
+        : { exists: () => false };
 
-const followsMeSnap = await getDoc(
-  doc(db, "follows", `${followerId}_${myId}`)
-);
+      const walletSnap = await getDoc(
+        doc(db, "wallets", followerId)
+      );
 
+      const verifiedSnap = await getDoc(
+        doc(db, "verifiedUsers", followerId)
+      );
 
-      const walletSnap = await getDoc(doc(db, "wallets", followerId));
+      arr.push({
+        id: followerId,
 
-const verifiedSnap = await getDoc(
-doc(db,"verifiedUsers",followerId)
-);
+        ...user,
 
-arr.push({
-id:followerId,
+        iFollow: iFollowSnap.exists(),
 
-iFollow: iFollowSnap.exists(),
-followsMe: followsMeSnap.exists(),
+        followsMe: followsMeSnap.exists(),
 
-level:walletSnap.exists()
-? walletSnap.data().level || 1
-:1,
+        level: walletSnap.exists()
+          ? walletSnap.data().level || 1
+          : 1,
 
-verified: verifiedSnap.exists(),
+        verified: verifiedSnap.exists(),
 
-verifiedColor:
-userSnap.data().verifiedColor || "",
-
-...userSnap.data(),
-});
-
-      }
+        verifiedColor: user.verifiedColor || "",
+      });
 
     }
 
@@ -658,16 +814,29 @@ userSnap.data().verifiedColor || "",
 
   } catch (error) {
 
-    console.log(error);
+    console.log(
+      "LOAD FOLLOWERS ERROR =",
+      error
+    );
+
+  } finally {
+
+    setFollowersLoading(false);
 
   }
 
 };
 
 
+
+
 const loadFollowing = async () => {
 
+  if (!userId) return;
+
   try {
+
+    setFollowingLoading(true);
 
     const q = query(
       collection(db, "follows"),
@@ -676,57 +845,68 @@ const loadFollowing = async () => {
 
     const snap = await getDocs(q);
 
-    let arr = [];
+    const myId = auth.currentUser?.uid;
+
+    const arr = [];
 
     for (const item of snap.docs) {
 
       const followingId =
-      item.data().followingId;
+        item.data().followingId;
 
-      const userSnap =
-      await getDoc(
+      const userSnap = await getDoc(
         doc(db, "users", followingId)
       );
 
-      if (userSnap.exists()) {
+      if (!userSnap.exists()) continue;
 
+      const user = userSnap.data();
 
-const myId = auth.currentUser?.uid;
+      const iFollowSnap = myId
+        ? await getDoc(
+            doc(
+              db,
+              "follows",
+              `${myId}_${followingId}`
+            )
+          )
+        : { exists: () => false };
 
-const iFollowSnap = await getDoc(
-  doc(db, "follows", `${myId}_${followingId}`)
-);
+      const followsMeSnap = myId
+        ? await getDoc(
+            doc(
+              db,
+              "follows",
+              `${followingId}_${myId}`
+            )
+          )
+        : { exists: () => false };
 
-const followsMeSnap = await getDoc(
-  doc(db, "follows", `${followingId}_${myId}`)
-);
+      const walletSnap = await getDoc(
+        doc(db, "wallets", followingId)
+      );
 
+      const verifiedSnap = await getDoc(
+        doc(db, "verifiedUsers", followingId)
+      );
 
-       const walletSnap = await getDoc(doc(db, "wallets", followingId));
+      arr.push({
+        id: followingId,
 
-const verifiedSnap = await getDoc(
-doc(db,"verifiedUsers",followingId)
-);
+        ...user,
 
-arr.push({
-id:followingId,
+        iFollow: iFollowSnap.exists(),
 
-iFollow: iFollowSnap.exists(),
-followsMe: followsMeSnap.exists(),
+        followsMe: followsMeSnap.exists(),
 
-level:walletSnap.exists()
-? walletSnap.data().level || 1
-:1,
+        level: walletSnap.exists()
+          ? walletSnap.data().level || 1
+          : 1,
 
-verified: verifiedSnap.exists(),
+        verified: verifiedSnap.exists(),
 
-verifiedColor:
-userSnap.data().verifiedColor || "",
-
-...userSnap.data(),
-});
-
-      }
+        verifiedColor: user.verifiedColor || "",
+      });
 
     }
 
@@ -734,27 +914,20 @@ userSnap.data().verifiedColor || "",
 
   } catch (error) {
 
-    console.log(error);
+    console.log(
+      "LOAD FOLLOWING ERROR =",
+      error
+    );
+
+  } finally {
+
+    setFollowingLoading(false);
 
   }
 
 };
 
 
-
-useEffect(()=>{
-
-if(followersModalVisible){
-
-loadFollowers();
-loadFollowing();
-
-}
-
-},[
-followersModalVisible,
-isFollowing
-]);
 
 
 
@@ -1375,13 +1548,15 @@ contentContainerStyle={{
 
                 <TouchableOpacity
   style={styles.statBox}
- onPress={async () => {
+onPress={() => {
 
-setActiveFollowTab("followers");
+  setActiveFollowTab("followers");
 
-await loadFollowers();
+  // Modal pehle open
+  setFollowersModalVisible(true);
 
-setFollowersModalVisible(true);
+  // Data baad mein load
+  loadFollowers();
 
 }}
 >
@@ -1397,13 +1572,15 @@ setFollowersModalVisible(true);
                 
 <TouchableOpacity
   style={styles.statBox}
- onPress={async () => {
+onPress={() => {
 
-setActiveFollowTab("following");
+  setActiveFollowTab("following");
 
-await loadFollowing();
+  // Modal immediately open
+  setFollowersModalVisible(true);
 
-setFollowersModalVisible(true);
+  // Data background mein load
+  loadFollowing();
 
 }}
 
@@ -1564,21 +1741,43 @@ Follow
 
     <View style={styles.memberRow}>
 
-  {topGifters.map((item, index) => (
 
+{topGifters.map((item, index) => {
+
+  const imageUri =
+    item.profileImg ||
+    item.photoURL ||
+    item.photo ||
+    item.profile ||
+    item.avatar ||
+    "";
+
+  return (
     <Image
-      key={item.uid}
-      source={{ uri: item.photo }}
+      key={
+        item.uid ||
+        `gifter-${index}`
+      }
+      source={{
+        uri:
+          imageUri ||
+          "https://avatar.iran.liara.run/public/65",
+      }}
       style={[
         styles.memberImg,
         {
-          marginLeft: index === 0 ? 0 : -12,
-          zIndex: 3 - index,
+          marginLeft:
+            index === 0 ? 0 : -12,
+
+          zIndex:
+            3 - index,
         },
       ]}
     />
+  );
 
-  ))}
+})}
+  
 
   <Text
     style={{
@@ -1967,13 +2166,14 @@ Followers
 
 
 <TouchableOpacity
-onPress={async()=>{
+onPress={() => {
 
-setActiveFollowTab("following");
+  setActiveFollowTab("following");
 
-await loadFollowing();
+  loadFollowing();
 
 }}
+
 style={{
 backgroundColor:
 activeFollowTab==="following"
@@ -1998,6 +2198,69 @@ Following
 
 </View>
 
+
+
+
+
+{activeFollowTab === "followers" &&
+followersLoading ? (
+
+  <View
+    style={{
+      flex: 1,
+      justifyContent: "center",
+      alignItems: "center",
+      paddingTop: 60,
+    }}
+  >
+
+    <ActivityIndicator
+      size="large"
+      color="#FFD700"
+    />
+
+    <Text
+      style={{
+        color: "#aaa",
+        marginTop: 12,
+        fontSize: 14,
+      }}
+    >
+      Loading followers...
+    </Text>
+
+  </View>
+
+) : activeFollowTab === "following" &&
+followingLoading ? (
+
+  <View
+    style={{
+      flex: 1,
+      justifyContent: "center",
+      alignItems: "center",
+      paddingTop: 60,
+    }}
+  >
+
+    <ActivityIndicator
+      size="large"
+      color="#FFD700"
+    />
+
+    <Text
+      style={{
+        color: "#aaa",
+        marginTop: 12,
+        fontSize: 14,
+      }}
+    >
+      Loading following...
+    </Text>
+
+  </View>
+
+) : (
 
 
 <FlatList
@@ -2297,7 +2560,7 @@ Follow
 }}
 
 />
-
+)}
 </SafeAreaView>
 
 </Modal>
@@ -2331,14 +2594,14 @@ const styles = StyleSheet.create({
   },
 
   smallAvatar: {
-    width: 30,
-    height: 30,
+    width: 25,
+    height: 25,
     borderRadius: 25,
   },
 
   topUsername: {
     color: "#fff",
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: "bold",
     marginLeft: 10,
   },
@@ -2349,8 +2612,8 @@ const styles = StyleSheet.create({
   },
 
   profileImage: {
-    width: 85,
-    height: 85,
+    width: 80,
+    height: 80,
     borderRadius: 50,
     borderWidth: 1,
     borderColor: "#FFD700",
@@ -2400,7 +2663,7 @@ statBox: {
 
   bioBox: {
     paddingHorizontal: 20,
-    marginTop: 5,
+    marginTop: 0,
   },
 
   bioTitle: {
@@ -2411,7 +2674,7 @@ statBox: {
   bioText: {
     color: "#fff",
     fontSize: 11,
-    fontWeight: "bold",
+    
     marginTop: 5,
   },
 

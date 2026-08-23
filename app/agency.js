@@ -12,9 +12,12 @@ Alert,
 ScrollView,
 Modal,
 FlatList,
+ BackHandler,
 } from "react-native";
 
 import { auth, db } from "./firebaseConfig";
+
+import { useRouter } from "expo-router";
 
 import {
 doc,
@@ -44,7 +47,38 @@ import {
 
 export default function Agency(){
 
-const [agency,setAgency]=useState(null);
+  const router = useRouter();
+
+  // =========================
+  // MOBILE HARDWARE BACK
+  // =========================
+
+  useEffect(() => {
+
+    const backAction = () => {
+
+      router.back();
+
+      return true;
+
+    };
+
+
+    const subscription =
+      BackHandler.addEventListener(
+        "hardwareBackPress",
+        backAction
+      );
+
+
+    return () => {
+      subscription.remove();
+    };
+
+  }, [router]);
+
+
+  const [agency,setAgency]=useState(null);
 
 const [hostUsername,setHostUsername]=useState("");
 
@@ -122,6 +156,9 @@ useEffect(()=>{
 loadAgency();
 
 },[]);
+
+
+
 
 
 
@@ -435,7 +472,7 @@ const changeLogo = async () => {
     formData.append("upload_preset", "profile_upload");
 
     const response = await fetch(
-      "https://api.cloudinary.com/v1_1/lkqk0rps/image/upload",
+      "https://api.cloudinary.com/v1_1/fzmrnrlz/image/upload",
       {
         method: "POST",
         body: formData,
@@ -502,6 +539,20 @@ const addHost = async () => {
     }
 
     const userDoc = userSnap.docs[0];
+const requestQuery = query(
+  collection(db, "agencyHostRequests"),
+  where("agencyId", "==", agency.id),
+  where("userId", "==", userDoc.id),
+  where("status", "==", "pending")
+);
+
+const requestSnap = await getDocs(requestQuery);
+
+if (!requestSnap.empty) {
+  Alert.alert("Request already sent.");
+  return;
+}
+
 
     // Agar user pehle se kisi agency me hai
     if (userDoc.data().agencyId) {
@@ -510,30 +561,45 @@ const addHost = async () => {
     }
 
     // User update
-    await updateDoc(userDoc.ref, {
-      agencyId: agency.id,
-      agencyName: agency.agencyName,
-      agencyHost: true,
-    });
+   
+await setDoc(
+  doc(collection(db, "agencyHostRequests")),
+  {
+    agencyId: agency.id,
 
-    // Agency member +1
-    await updateDoc(
-      doc(db, "agencies", agency.id),
-      {
-        totalMembers: increment(1),
-      }
-    );
+    agencyName: agency.agencyName,
 
-    // Screen refresh
-    loadAgency();
+    agencyLogo: agency.logo || "",
 
-loadHosts(agency.id);
+    ownerUserId: agency.ownerUserId,
 
-    setHostUsername("");
+    ownerName: agency.ownerName || "",
 
-    setHostVisible(false);
+    userId: userDoc.id,
 
-    Alert.alert("Success", "Host Added Successfully");
+    username: userDoc.data().username,
+
+    profileImg: userDoc.data().profileImg || "",
+
+    status: "pending",
+
+    createdAt: serverTimestamp(),
+  }
+);
+
+
+
+Alert.alert(
+  "Success",
+  "Host Request Sent Successfully"
+);
+
+setHostUsername("");
+setHostVisible(false);
+
+return;
+
+
 
   } catch (error) {
 

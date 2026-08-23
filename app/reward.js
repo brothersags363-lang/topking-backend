@@ -9,6 +9,7 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
+  BackHandler,
 } from "react-native";
 
 import { LinearGradient } from "expo-linear-gradient";
@@ -27,10 +28,14 @@ import {
   getDoc,
   serverTimestamp,
 } from "firebase/firestore";
-
+import { useRouter } from "expo-router";
 import { db, auth } from "./firebaseConfig";
 
 export default function Reward() {
+const router = useRouter();
+
+  
+
 
 const [loading, setLoading] = useState(true);
 
@@ -48,6 +53,25 @@ const [lastLiveClaimDate, setLastLiveClaimDate] = useState("");
 
 const [lastGiftClaimDate, setLastGiftClaimDate] = useState("");
 
+
+// Mobile hardware back button
+useEffect(() => {
+
+  const handleBackPress = () => {
+    router.back();
+    return true;
+  };
+
+  const subscription = BackHandler.addEventListener(
+    "hardwareBackPress",
+    handleBackPress
+  );
+
+  return () => {
+    subscription.remove();
+  };
+
+}, [router]);
 
 const liveCompleted = liveMinutes >= 120;
 

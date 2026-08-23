@@ -5,7 +5,11 @@ import {
   getAuth,
 } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getFirestore } from 'firebase/firestore';
+import {
+  getFirestore,
+  doc,
+  setDoc,
+} from "firebase/firestore";
 import { getStorage } from 'firebase/storage';
 
 import messaging from '@react-native-firebase/messaging';
@@ -61,6 +65,35 @@ export const getFCMToken = async () => {
 };
 
 
+messaging().onTokenRefresh(async (token) => {
+
+  console.log("NEW FCM TOKEN =", token);
+
+  const uid = auth.currentUser?.uid;
+
+  if (!uid) return;
+
+  try {
+
+    await setDoc(
+      doc(db, "users", uid),
+      {
+        fcmToken: token,
+      },
+      {
+        merge: true,
+      }
+    );
+
+    console.log("FCM TOKEN UPDATED");
+
+  } catch (e) {
+
+    console.log(e);
+
+  }
+
+});
 
 
 

@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   StatusBar,
     ScrollView,
+    BackHandler,
 } from "react-native";
 
 import { Ionicons } from "@expo/vector-icons";
@@ -27,6 +28,24 @@ import {
 } from "firebase/firestore";
 
 export default function FeedbackScreen() {
+
+// Mobile hardware back button
+useEffect(() => {
+  const handleBackPress = () => {
+    router.back();
+    return true;
+  };
+
+  const subscription = BackHandler.addEventListener(
+    "hardwareBackPress",
+    handleBackPress
+  );
+
+  return () => {
+    subscription.remove();
+  };
+}, [router]);
+
 
   const router = useRouter();
 

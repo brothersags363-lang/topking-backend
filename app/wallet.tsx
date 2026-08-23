@@ -41,7 +41,36 @@ import {
 export default function WalletScreen() {
 
   const router = useRouter();
+
   const [activeTab, setActiveTab] = useState('Star');
+
+
+  // =========================
+  // MOBILE HARDWARE BACK
+  // =========================
+
+  useEffect(() => {
+
+    const backAction = () => {
+
+      router.back();
+
+      return true;
+    };
+
+
+    const subscription =
+      BackHandler.addEventListener(
+        "hardwareBackPress",
+        backAction
+      );
+
+
+    return () => {
+      subscription.remove();
+    };
+
+  }, [router]);
 
   const [withdrawAmount, setWithdrawAmount] = useState('');
 const [upiId, setUpiId] = useState('');

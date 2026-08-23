@@ -19,6 +19,7 @@ import {
     Alert,
 Modal,
 Pressable,
+ Linking,
 } from "react-native";
 
 import {
@@ -43,6 +44,56 @@ import {
   deleteDoc,
   updateDoc,
 } from "firebase/firestore";
+
+
+// ==========================================
+// CHAT MESSAGE WITH CLICKABLE LINKS
+// ==========================================
+const ChatMessageText = ({
+  text,
+  style,
+  onLinkPress,
+}) => {
+
+  // http://, https:// aur www. links detect karega
+  const parts = String(text || "").split(
+    /(https?:\/\/[^\s]+|www\.[^\s]+)/gi
+  );
+
+  return (
+    <Text style={style}>
+
+      {parts.map((part, index) => {
+
+        const isLink =
+          /^(https?:\/\/|www\.)/i.test(part);
+
+        if (!isLink) {
+          return (
+            <Text key={index}>
+              {part}
+            </Text>
+          );
+        }
+
+        return (
+          <Text
+            key={index}
+            onPress={() => onLinkPress(part)}
+            style={{
+              color: "#4DA6FF",
+              textDecorationLine: "underline",
+            }}
+          >
+            {part}
+          </Text>
+        );
+
+      })}
+
+    </Text>
+  );
+};
 
 export default function ChatScreen() {
   const router = useRouter();
@@ -139,6 +190,39 @@ const getLevelTheme = (level = 1) => {
     text: "#FFD700",
     icon: "#00E5FF",
   };
+};
+
+
+// ================================
+// OPEN ANY LINK FROM CHAT
+// ================================
+const openChatLink = async (url) => {
+  try {
+    let cleanUrl = String(url).trim();
+
+    // Agar http/https nahi hai to https add karo
+    if (!/^https?:\/\//i.test(cleanUrl)) {
+      cleanUrl = `https://${cleanUrl}`;
+    }
+
+    const supported = await Linking.canOpenURL(cleanUrl);
+
+    if (supported) {
+      await Linking.openURL(cleanUrl);
+    } else {
+      Alert.alert(
+        "Unable to open link",
+        "This link cannot be opened on your device."
+      );
+    }
+  } catch (error) {
+    console.log("OPEN LINK ERROR =", error);
+
+    Alert.alert(
+      "Unable to open link",
+      "Something went wrong while opening this link."
+    );
+  }
 };
 
 
@@ -897,11 +981,13 @@ const videoArray = [{
 
   ) : (
 
-    <Text style={styles.messageText}>
-      {String(item?.text || "")}
-    </Text>
+  <ChatMessageText
+    text={String(item?.text || "")}
+    style={styles.messageText}
+    onLinkPress={openChatLink}
+  />
 
-  )}
+)}
 
 {item.edited && (
 

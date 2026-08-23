@@ -37,7 +37,6 @@ import { collection, addDoc, serverTimestamp, doc, getDoc } from 'firebase/fires
 export default function PostPage() {
 
   
-const UPLOAD_PRESET = 'topking_upload';
 
   const router = useRouter();
 
@@ -69,6 +68,40 @@ const musicImage =
   Array.isArray(params.musicImage)
     ? params.musicImage[0]
     : params.musicImage;
+
+
+
+const subtitleText =
+  Array.isArray(params.subtitleText)
+    ? params.subtitleText[0]
+    : params.subtitleText || "";
+
+const subtitleColor =
+  Array.isArray(params.subtitleColor)
+    ? params.subtitleColor[0]
+    : params.subtitleColor || "#FFFFFF";
+
+const subtitleSize =
+  Array.isArray(params.subtitleSize)
+    ? params.subtitleSize[0]
+    : params.subtitleSize || "28";
+
+const subtitleX =
+  Array.isArray(params.subtitleX)
+    ? params.subtitleX[0]
+    : params.subtitleX || "0";
+
+const subtitleY =
+  Array.isArray(params.subtitleY)
+    ? params.subtitleY[0]
+    : params.subtitleY || "0";
+
+
+console.log("SUBTITLE TEXT =", subtitleText);
+console.log("SUBTITLE COLOR =", subtitleColor);
+console.log("SUBTITLE SIZE =", subtitleSize);
+console.log("SUBTITLE POSITION =", subtitleX, subtitleY);
+
 
 
 useFocusEffect(
@@ -158,7 +191,7 @@ useEffect(() => {
   // HANDLE POST
   const handlePostNow = async () => {
     const user = auth.currentUser;
-const CLOUD_NAME = 'lkqk0rps';
+
 
     if (!user) {
       Alert.alert('Error', 'Pehle login karein');
@@ -279,15 +312,41 @@ const response = await axios.post(
 );
 
 
-const uploadedVideo = response.data.videoUrl;
+const uploadedVideo =
+  response.data.videoUrl;
+
+const thumbnailUrl =
+  response.data.thumbnailUrl;
+
+console.log(
+  "🔥 UPLOAD RESPONSE =",
+  JSON.stringify(response.data, null, 2)
+);
+
+console.log(
+  "🔥 VIDEO URL =",
+  response.data.videoUrl
+);
+
+console.log(
+  "🔥 THUMBNAIL URL =",
+  response.data.thumbnailUrl
+);
+
+
 // Original Audio = Uploaded Video URL
-const originalAudioUrl = uploadedVideo;
-      console.log("VIDEO URL =", uploadedVideo);
+const originalAudioUrl =
+  uploadedVideo;
 
-const thumbnailUrl = uploadedVideo
-  .replace('/video/upload/', '/video/upload/so_1,f_jpg/');
+console.log(
+  "VIDEO URL =",
+  uploadedVideo
+);
 
-console.log("THUMB URL =", thumbnailUrl);
+console.log(
+  "THUMB URL =",
+  thumbnailUrl
+);
 
       if (uploadedVideo) {
         // AB DATA DYNAMIC HAI
@@ -335,7 +394,7 @@ console.log("THUMB URL =", thumbnailUrl);
 
   engagementScore: 0, // ADD THIS
 
-  thumbnail: thumbnailUrl,
+  thumbnail: thumbnailUrl || uploadedVideo,
 
   verified: userData?.verified || false,
 };
@@ -365,7 +424,7 @@ await addDoc(collection(db, "songs"), {
     uploadedVideo,
 
   thumbnail:
-    thumbnailUrl,
+  thumbnailUrl || uploadedVideo,
 
   userId:
     user.uid,
