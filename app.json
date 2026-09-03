@@ -1,32 +1,35 @@
 {
   "expo": {
-    "name": "TopKingApp",
-    "slug": "TopKingApp",
-    "version": "1.0.0",
-
-
+    "name": "TopKing",
+    "slug": "TopKing",
+    "version": "2.2.3",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "topkingapp",
+    "scheme": "topking",
     "userInterfaceStyle": "automatic",
+
     "splash": {
       "image": "./assets/images/splash-icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
+
     "ios": {
       "supportsTablet": true
     },
-    "android": {
-      "package": "com.gufran.topkingapp",
 
-"softwareKeyboardLayoutMode": "resize",
+    "android": {
+      "package": "com.gufran.topking",
+      "googleServicesFile": "./google-services.json",
+      "softwareKeyboardLayoutMode": "resize",
 
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
+
       "predictiveBackGestureEnabled": false,
+
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
@@ -37,11 +40,10 @@
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO",
         "android.permission.READ_MEDIA_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS",
-        "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+        "android.permission.MODIFY_AUDIO_SETTINGS"
       ]
     },
+
     "web": {
       "bundler": "metro",
       "output": "static",
@@ -57,8 +59,10 @@
         }
       }
     },
+
     "plugins": [
       "expo-router",
+
       [
         "expo-camera",
         {
@@ -66,12 +70,14 @@
           "microphonePermission": "Allow Top King to access your microphone."
         }
       ],
+
       [
         "expo-image-picker",
         {
           "photosPermission": "Allow Top King to access your photos."
         }
       ],
+
       [
         "expo-media-library",
         {
@@ -80,16 +86,21 @@
           "isAccessMediaLocationEnabled": true
         }
       ],
+
       "expo-web-browser",
       "@react-native-google-signin/google-signin",
       "expo-video",
       "expo-audio",
       "expo-asset",
-      "expo-font"
+      "expo-font",
+      "@react-native-firebase/app",
+      "@react-native-firebase/messaging"
     ],
+
     "experiments": {
       "typedRoutes": true
     },
+
     "extra": {
       "router": {},
       "eas": {
