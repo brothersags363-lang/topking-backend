@@ -349,6 +349,8 @@ const [joined,setJoined]=useState(false);
 
 const [remoteUsers,setRemoteUsers]=useState([]);
 
+const heartbeatRef = useRef(null);
+
 const [mutedUsers,setMutedUsers]=useState([]);
 
 const [activeSpeakers, setActiveSpeakers] = useState({});
@@ -1093,6 +1095,95 @@ if (
   currentRealName,
   currentAvatar,
   hostLevel,
+]);
+
+
+// =====================================================
+// LIVE ROOM HEARTBEAT
+// =====================================================
+
+useEffect(() => {
+
+  if (!db || !roomId || !currentUid) {
+    return;
+  }
+
+  const roomRef = doc(db, "rooms", roomId);
+
+  const sendHeartbeat = async () => {
+
+    try {
+
+      // Room exist karta hai ya nahi check
+      const roomSnap = await getDoc(roomRef);
+
+      if (!roomSnap.exists()) {
+        console.log("Heartbeat: Room not found");
+        return;
+      }
+
+      const data = roomSnap.data();
+
+      // Sirf room ka host heartbeat bhejega
+      if (data?.hostId !== currentUid) {
+        return;
+      }
+
+      await updateDoc(roomRef, {
+
+        lastHeartbeat: Date.now(),
+
+        hostOnline: true,
+
+      });
+
+      console.log(
+        "❤️ Live heartbeat sent:",
+        roomId
+      );
+
+    } catch (error) {
+
+      console.log(
+        "Heartbeat Error:",
+        error
+      );
+
+    }
+
+  };
+
+
+  // Page open hote hi ek baar heartbeat
+  sendHeartbeat();
+
+
+  // Har 15 second heartbeat
+  heartbeatRef.current = setInterval(() => {
+
+    sendHeartbeat();
+
+  }, 15000);
+
+
+  // Cleanup
+  return () => {
+
+    if (heartbeatRef.current) {
+
+      clearInterval(
+        heartbeatRef.current
+      );
+
+      heartbeatRef.current = null;
+
+    }
+
+  };
+
+}, [
+  roomId,
+  currentUid
 ]);
 
 
@@ -2757,7 +2848,7 @@ marginLeft:3
     maxToRenderPerBatch={20}
     windowSize={10}
    removeClippedSubviews={true}
-   
+   windowSize={5}
 updateCellsBatchingPeriod={50}
     keyExtractor={(item,index)=>
         item.id || index.toString()
