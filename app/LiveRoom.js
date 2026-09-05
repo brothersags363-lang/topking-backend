@@ -342,8 +342,6 @@ const [keyboardHeight, setKeyboardHeight] = useState(0);
 const [roomStartTime, setRoomStartTime] = useState(null);
 
   const isJoinedRef = useRef(false);
-const agoraInitPromiseRef = useRef(null);
-const agoraJoinStartedRef = useRef(false);
 
 const agoraEngineRef = useRef(null);
 
@@ -920,29 +918,20 @@ chats: updatedChats
         setRoomData(data);
         setLoading(false);
 
-const snapshotHostId = data?.hostId || data?.seatsData?.seat_1?.userId || null;
-const snapshotHostName =
-  data?.hostName ||
-  data?.seatsData?.seat_1?.userName ||
-  "Host";
-const snapshotHostImage =
-  data?.hostImg ||
-  data?.seatsData?.seat_1?.userImg ||
-  STABLE_AVATAR;
-const snapshotRole =
-  snapshotHostId === currentUid
-    ? "host"
-    : "listener";
-
 startLive({
-  roomId,
-  roomName: data?.roomName || data?.title || data?.name || "Live Room",
-  hostName: snapshotHostName,
-  hostImage: snapshotHostImage,
-  hostId: snapshotHostId,
-  userRole: snapshotRole,
-  startTime: data?.createdAt || null,
-  roomData: data,
+  roomId: roomId,
+  roomName:
+    data?.roomName ||
+    data?.name ||
+    "Live Room",
+
+  hostName:
+    data?.seatsData?.seat_1?.userName ||
+    "Host",
+
+  hostAvatar:
+    data?.seatsData?.seat_1?.userImg ||
+    STABLE_AVATAR,
 });
 
 
@@ -1555,117 +1544,225 @@ const handleRaiseHand = async () => {
 
 
 const initAgora = async (userRole) => {
-  if (!roomId || !currentUid) return;
-  if (agoraEngineRef.current || agoraInitPromiseRef.current || agoraJoinStartedRef.current) return;
 
-  agoraJoinStartedRef.current = true;
+if (Platform.OS === "android") {
 
-  const run = async () => {
-    let engine = null;
-    try {
-      if (Platform.OS === "android") {
-        const permissions = await PermissionsAndroid.requestMultiple([
-          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-          PermissionsAndroid.PERMISSIONS.CAMERA,
-        ]);
-        if (permissions[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] !== PermissionsAndroid.RESULTS.GRANTED) {
-          throw new Error("Microphone permission denied");
-        }
-      }
+await PermissionsAndroid.requestMultiple([
+PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+PermissionsAndroid.PERMISSIONS.CAMERA,
+]);
 
-      const firebaseUser = auth?.currentUser;
-      if (!firebaseUser) throw new Error("Firebase user not available");
-      const firebaseIdToken = await firebaseUser.getIdToken(true);
-      if (!firebaseIdToken) throw new Error("Firebase ID token missing");
+}
 
-      const numericUid = currentUid.split("").reduce((a,c) => a + c.charCodeAt(0), 0) % 1000000;
-      const role = userRole === "host" || userRole === "speaker"
-        ? ClientRoleType.ClientRoleBroadcaster
-        : ClientRoleType.ClientRoleAudience;
 
-      console.log("AGORA INIT ROLE =", userRole, "UID =", numericUid);
+const engine = createAgoraRtcEngine();
 
-      const response = await fetch(
-        `https://topking-backend.onrender.com/token?channel=${encodeURIComponent(roomId)}&uid=${numericUid}`,
-        { headers: { Authorization: `Bearer ${firebaseIdToken}`, Accept: "application/json" } }
-      );
-      const tokenData = await response.json();
-      console.log("TOKEN HTTP STATUS =", response.status);
-      if (!response.ok || !tokenData?.success || !tokenData?.token) {
-        throw new Error(tokenData?.error || `Token request failed (${response.status})`);
-      }
+engine.initialize({
+appId:'4e23c17b272f4a1c920c214be58486f4'
+});
 
-      const token = tokenData.token;
-      const backendUid = Number(tokenData.uid) || numericUid;
-      setMyAgoraUid(backendUid);
 
-      engine = createAgoraRtcEngine();
-      engine.initialize({ appId: "4e23c17b272f4a1c920c214be58486f4" });
-      await engine.setAudioProfile(
-        AudioProfileType.AudioProfileSpeechStandard,
-        AudioScenarioType.AudioScenarioChatroom
-      );
-      await engine.setParameters(JSON.stringify({
-        "che.audio.ans.enable": true,
-        "che.audio.agc.enable": true,
-        "che.audio.aec.enable": true
-      }));
+await engine.setAudioProfile(
+  AudioProfileType.AudioProfileSpeechStandard,
+  AudioScenarioType.AudioScenarioChatroom
+);
 
-      engine.registerEventHandler({
-        onJoinChannelSuccess: (connection, uid) => {
-          console.log("JOIN SUCCESS", uid);
-          setJoined(true);
-          isJoinedRef.current = true;
-        },
-        onUserJoined: (connection, uid) => {
-          setRemoteUsers(prev => prev.includes(uid) ? prev : [...prev, uid]);
-        },
-        onUserOffline: (connection, uid) => {
-          setRemoteUsers(prev => prev.filter(id => id !== uid));
-        },
-        onAudioVolumeIndication: (connection, speakers) => {
-          const map = {};
-          (speakers || []).forEach(item => { if (item.volume > 10) map[item.uid] = true; });
-          setActiveSpeakers(map);
-        },
-        onError: err => console.log("Agora Error:", err),
-      });
+await engine.setParameters(
+  JSON.stringify({
+    "che.audio.ans.enable": true,
+    "che.audio.agc.enable": true,
+    "che.audio.aec.enable": true
+  })
+);
 
-      await engine.enableAudio();
-      await engine.setEnableSpeakerphone(true);
-      await engine.setClientRole(role);
-      engine.enableAudioVolumeIndication(500, 3, true);
 
-      if (role === ClientRoleType.ClientRoleBroadcaster) {
-        await engine.enableLocalAudio(true);
-        await engine.muteLocalAudioStream(false);
-      } else {
-        await engine.enableLocalAudio(false);
-        await engine.muteLocalAudioStream(true);
-      }
+engine.registerEventHandler({
 
-      await engine.joinChannel(token, roomId, backendUid, {
-        channelProfile: ChannelProfileType.ChannelProfileLiveBroadcasting,
-        clientRoleType: role,
-      });
+onJoinChannelSuccess:(connection,uid)=>{
 
-      agoraEngineRef.current = engine;
-      console.log("AGORA JOINED ONCE =", backendUid);
-    } catch (error) {
-      console.log("AGORA INIT ERROR =", error?.message || error);
-      try { if (engine) engine.release(); } catch (_) {}
-      agoraEngineRef.current = null;
-      isJoinedRef.current = false;
-      setJoined(false);
-      throw error;
-    } finally {
-      agoraJoinStartedRef.current = false;
-      agoraInitPromiseRef.current = null;
-    }
-  };
+console.log("JOIN SUCCESS",uid);
 
-  agoraInitPromiseRef.current = run();
-  return agoraInitPromiseRef.current;
+setJoined(true);
+
+},
+
+onUserJoined:(connection,uid)=>{
+
+console.log("REMOTE USER JOINED",uid);
+
+console.log("Joined:",uid);
+
+setRemoteUsers(prev=>{
+if(prev.includes(uid)) return prev;
+return [...prev,uid];
+});
+
+},
+
+
+onUserOffline:(connection,uid)=>{
+console.log("Left:",uid);
+
+setRemoteUsers(prev=>
+prev.filter(id=>id!==uid)
+);
+
+},
+
+onRemoteAudioStateChanged:(connection,uid,state,reason)=>{
+
+console.log(
+"REMOTE AUDIO",
+uid,
+state,
+reason
+);
+
+},
+
+
+onAudioVolumeIndication: (
+connection,
+speakers,
+speakerNumber,
+totalVolume
+) => {
+
+let speakingMap = {};
+
+speakers.forEach(item => {
+
+if(item.volume > 10){
+
+speakingMap[item.uid] = true;
+
+}
+
+});
+
+setActiveSpeakers(speakingMap);
+
+},
+
+
+onLocalAudioStateChanged:(connection,state,error)=>{
+
+console.log("LOCAL AUDIO =",state);
+
+},
+
+onConnectionStateChanged:(state,reason)=>{
+
+console.log("CONNECTION =",state);
+
+},
+
+
+onError:(err)=>{
+console.log("Agora Error:",err);
+}
+
+});
+
+
+
+await engine.enableAudio();
+await engine.enableLocalAudio(true);
+await engine.setEnableSpeakerphone(true);
+
+engine.enableAudioVolumeIndication(
+200,
+1,
+true
+);
+
+await engine.setDefaultAudioRouteToSpeakerphone(true);
+
+
+
+const role =
+userRole === "listener"
+?
+ClientRoleType.ClientRoleAudience
+:
+ClientRoleType.ClientRoleBroadcaster;
+
+const numericUid = currentUid
+  ? currentUid.split("").reduce((a, c) => a + c.charCodeAt(0), 0)
+  : Math.floor(Math.random() * 1000000);
+
+
+
+const agoraUid = numericUid % 1000000;
+
+setMyAgoraUid(agoraUid);
+
+
+
+
+
+await engine.setClientRole(role);
+
+if(role===ClientRoleType.ClientRoleAudience){
+
+await engine.enableLocalAudio(false);
+await engine.muteLocalAudioStream(true);
+
+}else{
+
+await engine.enableLocalAudio(true);
+await engine.muteLocalAudioStream(false);
+
+}
+
+const response = await fetch(
+`https://topking-backend.onrender.com/token?channel=${roomId}&uid=${agoraUid}`
+);
+
+const data = await response.json();
+
+
+
+const token = data.token;
+console.log("TOKEN =", token);
+console.log("TOKEN RESPONSE =", data);
+
+
+console.log("TOKEN =", token);
+console.log("ROOM =", roomId);
+console.log("UID =", agoraUid);
+
+
+await engine.joinChannel(
+token,
+roomId,
+agoraUid,
+{
+channelProfile:
+ChannelProfileType.ChannelProfileLiveBroadcasting,
+
+clientRoleType: role
+}
+);
+
+await engine.setEnableSpeakerphone(true);
+
+if(role===ClientRoleType.ClientRoleBroadcaster){
+
+await engine.enableLocalAudio(true);
+
+await engine.muteLocalAudioStream(false);
+
+}
+
+
+console.log("JOIN SUCCESS CALL");
+
+console.log("JOIN CALLED");
+
+
+agoraEngineRef.current=engine;
+
 };
 
 
@@ -1823,7 +1920,7 @@ await setDoc(
 
 
 
-      console.log("LIVE INVITE SAVED =", uid);
+      console.log("LIVE INVITE SAVED =", docRef.id);
 
       // Notification
       await setDoc(
