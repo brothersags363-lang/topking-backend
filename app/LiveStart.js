@@ -107,6 +107,7 @@ const [loadingButton, setLoadingButton] = useState(null);
   const handleStartLive = async (roomType = "public") => {
     setLoadingButton(roomType);
     if (!roomTitle.trim()) {
+      setLoadingButton(null);
       Alert.alert("Required", "Please provide a catchy room title first.");
       return;
     }

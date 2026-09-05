@@ -167,108 +167,77 @@ export function LiveProvider({ children }) {
     agoraEngine = null,
     agoraUid = null,
   }) => {
+    if (!roomId) return;
 
-    if (!roomId) {
+    const currentUid = auth?.currentUser?.uid || null;
+    const incomingRoomId = String(roomId);
+    const incomingHostId = hostId || roomData?.hostId || null;
+    const resolvedRole =
+      incomingHostId && currentUid && incomingHostId === currentUid
+        ? "host"
+        : (userRole || "listener");
 
-      console.log(
-        "LiveContext: roomId missing"
-      );
+    const existing = activeLiveRef.current;
 
+    // Same room: NEVER restart the live or generate a new startTime.
+    // Only merge newer room/host/role information.
+    if (existing?.roomId && String(existing.roomId) === incomingRoomId) {
+      const merged = {
+        ...existing,
+        roomName: roomName || existing.roomName,
+        hostName: hostName || roomData?.hostName || existing.hostName,
+        hostImage: hostImage || roomData?.hostImg || existing.hostImage || null,
+        hostId: incomingHostId || existing.hostId || null,
+        userId: currentUid || existing.userId || null,
+        userRole: resolvedRole === "host" ? "host" : (existing.userRole === "host" ? "host" : resolvedRole),
+        seatKey: seatKey || existing.seatKey || null,
+        roomData: roomData || existing.roomData || null,
+        startTime: existing.startTime,
+        type: roomData?.type || existing.type || "audio",
+      };
+
+      activeLiveRef.current = merged;
+      setActiveLive(prev => {
+        if (!prev) return merged;
+        const same =
+          prev.roomId === merged.roomId &&
+          prev.startTime === merged.startTime &&
+          prev.hostId === merged.hostId &&
+          prev.userRole === merged.userRole &&
+          prev.roomData === merged.roomData;
+        return same ? prev : merged;
+      });
+
+      if (agoraEngine) registerAgoraEngine(agoraEngine, agoraUid);
       return;
-
     }
-
-
-    const currentUser =
-      auth?.currentUser;
-
-
-    const currentUid =
-      currentUser?.uid || null;
-
-
-    const finalHostId =
-      hostId ||
-      roomData?.hostId ||
-      null;
-
 
     const finalStartTime =
-      startTime ||
-      roomData?.createdAt ||
-      Date.now();
-
+      startTime || roomData?.createdAt || Date.now();
 
     const liveInfo = {
-
-      roomId: String(roomId),
-
-      roomName:
-        roomName ||
-        roomData?.title ||
-        "Live Room",
-
-      hostName:
-        hostName ||
-        roomData?.hostName ||
-        roomData?.host ||
-        "User",
-
-      hostImage:
-        hostImage ||
-        roomData?.hostImg ||
-        roomData?.profileImg ||
-        null,
-
-      hostId:
-        finalHostId,
-
-      userId:
-        currentUid,
-
-      userRole:
-        userRole || "listener",
-
-      seatKey:
-        seatKey || null,
-
-      roomData:
-        roomData || null,
-
-      startTime:
-        finalStartTime,
-
-      type:
-        roomData?.type ||
-        "audio",
-
+      roomId: incomingRoomId,
+      roomName: roomName || roomData?.title || "Live Room",
+      hostName: hostName || roomData?.hostName || roomData?.host || "User",
+      hostImage: hostImage || roomData?.hostImg || roomData?.profileImg || null,
+      hostId: incomingHostId,
+      userId: currentUid,
+      userRole: resolvedRole,
+      seatKey: seatKey || null,
+      roomData: roomData || null,
+      startTime: finalStartTime,
+      type: roomData?.type || "audio",
     };
 
-
+    activeLiveRef.current = liveInfo;
     setActiveLive(liveInfo);
-
     setIsMiniPlayerVisible(false);
-
     setIsLiveMuted(false);
 
+    if (agoraEngine) registerAgoraEngine(agoraEngine, agoraUid);
 
-    if (agoraEngine) {
-
-      registerAgoraEngine(
-        agoraEngine,
-        agoraUid
-      );
-
-    }
-
-
-    console.log(
-      "LiveContext: Live started",
-      liveInfo
-    );
-
+    console.log("LiveContext: Live started", liveInfo);
   };
-
 
   // ===================================================
   // UPDATE LIVE DATA
@@ -591,6 +560,7 @@ export function LiveProvider({ children }) {
 
 
     // Clear state
+    activeLiveRef.current = null;
     setActiveLive(null);
 
     setLiveDuration("00:00:00");
@@ -673,6 +643,7 @@ export function LiveProvider({ children }) {
     }
 
 
+    activeLiveRef.current = null;
     setActiveLive(null);
 
     setLiveDuration("00:00:00");
