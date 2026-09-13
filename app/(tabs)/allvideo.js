@@ -1,26 +1,26 @@
 import React, {
-  useState,
-  useRef,
   useEffect,
+  useRef,
+  useState,
 } from 'react';
 
 import {
-  StyleSheet,
-  View,
-  Dimensions,
-  Text,
-  FlatList,
-  StatusBar,
-  Image,
-  BackHandler,
-  TouchableOpacity,
-  Share,
+  ActivityIndicator,
   Alert,
+  Animated,
+  BackHandler,
+  Dimensions,
+  Easing,
+  FlatList,
+  Image,
+  Keyboard,
+  Share,
+  StatusBar,
+  StyleSheet,
+  Text,
   TextInput,
-    Keyboard,
-    Animated,
-    ActivityIndicator,
-      Easing,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 
 import {
@@ -30,20 +30,18 @@ import {
 import { VideoView, useVideoPlayer } from "expo-video";
 
 import {
+  addDoc,
   collection,
-  query,
-  orderBy,
-  onSnapshot,
-  doc,
-  updateDoc,
-  increment,
-  getDoc,
-  getDocs,
-  where,
-  setDoc,
   deleteDoc,
+  doc,
+  getDoc,
+  increment,
+  onSnapshot,
+  orderBy,
+  query,
   serverTimestamp,
-  addDoc
+  setDoc,
+  updateDoc
 } from 'firebase/firestore';
 
 import { db } from '../firebaseConfig';
@@ -54,9 +52,9 @@ import {
 } from 'firebase/auth';
 
 import {
+  useFocusEffect,
   useLocalSearchParams,
   useRouter,
-  useFocusEffect,
 } from "expo-router";
 
 const { height, width } = Dimensions.get('screen');

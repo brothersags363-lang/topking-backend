@@ -52,3 +52,15 @@ aab-manifest*.txt
 
 # Firebase config
 google-services.json
+
+credentials.json
+credentials/
+android-before-recovery/
+manifest-final.txt
+*.keystore
+*.jks
+*.aab
+*.apk
+.env
+android/app/build/
+android/build/

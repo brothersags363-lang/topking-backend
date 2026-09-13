@@ -1,19 +1,19 @@
          
-import React, { useState, useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import {
-  View,
-  Text,
-  StyleSheet,
-  SafeAreaView,
-  StatusBar,
-  ScrollView,
-  TouchableOpacity,
-  Dimensions,
-  Platform,
   ActivityIndicator,
+  BackHandler,
+  Dimensions,
   Image,
-  BackHandler
+  Platform,
+  SafeAreaView,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from 'react-native';
 
 import { Ionicons } from '@expo/vector-icons';
@@ -36,11 +36,11 @@ try {
 }
 
 import {
+  arrayUnion,
   collection,
-  onSnapshot,
   doc,
-  updateDoc,
-  arrayUnion
+  onSnapshot,
+  updateDoc
 } from 'firebase/firestore';
 
 const { width } = Dimensions.get('window');

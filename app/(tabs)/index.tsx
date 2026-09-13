@@ -5,7 +5,7 @@ import React, { memo,  useRef, useState, useEffect, useCallback } from 'react';
 
 import { InteractionManager } from "react-native";
 
-import {
+import { 
   View,
   Text,
   TouchableOpacity,
@@ -17,6 +17,7 @@ import {
   Image,
   StatusBar,
   ActivityIndicator,
+  RefreshControl,
   Share,
   Alert,
   TextInput,
@@ -145,6 +146,7 @@ const [showSharePopup, setShowSharePopup] = useState(false);
 const [selectedShareVideo, setSelectedShareVideo] = useState(null);
   const [videos, setVideos] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [activeVideo, setActiveVideo] = useState(0);
   const [currentIndex,setCurrentIndex]=useState(0);
 
@@ -510,7 +512,7 @@ useEffect(() => {
       const q = query(
         collection(db, "all_videos"),
         orderBy("createdAt", "desc"),
-        limit(10)
+        limit(30)
       );
 
       const snapshot = await getDocs(q);
@@ -547,7 +549,13 @@ useEffect(() => {
 
       }
 
-      setHasMoreVideos(snapshot.docs.length === 10);
+      setHasMoreVideos(snapshot.docs.length === 30);
+
+      // Har app open par feed order fresh/random rahe.
+      for (let i = loadedVideos.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [loadedVideos[i], loadedVideos[j]] = [loadedVideos[j], loadedVideos[i]];
+      }
 
       setVideos(loadedVideos);
 
@@ -572,6 +580,51 @@ useEffect(() => {
   };
 
 }, [blockedUsers]);
+
+// Pull-to-refresh: same feed, fresh order.
+const refreshVideos = useCallback(async () => {
+  if (refreshing) return;
+  setRefreshing(true);
+  try {
+    const q = query(
+      collection(db, "all_videos"),
+      orderBy("createdAt", "desc"),
+      limit(30)
+    );
+    const snapshot = await getDocs(q);
+    const refreshedVideos = [];
+    snapshot.forEach((docItem) => {
+      const data = docItem.data();
+      if (
+        data.status !== "blocked" &&
+        data.hidden !== true &&
+        !blockedUsers.includes(data.userId)
+      ) {
+        refreshedVideos.push({
+          id: docItem.id,
+          ...data,
+          verified: data.verified || false,
+          verifiedColor: data.verifiedColor || "",
+        });
+      }
+    });
+    for (let i = refreshedVideos.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [refreshedVideos[i], refreshedVideos[j]] = [refreshedVideos[j], refreshedVideos[i]];
+    }
+    lastVideoDocRef.current = snapshot.docs.length
+      ? snapshot.docs[snapshot.docs.length - 1]
+      : null;
+    setHasMoreVideos(snapshot.docs.length === 30);
+    setCurrentIndex(0);
+    setActiveVideo(0);
+    setVideos(refreshedVideos);
+  } catch (error) {
+    console.log("Refresh Videos Error:", error);
+  } finally {
+    setRefreshing(false);
+  }
+}, [blockedUsers, refreshing]);
 
 
 
@@ -1175,65 +1228,33 @@ if(videoSnap.exists()){
 
 
 const handleFollow = async (targetUserId) => {
-
   const user = auth.currentUser;
+  if (!user || user.uid === targetUserId) return;
 
-  if (!user) return;
-
-  if (user.uid === targetUserId) return;
-
-  const followingRef = doc(
-    db,
-    "users",
-    user.uid,
-    "following",
-    targetUserId
-  );
-
-  const followerRef = doc(
-    db,
-    "users",
-    targetUserId,
-    "followers",
-    user.uid
-  );
+  const followingRef = doc(db, "users", user.uid, "following", targetUserId);
+  const followerRef = doc(db, "users", targetUserId, "followers", user.uid);
+  const myUserRef = doc(db, "users", user.uid);
+  const targetUserRef = doc(db, "users", targetUserId);
+  const isFollowing = !!followingUsers[targetUserId];
 
   try {
-
-    if (followingUsers[targetUserId]) {
-
+    if (isFollowing) {
       await deleteDoc(followingRef);
-
       await deleteDoc(followerRef);
-
-      setFollowingUsers(prev => ({
-        ...prev,
-        [targetUserId]: false
-      }));
-
+      await updateDoc(myUserRef, { following: increment(-1) });
+      await updateDoc(targetUserRef, { followers: increment(-1) });
+      setFollowingUsers(prev => ({ ...prev, [targetUserId]: false }));
     } else {
-
-      await setDoc(followingRef,{
-        createdAt:serverTimestamp()
-      });
-
-      await setDoc(followerRef,{
-        createdAt:serverTimestamp()
-      });
-
-      setFollowingUsers(prev => ({
-        ...prev,
-        [targetUserId]: true
-      }));
-
+      await setDoc(followingRef, { createdAt: serverTimestamp() });
+      await setDoc(followerRef, { createdAt: serverTimestamp() });
+      await updateDoc(myUserRef, { following: increment(1) });
+      await updateDoc(targetUserRef, { followers: increment(1) });
+      setFollowingUsers(prev => ({ ...prev, [targetUserId]: true }));
     }
-
-  } catch(e){
-    console.log(e);
+  } catch (e) {
+    console.log("Follow Error:", e);
   }
-
 };
-
 
 
 const handleDoubleTapLike = (videoId) => {
@@ -1351,6 +1372,11 @@ const playStarAnimation = () => {
         message: `Check out this amazing video on Star App! ${videoUrl || ''}`,
       });
       if (result.action === Share.sharedAction) {
+        setVideos(prev => prev.map(video =>
+          video.id === videoId
+            ? { ...video, shares: (video.shares || 0) + 1 }
+            : video
+        ));
         await updateDoc(doc(db, 'all_videos', videoId), { shares: increment(1), engagementScore: increment(10) });
       }
     } catch (e) { console.log("Share Error", e); }
@@ -1510,6 +1536,13 @@ const text = commentText.trim();
 setCommentText("");
 Keyboard.dismiss();
 
+  // Comment count turant screen par badhe.
+  setVideos(prev => prev.map(video =>
+    video.id === selectedVideoId
+      ? { ...video, commentsCount: (video.commentsCount || 0) + 1 }
+      : video
+  ));
+
   try {
     await addDoc(
       collection(
@@ -1587,6 +1620,11 @@ isRead: false,
 
     
   } catch (error) {
+    setVideos(prev => prev.map(video =>
+      video.id === selectedVideoId
+        ? { ...video, commentsCount: Math.max(0, (video.commentsCount || 1) - 1) }
+        : video
+    ));
     console.log('Comment Error:', error);
   }
 };
@@ -2214,6 +2252,14 @@ disableIntervalMomentum={true}
         showsVerticalScrollIndicator={false}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewConfigRef.current}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={refreshVideos}
+            tintColor="#f1c40f"
+            colors={["#f1c40f"]}
+          />
+        }
 
         windowSize={5}
 initialNumToRender={2}

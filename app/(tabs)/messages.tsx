@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
+  ActivityIndicator,
   StyleSheet,
   TouchableOpacity,
   SafeAreaView,
@@ -39,6 +40,9 @@ import {
   setDoc,
   addDoc,
   getDoc,
+  getDocs,
+  limit,
+  startAfter,
   serverTimestamp,
   updateDoc,
 } from 'firebase/firestore';
@@ -63,6 +67,12 @@ export default function Messages() {
 const [notifications, setNotifications] = useState([]);
 
 const [friends, setFriends] = useState([]);
+const [friendsLoadingMore, setFriendsLoadingMore] = useState(false);
+const [friendsInitialLoading, setFriendsInitialLoading] = useState(true);
+const [friendsHasMore, setFriendsHasMore] = useState(true);
+const friendsCursorRef = React.useRef(null);
+const friendsLoadingRef = React.useRef(false);
+const friendsLoadedPagesRef = React.useRef(0);
 
 const [menuVisible, setMenuVisible] = useState(false);
 
@@ -268,87 +278,148 @@ console.log(
 
 
 
+const loadFriendDocs = async (docs, append = false) => {
+  const list = await Promise.all(
+    docs.map(async (d) => {
+      const data = d.data();
+      let level = 1;
+      let verified = false;
+      let verifiedColor = "white";
+
+      try {
+        const walletSnap = await getDoc(doc(db, "wallets", data.userId));
+        if (walletSnap.exists()) level = walletSnap.data().level || 1;
+
+        const userSnap = await getDoc(doc(db, "users", data.userId));
+        if (userSnap.exists()) {
+          verified = userSnap.data().verified === true;
+          verifiedColor = userSnap.data().verifiedColor || "white";
+        }
+      } catch (e) {
+        console.log("Friend profile load error:", e);
+      }
+
+      return { id: d.id, ...data, level, verified, verifiedColor };
+    })
+  );
+
+  if (append) {
+    setFriends((prev) => {
+      const byId = new Map(prev.map((item) => [item.id, item]));
+      list.forEach((item) => byId.set(item.id, item));
+      return Array.from(byId.values());
+    });
+  } else {
+    // Realtime first page updates must NOT delete already-loaded pages.
+    // This keeps 10 + 10 + 10 pagination stable while the first 10 stay live.
+    setFriends((prev) => {
+      if (friendsLoadedPagesRef.current <= 1) {
+        return list;
+      }
+
+      const firstPageIds = new Set(list.map((item) => item.id));
+      const olderLoaded = prev.filter((item) => !firstPageIds.has(item.id));
+
+      const byId = new Map();
+      [...list, ...olderLoaded].forEach((item) => byId.set(item.id, item));
+      return Array.from(byId.values());
+    });
+  }
+
+  if (docs.length > 0 && (append || !friendsCursorRef.current)) {
+    friendsCursorRef.current = docs[docs.length - 1];
+  }
+
+  if (docs.length < 10) {
+    setFriendsHasMore(false);
+  } else {
+    setFriendsHasMore(true);
+  }
+
+  if (!append) {
+    setFriendsInitialLoading(false);
+  }
+};
+
 useEffect(() => {
   if (!currentUser) return;
 
+  friendsCursorRef.current = null;
+  friendsLoadedPagesRef.current = 0;
+  friendsLoadingRef.current = false;
+  setFriends([]);
+  setFriendsHasMore(true);
+  setFriendsInitialLoading(true);
+
   const q = query(
-    collection(
-      db,
-      "userChats",
-      currentUser.uid,
-      "friends"
-    ),
-    orderBy("updatedAt", "desc")
+    collection(db, "userChats", currentUser.uid, "friends"),
+    orderBy("updatedAt", "desc"),
+    limit(10)
   );
 
   const unsubscribe = onSnapshot(
     q,
     async (snapshot) => {
+      try {
+        await loadFriendDocs(snapshot.docs, false);
 
-      const list = await Promise.all(
-
-        snapshot.docs.map(async (d) => {
-
-          const data = d.data();
-
-
-
- let level = 1;
-let verified = false;
-let verifiedColor = "white";
-
-
-try {
-
-  const walletSnap = await getDoc(
-    doc(db, "wallets", data.userId)
-  );
-
-  if (walletSnap.exists()) {
-    level = walletSnap.data().level || 1;
-  }
-
-  const userSnap = await getDoc(
-  doc(db, "users", data.userId)
-);
-
-if (userSnap.exists()) {
-
-  verified =
-    userSnap.data().verified === true;
-
-  verifiedColor =
-    userSnap.data().verifiedColor ||
-    "white";
-
-}
-
-} catch (e) {
-  console.log(e);
-}
-
-return {
-  id: d.id,
-  ...data,
-  level,
-  verified,
-  verifiedColor,
-};
-
-
-
-        })
-
-      );
-
-      setFriends(list);
-
+        if (friendsLoadedPagesRef.current === 0) {
+          friendsLoadedPagesRef.current = 1;
+        }
+      } catch (e) {
+        console.log("Friends listener load error:", e);
+        setFriendsInitialLoading(false);
+      }
+    },
+    (error) => {
+      console.log("Friends listener error:", error);
+      setFriendsInitialLoading(false);
     }
   );
 
   return unsubscribe;
-
 }, [currentUser]);
+
+const loadMoreFriends = async () => {
+  if (!currentUser || !friendsHasMore || friendsLoadingRef.current) return;
+
+  friendsLoadingRef.current = true;
+  setFriendsLoadingMore(true);
+
+  try {
+    const friendsRef = collection(db, "userChats", currentUser.uid, "friends");
+
+    if (!friendsCursorRef.current) {
+      return;
+    }
+
+    const q = query(
+      friendsRef,
+      orderBy("updatedAt", "desc"),
+      startAfter(friendsCursorRef.current),
+      limit(10)
+    );
+
+    const snapshot = await getDocs(q);
+
+    if (snapshot.empty) {
+      setFriendsHasMore(false);
+      return;
+    }
+
+    await loadFriendDocs(snapshot.docs, true);
+    friendsLoadedPagesRef.current += 1;
+
+    if (snapshot.docs.length < 10) {
+      setFriendsHasMore(false);
+    }
+  } catch (e) {
+    console.log("Load more friends error:", e);
+  } finally {
+    friendsLoadingRef.current = false;
+    setFriendsLoadingMore(false);
+  }
+};
 
 
 
@@ -734,11 +805,26 @@ await Promise.all(
 <ScrollView
   showsVerticalScrollIndicator={false}
   contentContainerStyle={styles.listContent}
+  onScroll={({ nativeEvent }) => {
+    const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
+    const distanceFromBottom = contentSize.height - (layoutMeasurement.height + contentOffset.y);
+    if (activeTab === "Friends" && distanceFromBottom < 250) {
+      loadMoreFriends();
+    }
+  }}
+  scrollEventThrottle={200}
 >
 
-{activeTab === "Friends" && (
+{activeTab === "Friends" && friendsInitialLoading && (
+  <View style={{ paddingVertical: 28, alignItems: "center" }}>
+    <ActivityIndicator size="small" color="#aaa" />
+    <Text style={{ color: "#aaa", fontSize: 14, marginTop: 8 }}>
+      Loading chats...
+    </Text>
+  </View>
+)}
 
-  friends.map((item) => (
+{activeTab === "Friends" && !friendsInitialLoading && friends.map((item) => (
 
     <TouchableOpacity
       key={item.id}
@@ -944,9 +1030,14 @@ await Promise.all(
 
     </TouchableOpacity>
 
-  ))
+  ))}
 
-)}
+  {activeTab === "Friends" && friendsLoadingMore && (
+    <View style={{ paddingVertical: 18, alignItems: "center" }}>
+      <Text style={{ color: "#aaa", fontSize: 14 }}>Loading 10 more chats...</Text>
+    </View>
+  )}
+
 
 
 

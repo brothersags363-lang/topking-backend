@@ -624,7 +624,7 @@ console.log("SEARCH USERS =", users);
             {[
               { label: 'Live', icon: 'mic-sharp', note: 'Go Live Now' },
               { label: 'Family Ranking', icon: 'trophy-sharp', note: 'Top Families' },
-              { label: 'Meetup', icon: 'people-sharp', note: 'Join Events' },
+              { label: 'Agency', icon: 'people-sharp', note: 'Agency Ranking' },
               { label: 'Creator', icon: 'ribbon-sharp', note: 'For Creators' }
             ].map((t, i) => (
 
@@ -634,13 +634,26 @@ console.log("SEARCH USERS =", users);
   activeOpacity={0.8}
   onPress={() => {
 
-    if (t.label === "Live") {
+  if (t.label === "Live") {
 
-      router.push("/all-live");
+    router.push("/all-live");
 
-    }
+  }
 
-  }}
+  if (t.label === "Creator") {
+
+    router.push("../top-followers");
+
+  }
+
+
+ if (t.label === "Agency") {
+
+    router.push("../AgencyTop");
+
+  }
+
+}}
 >
 
                 <View style={styles.trophyIconContainer}>

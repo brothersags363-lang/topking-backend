@@ -32,11 +32,6 @@ setDoc,
 serverTimestamp,
 } from "firebase/firestore";
 
-import {
-  CLOUDINARY_CLOUD_NAME,
-  CLOUDINARY_UPLOAD_PRESET,
-} from "../backend/config/cloudinary";
-
 import * as ImagePicker from "expo-image-picker";
 
 import {
@@ -205,9 +200,12 @@ return;
 
 const data=snap.docs[0];
 
+const agencyData = data.data();
+
 setAgency({
-id:data.id,
-...data.data()
+  id: data.id,
+  ...agencyData,
+  logo: agencyData.logo || agencyData.agencyLogo || "",
 });
 
 loadHosts(data.id);
@@ -317,7 +315,7 @@ if (totalStars >= 300000) {
       notifyRef,
       {
         agencyId,
-        agencyName: agency.agencyName,
+        agencyName: agency?.agencyName || "",
         ownerUserId: agency.ownerUserId,
         stars: totalStars,
         month,
@@ -376,7 +374,7 @@ const calculateAgencyRanking = async () => {
     });
 
     const index = agencies.findIndex(
-      item => item.id === agency.id
+      item => item.id === agency?.id
     );
 
     if (index !== -1) {
@@ -398,40 +396,81 @@ const calculateAgencyRanking = async () => {
 
 
 
-const updateAgencyName=async()=>{
+const saveAgencyChanges = async () => {
+  try {
+    const name = newAgencyName.trim();
 
-if(newAgencyName===""){
+    if (!name) {
+      Alert.alert("Agency Name", "Please enter your agency name.");
+      return;
+    }
 
-Alert.alert("Enter Agency Name");
+    if (!agency?.id) {
+      Alert.alert("Error", "Agency not found.");
+      return;
+    }
 
-return;
+    let logoUrl = agency.logo || agency.agencyLogo || "";
 
-}
+    if (newLogo && newLogo.startsWith("file://")) {
+      const formData = new FormData();
 
-await updateDoc(
+      formData.append("file", {
+        uri: newLogo,
+        type: "image/jpeg",
+        name: "agency_logo.jpg",
+      });
 
-doc(db,"agencies",agency.id),
+      formData.append("upload_preset", "topking_upload");
 
-{
+      const response = await fetch(
+        "https://api.cloudinary.com/v1_1/fzmrnrlz/image/upload",
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
 
-agencyName:newAgencyName
+      const data = await response.json();
 
-}
+      if (!response.ok || !data.secure_url) {
+        console.log("AGENCY LOGO UPLOAD ERROR =", data);
+        Alert.alert("Upload Failed", "Agency photo upload nahi ho paya.");
+        return;
+      }
 
-);
+      logoUrl = data.secure_url;
+    }
 
-setAgency({
+    await updateDoc(doc(db, "agencies", agency.id), {
+      agencyName: name,
+      logo: logoUrl,
+      agencyLogo: logoUrl,
+    });
 
-...agency,
+    setAgency((prev) => ({
+      ...prev,
+      agencyName: name,
+      logo: logoUrl,
+      agencyLogo: logoUrl,
+    }));
 
-agencyName:newAgencyName
+    setNewAgencyName("");
+    setNewLogo("");
+    setEditVisible(false);
 
-});
-
-Alert.alert("Agency Updated");
-
+    Alert.alert("Success", "Agency details successfully updated.");
+  } catch (e) {
+    console.log("AGENCY SAVE ERROR =", e);
+    Alert.alert("Error", e?.message || "Agency update nahi ho saki.");
+  }
 };
 
+const openEditAgency = () => {
+  setNewAgencyName(agency?.agencyName || "");
+  setNewLogo("");
+  setEditVisible(true);
+};
 
 if(!agency){
 
@@ -449,70 +488,6 @@ No Agency Found
 
 }
 
-
-
-
-const changeLogo = async () => {
-
-  try {
-
-    if (!newLogo) {
-      Alert.alert("Select Logo");
-      return;
-    }
-
-    const formData = new FormData();
-
-    formData.append("file", {
-      uri: newLogo,
-      type: "image/jpeg",
-      name: "agency_logo.jpg",
-    });
-
-    formData.append("upload_preset", "profile_upload");
-
-    const response = await fetch(
-      "https://api.cloudinary.com/v1_1/fzmrnrlz/image/upload",
-      {
-        method: "POST",
-        body: formData,
-      }
-    );
-
-    const data = await response.json();
-
-    if (!data.secure_url) {
-      console.log(data);
-      Alert.alert("Upload Failed");
-      return;
-    }
-
-    await updateDoc(
-      doc(db, "agencies", agency.id),
-      {
-        logo: data.secure_url,
-      }
-    );
-
-    setAgency({
-      ...agency,
-      logo: data.secure_url,
-    });
-
-    setNewLogo("");
-    setEditVisible(false);
-
-    Alert.alert("Success", "Logo Updated Successfully");
-
-  } catch (e) {
-
-    console.log(e);
-
-    Alert.alert("Error", e.message);
-
-  }
-
-};
 
 
 
@@ -567,7 +542,7 @@ await setDoc(
   {
     agencyId: agency.id,
 
-    agencyName: agency.agencyName,
+    agencyName: agency?.agencyName || "",
 
     agencyLogo: agency.logo || "",
 
@@ -656,7 +631,12 @@ return(
 <ScrollView style={styles.container}>
 
 <Image
-source={{uri:agency.logo}}
+source={{
+  uri:
+    agency.logo ||
+    agency.agencyLogo ||
+    "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
+}}
 style={styles.logo}
 />
 
@@ -702,7 +682,7 @@ Stars
 
 <TouchableOpacity
 style={styles.actionBtn}
-onPress={()=>setEditVisible(true)}
+onPress={openEditAgency}
 >
 <Text style={styles.btnText}>
 Edit Agency
@@ -894,58 +874,78 @@ onRequestClose={() => setEditVisible(false)}
 
 <View style={styles.popup}>
 
-<Text style={styles.popupTitle}>
-Edit Agency
-</Text>
+<View style={styles.editHeader}>
+  <View style={styles.editIconCircle}>
+    <Ionicons name="business-outline" size={22} color="#FFD700" />
+  </View>
+  <View style={{ flex: 1 }}>
+    <Text style={styles.popupTitle}>Edit Agency</Text>
+    <Text style={styles.popupSubTitle}>Name ya photo change karein</Text>
+  </View>
+</View>
+
+<Text style={styles.fieldLabel}>Agency Name</Text>
 
 <TextInput
-placeholder="New Agency Name"
-value={newAgencyName}
-onChangeText={setNewAgencyName}
-style={styles.input}
+  placeholder="Enter Agency Name"
+  placeholderTextColor="#777"
+  value={newAgencyName}
+  onChangeText={setNewAgencyName}
+  style={styles.input}
 />
 
+<Text style={styles.fieldLabel}>Agency Photo</Text>
+
 <TouchableOpacity
-style={styles.btn}
-onPress={pickLogo}
+  style={styles.photoPicker}
+  onPress={pickLogo}
+  activeOpacity={0.85}
 >
-<Text style={styles.btnText}>
-Select Logo
-</Text>
+  <Image
+    source={{
+      uri:
+        newLogo ||
+        agency.logo ||
+        agency.agencyLogo ||
+        "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
+    }}
+    style={styles.editLogoPreview}
+  />
+
+  <View style={styles.photoPickerTextBox}>
+    <Text style={styles.photoPickerTitle}>
+      {newLogo ? "New photo selected" : "Change Agency Photo"}
+    </Text>
+    <Text style={styles.photoPickerHint}>
+      Photo select karne ke liye yahan tap karein
+    </Text>
+  </View>
+
+  <Ionicons name="chevron-forward" size={20} color="#aaa" />
 </TouchableOpacity>
 
-{newLogo !== "" && (
-<Image
-source={{uri:newLogo}}
-style={styles.logo}
-/>
-)}
+<View style={styles.saveHint}>
+  <Ionicons name="cloud-upload-outline" size={18} color="#FFD700" />
+  <Text style={styles.saveHintText}>
+    Save Changes dabane par photo Firebase me save hogi aur refresh/app reopen ke baad bhi rahegi.
+  </Text>
+</View>
 
 <TouchableOpacity
-style={styles.btn}
-onPress={updateAgencyName}
+  style={styles.saveChangesBtn}
+  onPress={saveAgencyChanges}
+  activeOpacity={0.85}
 >
-<Text style={styles.btnText}>
-Save Name
-</Text>
+  <Ionicons name="checkmark-circle" size={20} color="#000" />
+  <Text style={styles.saveChangesText}>Save Changes</Text>
 </TouchableOpacity>
 
 <TouchableOpacity
-style={styles.btn}
-onPress={changeLogo}
+  style={styles.closeBtn}
+  onPress={() => setEditVisible(false)}
+  activeOpacity={0.8}
 >
-<Text style={styles.btnText}>
-Save Logo
-</Text>
-</TouchableOpacity>
-
-<TouchableOpacity
-style={styles.btn}
-onPress={() => setEditVisible(false)}
->
-<Text style={styles.btnText}>
-Close
-</Text>
+  <Text style={styles.closeBtnText}>Cancel</Text>
 </TouchableOpacity>
 
 </View>
@@ -1014,8 +1014,9 @@ const styles=StyleSheet.create({
 container:{
 flex:1,
 backgroundColor:"#111",
-padding:20
+padding:20,
 },
+
 
 center:{
 flex:1,
@@ -1138,6 +1139,107 @@ borderRadius:20,
 maxHeight:"85%",
 },
 
+editHeader:{
+  flexDirection:"row",
+  alignItems:"center",
+  marginBottom:18,
+},
+editIconCircle:{
+  width:44,
+  height:44,
+  borderRadius:22,
+  backgroundColor:"#2a2400",
+  borderWidth:1,
+  borderColor:"#665500",
+  alignItems:"center",
+  justifyContent:"center",
+  marginRight:12,
+},
+popupSubTitle:{
+  color:"#aaa",
+  fontSize:12,
+  marginTop:3,
+},
+fieldLabel:{
+  color:"#fff",
+  fontSize:13,
+  fontWeight:"700",
+  marginTop:8,
+  marginBottom:7,
+},
+photoPicker:{
+  flexDirection:"row",
+  alignItems:"center",
+  backgroundColor:"#222",
+  borderWidth:1,
+  borderColor:"#333",
+  borderRadius:14,
+  padding:10,
+  marginTop:2,
+},
+editLogoPreview:{
+  width:58,
+  height:58,
+  borderRadius:29,
+  backgroundColor:"#111",
+},
+photoPickerTextBox:{
+  flex:1,
+  marginLeft:12,
+  marginRight:8,
+},
+photoPickerTitle:{
+  color:"#fff",
+  fontSize:14,
+  fontWeight:"700",
+},
+photoPickerHint:{
+  color:"#888",
+  fontSize:11,
+  marginTop:4,
+  lineHeight:15,
+},
+saveHint:{
+  flexDirection:"row",
+  alignItems:"flex-start",
+  backgroundColor:"#201e10",
+  borderRadius:10,
+  padding:10,
+  marginTop:14,
+},
+saveHintText:{
+  flex:1,
+  color:"#c9c9c9",
+  fontSize:11,
+  lineHeight:16,
+  marginLeft:8,
+},
+saveChangesBtn:{
+  flexDirection:"row",
+  alignItems:"center",
+  justifyContent:"center",
+  backgroundColor:"#FFD700",
+  paddingVertical:13,
+  borderRadius:12,
+  marginTop:15,
+},
+saveChangesText:{
+  color:"#000",
+  fontWeight:"800",
+  fontSize:15,
+  marginLeft:7,
+},
+closeBtn:{
+  alignItems:"center",
+  justifyContent:"center",
+  paddingVertical:11,
+  marginTop:6,
+},
+closeBtnText:{
+  color:"#aaa",
+  fontSize:14,
+  fontWeight:"600",
+},
 hostCard:{
 
 flexDirection:"row",

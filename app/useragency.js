@@ -732,7 +732,7 @@ backgroundColor:"#111"
 text:{
 color:"#fff",
 fontSize:22
-},
+},  
 
 logo:{
 width:120,

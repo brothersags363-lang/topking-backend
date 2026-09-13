@@ -1,43 +1,39 @@
- import React, { useState, useEffect } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  Image,
-  TouchableOpacity,
-  SafeAreaView,
-  Dimensions,
-  Modal,
-  ActivityIndicator,
-  FlatList,
-  StatusBar,
-  Alert,
-  TextInput,
-  ScrollView,
-  Platform,
-  BackHandler,
-   Pressable,
-    RefreshControl,
-      Share,
-} from 'react-native';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { VideoView, useVideoPlayer } from 'expo-video';
-import { useRouter, usePathname, useLocalSearchParams } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
-import * as ImagePicker from 'expo-image-picker';
+ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useIsFocused } from '@react-navigation/native';
+import * as ImagePicker from 'expo-image-picker';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useLocalSearchParams, usePathname, useRouter } from 'expo-router';
+import { VideoView, useVideoPlayer } from 'expo-video';
+import React, { useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  BackHandler,
+  Dimensions,
+  FlatList,
+  Image,
+  Modal,
+  Platform,
+  Pressable,
+  RefreshControl,
+  SafeAreaView,
+  ScrollView,
+  Share,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import TopKingLogo from "../../assets/images/topking-logo.png";
 // FIREBASE CONFIG
-import { db, auth, storage } from '../firebaseConfig';
-
-import {
-  CLOUDINARY_CLOUD_NAME,
-  CLOUDINARY_UPLOAD_PRESET
-} from "../backend/config/cloudinary";
+import { auth, db } from '../firebaseConfig';
 
 
-import { collection, query, where, getDocs, doc, getDoc, setDoc, deleteDoc,  orderBy, limit,  onSnapshot,  } from 'firebase/firestore';
+
 import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, orderBy, query, setDoc, where } from 'firebase/firestore';
 
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 

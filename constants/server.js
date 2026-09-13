@@ -758,10 +758,6 @@ app.get(
       let agoraUid =
         hash.readUInt32BE(0) & 0x7fffffff;
 
-      // Keep one stable, positive 31-bit UID for Android/native Agora bridges.
-      // The token and joinChannel() therefore always use exactly the same UID.
-      agoraUid = Math.max(1, agoraUid);
-
 
       // Avoid zero.
       if (agoraUid === 0) {

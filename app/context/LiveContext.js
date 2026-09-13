@@ -1,4 +1,4 @@
-import React, {
+import {
   createContext,
   useContext,
   useEffect,
@@ -7,10 +7,10 @@ import React, {
 } from "react";
 
 import {
+  deleteDoc,
+  deleteField,
   doc,
   updateDoc,
-  deleteField,
-  deleteDoc,
 } from "firebase/firestore";
 
 import { useRouter } from "expo-router";
@@ -24,7 +24,7 @@ let db = null;
 let auth = null;
 
 try {
-  const firebaseModule = require("../app/firebaseConfig");
+  const firebaseModule = require("../firebaseConfig");
 
   db = firebaseModule.db;
   auth = firebaseModule.auth;

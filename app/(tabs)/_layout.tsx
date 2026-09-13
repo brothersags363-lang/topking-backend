@@ -9,7 +9,7 @@ export default function Layout() {
       }}
     >
       <Tabs.Screen name="index" />
-      <Tabs.Screen name="explore" />
+      <Tabs.Screen name="explore" /> 
       <Tabs.Screen name="messages" />
       <Tabs.Screen name="profile" />
     </Tabs>
