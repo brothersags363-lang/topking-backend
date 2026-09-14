@@ -80,7 +80,7 @@ const app = express();
 app.get("/version", (req, res) => {
   res.json({
     success: true,
-    version: "reel-merge-v6",
+    version: "reel-merge-v7",
     features: ["subtitle", "music", "voice", "effect"],
   });
 });
@@ -1146,6 +1146,25 @@ function safeVideoEffect(value) {
     : "none";
 }
 
+function assEscapeText(value) {
+  return String(value || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/\{/g, "\\{")
+    .replace(/\}/g, "\\}")
+    .replace(/\r?\n/g, "\\N");
+}
+
+function hexToAssColor(hex) {
+  const clean = String(hex || "#FFFFFF")
+    .replace(/^#/, "")
+    .padStart(6, "0")
+    .slice(0, 6);
+  const r = clean.slice(0, 2);
+  const g = clean.slice(2, 4);
+  const b = clean.slice(4, 6);
+  return `&H00${b}${g}${r}`;
+}
+
 app.post(
   "/merge",
 
@@ -1213,6 +1232,39 @@ app.post(
 
       const hasSubtitle =
         subtitleText.length > 0;
+
+      if (hasSubtitle) {
+        const tempDir = path.join(__dirname, "temp");
+        await fsp.mkdir(tempDir, { recursive: true });
+        const subtitleId = crypto.randomUUID();
+        subtitlePath = path.join(tempDir, `${subtitleId}.ass`);
+
+        const subtitleColor = safeSubtitleColor(req.body.subtitleColor);
+        const xRatio = safeRatio(req.body.subtitleXRatio, 0.10);
+        const yRatio = safeRatio(req.body.subtitleYRatio, 0.50);
+        const sizeRatio = safeSizeRatio(req.body.subtitleSizeRatio);
+
+        const x = Math.round(1080 * xRatio);
+        const y = Math.round(1920 * yRatio);
+        const fontSize = Math.max(12, Math.round(1920 * sizeRatio));
+        const assColor = hexToAssColor(subtitleColor);
+        const assText = assEscapeText(subtitleText);
+
+        const assContent =
+          `[Script Info]\n` +
+          `ScriptType: v4.00+\n` +
+          `PlayResX: 1080\n` +
+          `PlayResY: 1920\n` +
+          `ScaledBorderAndShadow: yes\n\n` +
+          `[V4+ Styles]\n` +
+          `Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n` +
+          `Style: TopKing,DejaVu Sans,${fontSize},${assColor},${assColor},&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,2,2,7,0,0,0,1\n\n` +
+          `[Events]\n` +
+          `Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n` +
+          `Dialogue: 0,0:00:00.00,9:59:59.00,TopKing,,0,0,0,,{\\pos(${x},${y})}${assText}\n`;
+
+        await fsp.writeFile(subtitlePath, assContent, "utf8");
+      }
 
       const videoEffect =
         safeVideoEffect(
@@ -1379,72 +1431,31 @@ app.post(
           .replace(/'/g, "\\'")
           .replace(/:/g, "\\:");
 
-      const subtitleFilterPath = subtitlePath
-        ? escapeFilterPath(subtitlePath)
-        : "";
-
       if (hasEffect || hasSubtitle) {
         let currentVideo = "0:v:0";
+        const videoFilters = [];
 
         if (videoEffect === "vivid") {
-          filterParts.push(
-            `[${currentVideo}]eq=saturation=1.35:contrast=1.08[vivid]`
-          );
-          currentVideo = "vivid";
+          videoFilters.push("eq=saturation=1.35:contrast=1.08");
         } else if (videoEffect === "soft") {
-          filterParts.push(
-            `[${currentVideo}]eq=saturation=0.85:contrast=0.95:brightness=0.03[soft]`
-          );
-          currentVideo = "soft";
+          videoFilters.push("eq=saturation=0.85:contrast=0.95:brightness=0.03");
         } else if (videoEffect === "bw") {
-          filterParts.push(
-            `[${currentVideo}]hue=s=0[bw]`
-          );
-          currentVideo = "bw";
+          videoFilters.push("hue=s=0");
         }
 
-        if (hasSubtitle) {
-          const color = safeSubtitleColor(
-            req.body.subtitleColor
-          ).replace("#", "0x");
+        if (hasSubtitle && subtitlePath) {
+          const subtitleFile = escapeFilterPath(subtitlePath);
+          videoFilters.push(`subtitles=${subtitleFile}`);
+        }
 
-          const xRatio = safeRatio(
-            req.body.subtitleXRatio,
-            0.10
-          );
+        const videoFilter = videoFilters.join(",");
 
-          const yRatio = safeRatio(
-            req.body.subtitleYRatio,
-            0.50
-          );
-
-          const sizeRatio = safeSizeRatio(
-            req.body.subtitleSizeRatio
-          );
-
-          const fontFile =
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
-
-          filterParts.push(
-            `[${currentVideo}]drawtext=` +
-            `fontfile='${fontFile}':` +
-            `textfile='${subtitleFilterPath}':` +
-            `fontcolor=${color}:` +
-            `fontsize=h*${sizeRatio}:` +
-            `x=w*${xRatio}:` +
-            `y=h*${yRatio}:` +
-            `shadowcolor=black@0.75:` +
-            `shadowx=2:` +
-            `shadowy=2` +
-            `[vout]`
-          );
+        if (hasMusic || hasVoice) {
+          filterParts.push(`[${currentVideo}]${videoFilter}[vout]`);
+          videoMap = "[vout]";
         } else {
-          filterParts.push(
-            `[${currentVideo}]null[vout]`
-          );
+          videoMap = "0:v:0";
         }
-
-        videoMap = "[vout]";
       }
 
       if (hasMusic && hasVoice) {
@@ -1484,6 +1495,15 @@ app.post(
           "-filter_complex",
           filterParts.join(";")
         );
+      } else if (hasEffect || hasSubtitle) {
+        const visualFilters = [];
+        if (videoEffect === "vivid") visualFilters.push("eq=saturation=1.35:contrast=1.08");
+        if (videoEffect === "soft") visualFilters.push("eq=saturation=0.85:contrast=0.95:brightness=0.03");
+        if (videoEffect === "bw") visualFilters.push("hue=s=0");
+        if (hasSubtitle && subtitlePath) {
+          visualFilters.push(`subtitles=${escapeFilterPath(subtitlePath)}`);
+        }
+        ffmpegArgs.push("-vf", visualFilters.join(","));
       }
 
       ffmpegArgs.push(
