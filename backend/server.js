@@ -1367,59 +1367,73 @@ app.post(
       let videoMap = "0:v:0";
       let audioMap = null;
 
-      // Video effects and subtitles are rendered into the
-      // actual output file, not just shown as UI overlays.
+      // Video effects and subtitles are rendered into the actual
+      // output file. Use fluent-ffmpeg's structured filter objects
+      // instead of a raw filter_complex string. This is important on
+      // Render/Linux because fluent-ffmpeg can escape ':' and '*'
+      // characters in a raw filter string, causing FFmpeg to report
+      // "Filter not found".
       if (hasEffect || hasSubtitle) {
-
-        // IMPORTANT: the input stream label must connect directly
-        // to the first filter. A comma after [0:v:0] creates an
-        // invalid FFmpeg graph and causes "Filter not found".
-        let videoFilter =
-          "[0:v:0]";
-
-        const videoFilters = [];
+        let currentVideo = "0:v:0";
+        let filterIndex = 0;
 
         if (videoEffect === "vivid") {
-          videoFilters.push(
-            "eq=saturation=1.35:contrast=1.08"
-          );
+          const nextVideo = `vfx${filterIndex++}`;
+          filters.push({
+            filter: "eq",
+            options: {
+              saturation: 1.35,
+              contrast: 1.08,
+            },
+            inputs: currentVideo,
+            outputs: nextVideo,
+          });
+          currentVideo = nextVideo;
         } else if (videoEffect === "soft") {
-          videoFilters.push(
-            "eq=saturation=0.85:contrast=0.95:brightness=0.03"
-          );
+          const nextVideo = `vfx${filterIndex++}`;
+          filters.push({
+            filter: "eq",
+            options: {
+              saturation: 0.85,
+              contrast: 0.95,
+              brightness: 0.03,
+            },
+            inputs: currentVideo,
+            outputs: nextVideo,
+          });
+          currentVideo = nextVideo;
         } else if (videoEffect === "bw") {
-          videoFilters.push(
-            "hue=s=0"
-          );
+          const nextVideo = `vfx${filterIndex++}`;
+          filters.push({
+            filter: "hue",
+            options: {
+              s: 0,
+            },
+            inputs: currentVideo,
+            outputs: nextVideo,
+          });
+          currentVideo = nextVideo;
         }
 
         if (hasSubtitle) {
-          const color =
-            safeSubtitleColor(
-              req.body.subtitleColor
-            );
+          const color = safeSubtitleColor(
+            req.body.subtitleColor
+          );
 
-          const xRatio =
-            safeRatio(
-              req.body.subtitleXRatio,
-              0.10
-            );
+          const xRatio = safeRatio(
+            req.body.subtitleXRatio,
+            0.10
+          );
 
-          const yRatio =
-            safeRatio(
-              req.body.subtitleYRatio,
-              0.50
-            );
+          const yRatio = safeRatio(
+            req.body.subtitleYRatio,
+            0.50
+          );
 
-          const sizeRatio =
-            safeSizeRatio(
-              req.body.subtitleSizeRatio
-            );
+          const sizeRatio = safeSizeRatio(
+            req.body.subtitleSizeRatio
+          );
 
-          // IMPORTANT: do not put user text directly inside the
-          // FFmpeg filter string. Emoji / Unicode can make some
-          // FFmpeg builds parse the filter incorrectly and return
-          // "Filter not found". Write the subtitle as UTF-8 textfile.
           subtitlePath = path.join(
             tempDir,
             `${fileId}-subtitle.txt`
@@ -1434,31 +1448,29 @@ app.post(
           const fontFile =
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
 
-          videoFilters.push(
-            `drawtext=` +
-            `fontfile=${fontFile}:` +
-            `textfile=${subtitlePath}:` +
-            `fontcolor=${color}:` +
-            `fontsize=h*${sizeRatio}:` +
-            `x=w*${xRatio}:` +
-            `y=h*${yRatio}:` +
-            `shadowcolor=black@0.75:` +
-            `shadowx=2:` +
-            `shadowy=2`
-          );
+          filters.push({
+            filter: "drawtext",
+            options: {
+              fontfile: fontFile,
+              textfile: subtitlePath,
+              fontcolor: color,
+              fontsize: `h*${sizeRatio}`,
+              x: `w*${xRatio}`,
+              y: `h*${yRatio}`,
+              shadowcolor: "black@0.75",
+              shadowx: 2,
+              shadowy: 2,
+            },
+            inputs: currentVideo,
+            outputs: "vout",
+          });
+        } else {
+          // Effect-only path.
+          const lastFilter = filters[filters.length - 1];
+          lastFilter.outputs = "vout";
         }
 
-        videoFilter += videoFilters.join(",");
-
-        videoFilter +=
-          "[vout]";
-
-        filters.push(
-          videoFilter
-        );
-
-        videoMap =
-          "[vout]";
+        videoMap = "[vout]";
       }
 
       if (hasMusic && hasVoice) {
