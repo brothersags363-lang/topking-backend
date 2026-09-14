@@ -79,7 +79,7 @@ const app = express();
 app.get("/version", (req, res) => {
   res.json({
     success: true,
-    version: "reel-merge-v4",
+    version: "reel-merge-v5",
     features: ["subtitle", "music", "voice", "effect"],
   });
 });
