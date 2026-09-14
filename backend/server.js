@@ -80,7 +80,7 @@ const app = express();
 app.get("/version", (req, res) => {
   res.json({
     success: true,
-    version: "reel-merge-v8",
+    version: "reel-merge-v9-fast",
     features: ["subtitle", "music", "voice", "effect"],
   });
 });
@@ -1518,14 +1518,19 @@ app.post(
         "-shortest"
       );
 
-      if (hasSubtitle || hasEffect || hasMusic || hasVoice) {
+      if (hasSubtitle || hasEffect) {
+        // Visual edits require video re-encoding. Use ultrafast on Render
+        // to minimize CPU time; CRF keeps quality reasonable.
         ffmpegArgs.push(
           "-c:v", "libx264",
-          "-preset", "veryfast",
-          "-crf", "23",
-          "-pix_fmt", "yuv420p"
+          "-preset", "ultrafast",
+          "-crf", "24",
+          "-pix_fmt", "yuv420p",
+          "-threads", "0"
         );
       } else {
+        // Music/voice-only edits do NOT need video re-encoding.
+        // Copying the video stream is dramatically faster.
         ffmpegArgs.push("-c:v", "copy");
       }
 
@@ -1614,7 +1619,7 @@ app.post(
               folder:
                 tempDir,
               size:
-                "720x?",
+                "480x?",
             })
             .on(
               "end",
@@ -1921,7 +1926,7 @@ app.post(
                 tempDir,
 
               size:
-                "720x?",
+                "480x?",
 
             })
 
