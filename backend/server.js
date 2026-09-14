@@ -79,7 +79,7 @@ const app = express();
 app.get("/version", (req, res) => {
   res.json({
     success: true,
-    version: "reel-merge-v3",
+    version: "reel-merge-v4",
     features: ["subtitle", "music", "voice", "effect"],
   });
 });
@@ -1169,6 +1169,7 @@ app.post(
     let voicePath = null;
     let musicPath = null;
     let outputPath = null;
+    let subtitlePath = null;
     let thumbnailPath = null;
 
     try {
@@ -1415,10 +1416,20 @@ app.post(
               req.body.subtitleSizeRatio
             );
 
-          const escapedText =
-            escapeDrawText(
-              subtitleText
-            );
+          // IMPORTANT: do not put user text directly inside the
+          // FFmpeg filter string. Emoji / Unicode can make some
+          // FFmpeg builds parse the filter incorrectly and return
+          // "Filter not found". Write the subtitle as UTF-8 textfile.
+          subtitlePath = path.join(
+            tempDir,
+            `${fileId}-subtitle.txt`
+          );
+
+          await fsp.writeFile(
+            subtitlePath,
+            subtitleText,
+            "utf8"
+          );
 
           const fontFile =
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
@@ -1426,7 +1437,7 @@ app.post(
           videoFilters.push(
             `drawtext=` +
             `fontfile=${fontFile}:` +
-            `text='${escapedText}':` +
+            `textfile=${subtitlePath}:` +
             `fontcolor=${color}:` +
             `fontsize=h*${sizeRatio}:` +
             `x=w*${xRatio}:` +
@@ -1702,6 +1713,10 @@ app.post(
 
       await cleanupFile(
         thumbnailPath
+      );
+
+      await cleanupFile(
+        subtitlePath
       );
 
     }
