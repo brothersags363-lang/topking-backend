@@ -80,7 +80,7 @@ const app = express();
 app.get("/version", (req, res) => {
   res.json({
     success: true,
-    version: "reel-merge-v7",
+    version: "reel-merge-v8",
     features: ["subtitle", "music", "voice", "effect"],
   });
 });
@@ -1413,17 +1413,11 @@ app.post(
         );
 
       // -------------------------------------------------
-      // BUILD FFMPEG PIPELINE
+      // BUILD FFMPEG COMMAND (DIRECT SPAWN)
       // -------------------------------------------------
-      // IMPORTANT: bypass fluent-ffmpeg complexFilter() here.
-      // fluent-ffmpeg can escape ':' and '*' inside filtergraph
-      // arguments, which breaks drawtext on Render/Linux.
-      // Passing the filtergraph directly as one argv item avoids
-      // shell parsing and keeps FFmpeg syntax intact.
-
-      const filterParts = [];
-      let videoMap = "0:v:0";
-      let audioMap = "0:a?";
+      // Do not use fluent-ffmpeg for filter_complex here.
+      // Direct argv prevents fluent-ffmpeg from escaping filter
+      // characters such as ':' and '*'.
 
       const escapeFilterPath = (value) =>
         String(value)
@@ -1431,56 +1425,61 @@ app.post(
           .replace(/'/g, "\\'")
           .replace(/:/g, "\\:");
 
+      const filterParts = [];
+      let videoMap = "0:v:0";
+      let audioMap = "0:a?";
+
+      // Visual processing is always applied to the video stream.
+      // Subtitle uses libass/subtitles because Render's FFmpeg has
+      // libass enabled but does not provide drawtext.
       if (hasEffect || hasSubtitle) {
-        let currentVideo = "0:v:0";
-        const videoFilters = [];
+        const visualFilters = [];
 
         if (videoEffect === "vivid") {
-          videoFilters.push("eq=saturation=1.35:contrast=1.08");
+          visualFilters.push("eq=saturation=1.35:contrast=1.08");
         } else if (videoEffect === "soft") {
-          videoFilters.push("eq=saturation=0.85:contrast=0.95:brightness=0.03");
+          visualFilters.push("eq=saturation=0.85:contrast=0.95:brightness=0.03");
         } else if (videoEffect === "bw") {
-          videoFilters.push("hue=s=0");
+          visualFilters.push("hue=s=0");
         }
 
         if (hasSubtitle && subtitlePath) {
-          const subtitleFile = escapeFilterPath(subtitlePath);
-          videoFilters.push(`subtitles=${subtitleFile}`);
+          visualFilters.push(`subtitles=${escapeFilterPath(subtitlePath)}`);
         }
 
-        const videoFilter = videoFilters.join(",");
-
-        if (hasMusic || hasVoice) {
-          filterParts.push(`[${currentVideo}]${videoFilter}[vout]`);
-          videoMap = "[vout]";
-        } else {
-          videoMap = "0:v:0";
+        // Use -vf for video-only visual processing. This avoids an
+        // unnecessary filter_complex graph when there is no audio mix.
+        if (visualFilters.length > 0 && !hasMusic && !hasVoice) {
+          filterParts.push({ type: "video", value: visualFilters.join(",") });
+        } else if (visualFilters.length > 0) {
+          filterParts.push({ type: "video", value: visualFilters.join(",") });
         }
       }
 
       if (hasMusic && hasVoice) {
-        filterParts.push(
-          `[1:a:0]aloop=loop=-1:size=2147483647,asetpts=N/SR/TB[music];` +
-          `[2:a:0]apad[voice];` +
-          `[music][voice]amix=inputs=2:duration=first:dropout_transition=2[aout]`
-        );
+        filterParts.push({
+          type: "complex",
+          value:
+            `[1:a:0]aloop=loop=-1:size=2147483647,asetpts=N/SR/TB[music];` +
+            `[2:a:0]apad[voice];` +
+            `[music][voice]amix=inputs=2:duration=first:dropout_transition=2[aout]`,
+        });
         audioMap = "[aout]";
       } else if (hasMusic) {
-        filterParts.push(
-          `[1:a:0]aloop=loop=-1:size=2147483647,asetpts=N/SR/TB[aout]`
-        );
+        filterParts.push({
+          type: "complex",
+          value: `[1:a:0]aloop=loop=-1:size=2147483647,asetpts=N/SR/TB[aout]`,
+        });
         audioMap = "[aout]";
       } else if (hasVoice) {
-        filterParts.push(
-          `[1:a:0]apad[aout]`
-        );
+        filterParts.push({
+          type: "complex",
+          value: `[1:a:0]apad[aout]`,
+        });
         audioMap = "[aout]";
       }
 
-      const ffmpegArgs = [
-        "-y",
-        "-i", videoPath,
-      ];
+      const ffmpegArgs = ["-y", "-i", videoPath];
 
       if (hasMusic) {
         ffmpegArgs.push("-i", musicPath);
@@ -1490,20 +1489,24 @@ app.post(
         ffmpegArgs.push("-i", voicePath);
       }
 
-      if (filterParts.length > 0) {
+      const visual = filterParts.find((x) => x.type === "video");
+      const complex = filterParts
+        .filter((x) => x.type === "complex")
+        .map((x) => x.value);
+
+      if (visual && complex.length === 0) {
+        // Simple video filter path: no filter_complex at all.
+        ffmpegArgs.push("-vf", visual.value);
+      } else if (visual && complex.length > 0) {
+        // Build one graph connecting the input video to the filtered
+        // output and keep audio processing in the same graph.
         ffmpegArgs.push(
           "-filter_complex",
-          filterParts.join(";")
+          `[0:v:0]${visual.value}[vout];${complex.join(";")}`
         );
-      } else if (hasEffect || hasSubtitle) {
-        const visualFilters = [];
-        if (videoEffect === "vivid") visualFilters.push("eq=saturation=1.35:contrast=1.08");
-        if (videoEffect === "soft") visualFilters.push("eq=saturation=0.85:contrast=0.95:brightness=0.03");
-        if (videoEffect === "bw") visualFilters.push("hue=s=0");
-        if (hasSubtitle && subtitlePath) {
-          visualFilters.push(`subtitles=${escapeFilterPath(subtitlePath)}`);
-        }
-        ffmpegArgs.push("-vf", visualFilters.join(","));
+        videoMap = "[vout]";
+      } else if (complex.length > 0) {
+        ffmpegArgs.push("-filter_complex", complex.join(";"));
       }
 
       ffmpegArgs.push(
@@ -1515,7 +1518,7 @@ app.post(
         "-shortest"
       );
 
-      if (hasSubtitle || hasEffect) {
+      if (hasSubtitle || hasEffect || hasMusic || hasVoice) {
         ffmpegArgs.push(
           "-c:v", "libx264",
           "-preset", "veryfast",
@@ -1525,6 +1528,20 @@ app.post(
       } else {
         ffmpegArgs.push("-c:v", "copy");
       }
+
+      // CRITICAL: FFmpeg must receive the output filename as the final
+      // positional argument. Without this it exits with:
+      // "At least one output file must be specified".
+      ffmpegArgs.push(outputPath);
+
+      console.log("FFMPEG MODE:", {
+        subtitle: hasSubtitle,
+        music: hasMusic,
+        voice: hasVoice,
+        effect: videoEffect,
+        output: outputPath,
+      });
+      console.log("FFMPEG ARGS:", ffmpegArgs);
 
       await new Promise((resolve, reject) => {
         const child = spawn(ffmpegPath, ffmpegArgs, {
