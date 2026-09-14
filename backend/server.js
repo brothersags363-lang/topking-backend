@@ -16,6 +16,7 @@ const crypto = require("crypto");
 const dns = require("dns").promises;
 const net = require("net");
 const cron = require("node-cron");
+const { spawn } = require("child_process");
 
 const {
   S3Client,
@@ -79,7 +80,7 @@ const app = express();
 app.get("/version", (req, res) => {
   res.json({
     success: true,
-    version: "reel-merge-v5",
+    version: "reel-merge-v6",
     features: ["subtitle", "music", "voice", "effect"],
   });
 });
@@ -1362,63 +1363,50 @@ app.post(
       // -------------------------------------------------
       // BUILD FFMPEG PIPELINE
       // -------------------------------------------------
+      // IMPORTANT: bypass fluent-ffmpeg complexFilter() here.
+      // fluent-ffmpeg can escape ':' and '*' inside filtergraph
+      // arguments, which breaks drawtext on Render/Linux.
+      // Passing the filtergraph directly as one argv item avoids
+      // shell parsing and keeps FFmpeg syntax intact.
 
-      const filters = [];
+      const filterParts = [];
       let videoMap = "0:v:0";
-      let audioMap = null;
+      let audioMap = "0:a?";
 
-      // Video effects and subtitles are rendered into the actual
-      // output file. Use fluent-ffmpeg's structured filter objects
-      // instead of a raw filter_complex string. This is important on
-      // Render/Linux because fluent-ffmpeg can escape ':' and '*'
-      // characters in a raw filter string, causing FFmpeg to report
-      // "Filter not found".
+      const escapeFilterPath = (value) =>
+        String(value)
+          .replace(/\\/g, "\\\\")
+          .replace(/'/g, "\\'")
+          .replace(/:/g, "\\:");
+
+      const subtitleFilterPath = subtitlePath
+        ? escapeFilterPath(subtitlePath)
+        : "";
+
       if (hasEffect || hasSubtitle) {
         let currentVideo = "0:v:0";
-        let filterIndex = 0;
 
         if (videoEffect === "vivid") {
-          const nextVideo = `vfx${filterIndex++}`;
-          filters.push({
-            filter: "eq",
-            options: {
-              saturation: 1.35,
-              contrast: 1.08,
-            },
-            inputs: currentVideo,
-            outputs: nextVideo,
-          });
-          currentVideo = nextVideo;
+          filterParts.push(
+            `[${currentVideo}]eq=saturation=1.35:contrast=1.08[vivid]`
+          );
+          currentVideo = "vivid";
         } else if (videoEffect === "soft") {
-          const nextVideo = `vfx${filterIndex++}`;
-          filters.push({
-            filter: "eq",
-            options: {
-              saturation: 0.85,
-              contrast: 0.95,
-              brightness: 0.03,
-            },
-            inputs: currentVideo,
-            outputs: nextVideo,
-          });
-          currentVideo = nextVideo;
+          filterParts.push(
+            `[${currentVideo}]eq=saturation=0.85:contrast=0.95:brightness=0.03[soft]`
+          );
+          currentVideo = "soft";
         } else if (videoEffect === "bw") {
-          const nextVideo = `vfx${filterIndex++}`;
-          filters.push({
-            filter: "hue",
-            options: {
-              s: 0,
-            },
-            inputs: currentVideo,
-            outputs: nextVideo,
-          });
-          currentVideo = nextVideo;
+          filterParts.push(
+            `[${currentVideo}]hue=s=0[bw]`
+          );
+          currentVideo = "bw";
         }
 
         if (hasSubtitle) {
           const color = safeSubtitleColor(
             req.body.subtitleColor
-          );
+          ).replace("#", "0x");
 
           const xRatio = safeRatio(
             req.body.subtitleXRatio,
@@ -1434,154 +1422,126 @@ app.post(
             req.body.subtitleSizeRatio
           );
 
-          subtitlePath = path.join(
-            tempDir,
-            `${fileId}-subtitle.txt`
-          );
-
-          await fsp.writeFile(
-            subtitlePath,
-            subtitleText,
-            "utf8"
-          );
-
           const fontFile =
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
 
-          filters.push({
-            filter: "drawtext",
-            options: {
-              fontfile: fontFile,
-              textfile: subtitlePath,
-              fontcolor: color,
-              fontsize: `h*${sizeRatio}`,
-              x: `w*${xRatio}`,
-              y: `h*${yRatio}`,
-              shadowcolor: "black@0.75",
-              shadowx: 2,
-              shadowy: 2,
-            },
-            inputs: currentVideo,
-            outputs: "vout",
-          });
+          filterParts.push(
+            `[${currentVideo}]drawtext=` +
+            `fontfile='${fontFile}':` +
+            `textfile='${subtitleFilterPath}':` +
+            `fontcolor=${color}:` +
+            `fontsize=h*${sizeRatio}:` +
+            `x=w*${xRatio}:` +
+            `y=h*${yRatio}:` +
+            `shadowcolor=black@0.75:` +
+            `shadowx=2:` +
+            `shadowy=2` +
+            `[vout]`
+          );
         } else {
-          // Effect-only path.
-          const lastFilter = filters[filters.length - 1];
-          lastFilter.outputs = "vout";
+          filterParts.push(
+            `[${currentVideo}]null[vout]`
+          );
         }
 
         videoMap = "[vout]";
       }
 
       if (hasMusic && hasVoice) {
-
-        // Music loops so a short song does not cut the reel.
-        // Voice is padded so a short voice-over does not cut it.
-        filters.push(
-          `[1:a]aloop=loop=-1:size=2147483647,asetpts=N/SR/TB[music];` +
-          `[2:a]apad[voice];` +
-          `[music][voice]amix=inputs=2:` +
-          `duration=first:` +
-          `dropout_transition=2[aout]`
+        filterParts.push(
+          `[1:a:0]aloop=loop=-1:size=2147483647,asetpts=N/SR/TB[music];` +
+          `[2:a:0]apad[voice];` +
+          `[music][voice]amix=inputs=2:duration=first:dropout_transition=2[aout]`
         );
-
-        audioMap =
-          "[aout]";
-
+        audioMap = "[aout]";
       } else if (hasMusic) {
-
-        filters.push(
-          `[1:a]aloop=loop=-1:size=2147483647,asetpts=N/SR/TB[aout]`
+        filterParts.push(
+          `[1:a:0]aloop=loop=-1:size=2147483647,asetpts=N/SR/TB[aout]`
         );
-
-        audioMap =
-          "[aout]";
-
+        audioMap = "[aout]";
       } else if (hasVoice) {
-
-        filters.push(
-          `[1:a]apad[aout]`
+        filterParts.push(
+          `[1:a:0]apad[aout]`
         );
-
-        audioMap =
-          "[aout]";
-
-      } else if (hasSubtitle) {
-
-        // No new audio edit: keep the video's original audio.
-        audioMap =
-          "0:a?";
+        audioMap = "[aout]";
       }
 
-      const command =
-        ffmpeg();
-
-      command.input(
-        videoPath
-      );
+      const ffmpegArgs = [
+        "-y",
+        "-i", videoPath,
+      ];
 
       if (hasMusic) {
-        command.input(
-          musicPath
-        );
+        ffmpegArgs.push("-i", musicPath);
       }
 
       if (hasVoice) {
-        command.input(
-          voicePath
+        ffmpegArgs.push("-i", voicePath);
+      }
+
+      if (filterParts.length > 0) {
+        ffmpegArgs.push(
+          "-filter_complex",
+          filterParts.join(";")
         );
       }
 
-      if (filters.length > 0) {
-        command.complexFilter(
-          filters
-        );
-      }
+      ffmpegArgs.push(
+        "-map", videoMap,
+        "-map", audioMap,
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        "-shortest"
+      );
 
-      const outputOptions = [
-        `-map ${videoMap}`,
-        `-map ${audioMap || "0:a?"}`,
-        "-c:a aac",
-        "-b:a 128k",
-        "-movflags +faststart",
-        "-shortest",
-      ];
-
-      if (
-        hasSubtitle ||
-        hasEffect
-      ) {
-        outputOptions.push(
-          "-c:v libx264",
-          "-preset veryfast",
-          "-crf 23",
-          "-pix_fmt yuv420p"
+      if (hasSubtitle || hasEffect) {
+        ffmpegArgs.push(
+          "-c:v", "libx264",
+          "-preset", "veryfast",
+          "-crf", "23",
+          "-pix_fmt", "yuv420p"
         );
       } else {
-        outputOptions.push(
-          "-c:v copy"
-        );
+        ffmpegArgs.push("-c:v", "copy");
       }
 
-      await new Promise(
-        (resolve, reject) => {
+      await new Promise((resolve, reject) => {
+        const child = spawn(ffmpegPath, ffmpegArgs, {
+          stdio: ["ignore", "pipe", "pipe"],
+        });
 
-          command
-            .outputOptions(
-              outputOptions
-            )
-            .save(outputPath)
-            .on(
-              "end",
-              resolve
-            )
-            .on(
-              "error",
-              reject
-            );
+        let stderr = "";
+        let stdout = "";
 
-        }
-      );
+        child.stdout.on("data", (chunk) => {
+          stdout += chunk.toString();
+          if (stdout.length > 12000) {
+            stdout = stdout.slice(-12000);
+          }
+        });
+
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk.toString();
+          if (stderr.length > 30000) {
+            stderr = stderr.slice(-30000);
+          }
+        });
+
+        child.on("error", reject);
+
+        child.on("close", (code) => {
+          if (code === 0) {
+            return resolve();
+          }
+
+          const error = new Error(
+            `ffmpeg exited with code ${code}: ${stderr || stdout || "unknown ffmpeg error"}`
+          );
+          error.code = code;
+          reject(error);
+        });
+      });
 
       if (
         !fs.existsSync(
