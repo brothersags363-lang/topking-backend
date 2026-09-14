@@ -76,6 +76,14 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 
 const app = express();
 
+app.get("/version", (req, res) => {
+  res.json({
+    success: true,
+    version: "reel-merge-v3",
+    features: ["subtitle", "music", "voice", "effect"],
+  });
+});
+
 app.disable("x-powered-by");
 
 app.set("trust proxy", 1);
@@ -1362,22 +1370,29 @@ app.post(
       // actual output file, not just shown as UI overlays.
       if (hasEffect || hasSubtitle) {
 
+        // IMPORTANT: the input stream label must connect directly
+        // to the first filter. A comma after [0:v:0] creates an
+        // invalid FFmpeg graph and causes "Filter not found".
         let videoFilter =
           "[0:v:0]";
 
+        const videoFilters = [];
+
         if (videoEffect === "vivid") {
-          videoFilter +=
-            "eq=saturation=1.35:contrast=1.08";
+          videoFilters.push(
+            "eq=saturation=1.35:contrast=1.08"
+          );
         } else if (videoEffect === "soft") {
-          videoFilter +=
-            "eq=saturation=0.85:contrast=0.95:brightness=0.03";
+          videoFilters.push(
+            "eq=saturation=0.85:contrast=0.95:brightness=0.03"
+          );
         } else if (videoEffect === "bw") {
-          videoFilter +=
-            "hue=s=0";
+          videoFilters.push(
+            "hue=s=0"
+          );
         }
 
         if (hasSubtitle) {
-
           const color =
             safeSubtitleColor(
               req.body.subtitleColor
@@ -1408,8 +1423,8 @@ app.post(
           const fontFile =
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
 
-          videoFilter +=
-            `,drawtext=` +
+          videoFilters.push(
+            `drawtext=` +
             `fontfile=${fontFile}:` +
             `text='${escapedText}':` +
             `fontcolor=${color}:` +
@@ -1418,8 +1433,11 @@ app.post(
             `y=h*${yRatio}:` +
             `shadowcolor=black@0.75:` +
             `shadowx=2:` +
-            `shadowy=2`;
+            `shadowy=2`
+          );
         }
+
+        videoFilter += videoFilters.join(",");
 
         videoFilter +=
           "[vout]";
