@@ -345,6 +345,97 @@ const upload = multer({
 });
 
 
+/*
+ * Processing upload:
+ * - video is the source reel
+ * - voice is an optional local voice-over
+ *
+ * The normal /upload-video middleware above is intentionally
+ * unchanged so existing upload behavior stays intact.
+ */
+const processUpload = multer({
+
+  dest: path.join(
+    __dirname,
+    "uploads"
+  ),
+
+  limits: {
+
+    fileSize:
+      100 * 1024 * 1024,
+
+    files: 2,
+
+    fields: 20,
+
+  },
+
+  fileFilter: (
+    req,
+    file,
+    cb
+  ) => {
+
+    const videoTypes = [
+      "video/mp4",
+      "video/quicktime",
+    ];
+
+    const videoExts = [
+      ".mp4",
+      ".mov",
+    ];
+
+    const voiceTypes = [
+      "audio/mp4",
+      "audio/m4a",
+      "audio/aac",
+      "audio/mpeg",
+      "audio/wav",
+      "audio/x-m4a",
+      "video/mp4",
+    ];
+
+    const voiceExts = [
+      ".m4a",
+      ".mp4",
+      ".aac",
+      ".mp3",
+      ".wav",
+    ];
+
+    const ext =
+      path
+        .extname(file.originalname || "")
+        .toLowerCase();
+
+    if (
+      file.fieldname === "video" &&
+      videoTypes.includes(file.mimetype) &&
+      videoExts.includes(ext)
+    ) {
+      return cb(null, true);
+    }
+
+    if (
+      file.fieldname === "voice" &&
+      voiceTypes.includes(file.mimetype) &&
+      voiceExts.includes(ext)
+    ) {
+      return cb(null, true);
+    }
+
+    return cb(
+      new Error(
+        "Invalid processing file"
+      )
+    );
+  },
+
+});
+
+
 // =====================================================
 // AGORA
 // =====================================================
@@ -983,79 +1074,265 @@ async function validateExternalAudioUrl(
 
 
 // =====================================================
-// MERGE VIDEO + AUDIO
+// PROCESS VIDEO + MUSIC + VOICE + SUBTITLE
 // =====================================================
 
-app.post(
+function escapeDrawText(value) {
+  return String(value || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/:/g, "\\:")
+    .replace(/%/g, "\\%")
+    .replace(/\r/g, "")
+    .replace(/\n/g, "\\n");
+}
 
+function safeSubtitleColor(value) {
+  const color =
+    typeof value === "string"
+      ? value.trim()
+      : "";
+
+  return /^#[0-9a-fA-F]{6}$/.test(color)
+    ? color
+    : "#FFFFFF";
+}
+
+function safeRatio(value, fallback = 0) {
+  const number = Number(value);
+
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+
+  return Math.max(
+    0,
+    Math.min(1, number)
+  );
+}
+
+function safeSizeRatio(value) {
+  const number = Number(value);
+
+  if (!Number.isFinite(number)) {
+    return 0.03;
+  }
+
+  return Math.max(
+    0.005,
+    Math.min(0.20, number)
+  );
+}
+
+function safeVideoEffect(value) {
+  const allowed = [
+    "none",
+    "vivid",
+    "soft",
+    "bw",
+  ];
+
+  return allowed.includes(value)
+    ? value
+    : "none";
+}
+
+app.post(
   "/merge",
 
   uploadLimiter,
 
   verifyUser,
 
-  upload.single("video"),
+  processUpload.fields([
+    {
+      name: "video",
+      maxCount: 1,
+    },
+    {
+      name: "voice",
+      maxCount: 1,
+    },
+  ]),
 
   async (req, res) => {
 
     let videoPath = null;
-
-    let audioPath = null;
-
+    let voicePath = null;
+    let musicPath = null;
     let outputPath = null;
-
+    let thumbnailPath = null;
 
     try {
 
-      if (!req.file) {
+      const videoFile =
+        req.files?.video?.[0];
 
+      const voiceFile =
+        req.files?.voice?.[0];
+
+      if (!videoFile) {
         return res.status(400).json({
-
           success: false,
-
           error: "Video missing",
-
         });
-
       }
 
+      videoPath =
+        videoFile.path;
+
+      if (voiceFile) {
+        voicePath =
+          voiceFile.path;
+      }
 
       const rawAudioUrl =
         req.body.audioUrl;
 
+      const hasMusic =
+        typeof rawAudioUrl === "string" &&
+        rawAudioUrl.trim() !== "";
 
-      if (
-        typeof rawAudioUrl !== "string" ||
-        rawAudioUrl.length > 2048
-      ) {
+      const hasVoice =
+        Boolean(voicePath);
 
-        return res.status(400).json({
+      const subtitleText =
+        typeof req.body.subtitleText === "string"
+          ? req.body.subtitleText.trim()
+          : "";
 
-          success: false,
+      const hasSubtitle =
+        subtitleText.length > 0;
 
-          error: "Invalid audio URL",
-
-        });
-
-      }
-
-
-      const audioUrl =
-        await validateExternalAudioUrl(
-          rawAudioUrl
+      const videoEffect =
+        safeVideoEffect(
+          req.body.videoEffect
         );
 
+      const hasEffect =
+        videoEffect !== "none";
 
-      videoPath =
-        req.file.path;
+      if (
+        !hasMusic &&
+        !hasVoice &&
+        !hasSubtitle &&
+        !hasEffect
+      ) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Nothing to process",
+        });
+      }
 
+      // -------------------------------------------------
+      // DOWNLOAD MUSIC
+      // -------------------------------------------------
+
+      if (hasMusic) {
+
+        const audioUrl =
+          await validateExternalAudioUrl(
+            rawAudioUrl
+          );
+
+        const tempDir =
+          path.join(
+            __dirname,
+            "temp"
+          );
+
+        await fsp.mkdir(
+          tempDir,
+          {
+            recursive: true,
+          }
+        );
+
+        const fileId =
+          crypto.randomUUID();
+
+        musicPath =
+          path.join(
+            tempDir,
+            `${fileId}.mp3`
+          );
+
+        const audioResponse =
+          await axios({
+            url: audioUrl,
+            method: "GET",
+            responseType: "stream",
+            timeout: 120000,
+            maxContentLength:
+              50 * 1024 * 1024,
+            maxBodyLength:
+              50 * 1024 * 1024,
+            validateStatus:
+              (status) =>
+                status >= 200 &&
+                status < 300,
+          });
+
+        await new Promise(
+          (resolve, reject) => {
+
+            const writer =
+              fs.createWriteStream(
+                musicPath
+              );
+
+            let totalBytes = 0;
+
+            audioResponse.data.on(
+              "data",
+              (chunk) => {
+
+                totalBytes +=
+                  chunk.length;
+
+                if (
+                  totalBytes >
+                  50 * 1024 * 1024
+                ) {
+                  audioResponse.data.destroy(
+                    new Error(
+                      "Audio file too large"
+                    )
+                  );
+                }
+
+              }
+            );
+
+            audioResponse.data.pipe(
+              writer
+            );
+
+            writer.on(
+              "finish",
+              resolve
+            );
+
+            writer.on(
+              "error",
+              reject
+            );
+
+            audioResponse.data.on(
+              "error",
+              reject
+            );
+
+          }
+        );
+      }
 
       const tempDir =
         path.join(
           __dirname,
           "temp"
         );
-
 
       await fsp.mkdir(
         tempDir,
@@ -1064,17 +1341,8 @@ app.post(
         }
       );
 
-
       const fileId =
         crypto.randomUUID();
-
-
-      audioPath =
-        path.join(
-          tempDir,
-          `${fileId}.mp3`
-        );
-
 
       outputPath =
         path.join(
@@ -1082,133 +1350,190 @@ app.post(
           `${fileId}.mp4`
         );
 
-
       // -------------------------------------------------
-      // DOWNLOAD AUDIO
+      // BUILD FFMPEG PIPELINE
       // -------------------------------------------------
 
-      const audioResponse =
-        await axios({
+      const filters = [];
+      let videoMap = "0:v:0";
+      let audioMap = null;
 
-          url: audioUrl,
+      // Video effects and subtitles are rendered into the
+      // actual output file, not just shown as UI overlays.
+      if (hasEffect || hasSubtitle) {
 
-          method: "GET",
+        let videoFilter =
+          "[0:v:0]";
 
-          responseType: "stream",
+        if (videoEffect === "vivid") {
+          videoFilter +=
+            "eq=saturation=1.35:contrast=1.08";
+        } else if (videoEffect === "soft") {
+          videoFilter +=
+            "eq=saturation=0.85:contrast=0.95:brightness=0.03";
+        } else if (videoEffect === "bw") {
+          videoFilter +=
+            "hue=s=0";
+        }
 
-          timeout: 120000,
+        if (hasSubtitle) {
 
-          maxContentLength:
-            50 * 1024 * 1024,
-
-          maxBodyLength:
-            50 * 1024 * 1024,
-
-          validateStatus:
-            (status) =>
-              status >= 200 &&
-              status < 300,
-
-        });
-
-
-      await new Promise(
-        (resolve, reject) => {
-
-          const writer =
-            fs.createWriteStream(
-              audioPath
+          const color =
+            safeSubtitleColor(
+              req.body.subtitleColor
             );
 
+          const xRatio =
+            safeRatio(
+              req.body.subtitleXRatio,
+              0.10
+            );
 
-          let totalBytes = 0;
+          const yRatio =
+            safeRatio(
+              req.body.subtitleYRatio,
+              0.50
+            );
 
+          const sizeRatio =
+            safeSizeRatio(
+              req.body.subtitleSizeRatio
+            );
 
-          audioResponse.data.on(
-            "data",
-            (chunk) => {
+          const escapedText =
+            escapeDrawText(
+              subtitleText
+            );
 
-              totalBytes +=
-                chunk.length;
+          const fontFile =
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
 
-
-              if (
-                totalBytes >
-                50 * 1024 * 1024
-              ) {
-
-                audioResponse.data.destroy(
-                  new Error(
-                    "Audio file too large"
-                  )
-                );
-
-              }
-
-            }
-          );
-
-
-          audioResponse.data.pipe(
-            writer
-          );
-
-
-          writer.on(
-            "finish",
-            resolve
-          );
-
-
-          writer.on(
-            "error",
-            reject
-          );
-
-
-          audioResponse.data.on(
-            "error",
-            reject
-          );
-
+          videoFilter +=
+            `,drawtext=` +
+            `fontfile=${fontFile}:` +
+            `text='${escapedText}':` +
+            `fontcolor=${color}:` +
+            `fontsize=h*${sizeRatio}:` +
+            `x=w*${xRatio}:` +
+            `y=h*${yRatio}:` +
+            `shadowcolor=black@0.75:` +
+            `shadowx=2:` +
+            `shadowy=2`;
         }
+
+        videoFilter +=
+          "[vout]";
+
+        filters.push(
+          videoFilter
+        );
+
+        videoMap =
+          "[vout]";
+      }
+
+      if (hasMusic && hasVoice) {
+
+        // Music loops so a short song does not cut the reel.
+        // Voice is padded so a short voice-over does not cut it.
+        filters.push(
+          `[1:a]aloop=loop=-1:size=2147483647,asetpts=N/SR/TB[music];` +
+          `[2:a]apad[voice];` +
+          `[music][voice]amix=inputs=2:` +
+          `duration=first:` +
+          `dropout_transition=2[aout]`
+        );
+
+        audioMap =
+          "[aout]";
+
+      } else if (hasMusic) {
+
+        filters.push(
+          `[1:a]aloop=loop=-1:size=2147483647,asetpts=N/SR/TB[aout]`
+        );
+
+        audioMap =
+          "[aout]";
+
+      } else if (hasVoice) {
+
+        filters.push(
+          `[1:a]apad[aout]`
+        );
+
+        audioMap =
+          "[aout]";
+
+      } else if (hasSubtitle) {
+
+        // No new audio edit: keep the video's original audio.
+        audioMap =
+          "0:a?";
+      }
+
+      const command =
+        ffmpeg();
+
+      command.input(
+        videoPath
       );
 
+      if (hasMusic) {
+        command.input(
+          musicPath
+        );
+      }
 
-      // -------------------------------------------------
-      // MERGE
-      // -------------------------------------------------
+      if (hasVoice) {
+        command.input(
+          voicePath
+        );
+      }
+
+      if (filters.length > 0) {
+        command.complexFilter(
+          filters
+        );
+      }
+
+      const outputOptions = [
+        `-map ${videoMap}`,
+        `-map ${audioMap || "0:a?"}`,
+        "-c:a aac",
+        "-b:a 128k",
+        "-movflags +faststart",
+        "-shortest",
+      ];
+
+      if (
+        hasSubtitle ||
+        hasEffect
+      ) {
+        outputOptions.push(
+          "-c:v libx264",
+          "-preset veryfast",
+          "-crf 23",
+          "-pix_fmt yuv420p"
+        );
+      } else {
+        outputOptions.push(
+          "-c:v copy"
+        );
+      }
 
       await new Promise(
         (resolve, reject) => {
 
-          ffmpeg()
-
-            .input(videoPath)
-
-            .input(audioPath)
-
-            .outputOptions([
-
-              "-map 0:v:0",
-
-              "-map 1:a:0",
-
-              "-c:v copy",
-
-              "-c:a aac",
-
-              "-shortest",
-
-            ])
-
+          command
+            .outputOptions(
+              outputOptions
+            )
             .save(outputPath)
-
             .on(
               "end",
               resolve
             )
-
             .on(
               "error",
               reject
@@ -1217,68 +1542,127 @@ app.post(
         }
       );
 
+      if (
+        !fs.existsSync(
+          outputPath
+        )
+      ) {
+        throw new Error(
+          "Processed video was not created"
+        );
+      }
+
+      // -------------------------------------------------
+      // THUMBNAIL
+      // -------------------------------------------------
+
+      const thumbnailFileName =
+        `${fileId}.jpg`;
+
+      thumbnailPath =
+        path.join(
+          tempDir,
+          thumbnailFileName
+        );
+
+      await new Promise(
+        (resolve, reject) => {
+
+          ffmpeg(outputPath)
+            .screenshots({
+              timestamps: ["10%"],
+              filename:
+                thumbnailFileName,
+              folder:
+                tempDir,
+              size:
+                "720x?",
+            })
+            .on(
+              "end",
+              resolve
+            )
+            .on(
+              "error",
+              reject
+            );
+
+        }
+      );
+
+      if (
+        !fs.existsSync(
+          thumbnailPath
+        )
+      ) {
+        throw new Error(
+          "Thumbnail creation failed"
+        );
+      }
 
       // -------------------------------------------------
       // R2 UPLOAD
       // -------------------------------------------------
 
-      const fileName =
+      const videoFileName =
         `${crypto.randomUUID()}.mp4`;
 
-
       await r2.send(
-
         new PutObjectCommand({
-
           Bucket:
             process.env.R2_BUCKET,
-
           Key:
-            fileName,
-
+            videoFileName,
           Body:
             fs.createReadStream(
               outputPath
             ),
-
           ContentType:
             "video/mp4",
-
         })
-
       );
 
+      await r2.send(
+        new PutObjectCommand({
+          Bucket:
+            process.env.R2_BUCKET,
+          Key:
+            thumbnailFileName,
+          Body:
+            fs.createReadStream(
+              thumbnailPath
+            ),
+          ContentType:
+            "image/jpeg",
+        })
+      );
 
       const videoUrl =
-        `${process.env.R2_PUBLIC_URL}/${fileName}`;
+        `${process.env.R2_PUBLIC_URL}/${videoFileName}`;
 
+      const thumbnailUrl =
+        `${process.env.R2_PUBLIC_URL}/${thumbnailFileName}`;
 
       return res.json({
-
         success: true,
-
-        video: videoUrl,
-
+        video:
+          videoUrl,
+        videoUrl,
+        thumbnailUrl,
       });
-
 
     } catch (e) {
 
       console.error(
-        "MERGE ERROR:",
+        "VIDEO PROCESS ERROR:",
         e.message
       );
 
-
       return res.status(500).json({
-
         success: false,
-
         error:
           "Video processing failed",
-
       });
-
 
     } finally {
 
@@ -1287,11 +1671,19 @@ app.post(
       );
 
       await cleanupFile(
-        audioPath
+        voicePath
+      );
+
+      await cleanupFile(
+        musicPath
       );
 
       await cleanupFile(
         outputPath
+      );
+
+      await cleanupFile(
+        thumbnailPath
       );
 
     }
