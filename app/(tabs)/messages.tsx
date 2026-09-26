@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import * as Notifications from 'expo-notifications';
 
 import {
   View,
@@ -57,7 +58,45 @@ export default function Messages() {
   const router = useRouter();
   const pathname = usePathname();
   const auth = getAuth();
-  const db = getFirestore(); 
+  const db = getFirestore();
+
+
+// ===============================
+// NOTIFICATION PERMISSION
+// ===============================
+useEffect(() => {
+  if (!currentUser) return;
+
+  const requestNotificationPermission = async () => {
+    try {
+      const { status: existingStatus } =
+        await Notifications.getPermissionsAsync();
+
+      if (existingStatus === 'granted') {
+        console.log("🔔 Notification permission already ON");
+        return;
+      }
+
+      const { status } =
+        await Notifications.requestPermissionsAsync();
+
+      if (status === 'granted') {
+        console.log("🔔 Notification permission GRANTED");
+      } else {
+        console.log("🔕 Notification permission DENIED");
+      }
+    } catch (error) {
+      console.log(
+        "Notification permission error:",
+        error
+      );
+    }
+  };
+
+  requestNotificationPermission();
+}, [currentUser]);
+
+ 
 
   // States
   const [activeTab, setActiveTab] = useState('Friends');
@@ -257,17 +296,6 @@ useEffect(() => {
       ...doc.data(),
     }));
 
-    console.log("Notifications:", data);
-
-    console.log(JSON.stringify(data, null, 2));
-
-console.log("Current UID:", currentUser.uid);
-console.log("Notifications:", data);
-console.log(
-  "FIRST NOTIFICATION =",
-  JSON.stringify(data[0], null, 2)
-);
-
     setNotifications(data);
   });
 
@@ -278,67 +306,112 @@ console.log(
 
 
 
-const loadFriendDocs = async (docs, append = false) => {
-  const list = await Promise.all(
-    docs.map(async (d) => {
-      const data = d.data();
-      let level = 1;
-      let verified = false;
-      let verifiedColor = "white";
-
-      try {
-        const walletSnap = await getDoc(doc(db, "wallets", data.userId));
-        if (walletSnap.exists()) level = walletSnap.data().level || 1;
-
-        const userSnap = await getDoc(doc(db, "users", data.userId));
-        if (userSnap.exists()) {
-          verified = userSnap.data().verified === true;
-          verifiedColor = userSnap.data().verifiedColor || "white";
-        }
-      } catch (e) {
-        console.log("Friend profile load error:", e);
-      }
-
-      return { id: d.id, ...data, level, verified, verifiedColor };
-    })
-  );
-
+// Merge a page of friend docs into state IMMEDIATELY using just the
+// data already in the doc (username, photo, last message, etc.) -
+// this is everything needed to paint the chat list right away.
+// The extra "level" / "verified" badge info needs two more Firestore
+// reads PER friend (wallets + users), so instead of making the whole
+// screen wait on that (which was the main reason the list felt slow
+// to appear), we render first and patch each row in once its enrich
+// data comes back, in the background.
+const mergeFriendsIntoState = (list, append) => {
   if (append) {
     setFriends((prev) => {
       const byId = new Map(prev.map((item) => [item.id, item]));
-      list.forEach((item) => byId.set(item.id, item));
+      list.forEach((item) => {
+        // Don't clobber richer badge data that may have already arrived.
+        const existing = byId.get(item.id);
+        const merged = existing
+          ? { ...item, level: existing.level, verified: existing.verified, verifiedColor: existing.verifiedColor }
+          : item;
+        byId.set(item.id, merged);
+      });
       return Array.from(byId.values());
     });
   } else {
     // Realtime first page updates must NOT delete already-loaded pages.
     // This keeps 10 + 10 + 10 pagination stable while the first 10 stay live.
     setFriends((prev) => {
+      const prevById = new Map(prev.map((item) => [item.id, item]));
+
+      const merged = list.map((item) => {
+        const existing = prevById.get(item.id);
+        // Keep any already-enriched level/verified info for items we
+        // already had, so a realtime refresh doesn't flash them back
+        // to the default badge while we re-fetch.
+        return existing
+          ? { ...item, level: existing.level, verified: existing.verified, verifiedColor: existing.verifiedColor }
+          : item;
+      });
+
       if (friendsLoadedPagesRef.current <= 1) {
-        return list;
+        return merged;
       }
 
       const firstPageIds = new Set(list.map((item) => item.id));
       const olderLoaded = prev.filter((item) => !firstPageIds.has(item.id));
 
       const byId = new Map();
-      [...list, ...olderLoaded].forEach((item) => byId.set(item.id, item));
+      [...merged, ...olderLoaded].forEach((item) => byId.set(item.id, item));
       return Array.from(byId.values());
     });
   }
+};
+
+// Fetches the level/verified enrichment for a page of friends in the
+// background and patches each row into state as soon as ITS data is
+// ready, without blocking anything else.
+const enrichFriendsInBackground = (docs) => {
+  docs.forEach(async (d) => {
+    const data = d.data();
+
+    try {
+      const [walletSnap, userSnap] = await Promise.all([
+        getDoc(doc(db, "wallets", data.userId)),
+        getDoc(doc(db, "users", data.userId)),
+      ]);
+
+      const level = walletSnap.exists() ? (walletSnap.data().level || 1) : 1;
+      const verified = userSnap.exists() ? userSnap.data().verified === true : false;
+      const verifiedColor = userSnap.exists() ? (userSnap.data().verifiedColor || "white") : "white";
+
+      setFriends((prev) =>
+        prev.map((item) =>
+          item.id === d.id
+            ? { ...item, level, verified, verifiedColor }
+            : item
+        )
+      );
+    } catch (e) {
+      console.log("Friend profile enrich error:", e);
+    }
+  });
+};
+
+const loadFriendDocs = async (docs, append = false) => {
+  const list = docs.map((d) => ({
+    id: d.id,
+    ...d.data(),
+    level: 1,
+    verified: false,
+    verifiedColor: "white",
+  }));
+
+  // Paint instantly with the base data...
+  mergeFriendsIntoState(list, append);
 
   if (docs.length > 0 && (append || !friendsCursorRef.current)) {
     friendsCursorRef.current = docs[docs.length - 1];
   }
 
-  if (docs.length < 10) {
-    setFriendsHasMore(false);
-  } else {
-    setFriendsHasMore(true);
-  }
+  setFriendsHasMore(docs.length >= 10);
 
   if (!append) {
     setFriendsInitialLoading(false);
   }
+
+  // ...then quietly fill in level/verified badges as they arrive.
+  enrichFriendsInBackground(docs);
 };
 
 useEffect(() => {
@@ -439,55 +512,41 @@ useEffect(() => {
 
   const unsubscribe = onSnapshot(
     q,
-    async (snapshot) => {
+    (snapshot) => {
 
-      const list = await Promise.all(
-
-        snapshot.docs.map(async (d) => {
-
-          const data = d.data();
-
-
-
- let level = 1;
-let verified = false;
-
-try {
-
-  const walletSnap = await getDoc(
-    doc(db, "wallets", data.userId)
-  );
-
-  if (walletSnap.exists()) {
-    level = walletSnap.data().level || 1;
-  }
-
-  const userSnap = await getDoc(
-    doc(db, "users", data.userId)
-  );
-
-  if (userSnap.exists()) {
-    verified = userSnap.data().verified === true;
-  }
-
-} catch (e) {
-  console.log(e);
-}
-
-return {
-  id: d.id,
-  ...data,
-  level,
-  verified,
-};
-
-
-
-        })
-
-      );
+      // Paint instantly with the base doc data...
+      const list = snapshot.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+        level: 1,
+        verified: false,
+      }));
 
       setHiddenFriends(list);
+
+      // ...then quietly fill in level/verified as each one arrives,
+      // instead of making the whole hidden list wait on it.
+      snapshot.docs.forEach(async (d) => {
+        const data = d.data();
+
+        try {
+          const [walletSnap, userSnap] = await Promise.all([
+            getDoc(doc(db, "wallets", data.userId)),
+            getDoc(doc(db, "users", data.userId)),
+          ]);
+
+          const level = walletSnap.exists() ? (walletSnap.data().level || 1) : 1;
+          const verified = userSnap.exists() ? userSnap.data().verified === true : false;
+
+          setHiddenFriends((prev) =>
+            prev.map((item) =>
+              item.id === d.id ? { ...item, level, verified } : item
+            )
+          );
+        } catch (e) {
+          console.log("Hidden friend profile enrich error:", e);
+        }
+      });
 
     }
   );
@@ -499,14 +558,7 @@ return {
 
 
 
-useEffect(() => {
-  console.log(
-    "FRIENDS DATA =",
-    JSON.stringify(friends, null, 2)
-  );
-}, [friends]);
-
-  const getIconColor = (path) => (pathname === path ? '#3498db' : '#fff');
+const getIconColor = (path) => (pathname === path ? '#3498db' : '#fff');
 
   // Top Horizontal Badges
 

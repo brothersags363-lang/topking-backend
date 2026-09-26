@@ -6,7 +6,7 @@ import React, {
 
 import {
   ActivityIndicator,
-  Alert,
+  Alert, 
   Animated,
   BackHandler,
   Dimensions,
@@ -306,6 +306,8 @@ const {
   index,
   userId,
   from,
+  username: chatUsername,
+  profileImg: chatProfileImg,
 } = useLocalSearchParams();
 
 const profileUserId = userId;
@@ -1044,45 +1046,145 @@ useEffect(() => {
 
 
 
+
+
+// ================================
+// ONE SHARED "GO BACK" FUNCTION
+// Used by BOTH the phone's hardware back button AND the on-screen
+// back arrow, so they always behave the same way and always return
+// to the exact screen this video was opened from - in ONE press,
+// with no flash of a "fake" placeholder screen and no refetch/refresh.
+// ================================
+
+// Guards against goBack firing twice for the same press (hardware
+// back + the on-screen tap can land almost together and cause a
+// double-navigation - this was producing the "press back, a fake id
+// shows up, press back again to reach the real screen" bug).
+const isGoingBackRef = useRef(false);
+
+// Turns the `from` param into the exact route this video was opened
+// from, so goBack() always lands on the right screen regardless of
+// what the raw navigation stack looks like underneath.
+const targetForFrom = () => {
+
+  if (from === "userProfile") {
+    return {
+      pathname: "/userProfile",
+      params: { userId: profileUserId },
+    };
+  }
+
+  if (from === "index") {
+    return {
+      pathname: "/index",
+      params: { userId },
+    };
+  }
+
+  if (from === "messages") {
+    return "/messages";
+  }
+
+  if (from === "explore") {
+    return "/explore";
+  }
+
+  if (from === "chat") {
+    return {
+      pathname: "/chat",
+      params: {
+        userId,
+        username: chatUsername,
+        profileImg: chatProfileImg,
+      },
+    };
+  }
+
+  return null;
+};
+
+const goBack = () => {
+
+  if (isGoingBackRef.current) {
+    // A navigation is already in flight - ignore the extra press.
+    return true;
+  }
+
+  if (showSharePopup) {
+    setShowSharePopup(false);
+    return true;
+  }
+
+  if (showStarPopup) {
+    setShowStarPopup(false);
+    return true;
+  }
+
+  if (showComments) {
+    setShowComments(false);
+    return true;
+  }
+
+  isGoingBackRef.current = true;
+
+  // `from` tells us exactly which screen opened this video - so it
+  // decides the DESTINATION (never just "wherever back() happens to
+  // land", which is what was sending everyone to index).
+  //
+  // We use `dismissTo` to get there: it looks through the existing
+  // navigation history for a screen matching this route, and if it finds
+  // one, dismisses straight down to that SAME already-mounted instance
+  // (real data, no refetch, no flash of a placeholder/"fake" id).
+  //
+  // EXCEPTION: "explore" lives in its own tab-navigator, not in this
+  // screen's stack, so dismissTo can never find it there and silently
+  // fails (the "action 'POP_TO' ... was not handled by any navigator"
+  // warning, and the back button doing nothing). For that one case we use
+  // `navigate` instead, which resolves the href through the app's full
+  // route table and works across navigator boundaries.
+  const target = targetForFrom();
+
+  if (target) {
+
+    if (from === "explore") {
+      router.navigate(target);
+    } else {
+      router.dismissTo(target);
+    }
+
+    isGoingBackRef.current = false;
+    return true;
+  }
+
+  // Unknown "from" - fall back to a plain stack pop if one exists.
+  if (router.canGoBack()) {
+    router.back();
+    setTimeout(() => { isGoingBackRef.current = false; }, 400);
+    return true;
+  }
+
+  isGoingBackRef.current = false;
+  return false;
+};
+
 useEffect(() => {
 
-  const backAction = () => {
-
-
-if (showSharePopup) {
-  setShowSharePopup(false);
-  return true;
-}
-
-    if (showStarPopup) {
-      setShowStarPopup(false);
-      return true;
-    }
-
-    if (showComments) {
-      setShowComments(false);
-      return true;
-    }
-
-    router.replace({
-      pathname: "/userProfile",
-      params: {
-        userId: profileUserId,
-      },
-    });
-
-    return true;
-  };
-
-  const backHandler =
-    BackHandler.addEventListener(
-      "hardwareBackPress",
-      backAction
-    );
+  const backHandler = BackHandler.addEventListener(
+    "hardwareBackPress",
+    goBack
+  );
 
   return () => backHandler.remove();
 
-}, [showComments, showStarPopup, showSharePopup]);
+}, [
+  showComments,
+  showStarPopup,
+  showSharePopup,
+  from,
+  userId,
+  chatUsername,
+  chatProfileImg,
+]);
 
 
 
@@ -1720,8 +1822,8 @@ starAnimationVideoId
   activeVideo,
   starAnimationVideoId,
 }}
- keyExtractor={(item, i) =>
-  item.id + i
+ keyExtractor={(item) =>
+  item.id
 }
         pagingEnabled
 
@@ -2766,12 +2868,12 @@ try {
 style={styles.backButton}
 onPress={() => {
 
-  router.replace({
-    pathname: "/userProfile",
-    params: {
-      userId: profileUserId,
-    },
-  });
+  const handled = goBack();
+
+  // Absolute last resort so the user is never stuck on this screen.
+  if (!handled) {
+    router.replace("/");
+  }
 
 }}
 >
@@ -2826,7 +2928,7 @@ bottomInfo: {
 
   left: 12,
 
-  bottom: 65,      // niche se kitna upar
+  bottom: 75,      // niche se kitna upar
 
   width: width * 0.7,
 
@@ -2866,7 +2968,7 @@ profileImage: {
 
 iconBox: {
   alignItems: 'center',
-  marginBottom: 4,
+  marginBottom: 15,
 },
 
 

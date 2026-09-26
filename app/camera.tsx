@@ -19,6 +19,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import * as ImagePicker from 'expo-image-picker';
+import { Audio } from 'expo-av';
 
 import { Ionicons } from '@expo/vector-icons';
 
@@ -49,12 +50,13 @@ export default function CameraPage() {
 
   const router = useRouter();
 
+  const params = useLocalSearchParams();
   const {
     audioUrl,
     musicName,
     profile,
     username,
-  } = useLocalSearchParams();
+  } = params;
 
 
   // --------------------------------------------------
@@ -93,6 +95,9 @@ export default function CameraPage() {
   const recordingRef = useRef(false);
 
   const mountedRef = useRef(true);
+  const musicSoundRef = useRef(null);
+  const autoRecordStartedRef = useRef(false);
+  const recordingStartedAtRef = useRef(0);
 
 
   // --------------------------------------------------
@@ -589,6 +594,41 @@ export default function CameraPage() {
 
 
   // --------------------------------------------------
+  // SELECTED MUSIC: preload once for smooth recording
+  // --------------------------------------------------
+  useEffect(() => {
+    let cancelled = false;
+    const loadSelectedMusic = async () => {
+      if (!audioUrl || typeof audioUrl !== 'string') return;
+      try {
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: true,
+          playsInSilentModeIOS: true,
+          staysActiveInBackground: false,
+        });
+        const { sound } = await Audio.Sound.createAsync(
+          { uri: audioUrl },
+          { shouldPlay: false, isLooping: false, progressUpdateIntervalMillis: 250 }
+        );
+        if (cancelled) { await sound.unloadAsync(); return; }
+        musicSoundRef.current = sound;
+        sound.setOnPlaybackStatusUpdate((status) => {
+          if (status?.isLoaded && status.didJustFinish && recordingRef.current && cameraRef.current) {
+            cameraRef.current.stopRecording().catch(() => {});
+          }
+        });
+      } catch (e) { console.log('Music preload error:', e); }
+    };
+    loadSelectedMusic();
+    return () => {
+      cancelled = true;
+      const sound = musicSoundRef.current;
+      musicSoundRef.current = null;
+      if (sound) sound.unloadAsync().catch(() => {});
+    };
+  }, [audioUrl]);
+
+  // --------------------------------------------------
   // START RECORDING
   // --------------------------------------------------
 
@@ -638,23 +678,30 @@ export default function CameraPage() {
       try {
 
         recordingRef.current = true;
-
+        recordingStartedAtRef.current = Date.now();
         setIsRecording(true);
 
+        // Reset the selected song before starting the camera. Do not await
+        // playback here: the camera and song must start together.
+        if (musicSoundRef.current) {
+          await musicSoundRef.current.stopAsync().catch(() => {});
+          await musicSoundRef.current.setPositionAsync(0).catch(() => {});
+        }
 
-        console.log(
-          'VIDEO RECORDING START'
-        );
+        console.log('VIDEO + MUSIC RECORDING START');
 
+        const videoPromise = cameraRef.current.recordAsync({
+          quality: '720p',
+          maxDuration: 60,
+        });
 
-        const video =
-          await cameraRef.current.recordAsync({
+        if (musicSoundRef.current) {
+          musicSoundRef.current.playAsync().catch((e) =>
+            console.log('Music playback start error:', e)
+          );
+        }
 
-            quality: '720p',
-
-            maxDuration: 60,
-
-          });
+        const video = await videoPromise;
 
 
         console.log(
@@ -663,8 +710,17 @@ export default function CameraPage() {
         );
 
 
-        recordingRef.current = false;
+        const recordedDurationSeconds = Math.max(
+          0.05,
+          (Date.now() - (recordingStartedAtRef.current || Date.now())) / 1000
+        );
 
+        recordingRef.current = false;
+        recordingStartedAtRef.current = 0;
+
+        if (musicSoundRef.current) {
+          musicSoundRef.current.pauseAsync().catch(() => {});
+        }
 
         if (mountedRef.current) {
           setIsRecording(false);
@@ -691,6 +747,10 @@ export default function CameraPage() {
               musicImage: profile,
 
               musicArtist: username,
+
+              // Exact duration of this camera take. EditView and /merge
+              // use this so a 5s take can never receive the full 15s song.
+              videoDuration: String(recordedDurationSeconds.toFixed(3)),
 
             },
 
@@ -800,6 +860,12 @@ export default function CameraPage() {
       stopRecording,
     ]);
 
+
+  // IMPORTANT: opening Camera must NOT start recording automatically.
+  // The user explicitly taps the record button to begin.
+  // The selected song starts together with the recording in startRecording().
+  // When the user taps again, stopRecording() lets recordAsync resolve and
+  // the recorded video is sent to EditView.
 
   // --------------------------------------------------
   // UI

@@ -67,7 +67,7 @@ animation: require("./gifts/Rose.json"),
 
 {
 id:"be-mine",
-name:"Be ❤️ Mine",
+name:"Be â¤ï¸ Mine",
 price:999,
 duration:6000,
 icon: require("./gifts/be-mine.png"),
@@ -194,22 +194,33 @@ animation: require("./gifts/Love Proposal.json"),
 },
 
 {
-id:"Aeroplane",
-name:"aeroplane",
-price:6999,
-duration:3500,
-icon: require("./gifts/aeroplane.png"),
-animation: require("./gifts/aeroplane.json"),
-
-},
-
-{
 id:"long drive",
 name:"long drive",
 price:2599,
 duration:2000,
 icon: require("./gifts/long drive.png"),
 animation: require("./gifts/long drive.json"),
+
+},
+
+
+{
+id:"love_flight",
+name:"love_flight",
+price:6999,
+duration:3500,
+icon: require("./gifts/love_flight.png"),
+animation: require("./gifts/love_flight.json"),
+
+},
+
+{
+id:"TOPKING",
+name:"TOPKING",
+price:1999,
+duration:1299,
+icon: require("./gifts/TOPKING.png"),
+animation: require("./gifts/TOPKING.json"),
 
 },
 

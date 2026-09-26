@@ -77,6 +77,11 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 
 const app = express();
 
+app.get("/health", (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json({ success: true, status: "ok", service: "topking-backend", time: new Date().toISOString() });
+});
+
 app.get("/version", (req, res) => {
   res.json({
     success: true,
@@ -86,6 +91,11 @@ app.get("/version", (req, res) => {
 });
 
 app.disable("x-powered-by");
+
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  next();
+});
 
 app.set("trust proxy", 1);
 
@@ -1154,6 +1164,45 @@ function assEscapeText(value) {
     .replace(/\r?\n/g, "\\N");
 }
 
+// -------------------------------------------------
+// GET REAL VIDEO DIMENSIONS (no ffprobe binary needed)
+// -------------------------------------------------
+// We read ffmpeg's own "-i" stderr output, which always prints the
+// input stream info including "WxH" for the video track. This lets us
+// keep the FINAL POST at the SAME SIZE/ASPECT RATIO the user recorded
+// or uploaded, instead of assuming every video is 1080x1920.
+function getVideoDimensions(videoPath) {
+  return new Promise((resolve) => {
+    const probe = spawn(ffmpegPath, ["-i", videoPath]);
+    let stderr = "";
+
+    probe.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    probe.on("close", () => {
+      // Matches lines like: "Stream #0:0(und): Video: h264 ... 1080x1920 ..."
+      const match = stderr.match(
+        /Video:.*?(\d{2,5})x(\d{2,5})/
+      );
+
+      if (match) {
+        resolve({
+          width: parseInt(match[1], 10),
+          height: parseInt(match[2], 10),
+        });
+      } else {
+        // Safe fallback so subtitle rendering never crashes.
+        resolve({ width: 1080, height: 1920 });
+      }
+    });
+
+    probe.on("error", () => {
+      resolve({ width: 1080, height: 1920 });
+    });
+  });
+}
+
 function hexToAssColor(hex) {
   const clean = String(hex || "#FFFFFF")
     .replace(/^#/, "")
@@ -1222,6 +1271,14 @@ app.post(
         typeof rawAudioUrl === "string" &&
         rawAudioUrl.trim() !== "";
 
+      // Client sends the exact recorded video duration so the final mix
+      // can never keep music running beyond the video.
+      const requestedVideoDuration = Number(req.body.videoDuration);
+      const hasRequestedVideoDuration =
+        Number.isFinite(requestedVideoDuration) &&
+        requestedVideoDuration > 0 &&
+        requestedVideoDuration <= 60;
+
       const hasVoice =
         Boolean(voicePath);
 
@@ -1244,17 +1301,24 @@ app.post(
         const yRatio = safeRatio(req.body.subtitleYRatio, 0.50);
         const sizeRatio = safeSizeRatio(req.body.subtitleSizeRatio);
 
-        const x = Math.round(1080 * xRatio);
-        const y = Math.round(1920 * yRatio);
-        const fontSize = Math.max(12, Math.round(1920 * sizeRatio));
+        // Read the ACTUAL uploaded video's resolution instead of assuming
+        // every reel is 1080x1920. This keeps subtitle placement correct
+        // no matter what size/aspect ratio the user recorded or uploaded.
+        const videoDims = await getVideoDimensions(videoPath);
+        const playResX = videoDims.width || 1080;
+        const playResY = videoDims.height || 1920;
+
+        const x = Math.round(playResX * xRatio);
+        const y = Math.round(playResY * yRatio);
+        const fontSize = Math.max(12, Math.round(playResY * sizeRatio));
         const assColor = hexToAssColor(subtitleColor);
         const assText = assEscapeText(subtitleText);
 
         const assContent =
           `[Script Info]\n` +
           `ScriptType: v4.00+\n` +
-          `PlayResX: 1080\n` +
-          `PlayResY: 1920\n` +
+          `PlayResX: ${playResX}\n` +
+          `PlayResY: ${playResY}\n` +
           `ScaledBorderAndShadow: yes\n\n` +
           `[V4+ Styles]\n` +
           `Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n` +
@@ -1460,7 +1524,7 @@ app.post(
         filterParts.push({
           type: "complex",
           value:
-            `[1:a:0]aloop=loop=-1:size=2147483647,asetpts=N/SR/TB[music];` +
+            `[1:a:0]asetpts=N/SR/TB[music];` +
             `[2:a:0]apad[voice];` +
             `[music][voice]amix=inputs=2:duration=first:dropout_transition=2[aout]`,
         });
@@ -1468,7 +1532,7 @@ app.post(
       } else if (hasMusic) {
         filterParts.push({
           type: "complex",
-          value: `[1:a:0]aloop=loop=-1:size=2147483647,asetpts=N/SR/TB[aout]`,
+          value: `[1:a:0]asetpts=N/SR/TB[aout]`,
         });
         audioMap = "[aout]";
       } else if (hasVoice) {
@@ -1517,6 +1581,12 @@ app.post(
         "-movflags", "+faststart",
         "-shortest"
       );
+
+      // Hard cap the output to the recorded video duration. This is the
+      // final safety net for selected music longer than the recorded clip.
+      if (hasRequestedVideoDuration) {
+        ffmpegArgs.push("-t", requestedVideoDuration.toFixed(3));
+      }
 
       if (hasSubtitle || hasEffect) {
         // Visual edits require video re-encoding. Use ultrafast on Render

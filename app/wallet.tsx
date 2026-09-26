@@ -215,54 +215,54 @@ return ()=>unsubscribe();
 
 
 const getLevel = (stars) => {
-  if (stars >= 600000) return 50;
-  if (stars >= 540000) return 49;
-  if (stars >= 480000) return 48;
-  if (stars >= 420000) return 47;
-  if (stars >= 360000) return 46;
-  if (stars >= 310000) return 45;
-  if (stars >= 270000) return 44;
-  if (stars >= 230000) return 43;
-  if (stars >= 200000) return 42;
-  if (stars >= 175000) return 41;
-  if (stars >= 150000) return 40;
-  if (stars >= 130000) return 39;
-  if (stars >= 110000) return 38;
-  if (stars >= 95000) return 37;
-  if (stars >= 82000) return 36;
-  if (stars >= 70000) return 35;
-  if (stars >= 60000) return 34;
-  if (stars >= 50000) return 33;
-  if (stars >= 42000) return 32;
-  if (stars >= 35000) return 31;
-  if (stars >= 29000) return 30;
-  if (stars >= 24000) return 29;
-  if (stars >= 20000) return 28;
-  if (stars >= 17000) return 27;
-  if (stars >= 14500) return 26;
-  if (stars >= 12500) return 25;
-  if (stars >= 10500) return 24;
-  if (stars >= 8800) return 23;
-  if (stars >= 7400) return 22;
-  if (stars >= 6200) return 21;
-  if (stars >= 5200) return 20;
-  if (stars >= 4400) return 19;
-  if (stars >= 3700) return 18;
-  if (stars >= 3100) return 17;
-  if (stars >= 2600) return 16;
-  if (stars >= 2200) return 15;
-  if (stars >= 1850) return 14;
-  if (stars >= 1550) return 13;
-  if (stars >= 1300) return 12;
-  if (stars >= 1100) return 11;
-  if (stars >= 900) return 10;
-  if (stars >= 750) return 9;
-  if (stars >= 600) return 8; // 75 rupaye = 600 stars = Level 8
-  if (stars >= 450) return 7;
-  if (stars >= 350) return 6;
-  if (stars >= 250) return 5; // 250 ka 2 level (approx)
-  if (stars >= 180) return 4;
-  if (stars >= 120) return 3; // 15 rupaye = 120 stars = Level 3
+  if (stars >= 499000) return 50;
+  if (stars >= 440000) return 49;
+  if (stars >= 385000) return 48;
+  if (stars >= 310000) return 47;
+  if (stars >= 299000) return 46;
+  if (stars >= 260000) return 45;
+  if (stars >= 210000) return 44;
+  if (stars >= 189000) return 43;
+  if (stars >= 155000) return 42;
+  if (stars >= 125000) return 41;
+  if (stars >= 110000) return 40;
+  if (stars >= 101000) return 39;
+  if (stars >= 99000) return 38;
+  if (stars >= 89000) return 37;
+  if (stars >= 78000) return 36;
+  if (stars >= 67000) return 35;
+  if (stars >= 51000) return 34;
+  if (stars >= 43000) return 33;
+  if (stars >= 31000) return 32;
+  if (stars >= 26000) return 31;
+  if (stars >= 23000) return 30;
+  if (stars >= 19000) return 29;
+  if (stars >= 17000) return 28;
+  if (stars >= 14000) return 27;
+  if (stars >= 12300) return 26;
+  if (stars >= 1150) return 25;
+  if (stars >= 9000) return 24;
+  if (stars >= 8200) return 23;
+  if (stars >= 7200) return 22;
+  if (stars >= 6100) return 21;
+  if (stars >= 5050) return 20;
+  if (stars >= 4000) return 19;
+  if (stars >= 3500) return 18;
+  if (stars >= 2800) return 17;
+  if (stars >= 2400) return 16;
+  if (stars >= 1900) return 15;
+  if (stars >= 1600) return 14;
+  if (stars >= 1300) return 13;
+  if (stars >= 1150) return 12;
+  if (stars >= 1000) return 11;
+  if (stars >= 870) return 10;
+  if (stars >= 670) return 9;
+  if (stars >= 540) return 8; // 75 rupaye = 600 stars = Level 8
+  if (stars >= 360) return 7;
+  if (stars >= 280) return 6;
+  if (stars >= 200) return 5; // 250 ka 2 level (approx)
+  if (stars >= 160) return 4;
+  if (stars >= 100) return 3; // 15 rupaye = 120 stars = Level 3
   if (stars >= 60) return 2;
   if (stars >= 10) return 1;  // 100 star = 1 level shuruwat mein
   return 0;
@@ -542,7 +542,7 @@ accountName,
 
 mobileNumber,
 
-amount: Number(withdrawAmount) * 40, // ₹
+amount: Number(withdrawAmount) * 44, // ₹
 tk: Number(withdrawAmount),          // TK
 giftStars: Number(withdrawAmount) * 600,
 
@@ -895,7 +895,7 @@ TK≈ {(receivedStars / 600).toFixed(2)}
 
 
     <Text style={styles.guideText}>
-      • 1 TK = Rs 40
+      • 1 TK = Rs 44
     </Text>
 
     <Text style={styles.guideText}>
@@ -1035,7 +1035,7 @@ style={{
   fontSize:13
 }}
 >
-1 TK = ₹40
+1 TK = ₹44
 </Text>
 
 <View

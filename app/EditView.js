@@ -2,10 +2,11 @@ import React, {
   useState,
   useEffect,
   useRef,
+  useCallback,
 } from "react";
 
 import {
-  View,
+  View,  
   Text,
   StyleSheet,
   TouchableOpacity,
@@ -57,6 +58,21 @@ import {
 const { width, height } =
   Dimensions.get("window");
 
+const firstParam = (value) =>
+  Array.isArray(value) ? value[0] : value;
+
+const textParam = (value) => {
+  const param = firstParam(value);
+  return typeof param === "string" ? param : "";
+};
+
+const toDurationSeconds = (value) => {
+  const duration = Number(value);
+  return Number.isFinite(duration) && duration > 0
+    ? duration
+    : 0;
+};
+
 
 export default function EditView() {
 
@@ -73,25 +89,143 @@ export default function EditView() {
   // PARAMS
   // =====================================================
 
+  const routeVideoUri =
+    textParam(params.videoUri);
+
+  const routeVideoDuration =
+    toDurationSeconds(textParam(params.videoDuration));
+
+  const routeMusic = {
+    audioUrl: textParam(params.audioUrl),
+    musicName:
+      textParam(params.musicName) ||
+      textParam(params.musicTitle),
+    musicTitle:
+      textParam(params.musicTitle) ||
+      textParam(params.musicName),
+    musicArtist: textParam(params.musicArtist),
+    musicImage: textParam(params.musicImage),
+    musicId: textParam(params.musicId),
+  };
+
   const [videoUri, setVideoUri] =
-    useState(
-      params.videoUri || ""
-    );
+    useState(routeVideoUri);
+
+  const [videoDuration, setVideoDuration] =
+    useState(routeVideoDuration);
+
+  const videoUriRef =
+    useRef(routeVideoUri);
+
+  const videoDurationRef =
+    useRef({
+      uri: routeVideoUri,
+      value: routeVideoDuration,
+      isReady: routeVideoDuration > 0,
+    });
+
+  const lastRouteVideoUriRef =
+    useRef(routeVideoUri);
+
+  const updateVideoDuration =
+    useCallback((uri, duration) => {
+      const value = toDurationSeconds(duration);
+
+      videoDurationRef.current = {
+        uri,
+        value,
+        isReady: value > 0,
+      };
+
+      setVideoDuration(value);
+    }, []);
+
+  const updateVideoUri =
+    useCallback((uri, duration = 0) => {
+      const nextUri = textParam(uri);
+
+      videoUriRef.current = nextUri;
+      setVideoUri(nextUri);
+      updateVideoDuration(nextUri, duration);
+    }, [updateVideoDuration]);
+
+  const [selectedMusic, setSelectedMusic] =
+    useState(routeMusic);
+
+  const routeMusicKey = [
+    routeMusic.audioUrl,
+    routeMusic.musicName,
+    routeMusic.musicTitle,
+    routeMusic.musicArtist,
+    routeMusic.musicImage,
+    routeMusic.musicId,
+  ].join("\u0001");
+
+  const lastRouteMusicKeyRef =
+    useRef(routeMusicKey);
 
   const musicTitle =
-    params.musicName;
+    selectedMusic.musicName ||
+    selectedMusic.musicTitle ||
+    "";
 
   const musicArtist =
-    params.musicArtist;
+    selectedMusic.musicArtist || "";
 
   const musicImage =
-    params.musicImage;
+    selectedMusic.musicImage || "";
 
   const musicId =
-    params.musicId;
+    selectedMusic.musicId || "";
 
   const audioUrl =
-    params.audioUrl;
+    selectedMusic.audioUrl || "";
+
+  useEffect(() => {
+    if (
+      routeVideoUri &&
+      routeVideoUri !== lastRouteVideoUriRef.current
+    ) {
+      lastRouteVideoUriRef.current = routeVideoUri;
+      updateVideoUri(routeVideoUri, routeVideoDuration);
+      return;
+    }
+
+    if (
+      routeVideoUri &&
+      videoUriRef.current === routeVideoUri &&
+      routeVideoDuration > 0 &&
+      !videoDurationRef.current.isReady
+    ) {
+      updateVideoDuration(routeVideoUri, routeVideoDuration);
+    }
+  }, [
+    routeVideoUri,
+    routeVideoDuration,
+    updateVideoDuration,
+    updateVideoUri,
+  ]);
+
+  useEffect(() => {
+    const hasIncomingMusic = [
+      routeMusic.audioUrl,
+      routeMusic.musicName,
+      routeMusic.musicTitle,
+      routeMusic.musicArtist,
+      routeMusic.musicImage,
+      routeMusic.musicId,
+    ].some(Boolean);
+
+    if (
+      !hasIncomingMusic ||
+      routeMusicKey === lastRouteMusicKeyRef.current
+    ) {
+      return;
+    }
+
+    lastRouteMusicKeyRef.current = routeMusicKey;
+    setSelectedMusic(routeMusic);
+  }, [routeMusicKey]);
 
 
   // =====================================================
@@ -161,6 +295,18 @@ export default function EditView() {
   const [isEditingVideo, setIsEditingVideo] =
     useState(false);
 
+  // Native trim editor lifecycle.
+  // Keeps the real edited output connected to the next screen.
+  const trimEditorOpenRef = useRef(false);
+  const trimSubscriptionsRef = useRef([]);
+
+  // Real video effect selection. The selected effect is
+  // rendered into the final uploaded video by the server.
+  const [showEffectModal, setShowEffectModal] =
+    useState(false);
+
+  const [selectedEffect, setSelectedEffect] =
+    useState("none");
 
   // =====================================================
   // SUBTITLE COLORS
@@ -338,7 +484,7 @@ export default function EditView() {
 
             {
               shouldPlay: false,
-              isLooping: true,
+              isLooping: false,
             }
 
           );
@@ -394,7 +540,7 @@ export default function EditView() {
 
       (player) => {
 
-        player.loop = true;
+        player.loop = false;
 
         player.muted =
           !!musicTitle;
@@ -420,61 +566,62 @@ export default function EditView() {
   // =====================================================
 
   useEffect(() => {
+    const syncPlayer = async () => {
+      try {
+        if (isFocused) {
+          player.currentTime = 0;
+          player.play();
 
-    const syncPlayer =
-      async () => {
-
-        try {
-
-          if (isFocused) {
-
-            player.play();
-
-
-            if (
-              sound &&
-              !isRecording
-            ) {
-
-              await sound.playAsync();
-
-            }
-
-          } else {
-
-            player.pause();
-
-
-            if (sound) {
-
-              await sound.pauseAsync();
-
-            }
-
+          if (sound && !isRecording) {
+            await sound.stopAsync().catch(() => {});
+            await sound.setPositionAsync(0);
+            await sound.playAsync();
           }
+        } else {
+          player.pause();
 
-        } catch (error) {
-
-          console.log(
-            "Player Sync Error =",
-            error
-          );
-
+          if (sound) {
+            await sound.pauseAsync().catch(() => {});
+          }
         }
-
-      };
-
+      } catch (error) {
+        console.log("Player Sync Error =", error);
+      }
+    };
 
     syncPlayer();
+  }, [isFocused, sound, isRecording]);
 
-  }, [
-    isFocused,
-    sound,
-    isRecording,
-  ]);
+  // Stop music exactly when the video reaches its own duration.
+  // This prevents a longer source song from continuing after a short take.
+  useEffect(() => {
+    if (!sound || !player) return;
 
+    let subscription;
 
-  // =====================================================
+    try {
+      subscription = player.addListener("timeUpdate", async (event) => {
+        const current = Number(event?.currentTime ?? player.currentTime ?? 0);
+        const duration = Number(
+          videoDuration || player.duration || 0
+        );
+
+        if (duration > 0 && current >= duration - 0.08) {
+          await sound.pauseAsync().catch(() => {});
+          await sound.setPositionAsync(0).catch(() => {});
+        }
+      });
+    } catch (e) {
+      console.log("Video/music duration sync unavailable:", e);
+    }
+
+    return () => {
+      try {
+        subscription?.remove?.();
+      } catch (_) {}
+    };
+  }, [sound, player, videoDuration]);
+
   // =====================================================
   // VIDEO EDIT / TRIM
   // =====================================================
@@ -541,6 +688,7 @@ export default function EditView() {
       // Editing state
       // -----------------------------------------------
 
+      trimEditorOpenRef.current = true;
       setIsEditingVideo(true);
 
 
@@ -626,6 +774,7 @@ export default function EditView() {
       );
 
 
+      trimEditorOpenRef.current = false;
       setIsEditingVideo(false);
 
 
@@ -644,25 +793,171 @@ export default function EditView() {
   // =====================================================
 
   useEffect(() => {
+    let mounted = true;
+    const subscriptions = [];
 
-    /*
-     * react-native-video-trim ke events
-     * version/architecture ke hisaab se
-     * native editor finish event provide karte hain.
-     *
-     * Isliye app ke current package version ke
-     * event API ke saath callback integration
-     * rakha gaya hai.
-     */
+    const normalizeOutputUri = (value) => {
+      if (!value || typeof value !== "string") {
+        return "";
+      }
 
-    return () => {
+      if (
+        value.startsWith("file://") ||
+        value.startsWith("content://") ||
+        value.startsWith("http://") ||
+        value.startsWith("https://")
+      ) {
+        return value;
+      }
 
-      setIsEditingVideo(false);
-
+      return `file://${value}`;
     };
 
-  }, []);
+    const handleFinish = (event) => {
+      if (!mounted) return;
 
+      const editedUri = normalizeOutputUri(
+        event?.outputPath ||
+        event?.outputUri ||
+        event?.path ||
+        event?.uri
+      );
+
+      trimEditorOpenRef.current = false;
+      setIsEditingVideo(false);
+
+      if (editedUri) {
+        setVideoUri(editedUri);
+        console.log("VIDEO EDIT FINISHED =", editedUri);
+      } else {
+        console.log("VIDEO EDIT FINISHED WITHOUT OUTPUT", event);
+      }
+    };
+
+    const handleCancel = () => {
+      if (!mounted) return;
+
+      trimEditorOpenRef.current = false;
+      setIsEditingVideo(false);
+      console.log("VIDEO EDIT CANCELLED");
+    };
+
+    const handleError = (event) => {
+      if (!mounted) return;
+
+      trimEditorOpenRef.current = false;
+      setIsEditingVideo(false);
+
+      console.log("VIDEO EDIT ERROR =", event);
+
+      Alert.alert(
+        "Edit Error",
+        event?.message || "Video editing failed."
+      );
+    };
+
+    // New Architecture API.
+    try {
+      const videoTrimModule = require("react-native-video-trim");
+      const NativeVideoTrim =
+        videoTrimModule?.NativeVideoTrim ||
+        videoTrimModule?.default ||
+        videoTrimModule;
+
+      if (NativeVideoTrim?.onFinishTrimming) {
+        const sub = NativeVideoTrim.onFinishTrimming(handleFinish);
+        if (sub) subscriptions.push(sub);
+      }
+
+      if (NativeVideoTrim?.onCancelTrimming) {
+        const sub = NativeVideoTrim.onCancelTrimming(handleCancel);
+        if (sub) subscriptions.push(sub);
+      }
+
+      if (NativeVideoTrim?.onCancel) {
+        const sub = NativeVideoTrim.onCancel(handleCancel);
+        if (sub) subscriptions.push(sub);
+      }
+
+      if (NativeVideoTrim?.onError) {
+        const sub = NativeVideoTrim.onError(handleError);
+        if (sub) subscriptions.push(sub);
+      }
+    } catch (newArchError) {
+      console.log(
+        "VideoTrim New Architecture listener unavailable:",
+        newArchError?.message || newArchError
+      );
+    }
+
+    // Old Architecture fallback.
+    try {
+      const {
+        NativeEventEmitter,
+        NativeModules,
+      } = require("react-native");
+
+      const nativeModule = NativeModules?.VideoTrim;
+
+      if (
+        nativeModule &&
+        typeof nativeModule.addListener === "function" &&
+        typeof nativeModule.removeListeners === "function"
+      ) {
+        const emitter = new NativeEventEmitter(nativeModule);
+
+        const sub = emitter.addListener(
+          "VideoTrim",
+          (event) => {
+            const name = String(
+              event?.name ||
+              event?.event ||
+              ""
+            ).toLowerCase();
+
+            if (
+              name.includes("finish") ||
+              name.includes("complete") ||
+              event?.outputPath ||
+              event?.outputUri ||
+              event?.path
+            ) {
+              handleFinish(event);
+            } else if (name.includes("cancel")) {
+              handleCancel();
+            } else if (name.includes("error")) {
+              handleError(event);
+            }
+          }
+        );
+
+        subscriptions.push(sub);
+      }
+    } catch (oldArchError) {
+      console.log(
+        "VideoTrim legacy listener unavailable:",
+        oldArchError?.message || oldArchError
+      );
+    }
+
+    trimSubscriptionsRef.current = subscriptions;
+
+    return () => {
+      mounted = false;
+
+      subscriptions.forEach((sub) => {
+        try {
+          if (typeof sub?.remove === "function") {
+            sub.remove();
+          } else if (typeof sub === "function") {
+            sub();
+          }
+        } catch (_) {}
+      });
+
+      trimSubscriptionsRef.current = [];
+    };
+  }, []);
 
   // =====================================================
   // PLAY SELECTED MUSIC
@@ -1331,6 +1626,9 @@ export default function EditView() {
 
       label: "Effect",
 
+      action: () =>
+        setShowEffectModal(true),
+
     },
 
 
@@ -1358,6 +1656,14 @@ export default function EditView() {
     async () => {
 
       try {
+
+        if (trimEditorOpenRef.current || isEditingVideo) {
+          Alert.alert(
+            "Please wait",
+            "Video editing abhi complete ho rahi hai."
+          );
+          return;
+        }
 
         if (isRecording) {
 
@@ -1418,12 +1724,19 @@ export default function EditView() {
 
             audioUrl,
 
+            videoDuration: String(
+              videoDuration || player.duration || 0
+            ),
+
             musicName:
               musicTitle,
 
             musicArtist,
 
             musicImage,
+
+            videoEffect:
+              selectedEffect || "none",
 
 
             voiceUri:
@@ -1455,6 +1768,39 @@ export default function EditView() {
             subtitleY:
               String(
                 subtitlePosition.y
+              ),
+
+            subtitleXRatio:
+              String(
+                Math.max(
+                  0,
+                  Math.min(
+                    1,
+                    subtitlePosition.x / width
+                  )
+                )
+              ),
+
+            subtitleYRatio:
+              String(
+                Math.max(
+                  0,
+                  Math.min(
+                    1,
+                    subtitlePosition.y / height
+                  )
+                )
+              ),
+
+            subtitleSizeRatio:
+              String(
+                Math.max(
+                  0.005,
+                  Math.min(
+                    0.20,
+                    subtitleSize / height
+                  )
+                )
               ),
 
           },
@@ -1508,7 +1854,7 @@ export default function EditView() {
             style={
               styles.fullVideo
             }
-            contentFit="cover"
+            contentFit="contain"
             nativeControls={false}
           />
 
@@ -1755,13 +2101,17 @@ export default function EditView() {
 
         <TouchableOpacity
 
-          style={
-            styles.nextBtn
-          }
+          style={[
+            styles.nextBtn,
+            isEditingVideo &&
+              styles.nextBtnDisabled,
+          ]}
 
           onPress={
             goToPost
           }
+
+          disabled={isEditingVideo}
 
         >
 
@@ -1886,6 +2236,138 @@ export default function EditView() {
         </ScrollView>
 
       </View>
+
+
+      {/* =================================================
+          EFFECT MODAL
+      ================================================= */}
+      <Modal
+        visible={showEffectModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() =>
+          setShowEffectModal(false)
+        }
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() =>
+            setShowEffectModal(false)
+          }
+        >
+          <Pressable
+            style={styles.effectModal}
+            onPress={() => {}}
+          >
+            <View
+              style={styles.effectModalHeader}
+            >
+              <View>
+                <Text
+                  style={styles.effectModalTitle}
+                >
+                  Video Effects
+                </Text>
+
+                <Text
+                  style={styles.effectModalHint}
+                >
+                  Final video me effect apply hoga
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                onPress={() =>
+                  setShowEffectModal(false)
+                }
+              >
+                <Ionicons
+                  name="close"
+                  size={28}
+                  color="#fff"
+                />
+              </TouchableOpacity>
+            </View>
+
+            <View
+              style={styles.effectGrid}
+            >
+              {[
+                {
+                  id: "none",
+                  title: "Original",
+                  icon: "videocam-outline",
+                },
+                {
+                  id: "vivid",
+                  title: "Vivid",
+                  icon: "sunny-outline",
+                },
+                {
+                  id: "soft",
+                  title: "Soft",
+                  icon: "cloud-outline",
+                },
+                {
+                  id: "bw",
+                  title: "B&W",
+                  icon: "contrast-outline",
+                },
+              ].map((effect) => (
+                <TouchableOpacity
+                  key={effect.id}
+                  style={[
+                    styles.effectCard,
+                    selectedEffect ===
+                      effect.id &&
+                      styles.effectCardSelected,
+                  ]}
+                  onPress={() => {
+                    setSelectedEffect(
+                      effect.id
+                    );
+                    setShowEffectModal(false);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <View
+                    style={[
+                      styles.effectIcon,
+                      selectedEffect ===
+                        effect.id &&
+                        styles.effectIconSelected,
+                    ]}
+                  >
+                    <Ionicons
+                      name={effect.icon}
+                      size={24}
+                      color="#fff"
+                    />
+                  </View>
+
+                  <Text
+                    style={styles.effectTitle}
+                  >
+                    {effect.title}
+                  </Text>
+
+                  {selectedEffect ===
+                    effect.id && (
+                    <Ionicons
+                      name="checkmark-circle"
+                      size={18}
+                      color="#FF2D55"
+                      style={
+                        styles.effectCheck
+                      }
+                    />
+                  )}
+                </TouchableOpacity>
+              ))}
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
 
       {/* =================================================
@@ -2862,6 +3344,11 @@ const styles =
     },
 
 
+    nextBtnDisabled: {
+      opacity: 0.55,
+    },
+
+
     nextTxt: {
 
       color: "#fff",
@@ -2975,6 +3462,81 @@ const styles =
 
       justifyContent: "flex-end",
 
+    },
+
+
+    effectModal: {
+      backgroundColor: "#151515",
+      borderTopLeftRadius: 25,
+      borderTopRightRadius: 25,
+      padding: 20,
+      paddingBottom: 35,
+    },
+
+    effectModalHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: 18,
+    },
+
+    effectModalTitle: {
+      color: "#fff",
+      fontSize: 21,
+      fontWeight: "800",
+    },
+
+    effectModalHint: {
+      color: "#999",
+      fontSize: 12,
+      marginTop: 4,
+    },
+
+    effectGrid: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 12,
+    },
+
+    effectCard: {
+      width: "47%",
+      minHeight: 100,
+      borderRadius: 16,
+      backgroundColor: "#242424",
+      padding: 14,
+      position: "relative",
+    },
+
+    effectCardSelected: {
+      borderWidth: 1.5,
+      borderColor: "#FF2D55",
+      backgroundColor: "#2A171D",
+    },
+
+    effectIcon: {
+      width: 46,
+      height: 46,
+      borderRadius: 23,
+      backgroundColor: "#333",
+      justifyContent: "center",
+      alignItems: "center",
+    },
+
+    effectIconSelected: {
+      backgroundColor: "#FF2D55",
+    },
+
+    effectTitle: {
+      color: "#fff",
+      fontSize: 14,
+      fontWeight: "800",
+      marginTop: 10,
+    },
+
+    effectCheck: {
+      position: "absolute",
+      top: 10,
+      right: 10,
     },
 
 

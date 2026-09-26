@@ -9,7 +9,7 @@ import { LiveProvider } from '../context/LiveContext';
 
 export default function RootLayout() {
 
-  useEffect(() => { 
+  useEffect(() => {   
 
     NavigationBar.setBackgroundColorAsync('#000000');
     NavigationBar.setButtonStyleAsync('light');

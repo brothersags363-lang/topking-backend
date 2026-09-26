@@ -34,6 +34,7 @@ import {
   where,
   getDocs,
   limit,
+  orderBy,
   doc,
   getDoc
 } from 'firebase/firestore';
@@ -245,16 +246,24 @@ const loadTopVideos = async () => {
 
   try {
 
-    const snap = await getDocs(
-      collection(db,"all_videos")
+    // Was: getDocs(collection(db,"all_videos")) - this downloaded
+    // EVERY video in the whole app just to sort client-side and show
+    // a horizontal strip of the top ones. That's the main reason this
+    // screen felt slow to open. Doing the ordering + limit in the
+    // query itself means Firestore only ever sends back the videos we
+    // actually show.
+    const q = query(
+      collection(db, "all_videos"),
+      orderBy("views", "desc"),
+      limit(20)
     );
+
+    const snap = await getDocs(q);
 
     const arr = snap.docs.map(doc => ({
       id: doc.id,
       ...doc.data()
     }));
-
-    arr.sort((a,b)=>(b.views||0)-(a.views||0));
 
     setTopVideos(arr);
 
@@ -269,9 +278,19 @@ const loadTopVideos = async () => {
 const loadGiftKing = async () => {
   try {
 
-    const walletSnap = await getDocs(
-      collection(db, "wallets")
+    // Was: getDocs(collection(db, "wallets")) then a "users" read for
+    // EVERY single wallet in the app, only to keep the top 10 at the
+    // end. That's an extra Firestore read per user in the whole app,
+    // every time this screen opens. Ordering + limiting in the query
+    // means only the 10 wallets we actually show get the extra
+    // "users" lookup.
+    const q = query(
+      collection(db, "wallets"),
+      orderBy("receivedStars", "desc"),
+      limit(10)
     );
+
+    const walletSnap = await getDocs(q);
 
     const users = await Promise.all(
 
@@ -298,8 +317,7 @@ const loadGiftKing = async () => {
 
     const result = users
       .filter(Boolean)
-      .sort((a, b) => b.gifts - a.gifts)
-      .slice(0, 10);
+      .sort((a, b) => b.gifts - a.gifts);
 
     setGiftKings(result);
 
@@ -328,51 +346,74 @@ const onRefresh = async () => {
 };
 
 
-  // Search Logic
-  const handleSearch = async (text: string) => {
-    setSearchQuery(text);
-    if (text.trim().length > 0) {
-      setLoading(true);
-      try {
-        const q = query(
-          collection(db, "users"),
-          where("username", ">=", text.toLowerCase()),
-          where("username", "<=", text.toLowerCase() + '\uf8ff'),
-          limit(10)
-        );
-        const querySnapshot = await getDocs(q);
-       const users = await Promise.all(
-  querySnapshot.docs.map(async (d) => {
+  // Search Logic - debounced so typing doesn't fire a Firestore query
+  // on every single keystroke (that was the main reason search felt
+  // laggy while typing).
+  const searchDebounceRef = useRef(null);
 
-    const data = d.data();
+  const runSearch = async (text: string) => {
+    try {
+      const q = query(
+        collection(db, "users"),
+        where("username", ">=", text.toLowerCase()),
+        where("username", "<=", text.toLowerCase() + '\uf8ff'),
+        limit(10)
+      );
+      const querySnapshot = await getDocs(q);
+      const users = await Promise.all(
+        querySnapshot.docs.map(async (d) => {
 
-    const walletSnap = await getDoc(
-      doc(db, "wallets", d.id)
-    );
+          const data = d.data();
 
-    return {
-      id: d.id,
-      ...data,
-      level: walletSnap.exists()
-        ? walletSnap.data().level || 1
-        : 1,
-    };
-  })
-);
+          const walletSnap = await getDoc(
+            doc(db, "wallets", d.id)
+          );
 
+          return {
+            id: d.id,
+            ...data,
+            level: walletSnap.exists()
+              ? walletSnap.data().level || 1
+              : 1,
+          };
+        })
+      );
 
-console.log("SEARCH USERS =", users);
-
-        setSearchResults(users);
-      } catch (error) {
-        console.error("Search Error:", error);
-      } finally {
-        setLoading(false);
-      }
-    } else {
-      setSearchResults([]);
+      setSearchResults(users);
+    } catch (error) {
+      console.error("Search Error:", error);
+    } finally {
+      setLoading(false);
     }
   };
+
+  const handleSearch = (text: string) => {
+    setSearchQuery(text);
+
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+    }
+
+    if (text.trim().length === 0) {
+      setLoading(false);
+      setSearchResults([]);
+      return;
+    }
+
+    setLoading(true);
+
+    searchDebounceRef.current = setTimeout(() => {
+      runSearch(text);
+    }, 350);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (searchDebounceRef.current) {
+        clearTimeout(searchDebounceRef.current);
+      }
+    };
+  }, []);
 
   // Dynamic Navigation Icon Color Handler matching messages.js style
   const getIconColor = (path: string) => {
@@ -447,21 +488,6 @@ console.log("SEARCH USERS =", users);
 <TouchableOpacity
   style={styles.userCard}
   onPress={() => {
-
-    console.log("CLICK USER =", item);
-    console.log("CLICK USER ID =", item.id);
-
-  console.log(
-    "SEARCH USER",
-    item.username,
-    item.id
-  );
-
-  console.log(
-    "LOGGED USER",
-    auth.currentUser?.uid
-  );
-
 
     router.push({
       pathname: '/userProfile',
@@ -708,17 +734,15 @@ console.log("SEARCH USERS =", users);
 
           pathname:"/allvideo",
 
-          params:{
+params:{
+  videoId: item.id,
+  videos: JSON.stringify(topVideos),
+  index: topVideos.findIndex(
+    v => v.id === item.id
+  ),
+  from: "explore"
+}
 
-            videoId:item.id,
-
-            videos:JSON.stringify(topVideos),
-
-            index:topVideos.findIndex(
-              v=>v.id===item.id
-            )
-
-          }
 
         })
 
@@ -1189,4 +1213,4 @@ giftKingGift: {
   fontWeight: "bold",
 },
 
-});     
+});     

@@ -33,7 +33,7 @@ import { auth, db } from '../firebaseConfig';
 
 
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, orderBy, query, setDoc, where } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getCountFromServer, getDoc, getDocs, onSnapshot, query, setDoc, where } from 'firebase/firestore';
 
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 
@@ -233,94 +233,89 @@ if (categoryModalVisible) {
   // Authentication & Profile Setup
   
 useEffect(() => {
-
   const unsubscribe = onAuthStateChanged(auth, async (user) => {
-
-    // Login nahi hai
     if (!user) {
       setLoading(false);
       router.replace('/login');
       return;
     }
 
-    // Login hai
     setUserEmail(user.email || '');
 
     try {
-
       const userRef = doc(db, 'users', user.uid);
+      const userSnap = await getDoc(userRef);
 
+      let core = null;
 
-      const docSnap = await getDoc(userRef);
-
-      // Agar Firestore me user nahi hai to naya banao
-      if (!docSnap.exists()) {
-
-        const username =
-          user.email?.split('@')[0].toLowerCase().trim() || 'user';
-
+      if (!userSnap.exists()) {
         const newUserData = {
           name: user.displayName || 'User',
-          username: username,
+          username: user.email?.split('@')[0].toLowerCase().trim() || 'user',
           bioText: 'bio.........',
           category: 'Video Creator',
           gender: 'Male',
           followers: '0',
           following: '0',
           likes: '0',
-  uploadStatus: false,  
+          uploadStatus: false,
           profileImg:
             user.photoURL ||
             'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
         };
 
         await setDoc(userRef, newUserData);
-
-        setProfileData(newUserData);
-
+        setProfileData((prev) => ({ ...prev, ...newUserData }));
       } else {
-
-        // Firestore se load karo
-        await fetchUserData(user.uid);
-
+        // Fast path: just the fields the header needs (name/username/photo/
+        // bio + level), fetched in parallel. This is what lets the profile
+        // info show up before the video thumbnails, instead of after.
+        core = await fetchCoreProfile(user.uid, userSnap);
       }
 
-
-     
- await Promise.all([
-  fetchUserData(user.uid),
-  loadVideos(user.uid),
-  loadLikedVideos(user.uid),
-  loadLikedMeCount(user.uid),
-  checkAdmin(user.uid),
-  checkJoinedAgency(user.uid),
-  loadUserRank(user.uid),
-]);
-await checkYellowBadge(user.uid);
-
-
-
-    } catch (e) {
-
-      console.log(e);
-
-    } finally {
-
+      // Header is ready — stop showing the spinner now, don't wait for
+      // videos/stats/badges too.
       setLoading(false);
 
-    }
+      // Video thumbnails load right after the header.
+      const videoData = await loadVideos(user.uid);
 
+      // These reuse data we already fetched above instead of re-querying
+      // all_videos / users again.
+      setJoinedAgency(!!core?.userData?.agencyId);
+      setLikedMeCount(videoData.totalLikes);
+
+      if (
+        core?.userData?.verified &&
+        core?.userData?.verifiedColor !== 'yellow' &&
+        videoData.totalViews >= 4500
+      ) {
+        setDoc(
+          doc(db, 'users', user.uid),
+          { verifiedColor: 'yellow' },
+          { merge: true }
+        ).catch(() => {});
+      }
+
+      // Everything else (follower/following counts, liked videos, admin
+      // check, rank) is non-essential for first paint and runs quietly in
+      // the background.
+      Promise.allSettled([
+        fetchProfileStats(user.uid, videoData.totalLikes),
+        loadLikedVideos(user.uid),
+        checkAdmin(user.uid),
+        loadUserRank(user.uid, core?.receivedStars || 0),
+      ]).catch((error) => {
+        if (__DEV__) console.log('BACKGROUND PROFILE LOAD ERROR =', error);
+      });
+    } catch (error) {
+      if (__DEV__) console.log('PROFILE INITIAL LOAD ERROR =', error);
+      setLoading(false);
+    }
   });
 
   return () => unsubscribe();
-
 }, []);
-
-
-
-
-
-
 
 // ==========================================
 // TOP GIFTERS REALTIME LISTENER
@@ -347,10 +342,6 @@ useEffect(() => {
         return;
       }
 
-      console.log(
-        "🔥 TOP GIFTERS LISTENER UID =",
-        user.uid
-      );
 
       // Purana listener remove
       if (unsubscribeUser) {
@@ -363,10 +354,6 @@ useEffect(() => {
 
           if (!snap.exists()) {
 
-            console.log(
-              "❌ USER DOC NOT FOUND =",
-              user.uid
-            );
 
             setTopGifters([]);
             setGiftUserCount(0);
@@ -376,10 +363,6 @@ useEffect(() => {
 
           const data = snap.data();
 
-          console.log(
-            "🔥 USER TOP GIFTERS RAW =",
-            data.topGifters
-          );
 
           const giftersObject =
             data.topGifters || {};
@@ -395,10 +378,6 @@ useEffect(() => {
                 (a, b) => b.stars - a.stars
               );
 
-          console.log(
-            "🔥 TOP GIFTERS FINAL =",
-            gifters
-          );
 
           setTopGifters(
             gifters.slice(0, 3)
@@ -411,10 +390,6 @@ useEffect(() => {
         },
         (error) => {
 
-          console.log(
-            "❌ TOP GIFTERS LISTENER ERROR =",
-            error
-          );
 
         }
       );
@@ -455,7 +430,6 @@ Join me on TopKing!`,
     });
 
   } catch (error) {
-    console.log("SHARE PROFILE ERROR =", error);
   }
 };
 
@@ -481,10 +455,6 @@ Join me on TopKing!`,
 
   } catch (err) {
 
-    console.log(
-      "Google Signout Error =",
-      err
-    );
 
   }
 
@@ -492,10 +462,6 @@ Join me on TopKing!`,
 
 } catch (e) {
 
-  console.log(
-    "LOGOUT ERROR =",
-    e
-  );
 
   Alert.alert(
     "Error",
@@ -551,7 +517,6 @@ const checkVerifiedBadge = async (uid) => {
       }
     });
 
-    console.log("300+ Videos =", count);
 
     // Agar 5 ya usse jyada videos hain
     if (count >= 5) {
@@ -564,163 +529,106 @@ const checkVerifiedBadge = async (uid) => {
         { merge: true }
       );
 
-      console.log("Verified Badge Given");
 
     }
 
   } catch (error) {
-    console.log(error);
   }
 };
 
 
 
 
-const checkYellowBadge = async (uid) => {
-  try {
-
-    const userRef = doc(db, "users", uid);
-    const userSnap = await getDoc(userRef);
-
-    if (!userSnap.exists()) return;
-
-    const userData = userSnap.data();
-
-    if (!userData.verified) return;
-
-    let totalViews = 0;
-
-    const q = query(
-      collection(db, "all_videos"),
-      where("userId", "==", uid)
-    );
-
-    const snap = await getDocs(q);
-
-    snap.forEach((videoDoc) => {
-      totalViews += Number(
-        videoDoc.data().views || 0
-      );
-    });
-
-    if (totalViews >= 4500) {
-
-      await setDoc(
-        userRef,
-        {
-          verifiedColor: "yellow",
-        },
-        { merge: true }
-      );
-
-      console.log(
-        "Yellow Badge Given"
-      );
-    }
-
-  } catch (error) {
-    console.log(error);
-  }
-};
+// NOTE: yellow-badge logic now runs inline in the init effect using
+// core.userData.verified + videoData.totalViews (both already fetched),
+// instead of re-querying the user doc and the whole all_videos collection
+// again here.
 
 
 
 
-  const fetchUserData = async (uid) => {
-
-
+  // Fast path — only what the header needs (name, username, photo, bio,
+  // level). user doc + wallet doc are fetched together instead of one
+  // after another, and this is awaited BEFORE videos load, so the profile
+  // info appears first and thumbnails fill in after.
+  const fetchCoreProfile = async (uid, prefetchedUserSnap) => {
 
     try {
-      const docRef = doc(db, "users", uid);
-      const docSnap = await getDoc(docRef);
+      const [docSnap, walletSnap] = await Promise.all([
+        prefetchedUserSnap
+          ? Promise.resolve(prefetchedUserSnap)
+          : getDoc(doc(db, "users", uid)),
+        getDoc(doc(db, "wallets", uid)),
+      ]);
 
-const walletRef = doc(db, "wallets", uid);
-const walletSnap = await getDoc(walletRef);
+      const userLevel = walletSnap.exists()
+        ? (walletSnap.data().level || 1)
+        : 1;
 
-let userLevel = 1;
+      const receivedStars = walletSnap.exists()
+        ? (walletSnap.data().receivedStars || 0)
+        : 0;
 
-if (walletSnap.exists()) {
-  userLevel = walletSnap.data().level || 1;
+      if (!docSnap.exists()) return null;
 
+      const data = docSnap.data();
 
-  console.log("Wallet =", walletSnap.data());
-  console.log("Level =", userLevel);
-}
+      setHasAgency(data.agencyApproved === true);
 
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        console.log("USER DATA =", data);
-console.log("AGENCY STATUS =", data.agencyApproved);
-setHasAgency(data.agencyApproved === true);
+      setProfileData((prev) => ({
+        ...prev,
+        name: data.name || 'Top King ',
+        username:
+          data.username ||
+          auth.currentUser?.email?.split('@')[0] ||
+          'user',
+        bioText: data.bioText || 'bio.........',
+        category: data.category || 'Video Creator',
+        gender: data.gender || 'Male',
+        profileImg: data.profileImg || 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
+        verified: data.verified || false,
+        level: userLevel,
+        verifiedColor: data.verifiedColor || "white",
+      }));
 
-// Followers Count
-const followersQuery = query(
-  collection(db, "follows"),
-  where("followingId", "==", uid)
-);
+      return { userData: data, receivedStars };
 
+    } catch (e) {
+      if (__DEV__) console.log("Error fetching core profile: ", e);
+      return null;
+    }
+  };
 
-const followersSnap = await getDocs(followersQuery);
-const followersCount = followersSnap.size;
+  // Slow path — follower/following counts. Runs after the header is
+  // already visible and merges in once ready, instead of blocking
+  // everything else.
+  const fetchProfileStats = async (uid, totalLikes) => {
 
+    try {
+      const followersQuery = query(
+        collection(db, "follows"),
+        where("followingId", "==", uid)
+      );
 
-// Following Count
-const followingQuery = query(
-  collection(db, "follows"),
-  where("followerId", "==", uid)
-);
+      const followingQuery = query(
+        collection(db, "follows"),
+        where("followerId", "==", uid)
+      );
 
+      const [followersSnap, followingSnap] = await Promise.all([
+        getDocs(followersQuery),
+        getDocs(followingQuery),
+      ]);
 
+      setProfileData((prev) => ({
+        ...prev,
+        followers: followersSnap.size.toString(),
+        following: followingSnap.size.toString(),
+        likes: totalLikes.toString(),
+      }));
 
-const followingSnap = await getDocs(followingQuery);
-const followingCount = followingSnap.size;
-
-
-// Likes Count
-const videosQuery = query(
-  collection(db, "all_videos"),
-  where("userId", "==", uid)
-);
-
-const videosSnap = await getDocs(videosQuery);
-
-let totalLikes = 0;
-
-videosSnap.forEach((videoDoc) => {
-  totalLikes += Number(videoDoc.data().likes || 0);
-});
-
-
-
-        setProfileData({
-
-
-          name: data.name || 'Top King ',
-
-          username:
-  data.username ||
-  auth.currentUser?.email?.split('@')[0] ||
-  'user',
-
-
-          bioText: data.bioText || 'bio.........',
-          category: data.category || 'Video Creator',
-          gender: data.gender || 'Male',
-          followers: followersCount.toString(),
-following: followingCount.toString(),
-likes: totalLikes.toString(),
-          profileImg: data.profileImg || 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
-          verified: data.verified || false,
- level: userLevel,
-verifiedColor: data.verifiedColor || "white",
-
-
-        });
-      }
-    } catch (e) { 
-      console.log("Error fetching user data: ", e);
-    } finally { 
-      setLoading(false); 
+    } catch (e) {
+      if (__DEV__) console.log("Error fetching profile stats: ", e);
     }
   };
 
@@ -737,22 +645,48 @@ verifiedColor: data.verifiedColor || "white",
 
     const querySnapshot = await getDocs(q);
 
-    const tempVideos = querySnapshot.docs.map(docItem => ({
-      id: docItem.id,
-      ...docItem.data(),
-    }));
+    // Newest First: createdAt ke har possible format ko safely compare karo
+    const getCreatedTime = (value) => {
+      if (!value) return 0;
+      if (typeof value === "number") return value;
+      if (typeof value === "string") {
+        const parsed = Date.parse(value);
+        return Number.isNaN(parsed) ? 0 : parsed;
+      }
+      if (typeof value?.toMillis === "function") return value.toMillis();
+      if (typeof value?.seconds === "number") {
+        return value.seconds * 1000 + Math.floor((value.nanoseconds || 0) / 1000000);
+      }
+      return 0;
+    };
 
-    // Newest First
+    // Single pass over the docs: builds the video list AND derives
+    // totalLikes/totalViews here, so nothing else needs to re-query
+    // all_videos for this user again (fetchProfileStats, the yellow-badge
+    // check, and likedMeCount all reuse these numbers).
+    let totalLikes = 0;
+    let totalViews = 0;
+
+    const tempVideos = querySnapshot.docs.map((docItem) => {
+      const data = docItem.data();
+
+      totalLikes += Number(data.likes || 0);
+      totalViews += Number(data.views || 0);
+
+      return { id: docItem.id, ...data };
+    });
+
     tempVideos.sort((a, b) => {
-      const timeA = a.createdAt?.seconds || 0;
-      const timeB = b.createdAt?.seconds || 0;
-      return timeB - timeA;
+      return getCreatedTime(b.createdAt) - getCreatedTime(a.createdAt);
     });
 
     setVideos(tempVideos);
 
+    return { videos: tempVideos, totalLikes, totalViews };
+
   } catch (e) {
-    console.log(e);
+    if (__DEV__) console.log(e);
+    return { videos: [], totalLikes: 0, totalViews: 0 };
   }
 };
 
@@ -764,20 +698,38 @@ const onRefresh = async () => {
 
     setRefreshing(true);
 
-    getCurrentUser();
+    const uid = auth.currentUser?.uid;
+
+    if (!uid) return;
+
+    const core = await fetchCoreProfile(uid);
+    const videoData = await loadVideos(uid);
+
+    setJoinedAgency(!!core?.userData?.agencyId);
+    setLikedMeCount(videoData.totalLikes);
+
+    if (
+      core?.userData?.verified &&
+      core?.userData?.verifiedColor !== 'yellow' &&
+      videoData.totalViews >= 4500
+    ) {
+      setDoc(
+        doc(db, 'users', uid),
+        { verifiedColor: 'yellow' },
+        { merge: true }
+      ).catch(() => {});
+    }
 
     await Promise.all([
-      fetchUser(),
-      fetchVideos(),
-      loadLikedVideos(),
-      fetchFollowCounts(),
+      fetchProfileStats(uid, videoData.totalLikes),
+      loadLikedVideos(uid),
+      checkAdmin(uid),
+      loadUserRank(uid, core?.receivedStars || 0),
     ]);
-
-    await checkFollowStatus();
 
   } catch (error) {
 
-    console.log("REFRESH ERROR =", error);
+    if (__DEV__) console.log("REFRESH ERROR =", error);
 
   } finally {
 
@@ -789,34 +741,24 @@ const onRefresh = async () => {
 
 
 
-const loadUserRank = async (uid) => {
+// Rank via a count aggregation query — avoids downloading the whole
+// wallets collection just to find one position in it.
+const loadUserRank = async (uid, myReceivedStars = 0) => {
 
   try {
 
     const q = query(
       collection(db, "wallets"),
-      orderBy("receivedStars", "desc")
+      where("receivedStars", ">", myReceivedStars)
     );
 
-    const snap = await getDocs(q);
+    const countSnap = await getCountFromServer(q);
 
-    let rank = 1;
-
-    for (const item of snap.docs) {
-
-      if (item.id === uid) {
-        break;
-      }
-
-      rank++;
-
-    }
-
-    setUserRank(rank);
+    setUserRank(countSnap.data().count + 1);
 
   } catch (e) {
 
-    console.log(e);
+    if (__DEV__) console.log(e);
 
   }
 
@@ -845,7 +787,6 @@ const checkAdmin = async (uid) => {
 
   } catch(error){
 
-    console.log(error);
 
   }
 
@@ -853,65 +794,38 @@ const checkAdmin = async (uid) => {
 
 
 
-const checkJoinedAgency = async (uid) => {
-  try {
-    const userSnap = await getDoc(doc(db, "users", uid));
-
-    if (!userSnap.exists()) {
-      setJoinedAgency(false);
-      return;
-    }
-
-    const userData = userSnap.data();
-
-    // Agar user kisi agency me join hai
-    if (userData.agencyId) {
-      setJoinedAgency(true);
-    } else {
-      setJoinedAgency(false);
-    }
-
-  } catch (error) {
-    console.log(error);
-    setJoinedAgency(false);
-  }
-};
+// NOTE: agency-joined status now comes straight from fetchCoreProfile's
+// read of the user doc (see setJoinedAgency(!!core?.userData?.agencyId)
+// in the init effect) — no separate query needed here anymore.
 
 
 
 
 const loadLikedVideos = async (uid) => {
   try {
- 
-const likedSnapshot = await getDocs(
-  collection(
-    db,
-    "userLikes",
-    uid,
-    "likedVideos"
-  )
-);
 
+    const likedSnapshot = await getDocs(
+      collection(
+        db,
+        "userLikes",
+        uid,
+        "likedVideos"
+      )
+    );
 
-   
+    // Fetch every liked video in parallel instead of one-by-one
+    const videoSnaps = await Promise.all(
+      likedSnapshot.docs.map((like) =>
+        getDoc(doc(db, "all_videos", like.id))
+      )
+    );
 
-    const videosData = [];
-
-   for (const like of likedSnapshot.docs) {
-
-    const videoId = like.id; 
-
-      const videoSnap = await getDoc(
-        doc(db, "all_videos", videoId)
-      );
-
-      if (videoSnap.exists()) {
-        videosData.push({
-          id: videoSnap.id,
-          ...videoSnap.data(),
-        });
-      }
-    }
+    const videosData = videoSnaps
+      .filter((snap) => snap.exists())
+      .map((snap) => ({
+        id: snap.id,
+        ...snap.data(),
+      }));
 
     // Newest first
     videosData.sort((a, b) => {
@@ -923,34 +837,17 @@ const likedSnapshot = await getDocs(
     setLikedVideos(videosData);
 
   } catch (error) {
-    console.log(error);
+    if (__DEV__) console.log(error);
   }
 };
 
 
 
 
-const loadLikedMeCount = async (uid) => {
-  try {
-    const q = query(
-      collection(db, "all_videos"),
-      where("userId", "==", uid)
-    );
-
-    const snap = await getDocs(q);
-
-    let total = 0;
-
-    snap.forEach((doc) => {
-      total += Number(doc.data().likes || 0);
-    });
-
-    setLikedMeCount(total);
-
-  } catch (error) {
-    console.log(error);
-  }
-};
+// NOTE: likedMeCount is now set directly from loadVideos()'s totalLikes
+// (see setLikedMeCount(videoData.totalLikes) in the init effect) — it was
+// re-querying the exact same all_videos collection a second time just to
+// compute the same number.
 
 
 
@@ -1055,11 +952,6 @@ const openFollowers = async () => {
 
         } catch (error) {
 
-          console.log(
-            "Follower User Error:",
-            followerId,
-            error
-          );
 
           return null;
         }
@@ -1074,10 +966,6 @@ const openFollowers = async () => {
 
   } catch (error) {
 
-    console.log(
-      "Followers Error:",
-      error
-    );
 
   } finally {
 
@@ -1143,11 +1031,6 @@ const loadFollowing = async () => {
 
         } catch (error) {
 
-          console.log(
-            "Following User Error:",
-            followingId,
-            error
-          );
 
           return null;
         }
@@ -1162,15 +1045,31 @@ const loadFollowing = async () => {
 
   } catch (error) {
 
-    console.log(
-      "Following Error:",
-      error
-    );
 
   } finally {
 
     setFollowingLoading(false);
 
+  }
+};
+
+
+const handleFollowUser = async (userData) => {
+  try {
+    const myId = auth.currentUser?.uid;
+    if (!myId || !userData?.id || myId === userData.id) return;
+
+    const followId = `${myId}_${userData.id}`;
+    await setDoc(doc(db, "follows", followId), {
+      followerId: myId,
+      followingId: userData.id,
+      createdAt: Date.now(),
+    });
+
+    await loadFollowing();
+    Alert.alert("Success", "Follow ho gaya");
+  } catch (error) {
+    Alert.alert("Error", "Follow nahi ho saka");
   }
 };
 
@@ -1198,7 +1097,6 @@ const handleFollowBack = async (userData) => {
     );
 
   } catch (error) {
-    console.log(error);
   }
 };
 
@@ -1234,13 +1132,11 @@ const uploadProfileImage = async (imageUri) => {
 
     const result = await response.json();
 
-    console.log(result);
 
     return result.secure_url;
 
   } catch (error) {
 
-    console.log(error);
 
     Alert.alert(
       "Error",
@@ -1261,7 +1157,6 @@ const uploadProfileImage = async (imageUri) => {
     setSaving(true);
     
 
-console.log("tempProfileImg =", tempProfileImg);
 
 
 const imageUrl =
@@ -1352,7 +1247,6 @@ if (usernameTaken) {
       setEditModalVisible(false);
       Alert.alert("Success", "Profile successfully update ho gayi hai!");
     } catch (error) {
-      console.log("Error saving profile data: ", error);
       Alert.alert("Error", "Profile save nahi ho saki.");
     } finally { 
       setSaving(false); 
@@ -1793,6 +1687,11 @@ refreshControl={
         style={styles.videoList}
         contentContainerStyle={{ paddingBottom: 140 }} 
         showsVerticalScrollIndicator={false}
+        removeClippedSubviews={true}
+        initialNumToRender={12}
+        maxToRenderPerBatch={12}
+        windowSize={7}
+        updateCellsBatchingPeriod={50}
         ListHeaderComponent={
           <View style={styles.profileHeader}>
 
@@ -2230,7 +2129,7 @@ onPress={() => {
 
   }
 
-}}a
+}}
 
 
 
@@ -2775,13 +2674,7 @@ onPress={() => {
     maxToRenderPerBatch={6}
     windowSize={5}
     removeClippedSubviews={true}
-
-
-initialNumToRender={9}
-maxToRenderPerBatch={6}
-windowSize={5}
-removeClippedSubviews={true}
-keyExtractor={(item) => item.id}
+    keyExtractor={(item) => item.id}
 
 renderItem={({ item }) => {
 
@@ -2934,103 +2827,68 @@ renderItem={({ item }) => {
 
 
   {isFriend ? (
-
-  // =========================
-  // FRIEND / MUTUAL
-  // =========================
-  <TouchableOpacity
-    style={{
-      backgroundColor: "#222",
-      width: 100,
-      paddingVertical: 8,
-      borderRadius: 20,
-      alignItems: "center",
-    }}
-    onPress={() =>
-      router.push({
-        pathname: "/chat",
-        params: {
-          userId: item.id,
-          username: item.username,
-          profileImg: item.profileImg,
-        },
-      })
-    }
-  >
-    <Text
+    <TouchableOpacity
       style={{
-        color: "#fff",
-        fontWeight: "bold",
+        backgroundColor: "#222",
+        width: 100,
+        paddingVertical: 8,
+        borderRadius: 20,
+        alignItems: "center",
+      }}
+      onPress={() =>
+        router.push({
+          pathname: "/chat",
+          params: {
+            userId: item.id,
+            username: item.username,
+            profileImg: item.profileImg,
+          },
+        })
+      }
+    >
+      <Text style={{ color: "#fff", fontWeight: "bold" }}>Message</Text>
+    </TouchableOpacity>
+  ) : followsMe ? (
+    <TouchableOpacity
+      style={{
+        backgroundColor: "#FFD700",
+        width: 100,
+        paddingVertical: 8,
+        borderRadius: 20,
+        alignItems: "center",
+      }}
+      onPress={() => handleFollowBack(item)}
+    >
+      <Text style={{ color: "#000", fontWeight: "bold" }}>Follow Back</Text>
+    </TouchableOpacity>
+  ) : isFollowing ? (
+    <TouchableOpacity
+      disabled
+      style={{
+        backgroundColor: "#333",
+        width: 100,
+        paddingVertical: 8,
+        borderRadius: 20,
+        alignItems: "center",
+        opacity: 0.85,
       }}
     >
-      Message
-    </Text>
-  </TouchableOpacity>
-
-) : followsMe ? (
-
-  // =========================
-  // SIRF FOLLOWER
-  // USNE MUJHE FOLLOW KIYA
-  // MAINE USKO FOLLOW NAHI KIYA
-  // =========================
-  <TouchableOpacity
-    style={{
-      backgroundColor: "#FFD700",
-      width: 100,
-      paddingVertical: 8,
-      borderRadius: 20,
-      alignItems: "center",
-    }}
-    onPress={() => handleFollowBack(item)}
-  >
-    <Text
+      <Text style={{ color: "#fff", fontWeight: "bold" }}>Following</Text>
+    </TouchableOpacity>
+  ) : (
+    <TouchableOpacity
       style={{
-        color: "#000",
-        fontWeight: "bold",
+        backgroundColor: "#FF5E00",
+        width: 100,
+        paddingVertical: 8,
+        borderRadius: 20,
+        alignItems: "center",
       }}
+      onPress={() => handleFollowUser(item)}
     >
-      Follow Back
-    </Text>
-  </TouchableOpacity>
-
-) : (
-
-  // =========================
-  // FOLLOWING TAB
-  // MAIN ISKO FOLLOW KARTA HOON
-  // =========================
-  <TouchableOpacity
-    style={{
-      backgroundColor: "#222",
-      width: 100,
-      paddingVertical: 8,
-      borderRadius: 20,
-      alignItems: "center",
-    }}
-    onPress={() =>
-      router.push({
-        pathname: "/chat",
-        params: {
-          userId: item.id,
-          username: item.username,
-          profileImg: item.profileImg,
-        },
-      })
-    }
-  >
-    <Text
-      style={{
-        color: "#fff",
-        fontWeight: "bold",
-      }}
-    >
-      Message
-    </Text>
-  </TouchableOpacity>
-
-)}
-
+      <Text style={{ color: "#fff", fontWeight: "bold" }}>Follow</Text>
+    </TouchableOpacity>
+  )}
 
   </View>
 );

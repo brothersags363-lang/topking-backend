@@ -1717,7 +1717,7 @@ const handleShare = async () => {
     const shareLink = `https://topking.app/live/${roomId}`;
 
     await Share.share({
-      message: `🎙 Join my Live Room\n${shareLink}`,
+      message: `ðŸŽ™ Join my Live Room\n${shareLink}`,
     });
 
 setShareModalVisible(false);
@@ -1805,7 +1805,7 @@ await setDoc(
 
     username: currentName,
 
-    lastMessage: "🎙 Live Invite",
+    lastMessage: "ðŸŽ™ Live Invite",
 
     hasNewMessage: true,
 
@@ -1828,7 +1828,7 @@ await setDoc(
   {
     userId: uid,
 
-    lastMessage: "🎙 Live Invite",
+    lastMessage: "ðŸŽ™ Live Invite",
 
     updatedAt: serverTimestamp(),
   },
@@ -2356,7 +2356,7 @@ roomData?.seatsData?.seat_1?.verifiedColor
 
             <View style={styles.liveTag}>
 <Text style={styles.liveTagText}>
-● LIVE {roomTimer}
+â— LIVE {roomTimer}
 </Text>
 </View>
 
@@ -2626,7 +2626,7 @@ style={{
 fontSize:12
 }}
 >
-⭐
+â­
 </Text>
 
 <Text
@@ -3240,7 +3240,7 @@ x{giftCombo.count}
 
       {currentUserRole === 'listener' && (
         <TouchableOpacity style={styles.raiseHandBtn} onPress={handleRaiseHand}>
-          <Text style={styles.raiseHandText}>✋</Text>
+          <Text style={styles.raiseHandText}>âœ‹</Text>
         </TouchableOpacity>
       )}
 
@@ -3336,7 +3336,7 @@ onRequestClose={() => setRequestModalVisible(false)}
         <View style={styles.requestSheet}>
 
           <Text style={{color:'#fff', fontSize:20, fontWeight:'bold', marginBottom:20}}>
-            🎤 Speaker Requests
+            🔊 Speaker Requests
           </Text>
 
           <ScrollView>
@@ -3477,7 +3477,7 @@ style={{
 fontSize:24
 }}
 >
-⭐
+â­
 </Text>
 
 <Text
@@ -3775,17 +3775,17 @@ try {
 
   // Safety check
   if (!senderId) {
-    console.log("❌ SENDER ID MISSING");
+    console.log("âŒ SENDER ID MISSING");
     return;
   }
 
   if (!receiverId) {
-    console.log("❌ RECEIVER ID MISSING");
+    console.log("âŒ RECEIVER ID MISSING");
     return;
   }
 
   if (!gift?.price) {
-    console.log("❌ GIFT PRICE MISSING");
+    console.log("âŒ GIFT PRICE MISSING");
     return;
   }
 
@@ -3807,7 +3807,7 @@ try {
   if (!receiverUserSnap.exists()) {
 
     console.log(
-      "❌ RECEIVER USER DOCUMENT NOT FOUND =",
+      "âŒ RECEIVER USER DOCUMENT NOT FOUND =",
       receiverId
     );
 
@@ -3907,7 +3907,7 @@ try {
 
 
     console.log(
-      "🔥 TOP GIFTER UPDATED =",
+      "ðŸ”¥ TOP GIFTER UPDATED =",
       currentTopGifters[senderId]
     );
 
@@ -3916,7 +3916,7 @@ try {
 } catch (error) {
 
   console.log(
-    "❌ TOP GIFTER UPDATE ERROR =",
+    "âŒ TOP GIFTER UPDATE ERROR =",
     error
   );
 
@@ -4100,7 +4100,7 @@ color:'red',
 fontSize:20,
 fontWeight:'bold'
 }}>
-❌ Remove
+âŒ Remove
 </Text>
 
 </TouchableOpacity>
@@ -4115,7 +4115,7 @@ color:'#fff',
 fontSize:20,
 fontWeight:'bold'
 }}>
-{selectedSpeaker?.isMuted ? "🎤 Unmute" : "🔇 Mute"}
+{selectedSpeaker?.isMuted ? "🔇 Unmute" : "🔊 Mute"}
 </Text>
 
 </TouchableOpacity>
@@ -4590,7 +4590,7 @@ marginTop:8,
 fontWeight:"bold"
 }}
 >
-{currentUserRole==="host" ? "👤 Host" : "👤 Speaker"}
+ {currentUserRole === "host" ? "👤 Host" : "👤 Speaker"}
 </Text>
 
 </View>
@@ -4612,7 +4612,7 @@ color:"#fff",
 fontSize:18
 }}
 >
-{selfMuted ? "🎤 Unmute" : "🔇 Mute"}
+{selfMuted ? "🔇 Unmute" : "🔉 Mute"}
 </Text>
 
 </TouchableOpacity>
@@ -4637,7 +4637,7 @@ color:"red",
 fontSize:18
 }}
 >
-🚪 Leave Seat
+ðŸšª Leave Seat
 </Text>
 
 </TouchableOpacity>

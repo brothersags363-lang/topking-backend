@@ -22,6 +22,9 @@ import {
   query,
   where,
   getDocs,
+  doc,
+  updateDoc,
+  increment,
 } from "firebase/firestore";
 
 import { db } from "./firebaseConfig";
@@ -33,6 +36,7 @@ const { width } = Dimensions.get("window");
 export default function MusicDetails() {
 
   const router = useRouter();
+const params = useLocalSearchParams();
 
 const {
 musicName,
@@ -40,6 +44,23 @@ username,
 profile,
 audioUrl,
 } = useLocalSearchParams();
+
+const firstParam = (value) =>
+  Array.isArray(value) ? value[0] : value;
+
+// Keep the same sound identity through camera, editor, and publish.  Older
+// reel records only have username/profile, so use those as safe fallbacks.
+const selectedMusicId = firstParam(params?.musicId) || "";
+const selectedMusicArtist =
+  firstParam(params?.musicArtist) ||
+  firstParam(params?.artist) ||
+  firstParam(username) ||
+  "";
+const selectedMusicImage =
+  firstParam(params?.musicImage) ||
+  firstParam(params?.image) ||
+  firstParam(profile) ||
+  "";
 
 console.log("audioUrl =", audioUrl);
 
@@ -128,7 +149,7 @@ return () => {
 
 };
 
-},[]);
+},[audioUrl]);
 
 
 
@@ -310,11 +331,18 @@ style={styles.useBtn}
 
 onPress={async () => {
 
-  // Music stop
+  try {
+    const songId = Array.isArray(params?.musicId) ? params.musicId[0] : params?.musicId;
+    if (songId) await updateDoc(doc(db, "songs", songId), { uses: increment(1) });
+  } catch (e) { console.log("Song use counter:", e); }
+
+  // Stop only the preview. Camera will start the selected song
+  // when the user presses the record button.
   if (sound) {
     await sound.stopAsync();
     await sound.unloadAsync();
     setPlaying(false);
+    setSound(null);
   }
 
   router.push({
@@ -324,6 +352,9 @@ onPress={async () => {
       musicName,
       profile,
       username,
+      musicId: selectedMusicId,
+      musicArtist: selectedMusicArtist,
+      musicImage: selectedMusicImage,
     },
   });
 

@@ -95,6 +95,41 @@ const ChatMessageText = ({
   );
 };
 
+// ==========================================
+// TIME / DATE HELPERS
+// ==========================================
+const formatMessageTime = (createdAt) => {
+  if (!createdAt?.toDate) return "";
+  const d = createdAt.toDate();
+  let hours = d.getHours();
+  const minutes = d.getMinutes().toString().padStart(2, "0");
+  const ampm = hours >= 12 ? "PM" : "AM";
+  hours = hours % 12 || 12;
+  return `${hours}:${minutes} ${ampm}`;
+};
+
+const formatDateLabel = (createdAt) => {
+  if (!createdAt?.toDate) return "";
+  const d = createdAt.toDate();
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+
+  const sameDay = (a, b) =>
+    a.getDate() === b.getDate() &&
+    a.getMonth() === b.getMonth() &&
+    a.getFullYear() === b.getFullYear();
+
+  if (sameDay(d, today)) return "Today";
+  if (sameDay(d, yesterday)) return "Yesterday";
+
+  return d.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+};
+
 export default function ChatScreen() {
   const router = useRouter();
 
@@ -135,6 +170,8 @@ const [keyboardHeight, setKeyboardHeight] = useState(0);
 const [headerMenuVisible, setHeaderMenuVisible] = useState(false);
 const [isBlocked, setIsBlocked] = useState(false);
 const [blockedByOther, setBlockedByOther] = useState(false);
+const [loadingMessages, setLoadingMessages] = useState(true);
+const [sending, setSending] = useState(false);
 
 
 const getLevelTheme = (level = 1) => {
@@ -226,35 +263,26 @@ const openChatLink = async (url) => {
 };
 
 
+  // NOTE: hooks (useEffect below) must always run in the same order on
+  // every render, so we no longer "return" before they are declared.
+  // Missing user/userId is handled with a guarded render further down,
+  // after every hook has been called.
   const currentUser = auth.currentUser;
-
-  if (!currentUser) {
-    return (
-      <SafeAreaView style={styles.center}>
-        <Text style={styles.whiteText}>User not logged in</Text>
-      </SafeAreaView>
-    );
-  }
-
-  if (!userId) {
-    return (
-      <SafeAreaView style={styles.center}>
-        <Text style={styles.whiteText}>userId not found</Text>
-      </SafeAreaView>
-    );
-  }
-
-  const currentUid = currentUser.uid;
+  const currentUid = currentUser?.uid || "";
 
   const chatId =
-    currentUid < userId
-      ? `${currentUid}_${userId}`
-      : `${userId}_${currentUid}`;
+    currentUid && userId
+      ? currentUid < userId
+        ? `${currentUid}_${userId}`
+        : `${userId}_${currentUid}`
+      : "";
 
 
 
 
 useEffect(() => {
+
+  if (!currentUid || !userId) return;
 
   const loadUser = async () => {
 
@@ -325,73 +353,74 @@ setBlockedByOther(
 
 useEffect(() => {
 
-  const q = query(
-  collection(
-    db,
-    "chats",
-    chatId,
-    "messages"
-  ),
-  orderBy("createdAt", "desc")
-);
+  if (!chatId || !currentUid) return;
 
-  const unsubscribe = onSnapshot(
-    q,
-    async (snapshot) => {
+  let deletedAt = null;
+  let unsubscribeDeleted = () => {};
 
-      let deletedAt = null;
-
-      const deletedSnap = await getDoc(
-        doc(
-          db,
-          "deletedChats",
-          currentUser.uid,
-          "users",
-          userId
-        )
-      );
-
-      if (deletedSnap.exists()) {
-        deletedAt =
-          deletedSnap.data().deletedAt;
-      }
-
-      let list = snapshot.docs.map(
-        (d) => ({
-          id: d.id,
-          ...d.data(),
-        })
-      );
-
-      if (deletedAt) {
-
-        list = list.filter((msg) => {
-
-          if (!msg.createdAt)
-            return false;
-
-          return (
-            msg.createdAt.toMillis() >
-            deletedAt.toMillis()
-          );
-
-        });
-
-      }
-
-      setMessages(list);
-
+  // Watch the "deletedAt" marker separately (once), instead of doing a
+  // getDoc on every single incoming message snapshot - that was causing
+  // extra network round-trips and laggy/flickery message updates.
+  unsubscribeDeleted = onSnapshot(
+    doc(db, "deletedChats", currentUid, "users", userId),
+    (snap) => {
+      deletedAt = snap.exists() ? snap.data().deletedAt : null;
     }
   );
 
-  return unsubscribe;
+  const q = query(
+    collection(db, "chats", chatId, "messages"),
+    orderBy("createdAt", "desc")
+  );
 
-}, [chatId]);
+  const unsubscribe = onSnapshot(q, (snapshot) => {
+
+    let list = snapshot.docs.map((d) => ({
+      id: d.id,
+      ...d.data(),
+    }));
+
+    if (deletedAt) {
+      list = list.filter((msg) => {
+        if (!msg.createdAt) return false;
+        return msg.createdAt.toMillis() > deletedAt.toMillis();
+      });
+    }
+
+    setMessages(list);
+    setLoadingMessages(false);
+
+    // Mark incoming messages from the other user as read (real "seen"
+    // behaviour), so blue-tick status can be shown on our own messages.
+    const unreadIds = snapshot.docs
+      .filter((d) => {
+        const data = d.data();
+        return data.senderId === userId && data.read !== true;
+      })
+      .map((d) => d.id);
+
+    unreadIds.forEach((id) => {
+      updateDoc(
+        doc(db, "chats", chatId, "messages", id),
+        { read: true }
+      ).catch(() => {});
+    });
+
+  });
+
+  return () => {
+    unsubscribe();
+    unsubscribeDeleted();
+  };
+
+}, [chatId, currentUid, userId]);
 
 
 
 
 useEffect(() => {
+
+  if (!currentUid || !userId) return;
 
   const clearNewMessage = async () => {
 
@@ -399,7 +428,7 @@ useEffect(() => {
       doc(
         db,
         "userChats",
-        currentUser.uid,
+        currentUid,
         "friends",
         userId
       ),
@@ -416,7 +445,59 @@ useEffect(() => {
 
   clearNewMessage();
 
-}, []);
+}, [currentUid, userId]);
+
+
+// ================================
+// TYPING INDICATOR (real WhatsApp-style "typing...")
+// ================================
+const [otherTyping, setOtherTyping] = useState(false);
+const typingTimeoutRef = useRef(null);
+
+useEffect(() => {
+
+  if (!chatId || !userId) return;
+
+  const unsubscribeTyping = onSnapshot(
+    doc(db, "chats", chatId, "typing", userId),
+    (snap) => {
+      if (snap.exists()) {
+        setOtherTyping(snap.data().isTyping === true);
+      } else {
+        setOtherTyping(false);
+      }
+    }
+  );
+
+  return unsubscribeTyping;
+
+}, [chatId, userId]);
+
+const handleTyping = (text) => {
+
+  setMessage(text);
+
+  if (!chatId || !currentUid) return;
+
+  setDoc(
+    doc(db, "chats", chatId, "typing", currentUid),
+    { isTyping: text.length > 0, updatedAt: serverTimestamp() },
+    { merge: true }
+  ).catch(() => {});
+
+  if (typingTimeoutRef.current) {
+    clearTimeout(typingTimeoutRef.current);
+  }
+
+  typingTimeoutRef.current = setTimeout(() => {
+    setDoc(
+      doc(db, "chats", chatId, "typing", currentUid),
+      { isTyping: false },
+      { merge: true }
+    ).catch(() => {});
+  }, 2000);
+
+};
 
 
 
@@ -482,7 +563,18 @@ if (blockedByOther) {
 }
 
 
-    if (!message.trim()) return;
+    if (!message.trim() || sending) return;
+
+    const outgoingText = message.trim();
+    setMessage("");
+    setSending(true);
+
+    // Stop the typing indicator immediately once we send
+    setDoc(
+      doc(db, "chats", chatId, "typing", currentUid),
+      { isTyping: false },
+      { merge: true }
+    ).catch(() => {});
 
     try {
       const myDoc = await getDoc(
@@ -494,9 +586,10 @@ if (blockedByOther) {
       await addDoc(
         collection(db, "chats", chatId, "messages"),
         {
-          text: message,
+          text: outgoingText,
           senderId: currentUser.uid,
           receiverId: userId,
+          read: false,
           createdAt: serverTimestamp(),
         }
       );
@@ -513,7 +606,7 @@ if (blockedByOther) {
     userId,
     username,
     profileImg,
-    lastMessage: message,
+    lastMessage: outgoingText,
     updatedAt: serverTimestamp(),
     unreadCount: 0,
   },
@@ -540,7 +633,7 @@ if (blockedByOther) {
       myData?.profileImg ||
       currentUser.photoURL ||
       "",
-    lastMessage: message,
+    lastMessage: outgoingText,
 
 hasNewMessage: true,
    unreadCount: increment(1),
@@ -553,10 +646,8 @@ hasNewMessage: true,
 );
 
 
-      setMessage("");
-
-
-
+      // Best-effort push notification - failure here shouldn't block the
+      // message from having been sent already.
       try {
 
   await fetch(
@@ -573,7 +664,7 @@ hasNewMessage: true,
     myData?.username ||
     currentUser.displayName ||
     "User",
-  message: message,
+  message: outgoingText,
 }),
     }
   );
@@ -581,13 +672,21 @@ hasNewMessage: true,
 } catch (e) {
   console.log(e);
 }
-  
-setShowPreview(false);
 
+setShowPreview(false);
 Keyboard.dismiss();
 
     } catch (err) {
       console.log("SEND ERROR =", err);
+      // Message failed - restore the text so the user doesn't lose it
+      setMessage(outgoingText);
+      Alert.alert("Message not sent", "Please check your connection and try again.");
+    } finally {
+      setSending(false);
+      // Jump to the newest message (list is inverted, so index 0 = bottom)
+      requestAnimationFrame(() => {
+        flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
+      });
     }
   };
 
@@ -737,21 +836,35 @@ const unblockUser = async () => {
 
 
 
- const renderItem = ({ item }) => {
-
-console.log(
-    "MESSAGE TYPE =",
-    item.type,
-    item
-  );
+ const renderItem = ({ item, index }) => {
 
   const mine =
     item?.senderId === currentUser.uid;
+
+  // messages are ordered newest -> oldest; the "next" array entry is
+  // actually the older neighbour because the list is rendered inverted.
+  const olderNeighbour = messages[index + 1];
+
+  const showDateSeparator =
+    !!item.createdAt &&
+    (!olderNeighbour?.createdAt ||
+      formatDateLabel(olderNeighbour.createdAt) !==
+        formatDateLabel(item.createdAt));
+
+  const DateSeparator = showDateSeparator ? (
+    <View style={styles.dateSeparatorWrap}>
+      <Text style={styles.dateSeparatorText}>
+        {formatDateLabel(item.createdAt)}
+      </Text>
+    </View>
+  ) : null;
 
 
 if (item.type === "liveInvite") {
 
   return (
+    <>
+    {DateSeparator}
     <View
       style={[
         styles.row,
@@ -817,6 +930,7 @@ delayLongPress={400}
       </TouchableOpacity>
 
     </View>
+    </>
   );
 }
 
@@ -824,6 +938,8 @@ delayLongPress={400}
 
 
   return (
+    <>
+    {DateSeparator}
     <View
       style={[
         styles.row,
@@ -950,14 +1066,15 @@ const videoArray = [{
     item.views || 0,
 }];
 
-  router.push({
-    pathname: "/allvideo",
-    params: {
-      videos: JSON.stringify(videoArray),
-      index: 0,
-      userId: userId,
-    },
-  });
+router.push({
+  pathname: "/allvideo",
+  params: {
+    videos: JSON.stringify(videoArray),
+    index: 0,
+    userId: userId,
+    from: "chat",
+  },
+});
 
 }}
 
@@ -989,17 +1106,48 @@ const videoArray = [{
 
 )}
 
-{item.edited && (
+{item.type !== "video" && (
 
-<Text
+<View
   style={{
-    color:"#aaa",
-    fontSize:10,
-    marginTop:3,
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-end",
+    marginTop: 3,
   }}
 >
-  edited
-</Text>
+
+  {item.edited && (
+    <Text
+      style={{
+        color: "#cfcfcf",
+        fontSize: 10,
+        marginRight: 5,
+      }}
+    >
+      edited
+    </Text>
+  )}
+
+  <Text
+    style={{
+      color: "#dcdcdc",
+      fontSize: 10,
+    }}
+  >
+    {formatMessageTime(item.createdAt)}
+  </Text>
+
+  {mine && (
+    <Ionicons
+      name={item.read ? "checkmark-done" : "checkmark"}
+      size={14}
+      color={item.read ? "#4DA6FF" : "#dcdcdc"}
+      style={{ marginLeft: 4 }}
+    />
+  )}
+
+</View>
 
 )}
 
@@ -1008,10 +1156,29 @@ const videoArray = [{
 
 
 </View>
-
-    
+    </>
   );
 };
+
+  // These checks run after every hook above has already been called on
+  // every render, so they no longer break the Rules of Hooks (previously
+  // they sat above the useEffects, which caused React to sometimes see a
+  // different number of hooks between renders and crash/misbehave).
+  if (!currentUser) {
+    return (
+      <SafeAreaView style={styles.center}>
+        <Text style={styles.whiteText}>User not logged in</Text>
+      </SafeAreaView>
+    );
+  }
+
+  if (!userId) {
+    return (
+      <SafeAreaView style={styles.center}>
+        <Text style={styles.whiteText}>userId not found</Text>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <KeyboardAvoidingView
@@ -1057,9 +1224,14 @@ const videoArray = [{
 
 <View
   style={{
+    marginLeft: 10,
+  }}
+>
+
+<View
+  style={{
     flexDirection: "row",
     alignItems: "center",
-    marginLeft: 10,
   }}
 >
 
@@ -1132,7 +1304,11 @@ const videoArray = [{
   </View>
 
 
+</View>
 
+{otherTyping && (
+  <Text style={styles.typingText}>typing...</Text>
+)}
 
 </View>
 <View style={{ marginLeft: "auto" }}>
@@ -1162,12 +1338,20 @@ inverted
     String(item.id)
   }
 
-  contentContainerStyle={{
-    padding: 15,
-    paddingBottom: 20,
-  }}
+  contentContainerStyle={[
+    { padding: 15, paddingBottom: 20 },
+    messages.length === 0 && { flex: 1 },
+  ]}
 
-  
+  ListEmptyComponent={
+    loadingMessages ? null : (
+      <View style={styles.emptyChatWrap}>
+        <Text style={styles.emptyChatText}>
+          No messages yet. Say hi 👋
+        </Text>
+      </View>
+    )
+  }
 
   showsVerticalScrollIndicator={false}
 />
@@ -1201,7 +1385,7 @@ style={styles.previewText}
       <View style={styles.bottomBar}>
        <TextInput
   value={message}
-  onChangeText={setMessage}
+  onChangeText={handleTyping}
 
   placeholder={
   isBlocked
@@ -1627,6 +1811,52 @@ fontSize:16,
 
 },
 
+dateSeparatorWrap: {
+  alignSelf: "center",
+  backgroundColor: "#1f1f1f",
+  paddingHorizontal: 12,
+  paddingVertical: 4,
+  borderRadius: 12,
+  marginVertical: 10,
+},
+
+dateSeparatorText: {
+  color: "#ccc",
+  fontSize: 12,
+  fontWeight: "600",
+},
+
+typingText: {
+  color: "#9be29b",
+  fontSize: 12,
+  marginTop: 2,
+},
+
+scrollToBottomBtn: {
+  position: "absolute",
+  right: 15,
+  bottom: 90,
+  width: 40,
+  height: 40,
+  borderRadius: 20,
+  backgroundColor: "#2a2a2a",
+  justifyContent: "center",
+  alignItems: "center",
+  borderWidth: 1,
+  borderColor: "#444",
+},
+
+emptyChatWrap: {
+  flex: 1,
+  justifyContent: "center",
+  alignItems: "center",
+  transform: [{ scaleY: -1 }],
+},
+
+emptyChatText: {
+  color: "#777",
+  fontSize: 14,
+},
 
 
 

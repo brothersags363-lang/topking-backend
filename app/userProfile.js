@@ -21,6 +21,23 @@ import {
   MaterialCommunityIcons
 } from "@expo/vector-icons";
 
+import { Image as ExpoImage } from "expo-image";
+
+// Small reusable fast-loading avatar/thumbnail.
+// - memory-disk cache => same image loads instantly on repeat views
+// - transition => smooth fade instead of a hard pop-in
+// - a fixed background color acts as the placeholder while it loads
+const FastImage = ({ style, uri, fallback, contentFit = "cover" }) => (
+  <ExpoImage
+    source={{ uri: uri || fallback }}
+    style={style}
+    contentFit={contentFit}
+    cachePolicy="memory-disk"
+    transition={150}
+    recyclingKey={uri || fallback}
+  />
+);
+
 import React, { useEffect, useState } from "react";
 
 import {
@@ -47,6 +64,7 @@ import {
   increment,
   addDoc,
   serverTimestamp,
+  getCountFromServer,
 } from "firebase/firestore";
 
 import { useRouter } from "expo-router";
@@ -119,21 +137,15 @@ const [isBlocked, setIsBlocked] = useState(false);
 const [refreshing, setRefreshing] = useState(false);
 
 const { userId } = useLocalSearchParams();
-console.log("USER PROFILE PARAM =", userId);
 
 
 
 useEffect(() => {
 
   if (!db || !userId) {
-    console.log("❌ TOP GIFTERS: userId nahi mila");
     return;
   }
 
-  console.log(
-    "🔥 TOP GIFTERS LISTENING USER =",
-    userId
-  );
 
   const userRef = doc(
     db,
@@ -147,9 +159,6 @@ useEffect(() => {
 
       if (!snap.exists()) {
 
-        console.log(
-          "❌ TOP GIFTERS: USER DOCUMENT NOT FOUND"
-        );
 
         setTopGifters([]);
         setGiftUserCount(0);
@@ -159,10 +168,6 @@ useEffect(() => {
 
       const data = snap.data();
 
-      console.log(
-        "🔥 RAW TOP GIFTERS =",
-        data.topGifters
-      );
 
       let gifters = [];
 
@@ -259,10 +264,6 @@ useEffect(() => {
           Number(a.stars || 0)
       );
 
-      console.log(
-        "🔥 FINAL PROFILE TOP GIFTERS =",
-        gifters
-      );
 
       /*
        * Total unique gifters
@@ -282,10 +283,6 @@ useEffect(() => {
 
     (error) => {
 
-      console.log(
-        "❌ TOP GIFTERS SNAPSHOT ERROR =",
-        error
-      );
 
     }
   );
@@ -297,7 +294,6 @@ useEffect(() => {
 
 
 useEffect(() => {
-  console.log("OPEN PROFILE ID =", userId);
 }, [userId]);
 
 const router = useRouter();
@@ -408,13 +404,11 @@ useEffect(() => {
 
 
 
-console.log("PARAM USER ID =", userId);
 
 
 useFocusEffect(
   React.useCallback(() => {
 
-    console.log("PROFILE REFRESH");
 
     const loadProfile = async () => {
 
@@ -439,44 +433,18 @@ useFocusEffect(
 
 
 
+// Followers/following counts as a lightweight aggregate query instead of a
+// live listener. onSnapshot on these queries used to download every single
+// follow document just to read snapshot.size, which gets slower and more
+// expensive the more followers a profile has. getCountFromServer counts on
+// Firestore's side and returns just the number, so this loads instantly
+// regardless of follower count. Counts refresh on mount/focus and right
+// after this user follows/unfollows (see handleFollow/handleFollowBack).
 useEffect(() => {
 
   if (!userId) return;
 
-  const followersQuery = query(
-    collection(db, "follows"),
-    where("followingId", "==", userId)
-  );
-
-  const unsubscribeFollowers =
-    onSnapshot(followersQuery, (snapshot) => {
-
-      setFollowersCount(snapshot.size);
-
-    });
-
-
-  const followingQuery = query(
-    collection(db, "follows"),
-    where("followerId", "==", userId)
-  );
-
-  const unsubscribeFollowing =
-    onSnapshot(followingQuery, (snapshot) => {
-
-      setFollowingCount(snapshot.size);
-
-    });
-
-
-
-  return () => {
-
-    unsubscribeFollowers();
-
-    unsubscribeFollowing();
-
-  };
+  fetchFollowCounts();
 
 }, [userId]);
 
@@ -544,10 +512,6 @@ const getCurrentUser = () => {
 
   const uid = auth.currentUser?.uid;
 
-  console.log(
-    "AUTH USER =",
-    uid
-  );
 
   if (uid) {
     setCurrentUserId(uid);
@@ -599,7 +563,6 @@ const fetchVideos = async () => {
     setTotalLikes(likesCount);
 
   } catch (error) {
-    console.log("VIDEO ERROR =", error);
   }
 };
 
@@ -616,24 +579,19 @@ const loadLikedVideos = async () => {
       )
     );
 
-    let arr = [];
+    // Fetch every liked video in parallel instead of one-by-one
+    const videoSnaps = await Promise.all(
+      likedSnapshot.docs.map((like) =>
+        getDoc(doc(db, "all_videos", like.id))
+      )
+    );
 
-    for (const like of likedSnapshot.docs) {
-
-      const videoSnap = await getDoc(
-        doc(db, "all_videos", like.id)
-      );
-
-      if (videoSnap.exists()) {
-
-        arr.push({
-          id: videoSnap.id,
-          ...videoSnap.data(),
-        });
-
-      }
-
-    }
+    const arr = videoSnaps
+      .filter((snap) => snap.exists())
+      .map((snap) => ({
+        id: snap.id,
+        ...snap.data(),
+      }));
 
     // Newest First
     arr.sort((a, b) => {
@@ -645,42 +603,36 @@ const loadLikedVideos = async () => {
     setLikedVideos(arr);
 
   } catch (error) {
-    console.log("LOAD LIKED VIDEOS ERROR =", error);
+    if (__DEV__) console.log("LOAD LIKED VIDEOS ERROR =", error);
   }
 };
 
 const fetchFollowCounts = async () => {
   try {
 
-    // Followers
     const followersQuery = query(
       collection(db, "follows"),
       where("followingId", "==", userId)
     );
 
-    const followersSnap = await getDocs(followersQuery);
-
-    setFollowersCount(followersSnap.size);
-
-    // Following
     const followingQuery = query(
       collection(db, "follows"),
       where("followerId", "==", userId)
     );
 
-    const followingSnap = await getDocs(followingQuery);
+    // Aggregate count queries: Firestore returns just the number without
+    // transferring every matching document, so this stays fast even with
+    // thousands of followers.
+    const [followersCountSnap, followingCountSnap] = await Promise.all([
+      getCountFromServer(followersQuery),
+      getCountFromServer(followingQuery),
+    ]);
 
-    setFollowingCount(followingSnap.size);
-
-    console.log(
-      "FOLLOWERS:",
-      followersSnap.size,
-      "FOLLOWING:",
-      followingSnap.size
-    );
+    setFollowersCount(followersCountSnap.data().count);
+    setFollowingCount(followingCountSnap.data().count);
 
   } catch (error) {
-    console.log(error);
+    if (__DEV__) console.log(error);
   }
 };
 
@@ -692,37 +644,30 @@ const checkFollowStatus = async () => {
 
     if (!currentUserId || !userId) return;
 
-    // Main user follows profile user ?
     const followRef = doc(
       db,
       "follows",
       `${currentUserId}_${userId}`
     );
 
-    const followSnap =
-      await getDoc(followRef);
-
-    setIsFollowing(
-      followSnap.exists()
-    );
-
-    // Profile user follows me ?
     const backRef = doc(
       db,
       "follows",
       `${userId}_${currentUserId}`
     );
 
-    const backSnap =
-      await getDoc(backRef);
+    // Both directions are independent reads, run them together
+    const [followSnap, backSnap] = await Promise.all([
+      getDoc(followRef),
+      getDoc(backRef),
+    ]);
 
-    setIsFollowBack(
-      backSnap.exists()
-    );
+    setIsFollowing(followSnap.exists());
+    setIsFollowBack(backSnap.exists());
 
   } catch (error) {
 
-    console.log(error);
+    if (__DEV__) console.log(error);
 
   }
 };
@@ -748,73 +693,61 @@ const loadFollowers = async () => {
 
     const myId = auth.currentUser?.uid;
 
-    const arr = [];
+    // Build and run every follower's lookups in parallel instead of
+    // awaiting 5 reads per follower one after another in a loop.
+    const results = await Promise.all(
+      snap.docs.map(async (item) => {
 
-    for (const item of snap.docs) {
+        const followerId = item.data().followerId;
 
-      const followerId = item.data().followerId;
+        const [
+          userSnap,
+          iFollowSnap,
+          followsMeSnap,
+          walletSnap,
+          verifiedSnap,
+        ] = await Promise.all([
+          getDoc(doc(db, "users", followerId)),
+          myId
+            ? getDoc(doc(db, "follows", `${myId}_${followerId}`))
+            : Promise.resolve({ exists: () => false }),
+          myId
+            ? getDoc(doc(db, "follows", `${followerId}_${myId}`))
+            : Promise.resolve({ exists: () => false }),
+          getDoc(doc(db, "wallets", followerId)),
+          getDoc(doc(db, "verifiedUsers", followerId)),
+        ]);
 
-      const userSnap = await getDoc(
-        doc(db, "users", followerId)
-      );
+        if (!userSnap.exists()) return null;
 
-      if (!userSnap.exists()) continue;
+        const user = userSnap.data();
 
-      const user = userSnap.data();
+        return {
+          id: followerId,
 
-      const iFollowSnap = myId
-        ? await getDoc(
-            doc(
-              db,
-              "follows",
-              `${myId}_${followerId}`
-            )
-          )
-        : { exists: () => false };
+          ...user,
 
-      const followsMeSnap = myId
-        ? await getDoc(
-            doc(
-              db,
-              "follows",
-              `${followerId}_${myId}`
-            )
-          )
-        : { exists: () => false };
+          iFollow: iFollowSnap.exists(),
 
-      const walletSnap = await getDoc(
-        doc(db, "wallets", followerId)
-      );
+          followsMe: followsMeSnap.exists(),
 
-      const verifiedSnap = await getDoc(
-        doc(db, "verifiedUsers", followerId)
-      );
+          level: walletSnap.exists()
+            ? walletSnap.data().level || 1
+            : 1,
 
-      arr.push({
-        id: followerId,
+          verified: verifiedSnap.exists(),
 
-        ...user,
+          verifiedColor: user.verifiedColor || "",
+        };
 
-        iFollow: iFollowSnap.exists(),
+      })
+    );
 
-        followsMe: followsMeSnap.exists(),
-
-        level: walletSnap.exists()
-          ? walletSnap.data().level || 1
-          : 1,
-
-        verified: verifiedSnap.exists(),
-
-        verifiedColor: user.verifiedColor || "",
-      });
-
-    }
-
-    setFollowersList(arr);
+    setFollowersList(results.filter(Boolean));
 
   } catch (error) {
 
-    console.log(
+    if (__DEV__) console.log(
       "LOAD FOLLOWERS ERROR =",
       error
     );
@@ -847,74 +780,61 @@ const loadFollowing = async () => {
 
     const myId = auth.currentUser?.uid;
 
-    const arr = [];
+    // Same parallelization as loadFollowers: 5 reads per person run
+    // together, and every person runs together too.
+    const results = await Promise.all(
+      snap.docs.map(async (item) => {
 
-    for (const item of snap.docs) {
+        const followingId = item.data().followingId;
 
-      const followingId =
-        item.data().followingId;
+        const [
+          userSnap,
+          iFollowSnap,
+          followsMeSnap,
+          walletSnap,
+          verifiedSnap,
+        ] = await Promise.all([
+          getDoc(doc(db, "users", followingId)),
+          myId
+            ? getDoc(doc(db, "follows", `${myId}_${followingId}`))
+            : Promise.resolve({ exists: () => false }),
+          myId
+            ? getDoc(doc(db, "follows", `${followingId}_${myId}`))
+            : Promise.resolve({ exists: () => false }),
+          getDoc(doc(db, "wallets", followingId)),
+          getDoc(doc(db, "verifiedUsers", followingId)),
+        ]);
 
-      const userSnap = await getDoc(
-        doc(db, "users", followingId)
-      );
+        if (!userSnap.exists()) return null;
 
-      if (!userSnap.exists()) continue;
+        const user = userSnap.data();
 
-      const user = userSnap.data();
+        return {
+          id: followingId,
 
-      const iFollowSnap = myId
-        ? await getDoc(
-            doc(
-              db,
-              "follows",
-              `${myId}_${followingId}`
-            )
-          )
-        : { exists: () => false };
+          ...user,
 
-      const followsMeSnap = myId
-        ? await getDoc(
-            doc(
-              db,
-              "follows",
-              `${followingId}_${myId}`
-            )
-          )
-        : { exists: () => false };
+          iFollow: iFollowSnap.exists(),
 
-      const walletSnap = await getDoc(
-        doc(db, "wallets", followingId)
-      );
+          followsMe: followsMeSnap.exists(),
 
-      const verifiedSnap = await getDoc(
-        doc(db, "verifiedUsers", followingId)
-      );
+          level: walletSnap.exists()
+            ? walletSnap.data().level || 1
+            : 1,
 
-      arr.push({
-        id: followingId,
+          verified: verifiedSnap.exists(),
 
-        ...user,
+          verifiedColor: user.verifiedColor || "",
+        };
 
-        iFollow: iFollowSnap.exists(),
+      })
+    );
 
-        followsMe: followsMeSnap.exists(),
-
-        level: walletSnap.exists()
-          ? walletSnap.data().level || 1
-          : 1,
-
-        verified: verifiedSnap.exists(),
-
-        verifiedColor: user.verifiedColor || "",
-      });
-
-    }
-
-    setFollowingList(arr);
+    setFollowingList(results.filter(Boolean));
 
   } catch (error) {
 
-    console.log(
+    if (__DEV__) console.log(
       "LOAD FOLLOWING ERROR =",
       error
     );
@@ -948,11 +868,13 @@ followingId:userData.id
 }
 );
 
-await loadFollowing();
+await Promise.all([
+  loadFollowing(),
+  fetchFollowCounts(),
+]);
 
 }
 catch(error){
-console.log(error);
 }
 
 };
@@ -962,18 +884,9 @@ console.log(error);
 
 const handleFollow = async () => {
 
- console.log("====== FOLLOW BUTTON PRESSED ======");
 
-  console.log("LOGIN USER =", currentUserId);
 
-  console.log("PROFILE USER =", userId);
 
-console.log("==========");
-console.log("LOGIN USER =", currentUserId);
-console.log("OPEN PROFILE =", userId);
-console.log("SAME USER ?", currentUserId === userId);
-console.log("FOLLOW DOC ID =", `${currentUserId}_${userId}`);
-console.log("==========");
 
 
   try {
@@ -992,7 +905,6 @@ console.log("==========");
 
       setIsFollowing(false);
 
-      console.log("UNFOLLOWED");
 
     } else {
 
@@ -1040,11 +952,11 @@ await addDoc(
       setIsFollowing(true);
    
 
-      console.log("FOLLOWED");
     }
 
+    fetchFollowCounts();
+
   } catch (error) {
-    console.log(error);
   }
 };
 
@@ -1100,14 +1012,11 @@ const blockedUser = userSnap.data();
   }
 );
 
-            // remove follow
-            await deleteDoc(
-              doc(db, "follows", `${myId}_${userId}`)
-            );
-
-            await deleteDoc(
-              doc(db, "follows", `${userId}_${myId}`)
-            );
+            // remove follow (both directions, in parallel)
+            await Promise.all([
+              deleteDoc(doc(db, "follows", `${myId}_${userId}`)),
+              deleteDoc(doc(db, "follows", `${userId}_${myId}`)),
+            ]);
 
             setMenuVisible(false);
 
@@ -1120,7 +1029,6 @@ const blockedUser = userSnap.data();
 
           } catch (e) {
 
-            console.log(e);
 
           }
 
@@ -1165,7 +1073,6 @@ setMenuVisible(false);
 
 } catch (error) {
 
-console.log(error);
 
 }
 
@@ -1186,7 +1093,6 @@ const handleShareProfile = async () => {
     setMenuVisible(false);
 
   } catch (error) {
-    console.log(error);
   }
 };
 
@@ -1205,13 +1111,10 @@ if (!myId) {
 
 if (myId) {
 
-  const blockMe = await getDoc(
-    doc(db, "blockedUsers", `${myId}_${userId}`)
-  );
-
-  const blockedByUser = await getDoc(
-    doc(db, "blockedUsers", `${userId}_${myId}`)
-  );
+  const [blockMe, blockedByUser] = await Promise.all([
+    getDoc(doc(db, "blockedUsers", `${myId}_${userId}`)),
+    getDoc(doc(db, "blockedUsers", `${userId}_${myId}`)),
+  ]);
 
   if (blockMe.exists() || blockedByUser.exists()) {
 
@@ -1244,80 +1147,56 @@ if (myId) {
 
 
 const fetchUser = async () => {
-setLoading(true);
+  setLoading(true);
 
   try {
     if (!userId) return;
 
+    const myId = auth.currentUser?.uid;
 
-const myId = auth.currentUser?.uid;
+    // Run the two block-status checks in parallel instead of one after another
+    const [blockMe, blockedByUser] = await Promise.all([
+      getDoc(doc(db, "blockedUsers", `${myId}_${userId}`)),
+      getDoc(doc(db, "blockedUsers", `${userId}_${myId}`)),
+    ]);
 
-const blockMe = await getDoc(
-  doc(db, "blockedUsers", `${myId}_${userId}`)
-);
+    if (blockMe.exists() || blockedByUser.exists()) {
+      setIsBlocked(true);
 
-const blockedByUser = await getDoc(
-  doc(db, "blockedUsers", `${userId}_${myId}`)
-);
+      Alert.alert(
+        "Blocked",
+        "This profile is unavailable."
+      );
 
-if (blockMe.exists() || blockedByUser.exists()) {
+      router.back();
 
-  setIsBlocked(true);
-
-  Alert.alert(
-    "Blocked",
-    "This profile is unavailable."
-  );
-
-  router.back();
-
-  return;
-}
-
-
-
+      return;
+    }
 
     const userRef = doc(db, "users", userId);
 
-console.log("FETCHING USER =", userId);
+    // Fetch the profile doc and the wallet/level doc in parallel
+    const [userSnap, walletSnap] = await Promise.all([
+      getDoc(userRef),
+      getDoc(doc(db, "wallets", userId)),
+    ]);
 
+    if (userSnap.exists()) {
+      const data = userSnap.data();
 
-    const userSnap = await getDoc(userRef);
+      setUserData(data);
 
+      if (walletSnap.exists()) {
+        setUserLevel(walletSnap.data().level || 0);
+      }
 
-  if (userSnap.exists()) {
-
-  setUserData(userSnap.data());
-
-
-      console.log("USER DATA =", userSnap.data());
-
-
-
-const walletSnap = await getDoc(doc(db, "wallets", userId));
-
-if (walletSnap.exists()) {
-  setUserLevel(walletSnap.data().level || 0);
-}
-
-setIsVerified(userSnap.data().verified === true);
-
-
-    } 
-    
-    
-    else {
-      console.log("User not found");
+      setIsVerified(data.verified === true);
     }
   } catch (error) {
-    console.log("PROFILE ERROR =", error);
-
-
-
-   setLoading(false);
-
-
-
+    if (__DEV__) console.log("PROFILE ERROR =", error);
+  } finally {
+    // Always clear loading, success or failure, so the UI never gets stuck spinning
+    setLoading(false);
   }
 };
 
@@ -1341,7 +1220,6 @@ const onRefresh = async () => {
 
   } catch (error) {
 
-    console.log("REFRESH ERROR =", error);
 
   } finally {
 
@@ -1354,7 +1232,6 @@ const onRefresh = async () => {
 
 
 
-console.log("USER UID =", userId);
 
 
 
@@ -1365,12 +1242,9 @@ console.log("USER UID =", userId);
       {/* Header */}
       <View style={styles.topBar}>
         <View style={styles.userRow}>
-          <Image
-  source={{
-    uri:
-     userData?.profileImg ||
-      "https://avatar.iran.liara.run/public/65",
-  }}
+          <FastImage
+  uri={userData?.profileImg}
+  fallback="https://avatar.iran.liara.run/public/65"
   style={styles.smallAvatar}
 />
     
@@ -1432,9 +1306,15 @@ refreshControl={
   />
 }
 
-        keyExtractor={(item, index) => index.toString()}
+        keyExtractor={(item, index) => item.id || index.toString()}
         numColumns={3}
         showsVerticalScrollIndicator={false}
+
+removeClippedSubviews={true}
+initialNumToRender={12}
+maxToRenderPerBatch={12}
+windowSize={7}
+updateCellsBatchingPeriod={50}
 
 contentContainerStyle={{
     paddingBottom: 150,
@@ -1445,12 +1325,9 @@ contentContainerStyle={{
             {/* Profile Section */}
             <View style={styles.profileRow}>
 
-<Image
-  source={{
-    uri:
-      userData?.profileImg ||
-      "https://avatar.iran.liara.run/public/65",
-  }}
+<FastImage
+  uri={userData?.profileImg}
+  fallback="https://avatar.iran.liara.run/public/65"
   style={styles.profileImage}
 />
 
@@ -1753,16 +1630,13 @@ Follow
     "";
 
   return (
-    <Image
+    <FastImage
       key={
         item.uid ||
         `gifter-${index}`
       }
-      source={{
-        uri:
-          imageUri ||
-          "https://avatar.iran.liara.run/public/65",
-      }}
+      uri={imageUri}
+      fallback="https://avatar.iran.liara.run/public/65"
       style={[
         styles.memberImg,
         {
@@ -1894,45 +1768,45 @@ return (
   <TouchableOpacity
     style={styles.videoCard}
 
+
 onPress={() => {
 
+  router.push({
+    pathname: "/allvideo",
 
-router.navigate({
-  pathname: "/allvideo",
-  params: {
-    videoId: item.id,
-    userId: userId,
+    params: {
+      videoId: item.id,
+      userId: userId,
 
-    from: "userProfile",
+      from: "userProfile",
 
+      videos: JSON.stringify(currentList),
 
-    videos: JSON.stringify(currentList),
+      index: currentList.findIndex(
+        (v) => v.id === item.id
+      ),
 
-index: currentList.findIndex(
-  (v) => v.id === item.id
-),
-
-    videoUrl: item.videoUrl || item.video,
-    username: userData?.username,
-    caption: item.caption,
-    likes: item.likes,
-    commentsCount: item.commentsCount,
-    shares: item.shares,
-    views: item.views,
-    profile: userData?.profileImg,
-  },
-});
-
+      videoUrl: item.videoUrl || item.video,
+      username: userData?.username,
+      caption: item.caption,
+      likes: item.likes,
+      commentsCount: item.commentsCount,
+      shares: item.shares,
+      views: item.views,
+      profile: userData?.profileImg,
+    },
+  });
 
 }}
+
 
   >
 
 
-<Image
-  source={{ uri: item.thumbnail }}
+<FastImage
+  uri={item.thumbnail}
+  fallback="https://cdn-icons-png.flaticon.com/512/3135/3135715.png"
   style={styles.video}
-  fadeDuration={0}
 />
 
 <View style={styles.videoOverlayViews}>
@@ -2327,8 +2201,9 @@ userId:item.id,
     });
   }}
 >
-  <Image
-    source={{ uri: item.profileImg }}
+  <FastImage
+    uri={item.profileImg}
+    fallback="https://avatar.iran.liara.run/public/65"
     style={{
       width: 50,
       height: 50,

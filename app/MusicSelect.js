@@ -46,9 +46,14 @@ useEffect(() => {
   console.log("All Params =>", params);
 }, []);
 
-const videoUri = params.videoUri;
+const firstParam = (value) =>
+  Array.isArray(value) ? value[0] : value;
+
+const videoUri = firstParam(params.videoUri) || "";
+const returnTo = firstParam(params.returnTo) || "";
 
   const [search, setSearch] = useState("");
+  const searchInputRef = useRef(null);
 
   const [activeTab, setActiveTab] = useState("Trending");
 
@@ -325,7 +330,11 @@ onPress={async () => {
           Select Music
         </Text>
 
-        <TouchableOpacity>
+        <TouchableOpacity
+          onPress={() =>
+            searchInputRef.current?.focus()
+          }
+        >
 
           <Ionicons
             name="search"
@@ -348,6 +357,7 @@ onPress={async () => {
         />
 
         <TextInput
+          ref={searchInputRef}
           placeholder="Search music..."
           placeholderTextColor="#666"
           value={search}
@@ -519,7 +529,15 @@ outputRange:[
 
 
       <FlatList
-  data={musicList}
+  data={
+    search.trim()
+      ? musicList.filter((item) =>
+          `${item.title || ""} ${item.artist || ""}`
+            .toLowerCase()
+            .includes(search.trim().toLowerCase())
+        )
+      : musicList
+  }
   keyExtractor={(item) => item.id}
   showsVerticalScrollIndicator={false}
   contentContainerStyle={{
@@ -627,33 +645,50 @@ style={styles.useSoundBtn}
 
 
 onPress={async () => {
-console.log("Sending Audio =", selectedMusic.audioUrl);
-  // Preview audio stop karo
+  console.log("Sending Audio =", selectedMusic.audioUrl);
+
+  // Release the picker preview before the camera starts recording. This
+  // prevents Android from retaining the old audio player in the background.
   if (sound) {
-    await sound.stopAsync();
-    await sound.unloadAsync();
+    try {
+      await sound.stopAsync();
+      await sound.unloadAsync();
+    } catch (_) {}
     setSound(null);
+    setIsPlaying(false);
+  }
+
+  const musicParams = {
+    musicId: selectedMusic.id,
+    musicName: selectedMusic.title || "Original Audio",
+    musicTitle: selectedMusic.title || "Original Audio",
+    musicArtist: selectedMusic.artist || "",
+    musicImage: selectedMusic.image || "",
+    audioUrl: selectedMusic.audioUrl,
+  };
+
+  // A camera-initiated song selection happens before a video exists, so
+  // return to the camera rather than opening EditView with an empty URI.
+  if (returnTo === "/camera") {
+    router.replace({
+      pathname: "/camera",
+      params: musicParams,
+    });
+    return;
+  }
+
+  if (!videoUri) {
+    Alert.alert("Video Missing", "Pehle video record ya select karein.");
+    return;
   }
 
   router.push({
     pathname: "/EditView",
-  
-params:{
-
-videoUri,
-
-musicId:selectedMusic.id,
-
-musicTitle:selectedMusic.title,
-
-musicArtist:selectedMusic.artist,
-
-musicImage:selectedMusic.image,
-audioUrl: selectedMusic.audioUrl,
-}
-
+    params: {
+      videoUri,
+      ...musicParams,
+    },
   });
-
 }}
 
 >

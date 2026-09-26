@@ -9,7 +9,7 @@ import {
   View,
   Text,
   TouchableOpacity,
-  Pressable,
+  Pressable,  
   StyleSheet,
   Dimensions,
   FlatList,
@@ -139,6 +139,286 @@ mounted=false;
 );
 
 
+// ======================================================
+// VideoItem — memoized single feed row
+// ======================================================
+// FIX (biggest perf change): pehle ye poora JSX seedha renderItem
+// ke andar tha, aur renderItem ek useCallback tha jiski dependency
+// list me activeVideo/currentIndex/pausedVideoId/localLikes/
+// followingUsers/starAnimationVideoId the -- yani scroll ke har
+// step par, ya kahin bhi like/follow hone par, renderItem ki
+// identity badal jaati thi. Isse FlatList currently-mounted SAARE
+// cells ko re-render kar deta tha, sirf jo actually change hua wo
+// nahi.
+//
+// Ab actual row JSX ek alag React.memo() component me hai. renderItem
+// ab sirf is item ke liye zaroori props compute karke <VideoItem/>
+// return karta hai. React.memo apne aap shallow-compare karke sirf
+// UN cells ko re-render karega jinke props sach me badle hain --
+// baaki sab as-is rahenge. Isse scroll aur like/follow tap dono
+// kaafi zyada smooth feel honge.
+const VideoItem = memo(function VideoItem({
+  item,
+  index,
+  shouldRenderVideo,
+  isVideoActive,
+  showHeart,
+  showStar,
+  isLiked,
+  isFollowing,
+  rotateAnim,
+  textAnim,
+  starScale,
+  starOpacity,
+  starRotate,
+  starJump,
+  starTilt,
+  onItemPress,
+  onLike,
+  onFollow,
+  onOpenComments,
+  onOpenShare,
+  onOpenStar,
+  onOpenProfile,
+  onOpenMusic,
+}) {
+  return (
+    <TouchableOpacity
+      activeOpacity={1}
+      style={{ width, height: height, backgroundColor: '#000' }}
+      onPress={() => onItemPress(item.id)}
+    >
+
+      {shouldRenderVideo ? (
+        <FeedVideo
+          uri={item.videoUrl || item.video}
+          active={isVideoActive}
+        />
+      ) : (
+        <View
+          style={{
+            width,
+            height,
+            backgroundColor: "#000"
+          }}
+        />
+      )}
+
+      {showHeart && (
+        <View style={styles.heartPopup}>
+          <Ionicons
+            name="heart"
+            size={140}
+            color="#ff004f"
+          />
+        </View>
+      )}
+
+      {showStar && (
+        <View
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+
+            justifyContent: "center",
+            alignItems: "center",
+
+            zIndex: 99999,
+            elevation: 99999,
+          }}
+          pointerEvents="none"
+        >
+          <Animated.Image
+            source={require("../../assets/star-logo.png")}
+            style={{
+              width: 170,
+              height: 170,
+              opacity: starOpacity,
+              transform: [
+                { translateY: starJump },
+                { scale: starScale },
+                {
+                  rotateZ: starRotate.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: ["0deg", "720deg"]
+                  })
+                },
+                {
+                  rotateY: starTilt.interpolate({
+                    inputRange: [0, 0.5, 1],
+                    outputRange: ["0deg", "180deg", "360deg"]
+                  })
+                },
+                {
+                  rotateX: starTilt.interpolate({
+                    inputRange: [0, 0.5, 1],
+                    outputRange: ["0deg", "25deg", "0deg"]
+                  })
+                }
+              ],
+              shadowColor: "#FFD700",
+              shadowOpacity: 1,
+              shadowRadius: 35,
+              elevation: 35,
+              resizeMode: "contain",
+            }}
+          />
+        </View>
+      )}
+
+      <View style={styles.overlay} />
+      <View style={styles.bottomLeft}>
+
+        <View style={styles.userRow}>
+          <Text style={styles.userName}>
+            {item.username || "@user"}
+          </Text>
+
+          {item.verified && (
+            <View style={styles.badge}>
+              <MaterialCommunityIcons
+                name="check-decagram"
+                size={17}
+                color={
+                  item?.verifiedColor === "yellow"
+                    ? "#FFD700"
+                    : "#ffffff"
+                }
+              />
+              <Ionicons
+                name="checkmark"
+                size={10}
+                color="#131212"
+                style={styles.badgeTick}
+              />
+            </View>
+          )}
+        </View>
+
+        <Text style={styles.caption} numberOfLines={1} ellipsizeMode="tail">{item.caption}</Text>
+
+        <TouchableOpacity
+          style={styles.musicRow}
+          activeOpacity={0.8}
+          onPress={() => onOpenMusic(item)}
+        >
+          <Animated.View
+            style={[
+              styles.musicDiscOuter,
+              {
+                transform: [
+                  {
+                    rotate: rotateAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: ["0deg", "360deg"],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <View style={styles.vinylDisc}>
+              <Image
+                source={{
+                  uri:
+                    item.profile ||
+                    "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
+                }}
+                style={styles.musicCenterImage}
+              />
+              <View style={styles.musicDot} />
+            </View>
+          </Animated.View>
+
+          <View style={styles.musicTextContainer}>
+            <Animated.Text
+              style={[
+                styles.musicText,
+                {
+                  transform: [
+                    { translateX: textAnim }
+                  ]
+                }
+              ]}
+              numberOfLines={1}
+            >
+              🎵 Music • {item.username} • Original Audio
+            </Animated.Text>
+          </View>
+        </TouchableOpacity>
+
+      </View>
+
+      <View style={styles.rightIcons}>
+
+        <View style={[styles.iconBox, { marginBottom: 18 }]}>
+          <TouchableOpacity onPress={() => onOpenProfile(item.userId)}>
+            <Image
+              source={{
+                uri:
+                  item.profile ||
+                  "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
+              }}
+              style={styles.profileImage}
+            />
+          </TouchableOpacity>
+
+          {auth.currentUser?.uid !== item.userId && !isFollowing && (
+            <TouchableOpacity
+              style={styles.plusIconSmall}
+              onPress={() => onFollow(item.userId)}
+            >
+              <Ionicons
+                name="add"
+                size={12}
+                color="#000"
+              />
+            </TouchableOpacity>
+          )}
+        </View>
+
+        <TouchableOpacity style={styles.iconBox} onPress={() => onLike(item.id)}>
+          <Ionicons name="heart" size={40} color={isLiked ? "red" : "white"} />
+          <Text style={styles.iconText}>
+            {item.likes || 0}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.iconBox}
+          onPress={() => onOpenComments(item)}
+        >
+          <Ionicons name="chatbubble" size={35} color="#ffffff" />
+          <Text style={styles.iconText}>{item.commentsCount || 0}</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.iconBox}
+          onPress={() => onOpenShare(item)}
+        >
+          <Ionicons name="arrow-redo" size={38} color="#ffffff" />
+          <Text style={styles.iconText}>{item.shares || 0}</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.iconBox}
+          onPress={() => onOpenStar(item.id)}
+        >
+          <Image
+            source={require('../../assets/star-logo.png')}
+            style={styles.starImage}
+          />
+          <Text style={styles.starUpText}>StarUp</Text>
+        </TouchableOpacity>
+      </View>
+    </TouchableOpacity>
+  );
+});
+
+
 export default function BottomNav() {
   const router = useRouter();
   const pathname = usePathname();
@@ -149,6 +429,7 @@ const [selectedShareVideo, setSelectedShareVideo] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [activeVideo, setActiveVideo] = useState(0);
   const [currentIndex,setCurrentIndex]=useState(0);
+  const [pausedVideoId, setPausedVideoId] = useState(null);
 
 const [loadingMoreVideos, setLoadingMoreVideos] = useState(false);
 const [hasMoreVideos, setHasMoreVideos] = useState(true);
@@ -262,8 +543,10 @@ useEffect(() => {
 
           videoIds.forEach(videoId => {
 
-            updated[videoId] =
-              nearbyLikes[videoId] === true;
+            // Slow network ke dauran optimistic like ko overwrite mat karo.
+            if (!pendingLikeRef.current[videoId]) {
+              updated[videoId] = nearbyLikes[videoId] === true;
+            }
 
           });
 
@@ -366,8 +649,19 @@ useEffect(() => {
 
   const [heartVideoId, setHeartVideoId] = useState(null);
 const lastTap = useRef(null);
+const tapTimeout = useRef(null);
+const likeQueueRef = useRef({});
+const pendingLikeRef = useRef({});
 const viewTimeout = useRef(null);
 const heartTimeout = useRef(null);
+
+useEffect(() => {
+  return () => {
+    if (tapTimeout.current) clearTimeout(tapTimeout.current);
+    if (viewTimeout.current) clearTimeout(viewTimeout.current);
+    if (heartTimeout.current) clearTimeout(heartTimeout.current);
+  };
+}, []);
 
 
   const [showComments, setShowComments] = useState(false);
@@ -495,11 +789,105 @@ useEffect(() => {
   // AUDIO SETUP
 
 
-// FETCH FIRST 10 VIDEOS
-// ==========================
 
-// ==========================
-// FETCH FIRST 10 VIDEOS
+// ======================================================
+// FEED MIXER
+// Ek hi user ke videos ko lagatar aane se rokta hai.
+// Example: A -> B -> C -> A
+// Minimum 3 different-user positions ka GAP rakha jayega.
+// Agar feed me sirf 1 user ke videos hain, to naturally
+// same user repeat ho sakta hai.
+// ======================================================
+const FEED_USER_GAP = 3;
+
+const arrangeFeedVideos = (inputVideos, previousVideos = []) => {
+  if (!inputVideos || inputVideos.length <= 1) {
+    return inputVideos || [];
+  }
+
+  // Har user ke videos ko alag queue me rakho.
+  const groups = new Map();
+
+  inputVideos.forEach((video) => {
+    const userKey = video.userId || `video_${video.id}`;
+
+    if (!groups.has(userKey)) {
+      groups.set(userKey, []);
+    }
+
+    groups.get(userKey).push(video);
+  });
+
+  // Har user's videos ko thoda randomize karo, taki
+  // same user ka hamesha same sequence na aaye.
+  groups.forEach((queue) => {
+    for (let i = queue.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [queue[i], queue[j]] = [queue[j], queue[i]];
+    }
+  });
+
+  const result = [];
+
+  // Existing feed ke last 3 users ko bhi cooldown me rakho,
+  // taki load-more ke boundary par same user repeat na ho.
+  const recentUsers = previousVideos
+    .slice(-FEED_USER_GAP)
+    .map((video) => video.userId || `video_${video.id}`);
+
+  while (groups.size > 0) {
+    // Pehle un users ko choose karo jo recent 3 videos me nahi aaye.
+    let availableUsers = [...groups.keys()].filter(
+      (userKey) => !recentUsers.includes(userKey)
+    );
+
+    // Agar enough different users available nahi hain,
+    // to remaining users me se choose karo. Isse feed rukega nahi.
+    if (availableUsers.length === 0) {
+      availableUsers = [...groups.keys()];
+    }
+
+    // Available users ko random order me rakho.
+    for (let i = availableUsers.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [availableUsers[i], availableUsers[j]] = [
+        availableUsers[j],
+        availableUsers[i],
+      ];
+    }
+
+    // Jis user ke paas sabse zyada videos bache hain,
+    // usko preference do, lekin recent-user restriction ke andar.
+    const selectedUser = availableUsers.reduce((best, userKey) => {
+      if (!best) return userKey;
+
+      const bestCount = groups.get(best)?.length || 0;
+      const currentCount = groups.get(userKey)?.length || 0;
+
+      return currentCount > bestCount ? userKey : best;
+    }, null);
+
+    const queue = groups.get(selectedUser);
+    const nextVideo = queue.shift();
+
+    if (nextVideo) {
+      result.push(nextVideo);
+
+      recentUsers.push(selectedUser);
+      if (recentUsers.length > FEED_USER_GAP) {
+        recentUsers.shift();
+      }
+    }
+
+    if (queue.length === 0) {
+      groups.delete(selectedUser);
+    }
+  }
+
+  return result;
+};
+
+// FETCH FIRST 3 VIDEOS
 // ==========================
 useEffect(() => {
 
@@ -512,7 +900,8 @@ useEffect(() => {
       const q = query(
         collection(db, "all_videos"),
         orderBy("createdAt", "desc"),
-        limit(30)
+        orderBy("__name__", "desc"),
+        limit(6)
       );
 
       const snapshot = await getDocs(q);
@@ -549,15 +938,13 @@ useEffect(() => {
 
       }
 
-      setHasMoreVideos(snapshot.docs.length === 30);
+      setHasMoreVideos(snapshot.docs.length === 6);
 
-      // Har app open par feed order fresh/random rahe.
-      for (let i = loadedVideos.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [loadedVideos[i], loadedVideos[j]] = [loadedVideos[j], loadedVideos[i]];
-      }
+      // User variety:
+      // same user ke videos ko lagatar aane se roko.
+      const mixedVideos = arrangeFeedVideos(loadedVideos);
 
-      setVideos(loadedVideos);
+      setVideos(mixedVideos);
 
     } catch (error) {
 
@@ -581,56 +968,72 @@ useEffect(() => {
 
 }, [blockedUsers]);
 
-// Pull-to-refresh: same feed, fresh order.
+// Pull-to-refresh: same feed, fresh order + user variety.
 const refreshVideos = useCallback(async () => {
   if (refreshing) return;
   setRefreshing(true);
+
   try {
+
     const q = query(
       collection(db, "all_videos"),
       orderBy("createdAt", "desc"),
-      limit(30)
+      orderBy("__name__", "desc"),
+      limit(6)
     );
+
     const snapshot = await getDocs(q);
     const refreshedVideos = [];
+
     snapshot.forEach((docItem) => {
+
       const data = docItem.data();
+
       if (
         data.status !== "blocked" &&
         data.hidden !== true &&
         !blockedUsers.includes(data.userId)
       ) {
+
         refreshedVideos.push({
           id: docItem.id,
           ...data,
           verified: data.verified || false,
           verifiedColor: data.verifiedColor || "",
         });
+
       }
+
     });
-    for (let i = refreshedVideos.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [refreshedVideos[i], refreshedVideos[j]] = [refreshedVideos[j], refreshedVideos[i]];
-    }
+
+    const mixedVideos = arrangeFeedVideos(refreshedVideos);
+
     lastVideoDocRef.current = snapshot.docs.length
       ? snapshot.docs[snapshot.docs.length - 1]
       : null;
-    setHasMoreVideos(snapshot.docs.length === 30);
+
+    setHasMoreVideos(snapshot.docs.length === 6);
     setCurrentIndex(0);
     setActiveVideo(0);
-    setVideos(refreshedVideos);
+    setPausedVideoId(null);
+    setVideos(mixedVideos);
+
   } catch (error) {
+
     console.log("Refresh Videos Error:", error);
+
   } finally {
+
     setRefreshing(false);
+
   }
+
 }, [blockedUsers, refreshing]);
 
 
 
-
 // ==========================
-// LOAD NEXT 10 VIDEOS
+// LOAD NEXT 5 VIDEOS
 // ==========================
 const loadMoreVideos = useCallback(async () => {
 
@@ -653,8 +1056,9 @@ const loadMoreVideos = useCallback(async () => {
     const nextQuery = query(
       collection(db, "all_videos"),
       orderBy("createdAt", "desc"),
+      orderBy("__name__", "desc"),
       startAfter(lastVideoDocRef.current),
-      limit(10)
+      limit(5)
     );
 
     const snapshot = await getDocs(nextQuery);
@@ -692,7 +1096,7 @@ const loadMoreVideos = useCallback(async () => {
     lastVideoDocRef.current =
       snapshot.docs[snapshot.docs.length - 1];
 
-    if (snapshot.docs.length < 10) {
+    if (snapshot.docs.length < 5) {
       setHasMoreVideos(false);
     }
 
@@ -704,14 +1108,21 @@ const loadMoreVideos = useCallback(async () => {
           prevVideos.map(video => video.id)
         );
 
-        const uniqueNewVideos =
-          newVideos.filter(
-            video => !existingIds.has(video.id)
-          );
+        const uniqueNewVideos = newVideos.filter(
+          video => !existingIds.has(video.id)
+        );
+
+        // IMPORTANT:
+        // Previous feed ke last 3 users ko bhi cooldown me rakho.
+        // Isliye page boundary par bhi same user turant repeat nahi hoga.
+        const mixedNewVideos = arrangeFeedVideos(
+          uniqueNewVideos,
+          prevVideos
+        );
 
         return [
           ...prevVideos,
-          ...uniqueNewVideos
+          ...mixedNewVideos
         ];
 
       });
@@ -769,29 +1180,57 @@ const loadMoreVideos = useCallback(async () => {
 
 
 useEffect(() => {
+  let unsubscribeWallet = null;
 
-  const user = auth.currentUser;
-
-  if (!user) return;
-
-  const walletRef = doc(db, "wallets", user.uid);
-
-  // Pehle ek baar direct read
-  getDoc(walletRef).then((snap) => {
-    if (snap.exists()) {
-      setMyStars(snap.data().stars || 0);
+  const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+    if (!user) {
+      setMyStars(0);
+      if (unsubscribeWallet) {
+        unsubscribeWallet();
+        unsubscribeWallet = null;
+      }
+      return;
     }
+
+    const walletRef = doc(db, "wallets", user.uid);
+
+    getDoc(walletRef)
+      .then((snap) => {
+        if (snap.exists()) {
+          setMyStars(snap.data().stars || 0);
+        } else {
+          setMyStars(0);
+        }
+      })
+      .catch((error) => {
+        console.log("Wallet Stars Load Error:", error);
+      });
+
+    if (unsubscribeWallet) {
+      unsubscribeWallet();
+    }
+
+    unsubscribeWallet = onSnapshot(
+      walletRef,
+      (snap) => {
+        if (snap.exists()) {
+          setMyStars(snap.data().stars || 0);
+        } else {
+          setMyStars(0);
+        }
+      },
+      (error) => {
+        console.log("Wallet Stars Realtime Error:", error);
+      }
+    );
   });
 
-  // Fir realtime update
-  const unsubscribe = onSnapshot(walletRef, (snap) => {
-    if (snap.exists()) {
-      setMyStars(snap.data().stars || 0);
+  return () => {
+    unsubscribeAuth();
+    if (unsubscribeWallet) {
+      unsubscribeWallet();
     }
-  });
-
-  return () => unsubscribe();
-
+  };
 }, []);
 
 
@@ -943,7 +1382,13 @@ id:doc.id,
 
 setComments(data);
 
-
+// FIX: purane reply listeners yahan bhi band karo, sirf effect
+// ke start par nahi. Warna har naya comment aane/update hone par
+// har comment ke liye ek naya duplicate listener jama hota rehta
+// hai (listener + memory leak, jo time ke saath app ko slow
+// karta hai).
+replyUnsubscribers.current.forEach(unsub => unsub());
+replyUnsubscribers.current = [];
 
 data.forEach((comment)=>{
 
@@ -1038,7 +1483,7 @@ replyUnsubscribers.current=[];
   // INTERACTIONS
   
 
-      const handleLike = async (videoId) => {
+      const handleLike = (videoId) => {
   const user = auth.currentUser;
 
   if (!user) {
@@ -1050,160 +1495,19 @@ replyUnsubscribers.current=[];
   }
 
   const userId = user.uid;
+  const alreadyLiked = !!localLikes[videoId];
+  const nextLiked = !alreadyLiked;
 
-  const likeRef = doc(
-    db,
-    "all_videos",
-    videoId,
-    "likes",
-    userId
-  );
+  // =====================================================
+  // OPTIMISTIC UI:
+  // Heart RED + count dono ek hi tap par turant change.
+  // Slow network me bhi next tap latest local state use karega.
+  // =====================================================
+  pendingLikeRef.current[videoId] = true;
 
-  const videoRef = doc(
-    db,
-    "all_videos",
-    videoId
-  );
-
-const alreadyLiked = localLikes[videoId];
-
-  try {
-
-
-
-
-// UI ko turant update karo
-setLocalLikes(prev => ({
-  ...prev,
-  [videoId]: !alreadyLiked,
-}));
-
-// Likes count bhi turant change karo
-setVideos(prev =>
-  prev.map(video =>
-    video.id === videoId
-      ? {
-          ...video,
-          likes:
-            (video.likes || 0) +
-            (alreadyLiked ? -1 : 1),
-        }
-      : video
-  )
-);
-
-
-    // ===== UNLIKE =====
-    if (alreadyLiked) {
-
-     await deleteDoc(likeRef);
-
-await updateDoc(videoRef,{
-    likes:increment(-1),
-    engagementScore:increment(-5)
-});
-
-const userLikeRef = doc(
-    db,
-    "userLikes",
-    userId,
-    "likedVideos",
-    videoId
-);
-
-await deleteDoc(userLikeRef); 
-
-
-    }
-
-    // ===== LIKE =====
-    else {
-
-      await setDoc(likeRef, {
-        userId: userId,
-        createdAt: serverTimestamp()
-      });
-
-      await updateDoc(videoRef, {
-        likes: increment(1),
-        engagementScore: increment(5)
-      });
-
-    
-
-      // Notification
-      
-
-const videoSnap = await getDoc(videoRef);
-
-if(videoSnap.exists()){
-
-    const videoData = videoSnap.data();
-
-
-
-
-
-    const userLikeRef = doc(
-        db,
-        "userLikes",
-        userId,
-        "likedVideos",
-        videoId
-    );
-
-    await setDoc(userLikeRef,{
-        videoId:videoId,
-        ownerId:videoData.userId,
-        createdAt:serverTimestamp()
-    });
-
-}
-
-
-
-
-      if (videoSnap.exists()) {
-
-        const videoData = videoSnap.data();
-
-        if (videoData.userId !== user.uid) {
-
-        await addDoc(
-  collection(db, "users", videoData.userId, "notifications"),
-  {
-    type: "like",
-    isRead: false,
-    senderId: user.uid,
-    senderName: currentUserData.name,
-    senderPhoto: currentUserData.photo,
-
-    videoId: videoId, // IMPORTANT
-
-    videoCaption: videoData.caption || "",
-    videoThumbnail:
-      videoData.thumbnail ||
-      videoData.videoThumbnail ||
-      "",
-
-    createdAt: serverTimestamp()
-  }
-);
-
-        }
-
-      }
-
-    }
-
-  }
-
- catch (e) {
-
-  // Agar Firebase fail ho jaye to UI wapas previous state me aa jaye
   setLocalLikes(prev => ({
     ...prev,
-    [videoId]: alreadyLiked,
+    [videoId]: nextLiked,
   }));
 
   setVideos(prev =>
@@ -1211,21 +1515,128 @@ if(videoSnap.exists()){
       video.id === videoId
         ? {
             ...video,
-            likes:
-              (video.likes || 0) +
-              (alreadyLiked ? 1 : -1),
+            likes: Math.max(
+              0,
+              (video.likes || 0) + (nextLiked ? 1 : -1)
+            ),
           }
         : video
     )
   );
 
-  console.log("Like Error:", e);
-}
+  // Same video ke Firebase operations ko order me chalao.
+  const previousOperation =
+    likeQueueRef.current[videoId] || Promise.resolve();
 
+  const operation = previousOperation
+    .catch(() => {})
+    .then(async () => {
+      const likeRef = doc(
+        db,
+        "all_videos",
+        videoId,
+        "likes",
+        userId
+      );
+
+      const videoRef = doc(
+        db,
+        "all_videos",
+        videoId
+      );
+
+      if (nextLiked) {
+        // ===== LIKE =====
+        await setDoc(likeRef, {
+          userId: userId,
+          createdAt: serverTimestamp()
+        });
+
+        await updateDoc(videoRef, {
+          likes: increment(1),
+          engagementScore: increment(5)
+        });
+
+        const videoSnap = await getDoc(videoRef);
+
+        if (videoSnap.exists()) {
+          const videoData = videoSnap.data();
+
+          const userLikeRef = doc(
+            db,
+            "userLikes",
+            userId,
+            "likedVideos",
+            videoId
+          );
+
+          await setDoc(userLikeRef, {
+            videoId: videoId,
+            ownerId: videoData.userId,
+            createdAt: serverTimestamp()
+          });
+
+          // Notification
+          if (videoData.userId !== user.uid) {
+            await addDoc(
+              collection(
+                db,
+                "users",
+                videoData.userId,
+                "notifications"
+              ),
+              {
+                type: "like",
+                isRead: false,
+                senderId: user.uid,
+                senderName: currentUserData.name,
+                senderPhoto: currentUserData.photo,
+                videoId: videoId,
+                videoCaption: videoData.caption || "",
+                videoThumbnail:
+                  videoData.thumbnail ||
+                  videoData.videoThumbnail ||
+                  "",
+                createdAt: serverTimestamp()
+              }
+            );
+          }
+        }
+
+      } else {
+        // ===== UNLIKE =====
+        await deleteDoc(likeRef);
+
+        await updateDoc(videoRef, {
+          likes: increment(-1),
+          engagementScore: increment(-5)
+        });
+
+        const userLikeRef = doc(
+          db,
+          "userLikes",
+          userId,
+          "likedVideos",
+          videoId
+        );
+
+        await deleteDoc(userLikeRef);
+      }
+    })
+    .catch((e) => {
+      // UI ko rollback nahi karte:
+      // user ko slow network me bhi latest tap state dikhti rahe.
+      console.log("Like Firebase Error:", e);
+    })
+    .finally(() => {
+      if (likeQueueRef.current[videoId] === operation) {
+        delete pendingLikeRef.current[videoId];
+        delete likeQueueRef.current[videoId];
+      }
+    });
+
+  likeQueueRef.current[videoId] = operation;
 };
-
-
-
 
 const handleFollow = async (targetUserId) => {
   const user = auth.currentUser;
@@ -1268,7 +1679,7 @@ const handleDoubleTapLike = (videoId) => {
 
   heartTimeout.current = setTimeout(() => {
     setHeartVideoId(null);
-  }, 800);
+  }, 1000);
 
   // Agar pehle se like nahi hai tabhi like karo
   if (!localLikes[videoId]) {
@@ -1276,6 +1687,112 @@ const handleDoubleTapLike = (videoId) => {
   }
 
 };
+
+
+// ======================================================
+// STABLE CALLBACKS FOR THE MEMOIZED <VideoItem/>
+// ======================================================
+// handleLike / handleFollow / handleDoubleTapLike upar plain
+// functions hain, isliye har render par inki identity badalti hai.
+// Agar unhe directly VideoItem ko prop ki tarah diya jaye, to React.memo
+// har render par "prop badla" samajh kar poori list ko re-render kar
+// dega -- exactly wahi performance problem jo hum fix karna chahte hain.
+//
+// Fix: ref me hamesha latest function rakho, aur VideoItem ko ek
+// useCallback(..., []) wrapper do jiski identity KABHI nahi badalti.
+// Andar se wo hamesha ref.current (yaani latest version) hi call karta hai.
+const handleLikeRef = useRef(handleLike);
+handleLikeRef.current = handleLike;
+const onLike = useCallback((videoId) => handleLikeRef.current(videoId), []);
+
+const handleFollowRef = useRef(handleFollow);
+handleFollowRef.current = handleFollow;
+const onFollow = useCallback((userId) => handleFollowRef.current(userId), []);
+
+const handleDoubleTapLikeRef = useRef(handleDoubleTapLike);
+handleDoubleTapLikeRef.current = handleDoubleTapLike;
+const onDoubleTapLike = useCallback((videoId) => handleDoubleTapLikeRef.current(videoId), []);
+
+// Single tap = play/pause, double tap = like. lastTap/tapTimeout
+// refs hain (already stable), aur setPausedVideoId React ka setState
+// hai (hamesha stable), isliye ye callback bhi hamesha stable rehta hai.
+const onItemPress = useCallback((videoId) => {
+  const now = Date.now();
+
+  if (lastTap.current && (now - lastTap.current) < 300) {
+    if (tapTimeout.current) {
+      clearTimeout(tapTimeout.current);
+      tapTimeout.current = null;
+    }
+    lastTap.current = null;
+    onDoubleTapLike(videoId);
+    return;
+  }
+
+  lastTap.current = now;
+
+  tapTimeout.current = setTimeout(() => {
+    tapTimeout.current = null;
+    lastTap.current = null;
+    setPausedVideoId(prev => (prev === videoId ? null : videoId));
+  }, 300);
+}, [onDoubleTapLike]);
+
+// router.push navigation ke liye bhi wahi ref-pattern, taaki
+// expo-router ka router object badalne se bhi VideoItem re-render
+// na ho.
+const routerRef = useRef(router);
+routerRef.current = router;
+
+const onOpenProfile = useCallback((userId) => {
+  routerRef.current.push({
+    pathname: "/userProfile",
+    params: { userId },
+  });
+}, []);
+
+const onOpenMusic = useCallback((item) => {
+  routerRef.current.push({
+    pathname: "/musicDetails",
+    params: {
+      musicId: item.musicId || item.id,
+      musicName: item.songName || "Original Audio",
+      username: item.username,
+      profile: item.profile,
+      audioUrl: item.audioUrl || item.songUrl || item.musicUrl,
+    },
+  });
+}, []);
+
+// Ye sab sirf useState setters call karte hain, jo hamesha stable
+// hote hain -- isliye empty dependency array safe hai.
+const onOpenComments = useCallback((item) => {
+  setComments([]);
+  setReplies({});
+  setExpandedReplies({});
+  setReplyingTo(null);
+  setCommentsLoading(true);
+  setSelectedVideoId(item.id);
+  setSelectedVideoData({
+    username: item.username,
+    profile: item.profile,
+    caption: item.caption,
+    userId: item.userId,
+    verified: item.verified || false,
+    verifiedColor: item.verifiedColor || "",
+  });
+  setShowComments(true);
+}, []);
+
+const onOpenShare = useCallback((item) => {
+  setSelectedShareVideo(item);
+  setShowSharePopup(true);
+}, []);
+
+const onOpenStar = useCallback((videoId) => {
+  setSelectedVideoId(videoId);
+  setShowStarPopup(true);
+}, []);
 
 
 
@@ -1722,6 +2239,7 @@ await updateDoc(
 
       setCurrentIndex(index);
       setActiveVideo(index);
+      setPausedVideoId(null);
 
     });
 
@@ -1746,7 +2264,7 @@ await updateDoc(
 }).current;
 
 // ==========================
-// PRELOAD NEXT 10 VIDEOS
+// PRELOAD NEXT 5 VIDEOS
 // ==========================
 useEffect(() => {
 
@@ -1754,7 +2272,7 @@ useEffect(() => {
     return;
   }
 
-  // Last se 3 videos pehle next page load
+  // Last 3 videos se pehle next 5 videos background me load
   if (
     currentIndex >= videos.length - 3 &&
     hasMoreVideos &&
@@ -1782,451 +2300,59 @@ useEffect(() => {
 
 
 const renderItem = useCallback(({ item, index }) => {
-
-
+  // FIX: yahan sirf is ek item ke liye zaroori booleans/values
+  // compute ho rahe hain, aur heavy JSX ab memoized <VideoItem/>
+  // ke andar hai. Isse sirf wahi row re-render hoti hai jiska
+  // data sach me badla, poori list nahi.
+  const isVideoActive = isFocused && activeVideo === index && pausedVideoId !== item.id;
+  const shouldRenderVideo = index >= currentIndex - 1 && index <= currentIndex + 2;
 
   return (
-  <TouchableOpacity
-    activeOpacity={1}
-    style={{ width, height: height, backgroundColor: '#000' }}
-    onPress={() => {
-
-      const now = Date.now();
-
-    if (lastTap.current && (now - lastTap.current) < 300) {
-
-  handleDoubleTapLike(item.id);
-
-}
-
-      lastTap.current = now;
-
-    }}
-  >
-
-{
-Math.abs(currentIndex - index) <= 2 ? (
-
-<FeedVideo
-  uri={item.videoUrl || item.video}
-  active={isFocused && activeVideo === index}
-/>
-
-) : (
-
-<View
-style={{
-width,
-height,
-backgroundColor:"#000"
-}}
-/>
-
-)
-}
-
-
-{
-  heartVideoId === item.id && (
-
-    <View style={styles.heartPopup}>
-
-     <Ionicons
-  name="heart"
-  size={140}
-  color="#ff004f"
-/>
-
-    </View>
-
-  )
-}
-
-
-
-
-
-{
-  starAnimationVideoId === item.id && (
-
-    <View
-      style={{
-        position: "absolute",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-
-        justifyContent: "center",
-        alignItems: "center",
-
-        zIndex: 99999,
-        elevation: 99999,
-      }}
-      pointerEvents="none"
-    >
-
-      <Animated.Image
-
-source={require("../../assets/star-logo.png")}
-
-style={{
-
-width:170,
-
-height:170,
-
-opacity:starOpacity,
-
-transform:[
-
-{
-translateY:starJump
-},
-
-{
-scale:starScale
-},
-
-{
-rotateZ:starRotate.interpolate({
-inputRange:[0,1],
-outputRange:["0deg","720deg"]
-})
-},
-
-{
-rotateY:starTilt.interpolate({
-inputRange:[0,0.5,1],
-outputRange:["0deg","180deg","360deg"]
-})
-},
-
-{
-rotateX:starTilt.interpolate({
-inputRange:[0,0.5,1],
-outputRange:["0deg","25deg","0deg"]
-})
-}
-
-],
-
-shadowColor:"#FFD700",
-
-shadowOpacity:1,
-
-shadowRadius:35,
-
-elevation:35,
-
-resizeMode:"contain",
-
-}}
-
- />
-
-    </View>
-
-  )
-}
-
-
-
-
-
-
-
-
-
-        <View style={styles.overlay} />
-
-        <View style={styles.bottomLeft}>
-          
- 
- <View style={styles.userRow}>
-
-  <Text style={styles.userName}>
-    {item.username || "@user"}
-  </Text>
-
-  {item.verified && (
-    <View style={styles.badge}>
-    
-<MaterialCommunityIcons
-  name="check-decagram"
-  size={17}
-  color={
-    item?.verifiedColor === "yellow"
-      ? "#FFD700"
-      : "#ffffff"
-  }
-/>
-
-
-      <Ionicons
-        name="checkmark"
-        size={10}
-        color="#131212"
-        style={styles.badgeTick}
-      />
-    </View>
-  )}
-
-</View>
-
-
-
-          <Text style={styles.caption}>{item.caption}</Text>
-          
-
-
-   
-<TouchableOpacity
-  style={styles.musicRow}
-  activeOpacity={0.8}
-  onPress={() =>
-    router.push({
-      pathname: "/musicDetails",
-      params: {
-        musicId: item.musicId || item.id,
-        musicName: item.songName || "Original Audio",
-        username: item.username,
-        profile: item.profile,
-          audioUrl: item.audioUrl || item.songUrl || item.musicUrl,
-      },
-    })
-  }
->
-
-
-  <Animated.View
-    style={[
-      styles.musicDiscOuter,
-      {
-        transform: [
-          {
-            rotate: rotateAnim.interpolate({
-              inputRange: [0, 1],
-              outputRange: ["0deg", "360deg"],
-            }),
-          },
-        ],
-      },
-    ]}
-  >
-
-    {/* Black Disc */}
-    <View style={styles.vinylDisc}>
-
-      {/* Center Profile */}
-      <Image
-        source={{
-          uri:
-            item.profile ||
-            "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
-        }}
-        style={styles.musicCenterImage}
-      />
-
-      {/* Center Dot */}
-      <View style={styles.musicDot} />
-
-    </View>
-
-  </Animated.View>
-
- <View
-style={styles.musicTextContainer}
->
-
-<Animated.Text
-
-style={[
-styles.musicText,
-{
-transform:[
-{
-translateX:textAnim
-}
-]
-}
-]}
-
-numberOfLines={1}
-
->
-
-🎵 Music • {item.username} • Original Audio 
-
-</Animated.Text>
-
-</View>
-
-
-</TouchableOpacity>
-
-
-
-        </View>
-
-        <View style={styles.rightIcons}>
-        
-
-
-<View style={[styles.iconBox,{marginBottom:18}]}>
-
-  {/* Profile */}
-  <TouchableOpacity
-    onPress={() =>
-      router.push({
-        pathname: "/userProfile",
-        params: {
-          userId: item.userId,
-        },
-      })
-    }
-  >
-
-    <Image
-      source={{
-        uri:
-          item.profile ||
-          "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
-      }}
-      style={styles.profileImage}
+    <VideoItem
+      item={item}
+      index={index}
+      shouldRenderVideo={shouldRenderVideo}
+      isVideoActive={isVideoActive}
+      showHeart={heartVideoId === item.id}
+      showStar={starAnimationVideoId === item.id}
+      isLiked={!!localLikes[item.id]}
+      isFollowing={!!followingUsers[item.userId]}
+      rotateAnim={rotateAnim}
+      textAnim={textAnim}
+      starScale={starScale}
+      starOpacity={starOpacity}
+      starRotate={starRotate}
+      starJump={starJump}
+      starTilt={starTilt}
+      onItemPress={onItemPress}
+      onLike={onLike}
+      onFollow={onFollow}
+      onOpenComments={onOpenComments}
+      onOpenShare={onOpenShare}
+      onOpenStar={onOpenStar}
+      onOpenProfile={onOpenProfile}
+      onOpenMusic={onOpenMusic}
     />
-
-  </TouchableOpacity>
-
-  {/* Plus Button */}
-  {
-    auth.currentUser?.uid !== item.userId &&
-    !followingUsers[item.userId] && (
-
-      <TouchableOpacity
-        style={styles.plusIconSmall}
-        onPress={() => handleFollow(item.userId)}
-      >
-
-        <Ionicons
-          name="add"
-          size={12}
-          color="#000"
-        />
-
-      </TouchableOpacity>
-
-    )
-  }
-
-</View>
-
-
-          <TouchableOpacity style={styles.iconBox} onPress={() => handleLike(item.id)}>
-            <Ionicons name="heart" size={40} color={localLikes[item.id] ? "red" : "white"} />
-
-<Text style={styles.iconText}>
-  {item.likes || 0}
-</Text>
-
-          </TouchableOpacity>
-
-   
-
-<TouchableOpacity
-  style={styles.iconBox}
-
-  onPress={() => {
-
-    // पुराने comments साफ
-    setComments([]);
-
-    // पुराने replies साफ
-    setReplies({});
-
-    // पुराने expanded replies साफ
-    setExpandedReplies({});
-
-    // reply mode बंद
-    setReplyingTo(null);
-
-    // loading चालू
-    setCommentsLoading(true);
-
-
-    // नया video select
-    setSelectedVideoId(item.id);
-
-
-    // comment header data
-    setSelectedVideoData({
-
-      username: item.username,
-
-      profile: item.profile,
-
-      caption: item.caption,
-
-      userId: item.userId,
-
-      verified: item.verified || false,
-
-      verifiedColor: item.verifiedColor || "",
-
-    });
-
-
-    // comment popup open
-    setShowComments(true);
-
-
-  }}
->
-
-
-            <Ionicons name="chatbubble" size={35} color="#ffffff" />
-            <Text style={styles.iconText}>{item.commentsCount || 0}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-  style={styles.iconBox}
-  onPress={() => {
-    setSelectedShareVideo(item);
-    setShowSharePopup(true);
-  }}
->
-            <Ionicons name="arrow-redo" size={38} color="#ffffff" />
-            <Text style={styles.iconText}>{item.shares || 0}</Text>
-          </TouchableOpacity>
-
-         
-
-          {/* STAR LOGIC WITH TEXT BELOW */}
-          <TouchableOpacity
-  style={styles.iconBox}
-  onPress={() => {
-    setSelectedVideoId(item.id);
-    setShowStarPopup(true);
-  }}
->
-  <Image
-    source={require('../../assets/star-logo.png')}
-    style={styles.starImage}
-  />
-  <Text style={styles.starUpText}>StarUp</Text>
-</TouchableOpacity>
-        </View>
-     </TouchableOpacity>
-    );
- 
+  );
 },[
-activeVideo,
-currentIndex,
-isFocused,
-localLikes,
-followingUsers,
-starAnimationVideoId
+  activeVideo,
+  currentIndex,
+  isFocused,
+  pausedVideoId,
+  heartVideoId,
+  starAnimationVideoId,
+  localLikes,
+  followingUsers,
+  onItemPress,
+  onLike,
+  onFollow,
+  onOpenComments,
+  onOpenShare,
+  onOpenStar,
+  onOpenProfile,
+  onOpenMusic,
 ]);
+
 
   if (loading) return <View style={styles.loadingBox}><ActivityIndicator size="large" color="#f1c40f" /></View>;
 
@@ -2261,6 +2387,7 @@ disableIntervalMomentum={true}
           />
         }
 
+        removeClippedSubviews={true}
         windowSize={5}
 initialNumToRender={2}
 maxToRenderPerBatch={2}
@@ -2270,7 +2397,7 @@ minIndexForVisible:0
 }}
 
 scrollEventThrottle={8}
-
+    
 disableVirtualization={false}
 
 

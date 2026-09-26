@@ -32,7 +32,19 @@ import { useNavigation } from "@react-navigation/native";
 // FIREBASE
 import { db, auth } from './firebaseConfig'; // 'auth' import kiya
 
-import { collection, addDoc, serverTimestamp, doc, getDoc } from 'firebase/firestore';
+import {
+  collection,
+  addDoc,
+  serverTimestamp,
+  doc,
+  getDoc,
+  setDoc,
+  increment,
+  getDocs,
+  query,
+  orderBy,
+  limit,
+} from 'firebase/firestore';
 
 export default function PostPage() {
 
@@ -51,9 +63,6 @@ const audioUrl =
     ? params.audioUrl[0]
     : params.audioUrl;
 
-console.log("POST audioUrl =", audioUrl);
-
-
 const musicName =
   Array.isArray(params.musicName)
     ? params.musicName[0]
@@ -68,6 +77,18 @@ const musicImage =
   Array.isArray(params.musicImage)
     ? params.musicImage[0]
     : params.musicImage;
+
+// Preserve the selected sound identity in the published reel.  This lets
+// later viewers open the same sound rather than a duplicate "original" one.
+const musicId =
+  Array.isArray(params.musicId)
+    ? params.musicId[0]
+    : params.musicId || "";
+
+const videoEffect =
+  Array.isArray(params.videoEffect)
+    ? params.videoEffect[0]
+    : params.videoEffect || "none";
 
 
 
@@ -96,11 +117,37 @@ const subtitleY =
     ? params.subtitleY[0]
     : params.subtitleY || "0";
 
+const subtitleXRatio =
+  Array.isArray(params.subtitleXRatio)
+    ? params.subtitleXRatio[0]
+    : params.subtitleXRatio || "0";
 
-console.log("SUBTITLE TEXT =", subtitleText);
-console.log("SUBTITLE COLOR =", subtitleColor);
-console.log("SUBTITLE SIZE =", subtitleSize);
-console.log("SUBTITLE POSITION =", subtitleX, subtitleY);
+const subtitleYRatio =
+  Array.isArray(params.subtitleYRatio)
+    ? params.subtitleYRatio[0]
+    : params.subtitleYRatio || "0";
+
+const subtitleSizeRatio =
+  Array.isArray(params.subtitleSizeRatio)
+    ? params.subtitleSizeRatio[0]
+    : params.subtitleSizeRatio || "0.03";
+
+const voiceUri =
+  Array.isArray(params.voiceUri)
+    ? params.voiceUri[0]
+    : params.voiceUri || "";
+
+const voiceDuration =
+  Array.isArray(params.voiceDuration)
+    ? params.voiceDuration[0]
+    : params.voiceDuration || "0";
+
+const videoDuration =
+  Array.isArray(params.videoDuration)
+    ? params.videoDuration[0]
+    : params.videoDuration || "0";
+
+
 
 
 
@@ -152,6 +199,9 @@ useEffect(() => {
 }, []);
   // STATES
   const [caption, setCaption] = useState('');
+  const [hashtagModal, setHashtagModal] = useState(false);
+  const [hashtagQuery, setHashtagQuery] = useState('');
+  const [hashtags, setHashtags] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [visibility, setVisibility] = useState('public');
@@ -189,7 +239,35 @@ useEffect(() => {
   
 
   // HANDLE POST
+  const extractHashtags = (text = "") => {
+    const found = text.match(/#[\\p{L}\\p{N}_]+/gu) || [];
+    return [...new Set(found.map((tag) => tag.slice(1).toLowerCase()))];
+  };
+
+  const usedHashtags = extractHashtags(caption);
+
+  const openHashtags = async () => {
+    setHashtagModal(true);
+    try {
+      const snap = await getDocs(query(collection(db, "hashtags"), orderBy("uses", "desc"), limit(50)));
+      setHashtags(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    } catch (e) { console.log("Hashtag list:", e); }
+  };
+
+  const selectHashtag = (tag) => {
+    const clean = String(tag || "").replace(/^#/, "");
+    if (!clean) return;
+    const separator = caption.trim().length ? " " : "";
+    setCaption((prev) => `${prev}${separator}#${clean} `);
+    setHashtagModal(false);
+  };
+
   const handlePostNow = async () => {
+    // Prevent accidental double-taps from starting two upload jobs.
+    if (uploading) {
+      return;
+    }
+
     const user = auth.currentUser;
 
 
@@ -201,12 +279,7 @@ useEffect(() => {
       Alert.alert('Error', 'Video select karo');
       return;
     }
-    if (!caption.trim()) {
-      Alert.alert('Caption Required', 'Caption likho');
-      return;
-    }
 
-    
 
     try {
       setUploading(true);
@@ -216,121 +289,262 @@ useEffect(() => {
 
 
 let finalVideo = videoUri;
+let thumbnailUrl = "";
 
 const token = await auth.currentUser.getIdToken();
 
 const API = "https://topking-backend.onrender.com";
 
+const hasMusic =
+  typeof audioUrl === "string" &&
+  audioUrl.trim() !== "";
 
-// ✅ SONG HAI TO MERGE KARO
-if (audioUrl && audioUrl.trim() !== "") {
+const hasVoice =
+  typeof voiceUri === "string" &&
+  voiceUri.trim() !== "";
 
-  console.log("🎵 Song found, merging started");
+const hasSubtitle =
+  typeof subtitleText === "string" &&
+  subtitleText.trim() !== "";
 
+const hasEffect =
+  typeof videoEffect === "string" &&
+  videoEffect !== "none";
 
-  const mergeForm = new FormData();
+const needsProcessing =
+  hasMusic ||
+  hasVoice ||
+  hasSubtitle ||
+  hasEffect;
 
-  mergeForm.append("video", {
-    uri: videoUri,
+if (needsProcessing) {
+  console.log(
+    "🎬 Processing edited reel:",
+    {
+      music: hasMusic,
+      voice: hasVoice,
+      subtitle: hasSubtitle,
+      effect: videoEffect,
+    }
+  );
+
+  setProgress(5);
+
+  const processForm = new FormData();
+
+  processForm.append("video", {
+    uri:
+      Platform.OS === "android"
+        ? videoUri
+        : String(videoUri).replace("file://", ""),
     type: "video/mp4",
     name: "video.mp4",
   });
 
+  // The backend uses this to trim a longer selected sound to the actual
+  // recorded/edited reel duration.
+  processForm.append("videoDuration", String(videoDuration || "0"));
 
-  mergeForm.append(
-    "audioUrl",
-    audioUrl
+  if (hasEffect) {
+    processForm.append(
+      "videoEffect",
+      videoEffect
+    );
+  }
+
+  if (hasMusic) {
+    processForm.append(
+      "audioUrl",
+      audioUrl
+    );
+  }
+
+  if (hasVoice) {
+    processForm.append("voice", {
+      uri:
+        Platform.OS === "android"
+          ? voiceUri
+          : String(voiceUri).replace("file://", ""),
+      type: "audio/mp4",
+      name: "voice.m4a",
+    });
+
+    processForm.append(
+      "voiceDuration",
+      String(voiceDuration || "0")
+    );
+  }
+
+  if (hasSubtitle) {
+    processForm.append(
+      "subtitleText",
+      subtitleText
+    );
+
+    processForm.append(
+      "subtitleColor",
+      subtitleColor || "#FFFFFF"
+    );
+
+    processForm.append(
+      "subtitleXRatio",
+      String(subtitleXRatio || "0")
+    );
+
+    processForm.append(
+      "subtitleYRatio",
+      String(subtitleYRatio || "0")
+    );
+
+    processForm.append(
+      "subtitleSizeRatio",
+      String(subtitleSizeRatio || "0.03")
+    );
+  }
+
+  const processResponse =
+    await axios.post(
+      `${API}/merge`,
+      processForm,
+      {
+        headers: {
+          "Content-Type":
+            "multipart/form-data",
+          Authorization:
+            `Bearer ${token}`,
+        },
+
+        timeout:
+          5 * 60 * 1000,
+
+        onUploadProgress:
+          (event) => {
+            if (
+              event.total &&
+              event.loaded
+            ) {
+              const uploadedPercent =
+                Math.round(
+                  (event.loaded * 70) /
+                    event.total
+                );
+
+              setProgress(
+                Math.min(
+                  70,
+                  Math.max(
+                    5,
+                    uploadedPercent
+                  )
+                )
+              );
+            }
+          },
+      }
+    );
+
+  if (
+    !processResponse.data?.success ||
+    !processResponse.data?.video
+  ) {
+    throw new Error(
+      processResponse.data?.error ||
+      "Video processing failed"
+    );
+  }
+
+  finalVideo =
+    processResponse.data.video;
+
+  thumbnailUrl =
+    processResponse.data.thumbnailUrl ||
+    "";
+
+  setProgress(85);
+
+  console.log(
+    "✅ Edited video ready:",
+    finalVideo
   );
+} else {
+  console.log(
+    "🎬 No server-side edits, direct upload"
+  );
+}
 
+let uploadedVideo = finalVideo;
 
-  const mergeResponse = await axios.post(
-    `${API}/merge`,
-    mergeForm,
+if (!needsProcessing) {
+  const formData = new FormData();
+
+  formData.append("video", {
+    uri:
+      Platform.OS === "android"
+        ? finalVideo
+        : finalVideo.replace("file://", ""),
+    type: "video/mp4",
+    name: "reel.mp4",
+  });
+
+  const response = await axios.post(
+    `${API}/upload-video`,
+    formData,
     {
-      headers:{
-        "Content-Type":"multipart/form-data",
-        Authorization:`Bearer ${token}`,
+      headers: {
+        "Content-Type":
+          "multipart/form-data",
+        Authorization:
+          `Bearer ${token}`,
       },
+
+      timeout:
+        5 * 60 * 1000,
+
+      onUploadProgress:
+        (event) => {
+          if (
+            event.total &&
+            event.loaded
+          ) {
+            setProgress(
+              Math.round(
+                (event.loaded * 100) /
+                  event.total
+              )
+            );
+          }
+        },
     }
   );
 
-
-  finalVideo = mergeResponse.data.video;
-
-
-  console.log(
-    "✅ Merge complete:",
-    finalVideo
-  );
-
-
-}
-
-
-// ✅ SONG NAHI HAI TO DIRECT UPLOAD
-else {
-
-  console.log(
-    "🎬 No song, direct upload"
-  );
-
-  finalVideo = videoUri;
-
-}
-
-
-
-
-const formData = new FormData();
-
-formData.append("video", {
-  uri:
-    Platform.OS === "android"
-      ? finalVideo
-      : finalVideo.replace("file://", ""),
-  type: "video/mp4",
-  name: "reel.mp4",
-});
-
-
-const response = await axios.post(
-  `${API}/upload-video`,
-  formData,
-  {
-    headers: {
-      "Content-Type": "multipart/form-data",
-      Authorization: `Bearer ${token}`,
-    },
-
-    onUploadProgress: (event) => {
-      const percent = Math.round(
-        (event.loaded * 100) / event.total
-      );
-      setProgress(percent);
-    },
+  if (
+    !response.data?.success ||
+    !response.data?.videoUrl
+  ) {
+    throw new Error(
+      response.data?.error ||
+      "Video upload failed"
+    );
   }
-);
 
+  uploadedVideo =
+    response.data.videoUrl;
 
-const uploadedVideo =
-  response.data.videoUrl;
+  thumbnailUrl =
+    response.data.thumbnailUrl ||
+    "";
+}
 
-const thumbnailUrl =
-  response.data.thumbnailUrl;
-
-console.log(
-  "🔥 UPLOAD RESPONSE =",
-  JSON.stringify(response.data, null, 2)
-);
+setProgress(100);
 
 console.log(
-  "🔥 VIDEO URL =",
-  response.data.videoUrl
+  "🔥 FINAL VIDEO URL =",
+  uploadedVideo
 );
 
 console.log(
-  "🔥 THUMBNAIL URL =",
-  response.data.thumbnailUrl
+  "🔥 FINAL THUMB URL =",
+  thumbnailUrl
 );
 
 
@@ -354,9 +568,17 @@ console.log(
 
   videoUrl: uploadedVideo,
 
+  musicId: musicId || "",
+
   audioUrl: audioUrl || originalAudioUrl,
 
   musicName:
+    musicName ||
+    `${userData?.name}'s Original Audio`,
+
+  // Older feed components read songName; writing both names keeps the
+  // selected sound label intact across existing Reel screens.
+  songName:
     musicName ||
     `${userData?.name}'s Original Audio`,
 
@@ -397,14 +619,48 @@ console.log(
   thumbnail: thumbnailUrl || uploadedVideo,
 
   verified: userData?.verified || false,
+
+  // Keep the editing choices with the post metadata.
+  hasMusic,
+  hasVoice,
+  hasSubtitle,
+  videoEffect:
+    videoEffect || "none",
+  subtitleText: hasSubtitle
+    ? subtitleText
+    : "",
+  subtitleColor: hasSubtitle
+    ? subtitleColor
+    : "",
+  subtitleX: hasSubtitle
+    ? subtitleX
+    : "",
+  subtitleY: hasSubtitle
+    ? subtitleY
+    : "",
+  hashtags: usedHashtags.map((tag) => `#${tag}`),
 };
 
   await addDoc(collection(db, 'all_videos'), videoData);
+
+  await Promise.all(
+    usedHashtags.map((tag) =>
+      setDoc(
+        doc(db, "hashtags", tag),
+        { name: `#${tag}`, uses: increment(1), lastUsedAt: serverTimestamp() },
+        { merge: true }
+      )
+    )
+  );
 
 
 console.log("UPLOAD URL =", `${API}/upload-video`);
 
 
+// A selected library sound already has a songs document. Do not create a
+// duplicate each time somebody makes a Reel with it. Videos without a chosen
+// sound still publish their own original audio to the music library.
+if (!hasMusic || !musicId) {
 await addDoc(collection(db, "songs"), {
 
   title:
@@ -435,13 +691,14 @@ await addDoc(collection(db, "songs"), {
     serverTimestamp(),
 
 });
+}
 
 
 setUploading(false);
 
 Alert.alert(
-  "Success ✅",
-  "Reel Successfully Posted",
+  "Video Upload Successful ✅",
+  "Aapka video successfully upload ho gaya hai.",
   [
     {
       text: "OK",
@@ -527,7 +784,7 @@ onPress={() => {
               <VideoView
   player={player}
   style={styles.video}
-  contentFit="cover"
+  contentFit="contain"
   nativeControls={false}
 />
               </View>
@@ -558,9 +815,7 @@ onPress={() => {
 <View style={styles.hashContainer}>
   <TouchableOpacity
     style={styles.hashBtn}
-    onPress={() => {
-      setCaption((prev) => prev + " #");
-    }}
+    onPress={openHashtags}
   >
     <Ionicons
       name="pricetag"
@@ -578,6 +833,47 @@ onPress={() => {
               </View>
             </View>
           </View>
+
+          <Modal
+            visible={hashtagModal}
+            transparent
+            animationType="slide"
+            onRequestClose={() => setHashtagModal(false)}
+          >
+            <View style={styles.hashModalBackdrop}>
+              <View style={styles.hashModal}>
+                <View style={styles.hashModalHeader}>
+                  <Text style={styles.hashModalTitle}>Hashtags</Text>
+                  <TouchableOpacity onPress={() => setHashtagModal(false)}>
+                    <Ionicons name="close" size={26} color="#fff" />
+                  </TouchableOpacity>
+                </View>
+                <TextInput
+                  value={hashtagQuery}
+                  onChangeText={setHashtagQuery}
+                  placeholder="Search hashtag..."
+                  placeholderTextColor="#888"
+                  style={styles.hashSearch}
+                  autoCapitalize="none"
+                />
+                <FlatList
+                  data={hashtags.filter((h) =>
+                    !hashtagQuery.trim() ||
+                    String(h.name || "").toLowerCase().includes(hashtagQuery.toLowerCase())
+                  )}
+                  keyExtractor={(item) => item.id}
+                  keyboardShouldPersistTaps="handled"
+                  renderItem={({ item }) => (
+                    <TouchableOpacity style={styles.hashRow} onPress={() => selectHashtag(item.name)}>
+                      <Text style={styles.hashName}>{item.name}</Text>
+                      <Text style={styles.hashUses}>{Number(item.uses || 0)} uses</Text>
+                    </TouchableOpacity>
+                  )}
+                  ListEmptyComponent={<Text style={styles.emptyHash}>No hashtags yet.</Text>}
+                />
+              </View>
+            </View>
+          </Modal>
 
           {/* UPLOAD PROGRESS */}
           {uploading && (
@@ -724,6 +1020,69 @@ hashText: {
   marginLeft: 8,
   fontWeight: "600",
 },
+
+hashModalBackdrop: {
+  flex: 1,
+  backgroundColor: 'rgba(0,0,0,0.65)',
+  justifyContent: 'flex-end',
+},
+
+hashModal: {
+  backgroundColor: '#181818',
+  borderTopLeftRadius: 25,
+  borderTopRightRadius: 25,
+  padding: 20,
+  height: '50%',
+},
+
+hashModalHeader: {
+  flexDirection: 'row',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  marginBottom: 15,
+},
+
+hashModalTitle: {
+  color: '#fff',
+  fontSize: 18,
+  fontWeight: '700',
+},
+
+hashSearch: {
+  backgroundColor: '#252525',
+  color: '#fff',
+  borderRadius: 12,
+  paddingHorizontal: 14,
+  paddingVertical: 12,
+  marginBottom: 12,
+},
+
+hashRow: {
+  flexDirection: 'row',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  paddingVertical: 14,
+  borderBottomWidth: 0.5,
+  borderBottomColor: '#333',
+},
+
+hashName: {
+  color: '#fff',
+  fontSize: 15,
+  fontWeight: '600',
+},
+
+hashUses: {
+  color: '#888',
+  fontSize: 12,
+},
+
+emptyHash: {
+  color: '#777',
+  textAlign: 'center',
+  paddingVertical: 20,
+},
+
 
 
 });
