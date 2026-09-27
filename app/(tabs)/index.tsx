@@ -66,6 +66,11 @@ import { db } from '../firebaseConfig';
 
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
 
+// Background reel-upload progress (post.tsx isko start karta hai,
+// ye screen sirf isko "sunti" hai — jahan bhi user ho, yahi dikhega)
+// File app/ ke BAHAR services/upload/ me hai, isliye '@/...' alias use kiya.
+import { useUploadState } from '@/services/upload/uploadManager';
+
 
 
 const { height, width } = Dimensions.get('screen');
@@ -137,6 +142,54 @@ mounted=false;
 }
 
 );
+
+
+// ======================================================
+// UploadStatusBadge — background reel-upload progress pill
+// ======================================================
+// FIX (performance): isse jaan-boojh kar ek alag, standalone
+// component me rakha gaya hai jiska koi prop nahi hai. `useUploadState`
+// hook ke andar ka `useState` isi component ke fiber se juda hota
+// hai — matlab jab bhi upload % badle (jo network chunk ke hisaab se
+// baar-baar ho sakta hai), sirf ye chhota badge re-render hota hai,
+// bhaari `BottomNav` (poora reels FlatList wala parent) bilkul touch
+// nahi hota. Isse feed scroll karte waqt kabhi lag/jhatka mehsoos
+// nahi hoga.
+const UploadStatusBadge = memo(function UploadStatusBadge() {
+  const uploadState = useUploadState();
+
+  if (
+    !uploadState.uploading &&
+    !uploadState.justCompleted &&
+    !uploadState.error &&
+    !uploadState.retrying
+  ) {
+    return null;
+  }
+
+  return (
+    <View style={styles.uploadBadge} pointerEvents="none">
+      {uploadState.error ? (
+        <Text style={styles.uploadBadgeErrorText} numberOfLines={1}>
+          ⚠️ Upload failed
+        </Text>
+      ) : uploadState.retrying ? (
+        <Text style={styles.uploadBadgeText} numberOfLines={1}>
+          🔄 Retrying...
+        </Text>
+      ) : uploadState.justCompleted ? (
+        <Text style={styles.uploadBadgeText}>✅ Posted</Text>
+      ) : (
+        <>
+          <Text style={styles.uploadBadgeText}>{uploadState.progress}%</Text>
+          <View style={styles.uploadBadgeTrack}>
+            <View style={[styles.uploadBadgeFill, { width: `${uploadState.progress}%` }]} />
+          </View>
+        </>
+      )}
+    </View>
+  );
+});
 
 
 // ======================================================
@@ -2359,8 +2412,11 @@ const renderItem = useCallback(({ item, index }) => {
   return (
     <View style={styles.fullScreenOverlay}>
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
-      
 
+      {/* BACKGROUND REEL UPLOAD — top-left percent indicator.
+          Standalone component below re-renders on its own; ye line
+          poore feed ko touch nahi karti. */}
+      <UploadStatusBadge />
 
 
 
@@ -3452,6 +3508,42 @@ translateY:Animated.multiply(keyboardHeight,-1)
 }
 
 const styles = StyleSheet.create({
+  uploadBadge: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 55 : 40,
+    left: 14,
+    zIndex: 1000,
+    elevation: 20,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    minWidth: 74,
+  },
+  uploadBadgeText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  uploadBadgeErrorText: {
+    color: '#ff5e5e',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  uploadBadgeTrack: {
+    width: 60,
+    height: 4,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    overflow: 'hidden',
+  },
+  uploadBadgeFill: {
+    height: '100%',
+    borderRadius: 4,
+    backgroundColor: '#FF5E00',
+  },
+
   loadingBox: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
   fullScreenOverlay: { flex: 1, backgroundColor: '#000' },
   video: {

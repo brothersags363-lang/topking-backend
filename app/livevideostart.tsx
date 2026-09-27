@@ -23,6 +23,7 @@ import {
   doc,
   getDoc,
   setDoc,
+  serverTimestamp,
 } from "firebase/firestore";
 
 import { db } from "./firebaseConfig";
@@ -128,64 +129,74 @@ const pickCover = async () => {
 const startLive =
 async () => {
 
+if (!userData.userId) return;
+
+const roomId =
+`video_${userData.userId}_${Date.now()}`;
+
 const liveData = {
 
-liveId:
-Date.now()
-.toString(),
-
-userId:
+hostId:
 userData.userId,
 
-username:
-userData.username,
+hostName:
+userData.username || "Host",
 
-profile:
-userData.profile,
+hostImg:
+userData.profile || "",
 
 title:
-title,
+title || "Live Broadcast",
 
-coverImage:
-coverImage,
+roomCover:
+coverImage || userData.profile || "",
 
-viewers:0,
+type: "video",
 
-likes:0,
+roomType: "public",
 
-gifts:0,
+status: "active",
+
+category: "LIVE",
+
+joinedUsers: [],
+
+viewers: 0,
+
+likes: 0,
+
+gifts: 0,
 
 createdAt:
-Date.now(),
+serverTimestamp(),
 
-isLive:true,
+lastHeartbeat:
+serverTimestamp(),
 
-isHost:true,
 };
 
 await setDoc(
 
 doc(
 db,
-"live_rooms",
-liveData.liveId
+"rooms",
+roomId
 ),
 
 liveData
 
 );
 
-router.push({
+router.replace({
 
 pathname:
 "/videolive",
 
 params:{
 
-liveData:
-JSON.stringify(
-liveData
-),
+id: roomId,
+
+role: "host",
 
 },
 
@@ -227,7 +238,7 @@ if (!permission.granted) {
       <StatusBar barStyle="light-content" backgroundColor="#000" />
 
       {/* Close Button */}
-      <TouchableOpacity style={styles.closeBtn}>
+      <TouchableOpacity style={styles.closeBtn} onPress={() => router.back()}>
         <Ionicons name="close" size={28} color="#fff" />
       </TouchableOpacity>
 
@@ -237,7 +248,12 @@ if (!permission.granted) {
 
 <View
 style={styles.preview}
-/>
+>
+  <CameraView
+    style={StyleSheet.absoluteFill}
+    facing="front"
+  />
+</View>
 
         {/* Blur Overlay */}
         <View style={styles.overlay} />

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState, memo } from "react";
 
 
 import {
@@ -11,7 +11,7 @@ TextInput,
 Alert,
 ScrollView,
 Modal,
-FlatList,
+ActivityIndicator,
  BackHandler,
 } from "react-native";
 
@@ -40,54 +40,8 @@ import {
 } from "@expo/vector-icons";
 
 
-export default function Agency(){
-
-  const router = useRouter();
-
-  // =========================
-  // MOBILE HARDWARE BACK
-  // =========================
-
-  useEffect(() => {
-
-    const backAction = () => {
-
-      router.back();
-
-      return true;
-
-    };
-
-
-    const subscription =
-      BackHandler.addEventListener(
-        "hardwareBackPress",
-        backAction
-      );
-
-
-    return () => {
-      subscription.remove();
-    };
-
-  }, [router]);
-
-
-  const [agency,setAgency]=useState(null);
-
-const [hostUsername,setHostUsername]=useState("");
-
-const [newAgencyName,setNewAgencyName]=useState("");
-
-const [editVisible,setEditVisible]=useState(false);
-
-const [hostVisible,setHostVisible]=useState(false);
-
-const [newLogo,setNewLogo]=useState("");
-
-const [hosts,setHosts]=useState([]);
-
-
+// PERF FIX: getLevelTheme koi component state use nahi karta, isliye ise
+// component ke bahar nikaal diya -> ab ye har render par dobara nahi banta.
 const getLevelTheme = (level) => {
 
   if(level>=50){
@@ -144,6 +98,149 @@ const getLevelTheme = (level) => {
 
 };
 
+// PERF FIX: pehle ye pura card FlatList ke renderItem ke andar inline
+// define tha (naya function har render par), aur FlatList khud ek
+// scrollEnabled=false list the andar ek ScrollView ke - jo React Native me
+// "VirtualizedList nested inside ScrollView" warning aur extra overhead
+// deta hai. Ab simple memoized row hai jo sirf apne item/level change hone
+// par re-render hoti hai.
+const HostRow = memo(function HostRow({ item, onRemove }) {
+  const theme = getLevelTheme(item.level);
+
+  return (
+    <View style={styles.hostCard}>
+      <Image
+        source={{
+          uri:
+            item.profileImg ||
+            "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
+        }}
+        style={styles.hostImage}
+      />
+
+      <View style={{ flex: 1, marginLeft: 15, justifyContent: "center" }}>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <Text style={styles.hostName}>{item.username}</Text>
+
+          {item.verified && (
+            <View
+              style={{
+                marginLeft: 5,
+                width: 18,
+                height: 18,
+                justifyContent: "center",
+                alignItems: "center",
+                position: "relative",
+              }}
+            >
+              <MaterialCommunityIcons
+                name="check-decagram"
+                size={18}
+                color={item.verifiedColor === "yellow" ? "#FFD700" : "#ffffff"}
+              />
+
+              <Ionicons
+                name="checkmark"
+                size={10}
+                color="#131212"
+                style={{ position: "absolute", top: 4.5, left: 4.2 }}
+              />
+            </View>
+          )}
+
+          <View
+            style={{
+              marginLeft: 8,
+              backgroundColor: theme.bg,
+              borderColor: theme.border,
+              borderWidth: 1,
+              borderRadius: 18,
+              paddingHorizontal: 10,
+              paddingVertical: 4,
+              flexDirection: "row",
+              alignItems: "center",
+            }}
+          >
+            <MaterialCommunityIcons
+              name="diamond-stone"
+              size={13}
+              color={theme.icon}
+            />
+
+            <Text
+              style={{
+                marginLeft: 4,
+                fontWeight: "bold",
+                fontSize: 12,
+                color: theme.text,
+              }}
+            >
+              LV {item.level}
+            </Text>
+          </View>
+        </View>
+      </View>
+
+      <TouchableOpacity style={styles.removeBtn} onPress={() => onRemove(item)}>
+        <Text style={styles.removeText}>Remove</Text>
+      </TouchableOpacity>
+    </View>
+  );
+});
+
+export default function Agency(){
+
+  const router = useRouter();
+
+  // =========================
+  // MOBILE HARDWARE BACK
+  // =========================
+
+  useEffect(() => {
+
+    const backAction = () => {
+
+      router.back();
+
+      return true;
+
+    };
+
+
+    const subscription =
+      BackHandler.addEventListener(
+        "hardwareBackPress",
+        backAction
+      );
+
+
+    return () => {
+      subscription.remove();
+    };
+
+  }, [router]);
+
+
+  const [agency,setAgency]=useState(null);
+
+// BUG FIX: pehle koi loading state nahi tha, isliye jab tak Firestore se
+// agency load ho rahi thi, screen turant "No Agency Found" dikha deti thi
+// (galat/flash message), phir data aane par sahi UI dikhti thi. Ab loading
+// khatam hone tak spinner dikhega.
+const [loadingAgency, setLoadingAgency] = useState(true);
+
+const [hostUsername,setHostUsername]=useState("");
+
+const [newAgencyName,setNewAgencyName]=useState("");
+
+const [editVisible,setEditVisible]=useState(false);
+
+const [hostVisible,setHostVisible]=useState(false);
+
+const [newLogo,setNewLogo]=useState("");
+
+const [hosts,setHosts]=useState([]);
+
 
 
 useEffect(()=>{
@@ -183,6 +280,8 @@ setNewLogo(result.assets[0].uri);
 
 const loadAgency=async()=>{
 
+try {
+
 const uid=auth.currentUser.uid;
 
 const q=query(
@@ -212,6 +311,16 @@ loadHosts(data.id);
 
 calculateAgencyStars(data.id);
 
+} catch (e) {
+
+  console.log("LOAD AGENCY ERROR =", e);
+
+} finally {
+
+  setLoadingAgency(false);
+
+}
+
 };
 
 
@@ -226,29 +335,27 @@ where("agencyHost","==",true)
 
 const snap = await getDocs(q);
 
-let arr=[];
+// PERF FIX: pehle har host ke liye wallet ek-ek karke (sequentially)
+// getDoc se load ho raha tha -> agar 20 hosts hon to 20 network
+// round-trips ek ke baad ek. Ab Promise.all se sab ek saath (parallel)
+// load hote hain -> load time bahut kam ho jaata hai.
+const arr = await Promise.all(
+  snap.docs.map(async (docItem) => {
+    const docData = docItem.data();
+    const walletSnap = await getDoc(
+      doc(db, "wallets", docItem.id)
+    );
 
-
-
-for (const docItem of snap.docs) {
-
-  const walletSnap = await getDoc(
-    doc(db, "wallets", docItem.id)
-  );
-
-  arr.push({
-    id: docItem.id,
-    ...docItem.data(),
-    level: walletSnap.exists()
-      ? walletSnap.data().level || 1
-      : 1,
-verifiedColor:
-    docItem.data().verifiedColor || "white",
-
-  });
-
-}
-
+    return {
+      id: docItem.id,
+      ...docData,
+      level: walletSnap.exists()
+        ? walletSnap.data().level || 1
+        : 1,
+      verifiedColor: docData.verifiedColor || "white",
+    };
+  })
+);
 
 setHosts(arr);
 
@@ -266,13 +373,18 @@ const calculateAgencyStars = async (agencyId) => {
 
     const usersSnap = await getDocs(usersQuery);
 
+    // PERF FIX: pehle sequential loop me har user ke wallet ke liye
+    // ek-ek getDoc call ho raha tha (N network round-trips ek ke baad
+    // ek). Promise.all se ab sab wallets parallel me fetch hote hain.
+    const walletSnaps = await Promise.all(
+      usersSnap.docs.map((userDoc) =>
+        getDoc(doc(db, "wallets", userDoc.id))
+      )
+    );
+
     let totalStars = 0;
 
-    for (const userDoc of usersSnap.docs) {
-
-      const walletSnap = await getDoc(
-        doc(db, "wallets", userDoc.id)
-      );
+    for (const walletSnap of walletSnaps) {
 
       if (walletSnap.exists()) {
 
@@ -472,15 +584,55 @@ const openEditAgency = () => {
   setEditVisible(true);
 };
 
+const removeHost = useCallback(async (host) => {
+
+  try {
+
+    await updateDoc(
+      doc(db,"users",host.id),
+      {
+        agencyId:"",
+        agencyName:"",
+        agencyHost:false,
+      }
+    );
+
+    await updateDoc(
+      doc(db,"agencies",agency.id),
+      {
+        totalMembers:increment(-1),
+      }
+    );
+
+    loadAgency();
+    loadHosts(agency.id);
+
+    Alert.alert("Host Removed");
+
+  } catch(e){
+
+    Alert.alert("Error",e.message);
+
+  }
+
+}, [agency]);
+
+
+
+
 if(!agency){
 
 return(
 
 <View style={styles.center}>
 
-<Text style={styles.text}>
-No Agency Found
-</Text>
+{loadingAgency ? (
+  <ActivityIndicator size="large" color="#FFD700" />
+) : (
+  <Text style={styles.text}>
+  No Agency Found
+  </Text>
+)}
 
 </View>
 
@@ -587,39 +739,6 @@ return;
 };
 
 
-const removeHost = async (host) => {
-
-  try {
-
-    await updateDoc(
-      doc(db,"users",host.id),
-      {
-        agencyId:"",
-        agencyName:"",
-        agencyHost:false,
-      }
-    );
-
-    await updateDoc(
-      doc(db,"agencies",agency.id),
-      {
-        totalMembers:increment(-1),
-      }
-    );
-
-    loadAgency();
-    loadHosts(agency.id);
-
-    Alert.alert("Host Removed");
-
-  } catch(e){
-
-    Alert.alert("Error",e.message);
-
-  }
-
-};
-
 
 
 
@@ -714,148 +833,23 @@ Agency Hosts
 
 </Text>
 
-<FlatList
-
-data={hosts}
-
-scrollEnabled={false}
-
-keyExtractor={(item)=>item.id}
-
-renderItem={({item})=>(
-
-
-
-<View style={styles.hostCard}>
-
-<Image
-source={{
-uri:
-item.profileImg ||
-"https://cdn-icons-png.flaticon.com/512/3135/3135715.png"
-}}
-style={styles.hostImage}
-/>
-
-<View
-style={{
-flex:1,
-marginLeft:15,
-justifyContent:"center",
-}}
->
-
-<View
-  style={{
-    flexDirection: "row",
-    alignItems: "center",
-  }}
->
-
-  <Text style={styles.hostName}>
-    {item.username}
+{hosts.length === 0 ? (
+  <Text style={{ color: "#888", fontSize: 13, marginTop: 4 }}>
+    Abhi koi host nahi hai. "Add Host" se naya host jodein.
   </Text>
-
-
-
-
-  {item.verified && (
-
-    <View
-      style={{
-        marginLeft: 5,
-        width: 18,
-        height: 18,
-        justifyContent: "center",
-        alignItems: "center",
-        position: "relative",
-      }}
-    >
-
-      <MaterialCommunityIcons
-      name="check-decagram"
-      size={18}
-      color={
-        item.verifiedColor === "yellow"
-          ? "#FFD700"
-          : "#ffffff"
-      }
-    />
-
-      <Ionicons
-        name="checkmark"
-        size={10}
-        color="#131212"
-        style={{
-          position: "absolute",
-          top: 4.5,
-          left: 4.2,
-        }}
-      />
-
-    </View>
-
- )}
-
-
-<View
-  style={{
-    marginLeft:8,
-    backgroundColor:getLevelTheme(item.level).bg,
-    borderColor:getLevelTheme(item.level).border,
-    borderWidth:1,
-    borderRadius:18,
-    paddingHorizontal:10,
-    paddingVertical:4,
-    flexDirection:"row",
-    alignItems:"center"
-  }}
->
-
-<MaterialCommunityIcons
-name="diamond-stone"
-size={13}
-color={getLevelTheme(item.level).icon}
-/>
-
-<Text
-style={{
-marginLeft:4,
-fontWeight:"bold",
-fontSize:12,
-color:getLevelTheme(item.level).text
-}}
->
-LV {item.level}
-</Text>
-
-</View>
-
- 
-
-</View>
-
-</View>
-
-<TouchableOpacity
-style={styles.removeBtn}
-onPress={()=>removeHost(item)}
->
-
-<Text style={styles.removeText}>
-Remove
-</Text>
-
-</TouchableOpacity>
-
-</View>
-
-
-
-
+) : (
+  // PERF FIX: pehle yahan FlatList (scrollEnabled=false) tha, jo bahar
+  // wali ScrollView ke andar nested VirtualizedList banata hai - React
+  // Native isse warning deta hai aur ye extra overhead / scroll jerks
+  // create karta hai. Yahan scrollEnabled false hone se FlatList ka
+  // virtualization fayda vaise bhi mil nahi raha tha, isliye ab simple
+  // .map() + memoized HostRow use ho raha hai.
+  hosts.map((item) => (
+    <HostRow key={item.id} item={item} onRemove={removeHost} />
+  ))
 )}
 
-/>
+
 
 
 

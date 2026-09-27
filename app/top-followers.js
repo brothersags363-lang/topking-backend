@@ -8,7 +8,7 @@ import {
   getDocs,
 } from "firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState, memo } from "react";
 import {
   ActivityIndicator,
   Dimensions,
@@ -84,6 +84,191 @@ const formatFollowers = (number) => {
 
   return String(n);
 };
+
+// PERF FIX: TopCard aur LeaderRow pehle TopFollowersPage function ke ANDAR
+// define the. Iska matlab har render (state change) par ye components
+// naye sirre se ban rahe the, isliye React inhe purane se compare nahi kar
+// paata tha aur FlatList/UI flicker + slow ho jaata tha. Ab ye bahar hain
+// aur memo() se wrap hain, sirf apne props change hone par re-render honge.
+// Rank-based color scheme: gold / silver / bronze
+const RANK_THEME = {
+  1: {
+    ring: ["#FFE58A", "#FFB300", "#FF7A00"],
+    badgeBg: "#F4A900",
+    badgeBorder: "#FFE6A1",
+    glow: "#F4A900",
+  },
+  2: {
+    ring: ["#FFFFFF", "#C9D4ED", "#7787AD"],
+    badgeBg: "#7184B5",
+    badgeBorder: "#E5ECFF",
+    glow: "#8FB4FF",
+  },
+  3: {
+    ring: ["#FFD1A8", "#F18A4B", "#9B431C"],
+    badgeBg: "#D96831",
+    badgeBorder: "#FFD0A7",
+    glow: "#FF8A3D",
+  },
+};
+
+const TopCard = memo(function TopCard({ user, rank, onPress }) {
+  if (!user) {
+    return <View style={styles.emptyTopCard} />;
+  }
+
+  const isFirst = rank === 1;
+  const isSecond = rank === 2;
+  const theme = RANK_THEME[rank] || RANK_THEME[3];
+
+  return (
+    <TouchableOpacity
+      activeOpacity={0.9}
+      onPress={() => onPress(user)}
+      style={[
+        styles.topCard,
+        isFirst && styles.firstCard,
+        isSecond && styles.secondCard,
+        !isFirst && !isSecond && styles.thirdCard,
+      ]}
+    >
+      {/* Crown + rank number badge */}
+      <View style={styles.crownPosition}>
+        <Text style={[styles.crownText, isFirst && styles.crownTextBig]}>
+          {isFirst ? "👑" : "♛"}
+        </Text>
+        <View
+          style={[
+            styles.crownNumberCircle,
+            {
+              backgroundColor: theme.badgeBg,
+              borderColor: theme.badgeBorder,
+            },
+          ]}
+        >
+          <Text style={styles.crownNumberText}>{rank}</Text>
+        </View>
+      </View>
+
+      {/* Laurel wreath, only around the #1 spot */}
+      {isFirst && (
+        <>
+          <Text style={styles.laurelLeft}>🌿</Text>
+          <Text style={styles.laurelRight}>🌿</Text>
+        </>
+      )}
+
+      <View
+        style={[
+          styles.avatarGlowWrap,
+          { shadowColor: theme.glow },
+        ]}
+      >
+        <LinearGradient
+          colors={theme.ring}
+          style={[styles.avatarOuter, isFirst && styles.avatarOuterBig]}
+        >
+          <Image
+            source={{ uri: getPhoto(user) }}
+            style={[styles.topAvatar, isFirst && styles.topAvatarBig]}
+          />
+        </LinearGradient>
+      </View>
+
+      <Text
+        numberOfLines={1}
+        style={[
+          styles.topUsername,
+          isFirst && styles.firstUsername,
+        ]}
+      >
+        @{getName(user)}
+      </Text>
+
+      <View style={styles.followersInfo}>
+        <Ionicons
+          name="people"
+          size={15}
+          color="#DCE4F7"
+        />
+        <Text style={styles.followersText}>
+          {formatFollowers(user.followersCount)} Followers
+        </Text>
+      </View>
+
+      {/* Glowing podium base strip */}
+      <View
+        style={[
+          styles.pedestal,
+          isFirst && styles.pedestalFirst,
+          {
+            backgroundColor: theme.badgeBg,
+            shadowColor: theme.glow,
+          },
+        ]}
+      />
+    </TouchableOpacity>
+  );
+});
+
+// PERF FIX: LeaderRow bhi bahar aur memo() ke saath, taaki list scroll
+// karte waqt off-screen/unchanged rows dobara render na hon.
+const LeaderRow = memo(function LeaderRow({ item, index, onPress }) {
+  const rank = index + 4;
+
+  return (
+    <TouchableOpacity
+      activeOpacity={0.85}
+      style={styles.row}
+      onPress={() => onPress(item)}
+    >
+      <View style={styles.rankRing}>
+        <LinearGradient
+          colors={["#20154B", "#0F1733"]}
+          style={styles.rankCircle}
+        >
+          <Text style={styles.rankText}>
+            {rank}
+          </Text>
+        </LinearGradient>
+      </View>
+
+      <Image
+        source={{ uri: getPhoto(item) }}
+        style={styles.rowAvatar}
+      />
+
+      <View style={styles.rowInfo}>
+        <Text
+          numberOfLines={1}
+          style={styles.rowUsername}
+        >
+          @{getName(item)}
+        </Text>
+
+        <View style={styles.rowFollowerLine}>
+          <Ionicons
+            name="people"
+            size={14}
+            color="#9EABCC"
+          />
+
+          <Text style={styles.rowFollowers}>
+            {formatFollowers(item.followersCount)} Followers
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.profileArrow}>
+        <Ionicons
+          name="chevron-forward"
+          size={18}
+          color="#FFFFFF"
+        />
+      </View>
+    </TouchableOpacity>
+  );
+});
 
 export default function TopFollowersPage() {
   const router = useRouter();
@@ -207,7 +392,7 @@ export default function TopFollowersPage() {
   const first = leaders[0];
   const third = leaders[2];
 
-  const openProfile = (user) => {
+  const openProfile = useCallback((user) => {
     if (!user?.id) return;
 
     router.push({
@@ -216,138 +401,17 @@ export default function TopFollowersPage() {
         userId: user.id,
       },
     });
-  };
+  }, [router]);
 
-  const TopCard = ({ user, rank }) => {
-    if (!user) {
-      return <View style={styles.emptyTopCard} />;
-    }
-
-    const isFirst = rank === 1;
-    const isSecond = rank === 2;
-
-    return (
-      <TouchableOpacity
-        activeOpacity={0.9}
-        onPress={() => openProfile(user)}
-        style={[
-          styles.topCard,
-          isFirst && styles.firstCard,
-          isSecond && styles.secondCard,
-          !isFirst && !isSecond && styles.thirdCard,
-        ]}
-      >
-        <View style={styles.crownPosition}>
-          <Text style={styles.crownText}>
-            {isFirst ? "👑" : "♛"}
-          </Text>
-        </View>
-
-        <LinearGradient
-          colors={
-            isFirst
-              ? ["#FFE58A", "#FFB300", "#FF7A00"]
-              : isSecond
-              ? ["#FFFFFF", "#C9D4ED", "#7787AD"]
-              : ["#FFD1A8", "#F18A4B", "#9B431C"]
-          }
-          style={styles.avatarOuter}
-        >
-          <Image
-            source={{ uri: getPhoto(user) }}
-            style={styles.topAvatar}
-          />
-        </LinearGradient>
-
-        <View
-          style={[
-            styles.numberBadge,
-            isFirst && styles.firstNumber,
-            isSecond && styles.secondNumber,
-            !isFirst && !isSecond && styles.thirdNumber,
-          ]}
-        >
-          <Text style={styles.numberText}>{rank}</Text>
-        </View>
-
-        <Text
-          numberOfLines={1}
-          style={[
-            styles.topUsername,
-            isFirst && styles.firstUsername,
-          ]}
-        >
-          @{getName(user)}
-        </Text>
-
-        <View style={styles.followersInfo}>
-          <Ionicons
-            name="people"
-            size={15}
-            color="#DCE4F7"
-          />
-          <Text style={styles.followersText}>
-            {formatFollowers(user.followersCount)} Followers
-          </Text>
-        </View>
-      </TouchableOpacity>
-    );
-  };
-
-  const LeaderRow = ({ item, index }) => {
-    const rank = index + 4;
-
-    return (
-      <TouchableOpacity
-        activeOpacity={0.85}
-        style={styles.row}
-        onPress={() => openProfile(item)}
-      >
-        <LinearGradient
-          colors={["#20154B", "#0F1733"]}
-          style={styles.rankCircle}
-        >
-          <Text style={styles.rankText}>
-            {rank}
-          </Text>
-        </LinearGradient>
-
-        <Image
-          source={{ uri: getPhoto(item) }}
-          style={styles.rowAvatar}
-        />
-
-        <View style={styles.rowInfo}>
-          <Text
-            numberOfLines={1}
-            style={styles.rowUsername}
-          >
-            @{getName(item)}
-          </Text>
-
-          <View style={styles.rowFollowerLine}>
-            <Ionicons
-              name="people"
-              size={14}
-              color="#9EABCC"
-            />
-
-            <Text style={styles.rowFollowers}>
-              {formatFollowers(item.followersCount)} Followers
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.profileArrow}>
-          <Ionicons
-            name="chevron-forward"
-            size={18}
-            color="#FFFFFF"
-          />
-        </View>
-      </TouchableOpacity>
-    );
-  };
+  // FlatList ko stable renderItem chahiye, warna items unnecessarily
+  // re-render/re-mount hote hain scroll ke waqt.
+  const renderLeaderRow = useCallback(
+    ({ item, index }) => (
+      <LeaderRow item={item} index={index} onPress={openProfile} />
+    ),
+    [openProfile]
+  );
+  const keyExtractor = useCallback((item) => item.id, []);
 
   if (loading) {
     return (
@@ -437,7 +501,8 @@ export default function TopFollowersPage() {
         ) : (
           <FlatList
             data={leaders.slice(3)}
-            keyExtractor={(item) => item.id}
+            keyExtractor={keyExtractor}
+            renderItem={renderLeaderRow}
             showsVerticalScrollIndicator={false}
             removeClippedSubviews
             initialNumToRender={8}
@@ -455,6 +520,7 @@ export default function TopFollowersPage() {
                       <TopCard
                         user={second}
                         rank={2}
+                        onPress={openProfile}
                       />
                     </View>
 
@@ -462,6 +528,7 @@ export default function TopFollowersPage() {
                       <TopCard
                         user={first}
                         rank={1}
+                        onPress={openProfile}
                       />
                     </View>
 
@@ -469,6 +536,7 @@ export default function TopFollowersPage() {
                       <TopCard
                         user={third}
                         rank={3}
+                        onPress={openProfile}
                       />
                     </View>
                   </View>
@@ -486,6 +554,7 @@ export default function TopFollowersPage() {
                           <TopCard
                             user={user}
                             rank={index + 1}
+                            onPress={openProfile}
                           />
                         </View>
                       )
@@ -499,7 +568,6 @@ export default function TopFollowersPage() {
                 )}
               </>
             }
-            renderItem={LeaderRow}
             ListFooterComponent={
               leaders.length > 3 ? (
                 <View style={styles.footer}>
@@ -616,19 +684,77 @@ const styles = StyleSheet.create({
   firstCard: {
     borderColor: "#D99A28",
     backgroundColor: "#14152F",
+    shadowColor: "#F4A900",
+    shadowOpacity: 0.5,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
     elevation: 5,
   },
-  secondCard: { borderColor: "#7183AE" },
-  thirdCard: { borderColor: "#A85329" },
+  secondCard: {
+    borderColor: "#7183AE",
+    shadowColor: "#8FB4FF",
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 3,
+  },
+  thirdCard: {
+    borderColor: "#A85329",
+    shadowColor: "#FF8A3D",
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 3,
+  },
   emptyTopCard: { flex: 1 },
 
   crownPosition: {
     position: "absolute",
-    top: -17,
+    top: -32,
+    alignItems: "center",
     zIndex: 10,
   },
-  crownText: { fontSize: 22 },
+  crownText: { fontSize: 24, textAlign: "center" },
+  crownTextBig: { fontSize: 32 },
+  crownNumberCircle: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    marginTop: -8,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+  },
+  crownNumberText: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "900",
+  },
 
+  laurelLeft: {
+    position: "absolute",
+    left: 0,
+    top: 30,
+    fontSize: 20,
+    zIndex: 5,
+    transform: [{ rotate: "-20deg" }, { scaleX: -1 }],
+  },
+  laurelRight: {
+    position: "absolute",
+    right: 0,
+    top: 30,
+    fontSize: 20,
+    zIndex: 5,
+    transform: [{ rotate: "20deg" }],
+  },
+
+  avatarGlowWrap: {
+    borderRadius: 36,
+    shadowOpacity: 0.85,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 6,
+  },
   avatarOuter: {
     width: 60,
     height: 60,
@@ -636,6 +762,11 @@ const styles = StyleSheet.create({
     padding: 2.5,
     alignItems: "center",
     justifyContent: "center",
+  },
+  avatarOuterBig: {
+    width: 70,
+    height: 70,
+    borderRadius: 36,
   },
   topAvatar: {
     width: 55,
@@ -645,34 +776,25 @@ const styles = StyleSheet.create({
     borderColor: "#0A1027",
     backgroundColor: "#1B2240",
   },
+  topAvatarBig: {
+    width: 64,
+    height: 64,
+    borderRadius: 33,
+  },
 
-  numberBadge: {
-    width: 27,
-    height: 27,
-    borderRadius: 14,
-    marginTop: -13,
-    zIndex: 4,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
+  pedestal: {
+    position: "absolute",
+    bottom: 0,
+    left: 12,
+    right: 12,
+    height: 5,
+    borderRadius: 3,
+    shadowOpacity: 0.9,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 4,
   },
-  firstNumber: {
-    backgroundColor: "#F4A900",
-    borderColor: "#FFE6A1",
-  },
-  secondNumber: {
-    backgroundColor: "#7184B5",
-    borderColor: "#E5ECFF",
-  },
-  thirdNumber: {
-    backgroundColor: "#D96831",
-    borderColor: "#FFD0A7",
-  },
-  numberText: {
-    color: "#FFFFFF",
-    fontSize: 12,
-    fontWeight: "900",
-  },
+  pedestalFirst: { height: 7 },
 
   topUsername: {
     color: "#FFFFFF",
@@ -733,12 +855,19 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderColor: "#202C52",
   },
+  rankRing: {
+    width: 33,
+    height: 33,
+    borderRadius: 17,
+    borderWidth: 1.5,
+    borderColor: "#F4A900",
+    justifyContent: "center",
+    alignItems: "center",
+  },
   rankCircle: {
-    width: 29,
-    height: 29,
-    borderRadius: 15,
-    borderWidth: 1,
-    borderColor: "#5E35AC",
+    width: 27,
+    height: 27,
+    borderRadius: 14,
     justifyContent: "center",
     alignItems: "center",
   },
@@ -781,9 +910,9 @@ const styles = StyleSheet.create({
     width: 29,
     height: 29,
     borderRadius: 15,
-    backgroundColor: "#101A39",
-    borderWidth: 1,
-    borderColor: "#35436F",
+    backgroundColor: "#151022",
+    borderWidth: 1.3,
+    borderColor: "#F4A900",
     alignItems: "center",
     justifyContent: "center",
     marginLeft: 4,

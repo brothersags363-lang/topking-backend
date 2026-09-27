@@ -5,7 +5,7 @@ import {
   orderBy,
   query,
 } from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, memo } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -70,6 +70,166 @@ const rankTheme = {
   },
 };
 
+// PERF FIX: renderAvatar / renderPodiumCard / renderRow pehle component
+// ke andar plain functions the -> har render par naye ban rahe the, aur
+// FlatList ko diya gaya renderItem bhi har render par naya reference leta
+// tha, jisse list scroll ke waqt extra re-renders hote the. Ab ye bahar
+// standalone memo() components hain, sirf props badalne par re-render
+// honge -> scrolling aur re-renders dono zyada smooth.
+const AgencyAvatar = memo(function AgencyAvatar({ agency, size = 76 }) {
+  if (agency.logo) {
+    return (
+      <Image
+        source={{ uri: agency.logo }}
+        style={{ width: size, height: size, borderRadius: size / 2 }}
+      />
+    );
+  }
+
+  return (
+    <View
+      style={[
+        styles.defaultAvatar,
+        {
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+        },
+      ]}
+    >
+      <Ionicons name="business" size={size * 0.42} color="#BFC8E8" />
+    </View>
+  );
+});
+
+const PodiumCard = memo(function PodiumCard({ agency, rank, onPress }) {
+  const theme = rankTheme[rank];
+  if (!agency || !theme) return null;
+
+  const isFirst = rank === 1;
+
+  return (
+    <TouchableOpacity
+      activeOpacity={0.9}
+      onPress={() => onPress(agency)}
+      style={[
+        styles.podiumCard,
+        isFirst ? styles.firstPodium : styles.sidePodium,
+        {
+          borderColor: theme.accent + "55",
+          shadowColor: theme.accent,
+        },
+      ]}
+    >
+      <View
+        style={[
+          styles.podiumGlow,
+          {
+            backgroundColor: theme.glow,
+          },
+        ]}
+      />
+
+      <View style={[styles.rankMedal, { backgroundColor: theme.dark }]}>
+        <Text style={styles.medalEmoji}>{theme.medal}</Text>
+        <Text style={[styles.rankNumber, { color: theme.accent }]}>
+          {rank}
+        </Text>
+      </View>
+
+      <View
+        style={[
+          styles.avatarRing,
+          {
+            borderColor: theme.accent,
+            width: isFirst ? 116 : 92,
+            height: isFirst ? 116 : 92,
+            borderRadius: isFirst ? 58 : 46,
+          },
+        ]}
+      >
+        <AgencyAvatar agency={agency} size={isFirst ? 102 : 80} />
+      </View>
+
+      <Text numberOfLines={1} style={styles.podiumName}>
+        {agency.agencyName || "Unnamed Agency"}
+      </Text>
+
+      <Text numberOfLines={1} style={styles.ownerName}>
+        {agency.ownerName ? `Owner • ${agency.ownerName}` : "Official Agency"}
+      </Text>
+
+      <View style={styles.starPill}>
+        <Ionicons name="star" size={11} color={theme.accent} />
+        <Text style={styles.starPillText}>
+          {formatNumber(agency.totalStars)} Stars
+        </Text>
+      </View>
+
+      <Text style={styles.memberText}>
+        {formatNumber(agency.totalMembers)} members
+      </Text>
+    </TouchableOpacity>
+  );
+});
+
+const AgencyRow = memo(function AgencyRow({ item, index, onPress }) {
+  const rank = index + 1;
+
+  return (
+    <TouchableOpacity
+      activeOpacity={0.86}
+      onPress={() => onPress(item)}
+      style={styles.row}
+    >
+      <View style={styles.rankCircle}>
+        <Text style={styles.rankCircleText}>{rank}</Text>
+      </View>
+
+      <View style={styles.rowAvatarWrap}>
+        <AgencyAvatar agency={item} size={58} />
+      </View>
+
+      <View style={styles.rowInfo}>
+        <View style={styles.nameLine}>
+          <Text numberOfLines={1} style={styles.rowName}>
+            {item.agencyName || "Unnamed Agency"}
+          </Text>
+          {item.status === "active" && (
+            <Ionicons
+              name="checkmark-circle"
+              size={14}
+              color="#6D7CFF"
+              style={{ marginLeft: 5 }}
+            />
+          )}
+        </View>
+
+        <Text numberOfLines={1} style={styles.rowOwner}>
+          {item.ownerName ? `Owner: ${item.ownerName}` : "Official Agency"}
+        </Text>
+
+        <View style={styles.statsLine}>
+          <Ionicons name="star" size={13} color="#FFD34E" />
+          <Text style={styles.statsText}>
+            {formatNumber(item.totalStars)} stars
+          </Text>
+          <View style={styles.dot} />
+          <Ionicons name="people" size={11} color="#AEB9D8" />
+          <Text style={styles.statsText}>
+            {formatNumber(item.totalMembers)} members
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.scoreBox}>
+        <Text style={styles.scoreLabel}>TOP</Text>
+        <Text style={styles.scoreRank}>{rank}</Text>
+      </View>
+    </TouchableOpacity>
+  );
+});
+
 export default function AgencyTop({ navigation, router }) {
   const [agencies, setAgencies] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -100,20 +260,25 @@ export default function AgencyTop({ navigation, router }) {
     return unsubscribe;
   }, []);
 
+  // BUG FIX: topThree agencies podium me alag se dikhti hain, lekin list
+  // (FlatList) pehle "agencies"/"visibleAgencies" (index 0 se) use kar rahi
+  // thi -> top 3 agencies list me DUPLICATE ho rahi thi aur galat rank
+  // number dikha rahi thi (offset +3 lagne ke bawajood data start index 0
+  // se tha). Ab list sirf "rest" (index 3 se aage) dikhayegi.
+  const topThree = useMemo(() => agencies.slice(0, 3), [agencies]);
+  const rest = useMemo(() => agencies.slice(3), [agencies]);
+
   const visibleAgencies = useMemo(
-    () => (showAll ? agencies : agencies.slice(0, PAGE_SIZE)),
-    [agencies, showAll]
+    () => (showAll ? rest : rest.slice(0, PAGE_SIZE)),
+    [rest, showAll]
   );
 
-  const topThree = agencies.slice(0, 3);
-  const rest = agencies.slice(3);
-
-  const goBack = () => {
+  const goBack = useCallback(() => {
     if (router?.back) router.back();
     else if (navigation?.goBack) navigation.goBack();
-  };
+  }, [router, navigation]);
 
-  const openAgency = (agency) => {
+  const openAgency = useCallback((agency) => {
     // Optional: replace with your own agency profile route.
     if (router?.push) {
       router.push({
@@ -121,159 +286,18 @@ export default function AgencyTop({ navigation, router }) {
         params: { agencyId: agency.id },
       });
     }
-  };
+  }, [router]);
 
-  const renderAvatar = (agency, size = 76) => {
-    if (agency.logo) {
-      return (
-        <Image
-          source={{ uri: agency.logo }}
-          style={{ width: size, height: size, borderRadius: size / 2 }}
-        />
-      );
-    }
-
-    return (
-      <View
-        style={[
-          styles.defaultAvatar,
-          {
-            width: size,
-            height: size,
-            borderRadius: size / 2,
-          },
-        ]}
-      >
-        <Ionicons name="business" size={size * 0.42} color="#BFC8E8" />
-      </View>
-    );
-  };
-
-  const renderPodiumCard = (agency, rank) => {
-    const theme = rankTheme[rank];
-    if (!agency || !theme) return null;
-
-    const isFirst = rank === 1;
-
-    return (
-      <TouchableOpacity
-        activeOpacity={0.9}
-        onPress={() => openAgency(agency)}
-        style={[
-          styles.podiumCard,
-          isFirst ? styles.firstPodium : styles.sidePodium,
-          {
-            borderColor: theme.accent + "55",
-            shadowColor: theme.accent,
-          },
-        ]}
-      >
-        <View
-          style={[
-            styles.podiumGlow,
-            {
-              backgroundColor: theme.glow,
-            },
-          ]}
-        />
-
-        <View style={[styles.rankMedal, { backgroundColor: theme.dark }]}>
-          <Text style={styles.medalEmoji}>{theme.medal}</Text>
-          <Text style={[styles.rankNumber, { color: theme.accent }]}>
-            {rank}
-          </Text>
-        </View>
-
-        <View
-          style={[
-            styles.avatarRing,
-            {
-              borderColor: theme.accent,
-              width: isFirst ? 116 : 92,
-              height: isFirst ? 116 : 92,
-              borderRadius: isFirst ? 58 : 46,
-            },
-          ]}
-        >
-          {renderAvatar(agency, isFirst ? 102 : 80)}
-        </View>
-
-        <Text numberOfLines={1} style={styles.podiumName}>
-          {agency.agencyName || "Unnamed Agency"}
-        </Text>
-
-        <Text numberOfLines={1} style={styles.ownerName}>
-          {agency.ownerName ? `Owner • ${agency.ownerName}` : "Official Agency"}
-        </Text>
-
-        <View style={styles.starPill}>
-          <Ionicons name="star" size={11} color={theme.accent} />
-          <Text style={styles.starPillText}>
-            {formatNumber(agency.totalStars)} Stars
-          </Text>
-        </View>
-
-        <Text style={styles.memberText}>
-          {formatNumber(agency.totalMembers)} members
-        </Text>
-      </TouchableOpacity>
-    );
-  };
-
-  const renderRow = ({ item, index }) => {
-    const rank = index + 1;
-
-    return (
-      <TouchableOpacity
-        activeOpacity={0.86}
-        onPress={() => openAgency(item)}
-        style={styles.row}
-      >
-        <View style={styles.rankCircle}>
-          <Text style={styles.rankCircleText}>{rank}</Text>
-        </View>
-
-        <View style={styles.rowAvatarWrap}>{renderAvatar(item, 58)}</View>
-
-        <View style={styles.rowInfo}>
-          <View style={styles.nameLine}>
-            <Text numberOfLines={1} style={styles.rowName}>
-              {item.agencyName || "Unnamed Agency"}
-            </Text>
-            {item.status === "active" && (
-              <Ionicons
-                name="checkmark-circle"
-                size={14}
-                color="#6D7CFF"
-                style={{ marginLeft: 5 }}
-              />
-            )}
-          </View>
-
-          <Text numberOfLines={1} style={styles.rowOwner}>
-            {item.ownerName ? `Owner: ${item.ownerName}` : "Official Agency"}
-          </Text>
-
-          <View style={styles.statsLine}>
-            <Ionicons name="star" size={13} color="#FFD34E" />
-            <Text style={styles.statsText}>
-              {formatNumber(item.totalStars)} stars
-            </Text>
-            <View style={styles.dot} />
-            <Ionicons name="people" size={11} color="#AEB9D8" />
-            <Text style={styles.statsText}>
-              {formatNumber(item.totalMembers)} members
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.scoreBox}>
-          <Text style={styles.scoreLabel}>TOP</Text>
-          <Text style={styles.scoreRank}>{rank}</Text>
-        </View>
-      </TouchableOpacity>
-    );
-  };
+  // Stable renderItem reference for FlatList -> kam re-renders, smooth scroll.
+  // "rest" list ka pehla item asal me overall #4 rank hai (top 3 podium me
+  // hain), isliye index me +3 offset diya jaata hai.
+  const renderRow = useCallback(
+    ({ item, index }) => (
+      <AgencyRow item={item} index={index + 3} onPress={openAgency} />
+    ),
+    [openAgency]
+  );
+  const keyExtractor = useCallback((item) => item.id, []);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -325,11 +349,16 @@ export default function AgencyTop({ navigation, router }) {
           </View>
         ) : (
           <FlatList
-            data={showAll ? agencies : visibleAgencies}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item, index }) => renderRow({ item, index: index + 3 })}
+            data={visibleAgencies}
+            keyExtractor={keyExtractor}
+            renderItem={renderRow}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.content}
+            // PERF: smoother scroll, kam initial render
+            initialNumToRender={10}
+            maxToRenderPerBatch={10}
+            windowSize={7}
+            removeClippedSubviews
             ListHeaderComponent={
               <>
                 <View style={styles.hero}>
@@ -344,9 +373,15 @@ export default function AgencyTop({ navigation, router }) {
 
                 {topThree.length > 0 && (
                   <View style={styles.podium}>
-                    {topThree[1] && renderPodiumCard(topThree[1], 2)}
-                    {topThree[0] && renderPodiumCard(topThree[0], 1)}
-                    {topThree[2] && renderPodiumCard(topThree[2], 3)}
+                    {topThree[1] && (
+                      <PodiumCard agency={topThree[1]} rank={2} onPress={openAgency} />
+                    )}
+                    {topThree[0] && (
+                      <PodiumCard agency={topThree[0]} rank={1} onPress={openAgency} />
+                    )}
+                    {topThree[2] && (
+                      <PodiumCard agency={topThree[2]} rank={3} onPress={openAgency} />
+                    )}
                   </View>
                 )}
 

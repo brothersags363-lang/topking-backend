@@ -32,6 +32,16 @@ import { useNavigation } from "@react-navigation/native";
 // FIREBASE
 import { db, auth } from './firebaseConfig'; // 'auth' import kiya
 
+// BACKGROUND UPLOAD (upload screen se hatne ke baad bhi chalta rehta hai)
+// Ye files ab app/ folder ke BAHAR services/upload/ me hain, isliye
+// '@/...' alias (tsconfig.json me set) se import kar rahe hain.
+import { startReelUpload } from '@/services/upload/reelUploadService';
+import { useUploadState } from '@/services/upload/uploadManager';
+
+// Share button dabate hi is route par navigate karke feed dikha dete hain.
+// Apne project ke actual reels/home route se match kar lena agar alag ho.
+const REELS_HOME_ROUTE = '/';
+
 import {
   collection,
   addDoc,
@@ -202,8 +212,7 @@ useEffect(() => {
   const [hashtagModal, setHashtagModal] = useState(false);
   const [hashtagQuery, setHashtagQuery] = useState('');
   const [hashtags, setHashtags] = useState([]);
-  const [uploading, setUploading] = useState(false);
-  const [progress, setProgress] = useState(0);
+  const uploadState = useUploadState(); // { uploading, progress, error, justCompleted }
   const [visibility, setVisibility] = useState('public');
 
   const [selectedLanguage, setSelectedLanguage] = useState('English');
@@ -262,14 +271,22 @@ useEffect(() => {
     setHashtagModal(false);
   };
 
+  // HANDLE POST
+  //
+  // Ab ye function upload ko background service (reelUploadService.js)
+  // ko de deta hai aur us par AWAIT nahi karta — isliye Share dabate
+  // hi hum turant reels feed par navigate kar sakte hain, aur upload
+  // apne aap chalta rehta hai. Progress `uploadManager` store me jaake
+  // update hota hai, jise index.tsx (feed) top-left corner me dikhata
+  // hai, aur 100% hone par video Firestore me save ho chuka hota hai
+  // (feed apne onSnapshot listener se usko khud dikha dega).
   const handlePostNow = async () => {
-    // Prevent accidental double-taps from starting two upload jobs.
-    if (uploading) {
+    // Ek time me sirf ek hi upload chale.
+    if (uploadState.uploading) {
       return;
     }
 
     const user = auth.currentUser;
-
 
     if (!user) {
       Alert.alert('Error', 'Pehle login karein');
@@ -280,460 +297,45 @@ useEffect(() => {
       return;
     }
 
-
     try {
-      setUploading(true);
-      setProgress(0);
+      const token = await auth.currentUser.getIdToken();
 
-      
+      // Background upload shuru karo — yahan jaan-boojh kar `await`
+      // nahi kiya, taaki neeche wali line turant chal jaye.
+      startReelUpload({
+        user,
+        token,
+        videoUri,
+        caption,
+        usedHashtags,
+        musicId,
+        audioUrl,
+        musicName,
+        musicArtist,
+        musicImage,
+        videoEffect,
+        subtitleText,
+        subtitleColor,
+        subtitleX,
+        subtitleY,
+        subtitleXRatio,
+        subtitleYRatio,
+        subtitleSizeRatio,
+        voiceUri,
+        voiceDuration,
+        videoDuration,
+        visibility,
+        selectedLanguage,
+        userData,
+      });
 
-
-let finalVideo = videoUri;
-let thumbnailUrl = "";
-
-const token = await auth.currentUser.getIdToken();
-
-const API = "https://topking-backend.onrender.com";
-
-const hasMusic =
-  typeof audioUrl === "string" &&
-  audioUrl.trim() !== "";
-
-const hasVoice =
-  typeof voiceUri === "string" &&
-  voiceUri.trim() !== "";
-
-const hasSubtitle =
-  typeof subtitleText === "string" &&
-  subtitleText.trim() !== "";
-
-const hasEffect =
-  typeof videoEffect === "string" &&
-  videoEffect !== "none";
-
-const needsProcessing =
-  hasMusic ||
-  hasVoice ||
-  hasSubtitle ||
-  hasEffect;
-
-if (needsProcessing) {
-  console.log(
-    "🎬 Processing edited reel:",
-    {
-      music: hasMusic,
-      voice: hasVoice,
-      subtitle: hasSubtitle,
-      effect: videoEffect,
+      // Turant reels/feed screen par bhej do — user wahin reels dekh
+      // sakta hai jab tak upload chalta rehta hai.
+      router.replace(REELS_HOME_ROUTE);
+    } catch (error) {
+      console.log("Post start error:", error);
+      Alert.alert('Error', error.message || 'Kuch galat ho gaya, dobara try karein.');
     }
-  );
-
-  setProgress(5);
-
-  const processForm = new FormData();
-
-  processForm.append("video", {
-    uri:
-      Platform.OS === "android"
-        ? videoUri
-        : String(videoUri).replace("file://", ""),
-    type: "video/mp4",
-    name: "video.mp4",
-  });
-
-  // The backend uses this to trim a longer selected sound to the actual
-  // recorded/edited reel duration.
-  processForm.append("videoDuration", String(videoDuration || "0"));
-
-  if (hasEffect) {
-    processForm.append(
-      "videoEffect",
-      videoEffect
-    );
-  }
-
-  if (hasMusic) {
-    processForm.append(
-      "audioUrl",
-      audioUrl
-    );
-  }
-
-  if (hasVoice) {
-    processForm.append("voice", {
-      uri:
-        Platform.OS === "android"
-          ? voiceUri
-          : String(voiceUri).replace("file://", ""),
-      type: "audio/mp4",
-      name: "voice.m4a",
-    });
-
-    processForm.append(
-      "voiceDuration",
-      String(voiceDuration || "0")
-    );
-  }
-
-  if (hasSubtitle) {
-    processForm.append(
-      "subtitleText",
-      subtitleText
-    );
-
-    processForm.append(
-      "subtitleColor",
-      subtitleColor || "#FFFFFF"
-    );
-
-    processForm.append(
-      "subtitleXRatio",
-      String(subtitleXRatio || "0")
-    );
-
-    processForm.append(
-      "subtitleYRatio",
-      String(subtitleYRatio || "0")
-    );
-
-    processForm.append(
-      "subtitleSizeRatio",
-      String(subtitleSizeRatio || "0.03")
-    );
-  }
-
-  const processResponse =
-    await axios.post(
-      `${API}/merge`,
-      processForm,
-      {
-        headers: {
-          "Content-Type":
-            "multipart/form-data",
-          Authorization:
-            `Bearer ${token}`,
-        },
-
-        timeout:
-          5 * 60 * 1000,
-
-        onUploadProgress:
-          (event) => {
-            if (
-              event.total &&
-              event.loaded
-            ) {
-              const uploadedPercent =
-                Math.round(
-                  (event.loaded * 70) /
-                    event.total
-                );
-
-              setProgress(
-                Math.min(
-                  70,
-                  Math.max(
-                    5,
-                    uploadedPercent
-                  )
-                )
-              );
-            }
-          },
-      }
-    );
-
-  if (
-    !processResponse.data?.success ||
-    !processResponse.data?.video
-  ) {
-    throw new Error(
-      processResponse.data?.error ||
-      "Video processing failed"
-    );
-  }
-
-  finalVideo =
-    processResponse.data.video;
-
-  thumbnailUrl =
-    processResponse.data.thumbnailUrl ||
-    "";
-
-  setProgress(85);
-
-  console.log(
-    "✅ Edited video ready:",
-    finalVideo
-  );
-} else {
-  console.log(
-    "🎬 No server-side edits, direct upload"
-  );
-}
-
-let uploadedVideo = finalVideo;
-
-if (!needsProcessing) {
-  const formData = new FormData();
-
-  formData.append("video", {
-    uri:
-      Platform.OS === "android"
-        ? finalVideo
-        : finalVideo.replace("file://", ""),
-    type: "video/mp4",
-    name: "reel.mp4",
-  });
-
-  const response = await axios.post(
-    `${API}/upload-video`,
-    formData,
-    {
-      headers: {
-        "Content-Type":
-          "multipart/form-data",
-        Authorization:
-          `Bearer ${token}`,
-      },
-
-      timeout:
-        5 * 60 * 1000,
-
-      onUploadProgress:
-        (event) => {
-          if (
-            event.total &&
-            event.loaded
-          ) {
-            setProgress(
-              Math.round(
-                (event.loaded * 100) /
-                  event.total
-              )
-            );
-          }
-        },
-    }
-  );
-
-  if (
-    !response.data?.success ||
-    !response.data?.videoUrl
-  ) {
-    throw new Error(
-      response.data?.error ||
-      "Video upload failed"
-    );
-  }
-
-  uploadedVideo =
-    response.data.videoUrl;
-
-  thumbnailUrl =
-    response.data.thumbnailUrl ||
-    "";
-}
-
-setProgress(100);
-
-console.log(
-  "🔥 FINAL VIDEO URL =",
-  uploadedVideo
-);
-
-console.log(
-  "🔥 FINAL THUMB URL =",
-  thumbnailUrl
-);
-
-
-// Original Audio = Uploaded Video URL
-const originalAudioUrl =
-  uploadedVideo;
-
-console.log(
-  "VIDEO URL =",
-  uploadedVideo
-);
-
-console.log(
-  "THUMB URL =",
-  thumbnailUrl
-);
-
-      if (uploadedVideo) {
-        // AB DATA DYNAMIC HAI
- const videoData = {
-
-  videoUrl: uploadedVideo,
-
-  musicId: musicId || "",
-
-  audioUrl: audioUrl || originalAudioUrl,
-
-  musicName:
-    musicName ||
-    `${userData?.name}'s Original Audio`,
-
-  // Older feed components read songName; writing both names keeps the
-  // selected sound label intact across existing Reel screens.
-  songName:
-    musicName ||
-    `${userData?.name}'s Original Audio`,
-
-  artist:
-    musicArtist ||
-    userData?.name,
-
-  image:
-    musicImage ||
-    userData?.profileImg,
-
- 
-
-
-  caption: caption,
-  language: selectedLanguage,
-  privacy: visibility,
-
-  userId: user.uid,
-  userName: userData?.name || 'New User',
-  username: userData?.username
-    ? `@${userData.username}`
-    : '@user',
-
-  profile:
-    userData?.profileImg ||
-    'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
-
-  createdAt: serverTimestamp(),
-
-  likes: 0,
-  commentsCount: 0,
-  shares: 0,
-  views: 0,
-
-  engagementScore: 0, // ADD THIS
-
-  thumbnail: thumbnailUrl || uploadedVideo,
-
-  verified: userData?.verified || false,
-
-  // Keep the editing choices with the post metadata.
-  hasMusic,
-  hasVoice,
-  hasSubtitle,
-  videoEffect:
-    videoEffect || "none",
-  subtitleText: hasSubtitle
-    ? subtitleText
-    : "",
-  subtitleColor: hasSubtitle
-    ? subtitleColor
-    : "",
-  subtitleX: hasSubtitle
-    ? subtitleX
-    : "",
-  subtitleY: hasSubtitle
-    ? subtitleY
-    : "",
-  hashtags: usedHashtags.map((tag) => `#${tag}`),
-};
-
-  await addDoc(collection(db, 'all_videos'), videoData);
-
-  await Promise.all(
-    usedHashtags.map((tag) =>
-      setDoc(
-        doc(db, "hashtags", tag),
-        { name: `#${tag}`, uses: increment(1), lastUsedAt: serverTimestamp() },
-        { merge: true }
-      )
-    )
-  );
-
-
-console.log("UPLOAD URL =", `${API}/upload-video`);
-
-
-// A selected library sound already has a songs document. Do not create a
-// duplicate each time somebody makes a Reel with it. Videos without a chosen
-// sound still publish their own original audio to the music library.
-if (!hasMusic || !musicId) {
-await addDoc(collection(db, "songs"), {
-
-  title:
-    musicName ||
-    `${userData?.name}'s Original Audio`,
-
-  artist:
-    userData?.name,
-
-  audioUrl:
-    audioUrl || originalAudioUrl,
-
-  image:
-    userData?.profileImg,
-
-  videoUrl:
-    uploadedVideo,
-
-  thumbnail:
-  thumbnailUrl || uploadedVideo,
-
-  userId:
-    user.uid,
-
-  uses:0,
-
-  createdAt:
-    serverTimestamp(),
-
-});
-}
-
-
-setUploading(false);
-
-Alert.alert(
-  "Video Upload Successful ✅",
-  "Aapka video successfully upload ho gaya hai.",
-  [
-    {
-      text: "OK",
-      onPress: () => {
-
-        router.replace("/profile");
-
-      },
-    },
-  ]
-);
-
-
-      }
-    } 
-
-catch (error) {
-
-  console.log("MESSAGE =", error.message);
-  console.log("CODE =", error.code);
-  console.log("CONFIG =", error.config?.url);
-  console.log("RESPONSE =", error.response?.data);
-  console.log("FULL ERROR =", error);
-
-  setUploading(false);
-
-  Alert.alert(
-    "Upload Error",
-    JSON.stringify(
-      error?.response?.data || error.message
-    )
-  );
-
-}
-
   };
 
   return (
@@ -766,8 +368,8 @@ onPress={() => {
 
           <Text style={styles.headerTitle}>New Reel</Text>
 
-          <TouchableOpacity style={styles.shareBtn} onPress={handlePostNow} disabled={uploading}>
-            {uploading ? (
+          <TouchableOpacity style={styles.shareBtn} onPress={handlePostNow} disabled={uploadState.uploading}>
+            {uploadState.uploading ? (
               <ActivityIndicator color="#fff" size="small" />
             ) : (
               <Text style={styles.shareText}>Share</Text>
@@ -875,15 +477,16 @@ onPress={() => {
             </View>
           </Modal>
 
-          {/* UPLOAD PROGRESS */}
-          {uploading && (
+          {/* UPLOAD PROGRESS (is screen se turant navigate ho jaate hain,
+              isliye ye normally sirf ek split-second ke liye dikhega) */}
+          {uploadState.uploading && (
             <View style={styles.progressContainer}>
               <View style={styles.progressTop}>
                 <Text style={styles.progressTitle}>Uploading Reel...</Text>
-                <Text style={styles.progressPercent}>{progress}%</Text>
+                <Text style={styles.progressPercent}>{uploadState.progress}%</Text>
               </View>
               <View style={styles.progressBarBg}>
-                <View style={[styles.progressBarFill, { width: `${progress}%` }]} />
+                <View style={[styles.progressBarFill, { width: `${uploadState.progress}%` }]} />
               </View>
             </View>
           )}

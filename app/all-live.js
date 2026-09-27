@@ -1,5 +1,5 @@
          
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
 
 import {
   ActivityIndicator,
@@ -77,6 +77,98 @@ const TRENDING_BANNERS_DATA = [
   require('../assets/images/banner3.jpeg'),
 ];
 
+// PERF FIX (the big one): pehle live-streams ka pura grid AllLive() ke
+// andar hi render hota tha. Banner auto-scroll har 3 second me
+// activeBannerIndex state change karta hai -> AllLive() re-render hota hai
+// -> is wajah se grid ke saare cards/images bhi har 3 second me dobara
+// render ho rahe the, chahe ek bhi live room change na hua ho. Yahi sabse
+// bada "smooth nahi hai" wala culprit tha.
+//
+// Fix: grid ko ek alag memo() component me nikaal diya jo sirf loading /
+// liveStreams / activeTab badalne par re-render hoga - banner tick se
+// bilkul affect nahi hoga.
+
+const LiveCard = memo(function LiveCard({ stream, onPress }) {
+  return (
+    <TouchableOpacity
+      style={styles.liveCard}
+      activeOpacity={0.9}
+      onPress={() => onPress(stream)}
+    >
+      <Image
+        source={{ uri: stream.roomCover }}
+        style={styles.cardImage}
+      />
+
+      <View style={styles.viewerBox}>
+        <Ionicons name="eye-outline" size={16} color="#999" />
+        <Text style={styles.viewerText}>{stream.users}</Text>
+      </View>
+
+      <Ionicons
+        name={stream.type === 'video' ? 'videocam' : 'mic'}
+        size={50}
+        color="#1200ff"
+        style={styles.micIcon}
+      />
+
+      <View style={styles.bottomUser}>
+        <Image
+          source={{ uri: stream.hostImg }}
+          style={styles.profilePic}
+        />
+        <Text style={styles.hostName}>{stream.host}</Text>
+      </View>
+    </TouchableOpacity>
+  );
+});
+
+const LiveFeedSection = memo(function LiveFeedSection({
+  loading,
+  liveStreams,
+  activeTab,
+  onCardPress,
+}) {
+  // useMemo: sirf tab liveStreams ya activeTab badalne par dobara filter
+  // hoga, har parent re-render par nahi.
+  const filteredStreams = useMemo(
+    () => liveStreams.filter((stream) => stream && stream.type === activeTab),
+    [liveStreams, activeTab]
+  );
+
+  if (loading) {
+    return (
+      <View style={styles.loaderBox}>
+        <ActivityIndicator size="small" color="#ebd500" />
+        <Text style={styles.emptyFeedText}>Loading live rooms...</Text>
+      </View>
+    );
+  }
+
+  if (filteredStreams.length === 0) {
+    return (
+      <View style={styles.emptyBox}>
+        <Ionicons
+          name={activeTab === 'audio' ? "mic-off-outline" : "videocam-off-outline"}
+          size={46}
+          color="rgba(255,255,255,0.1)"
+        />
+        <Text style={styles.emptyFeedText}>
+          No active {activeTab} rooms live right now
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.gridContainer}>
+      {filteredStreams.map((stream) => (
+        <LiveCard key={stream.id} stream={stream} onPress={onCardPress} />
+      ))}
+    </View>
+  );
+});
+
 export default function AllLive() {
 
   const router = useRouter();
@@ -144,7 +236,7 @@ export default function AllLive() {
   // ADD VIEWER TO ROOM
   // ------------------------------------
 
-  const addViewerToRoom = async (roomId) => {
+  const addViewerToRoom = useCallback(async (roomId) => {
 
     try {
 
@@ -187,7 +279,38 @@ export default function AllLive() {
 
     }
 
-  };
+  }, []);
+
+  // PERF FIX: is card-press handler ko stable rakhte hain (useCallback)
+  // taaki LiveFeedSection/LiveCard neeche di gayi memo() optimization
+  // se fayda uthayein - warna har render par naya function milne se
+  // memo() bekaar ho jaata.
+  const openLiveRoom = useCallback((stream) => {
+
+    addViewerToRoom(stream.id);
+
+    if (stream.type === 'video') {
+
+      router.push({
+        pathname: '/videolive',
+        params: {
+          id: stream.id,
+          role: 'viewer',
+        }
+      });
+
+      return;
+    }
+
+    router.push({
+      pathname: '/LiveRoom',
+      params: {
+        id: stream.id,
+        from: "alllive"
+      }
+    });
+
+  }, [addViewerToRoom, router]);
 
   // ------------------------------------
   // CONVERT FIREBASE TIME
@@ -698,13 +821,23 @@ export default function AllLive() {
   // AUTO BANNER
   // ------------------------------------
 
+  // PERF FIX: pehle is interval ke deps me activeBannerIndex tha, isliye
+  // har 3 second me state change hone par purana interval clear hoke naya
+  // interval start ho raha tha (clearInterval + setInterval baar baar) -
+  // isse timing thodi unstable ho sakti thi. Ab ek ref se current index
+  // track karte hain, interval sirf ek baar banta hai.
+  const activeBannerIndexRef = useRef(0);
+  useEffect(() => {
+    activeBannerIndexRef.current = activeBannerIndex;
+  }, [activeBannerIndex]);
+
   useEffect(() => {
 
     const bannerTimer =
       setInterval(() => {
 
         let nextBannerIndex =
-          activeBannerIndex + 1;
+          activeBannerIndexRef.current + 1;
 
         if (
           nextBannerIndex >=
@@ -735,7 +868,6 @@ export default function AllLive() {
       clearInterval(bannerTimer);
 
   }, [
-    activeBannerIndex,
     bannerWidthOffset
   ]);
 
@@ -1075,218 +1207,12 @@ export default function AllLive() {
           }
         >
 
-          {
-            loading
-
-              ? (
-
-                <View
-                  style={styles.loaderBox}
-                >
-
-                  <ActivityIndicator
-                    size="small"
-                    color="#ebd500"
-                  />
-
-                  <Text
-                    style={
-                      styles.emptyFeedText
-                    }
-                  >
-                    Loading live rooms...
-                  </Text>
-
-                </View>
-
-              )
-
-              : (
-
-                (() => {
-
-                  const filteredStreams =
-                    liveStreams.filter(
-                      stream =>
-                        stream &&
-                        stream.type ===
-                          activeTab
-                    );
-
-                  if (
-                    filteredStreams.length ===
-                    0
-                  ) {
-
-                    return (
-
-                      <View
-                        style={
-                          styles.emptyBox
-                        }
-                      >
-
-                        <Ionicons
-                          name={
-                            activeTab ===
-                            'audio'
-                              ? "mic-off-outline"
-                              : "videocam-off-outline"
-                          }
-                          size={46}
-                          color="rgba(255,255,255,0.1)"
-                        />
-
-                        <Text
-                          style={
-                            styles.emptyFeedText
-                          }
-                        >
-                          No active {activeTab}{' '}
-                          rooms live right now
-                        </Text>
-
-                      </View>
-
-                    );
-
-                  }
-
-                  return (
-
-                    <View
-                      style={
-                        styles.gridContainer
-                      }
-                    >
-
-                      {
-                        filteredStreams.map(
-                          (stream) => (
-
-                            <TouchableOpacity
-                              key={stream.id}
-                              style={
-                                styles.liveCard
-                              }
-                              activeOpacity={0.9}
-                              onPress={() => {
-
-                                addViewerToRoom(
-                                  stream.id
-                                );
-
-                                router.push({
-
-                                  pathname:
-                                    '/LiveRoom',
-
-                                  params: {
-
-                                    id:
-                                      stream.id,
-
-                                    from:
-                                      "alllive"
-
-                                  }
-
-                                });
-
-                              }}
-                            >
-
-                              <Image
-                                source={{
-                                  uri:
-                                    stream.roomCover
-                                }}
-                                style={
-                                  styles.cardImage
-                                }
-                              />
-
-                              <View
-                                style={
-                                  styles.viewerBox
-                                }
-                              >
-
-                                <Ionicons
-                                  name="eye-outline"
-                                  size={16}
-                                  color="#999"
-                                />
-
-                                <Text
-                                  style={
-                                    styles.viewerText
-                                  }
-                                >
-                                  {
-                                    stream.users
-                                  }
-                                </Text>
-
-                              </View>
-
-                              <Ionicons
-                                name={
-                                  stream.type ===
-                                  'video'
-                                    ? 'videocam'
-                                    : 'mic'
-                                }
-                                size={50}
-                                color="#1200ff"
-                                style={
-                                  styles.micIcon
-                                }
-                              />
-
-                              <View
-                                style={
-                                  styles.bottomUser
-                                }
-                              >
-
-                                <Image
-                                  source={{
-                                    uri:
-                                      stream.hostImg
-                                  }}
-                                  style={
-                                    styles.profilePic
-                                  }
-                                />
-
-                                <Text
-                                  style={
-                                    styles.hostName
-                                  }
-                                >
-                                  {
-                                    stream.host
-                                  }
-                                </Text>
-
-                              </View>
-
-                            </TouchableOpacity>
-
-                          )
-                        )
-                      }
-
-                    </View>
-
-                  );
-
-                })()
-
-              )
-          }
-
+          <LiveFeedSection
+            loading={loading}
+            liveStreams={liveStreams}
+            activeTab={activeTab}
+            onCardPress={openLiveRoom}
+          />
         </View>
 
       </ScrollView>

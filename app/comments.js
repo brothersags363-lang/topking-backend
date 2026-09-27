@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, memo } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TextInput, 
   TouchableOpacity, KeyboardAvoidingView, Platform, 
@@ -14,6 +14,25 @@ import {
   onSnapshot, serverTimestamp, doc, updateDoc, increment, getDoc 
 } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
+
+// PERF FIX: pehle renderComment component ke andar tha, isliye har render
+// (jaise TextInput me type karte waqt) par naya function ban raha tha aur
+// FlatList ki saari rows re-render ho rahi thi. Ab bahar memo() ke saath
+// hai, sirf apne item ke change hone par re-render hoga -> zyada smooth.
+const CommentRow = memo(function CommentRow({ item }) {
+  return (
+    <View style={styles.commentCard}>
+      <Image source={{ uri: item.profilePic }} style={styles.avatar} />
+      <View style={styles.commentContent}>
+        <View style={styles.commentHeader}>
+          <Text style={styles.usernameText}>{item.username}</Text>
+          <Text style={styles.timeText}>just now</Text>
+        </View>
+        <Text style={styles.commentBody}>{item.text}</Text>
+      </View>
+    </View>
+  );
+});
 
 export default function CommentsScreen() {
   const router = useRouter();
@@ -60,7 +79,7 @@ export default function CommentsScreen() {
   }, [videoId]);
 
   // 3. Post Comment
-  const postComment = async () => {
+  const postComment = useCallback(async () => {
     const user = auth.currentUser;
     if (!user || !commentText.trim()) return;
     const textToSend = commentText;
@@ -76,7 +95,7 @@ export default function CommentsScreen() {
       });
       await updateDoc(doc(db, 'all_videos', videoId), { commentsCount: increment(1) });
     } catch (error) { console.error(error); }
-  };
+  }, [commentText, videoId, currentUserData]);
 
   // ==========================================
   // 4. INSTA-STYLE BACK LOGIC (THE FIX)
@@ -89,18 +108,10 @@ export default function CommentsScreen() {
     }
   };
 
-  const renderComment = ({ item }) => (
-    <View style={styles.commentCard}>
-      <Image source={{ uri: item.profilePic }} style={styles.avatar} />
-      <View style={styles.commentContent}>
-        <View style={styles.commentHeader}>
-          <Text style={styles.usernameText}>{item.username}</Text>
-          <Text style={styles.timeText}>just now</Text>
-        </View>
-        <Text style={styles.commentBody}>{item.text}</Text>
-      </View>
-    </View>
-  );
+  // useCallback: FlatList ko stable renderItem reference milta hai,
+  // isse rows unnecessarily re-mount/re-render nahi hoti.
+  const renderComment = useCallback(({ item }) => <CommentRow item={item} />, []);
+  const keyExtractor = useCallback((item) => item.id, []);
 
   return (
     <View style={styles.container}>
@@ -121,9 +132,15 @@ export default function CommentsScreen() {
         <FlatList
           data={comments}
           renderItem={renderComment}
-          keyExtractor={(item) => item.id}
+          keyExtractor={keyExtractor}
           contentContainerStyle={{ paddingBottom: 120, paddingHorizontal: 15 }}
           showsVerticalScrollIndicator={false}
+          // PERF: kam initial items render karo, batch me render karo,
+          // aur off-screen rows ko memory se hata do -> zyada smooth scroll.
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          windowSize={7}
+          removeClippedSubviews={Platform.OS === 'android'}
         />
       )}
 
