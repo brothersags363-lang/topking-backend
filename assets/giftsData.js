@@ -23,17 +23,6 @@ animation: require("./gifts/hammer.json"),
 
 
 {
-id:"gift",
-name:"Gift",
-price:19,
-duration:5000,
-icon: require("./gifts/gift.png"),
-animation: require("./gifts/gift.json"),
-
-},
-
-
-{
 id:"Sending-Heart",
 name:"Sending Heart",
 price:39,
@@ -66,16 +55,6 @@ animation: require("./gifts/Rose.json"),
 },
 
 {
-id:"be-mine",
-name:"Be â¤ï¸ Mine",
-price:999,
-duration:6000,
-icon: require("./gifts/be-mine.png"),
-animation: require("./gifts/be-mine.json"),
-
-},
-
-{
 id:"LoveRose",
 name:"Love Rose",
 price:1999,
@@ -96,17 +75,6 @@ animation: require("./gifts/mylove.json"),
 
 },
 
-
-{
-id:"redcar",
-name:"Red Car",
-price:4999,
-duration:7000,
-icon: require("./gifts/redcar.png"),
-animation: require("./gifts/redcar.json"),
-
-},
-
 {
 id:"Bomb",
 name:"Bomb",
@@ -117,29 +85,6 @@ animation: require("./gifts/Bomb.json"),
 
 },
 
-
-{
-id:"diamond",
-name:"Diamond",
-price:2499,
-duration:2800,
-icon: require("./gifts/diamond.png"),
-animation: require("./gifts/diamond.json"),
-
-},
-
-
-{
-id:"bird.love",
-name:"bird.love",
-price:289,
-duration:2000,
-icon: require("./gifts/bird.love.png"),
-animation: require("./gifts/bird.love.json"),
-
-},
-
-
 {
 id:"Love",
 name:"Love",
@@ -147,16 +92,6 @@ price:899,
 duration:1500,
 icon: require("./gifts/Love.png"),
 animation: require("./gifts/Love.json"),
-
-},
-
-{
-id:"Couple eating",
-name:"Couple eating",
-price:79,
-duration:2000,
-icon: require("./gifts/Couple eating.png"),
-animation: require("./gifts/Couple eating.json"),
 
 },
 
@@ -184,44 +119,100 @@ animation: require("./gifts/love kiss.json"),
 
 
 {
-id:"Love Proposal",
-name:"Proposal",
-price:699,
-duration:2200,
-icon: require("./gifts/Love Proposal.png"),
-animation: require("./gifts/Love Proposal.json"),
-
-},
-
-{
-id:"long drive",
-name:"long drive",
-price:2599,
-duration:2000,
-icon: require("./gifts/long drive.png"),
-animation: require("./gifts/long drive.json"),
-
-},
-
-
-{
-id:"love_flight",
-name:"love_flight",
-price:6999,
-duration:3500,
-icon: require("./gifts/love_flight.png"),
-animation: require("./gifts/love_flight.json"),
-
-},
-
-{
-id:"TOPKING",
-name:"TOPKING",
+id:"ring3d",
+name:"Diamond Ring",
 price:1999,
-duration:1299,
-icon: require("./gifts/TOPKING.png"),
-animation: require("./gifts/TOPKING.json"),
+duration:6000,
+icon: require("./gifts/ring3d.png"),
+animation: "web:ring",
+},
 
+{
+id:"king3d",
+name:"King Crown",
+price:5999,
+duration:7000,
+icon: require("./gifts/king3d.png"),
+animation: "web:king",
+},
+
+{
+id:"love3d",
+name:" Proposal",
+price:9999,
+duration:8500,
+icon: require("./gifts/love3d.png"),
+animation: "web:love",
+},
+
+
+{
+id:"car3d",
+name:"Car Entry",
+price:1299,
+duration:7000,
+icon: require("./gifts/car3d.png"),
+animation: "web:car",
+},
+
+
+{
+id:"phone3d",
+name:"iPhone 17",
+price:24999,
+duration:6800,
+icon: require("./gifts/phone3d.png"),
+animation: "web:phone",
+},
+
+
+{
+id:"watch3d",
+name:"Touch Watch",
+price:12999,
+duration:7500,
+icon: require("./gifts/watch3d.png"),
+animation: "web:watch",
+},
+
+
+
+{
+id:"trophy3d",
+name:"TopKing",
+price:15999,
+duration:10000,
+icon: require("./gifts/trophy3d.png"),
+animation: "web:trophy",
+},
+
+{
+id:"coffee3d",
+name:"Good Morning",
+price:99,
+duration:9000,
+icon: require("./gifts/coffee3d.png"),
+animation: "web:coffee",
+},
+
+
+{
+id:"jet3d",
+name:"Love Jet",
+price:2199,
+duration:9000,
+icon: require("./gifts/jet3d.png"),
+animation: "web:jet",
+},
+
+
+{
+id:"cake3d",
+name:"Birthday Cake",
+price:6999,
+duration:9000,
+icon: require("./gifts/cake3d.png"),
+animation: "web:cake",
 },
 
 ];

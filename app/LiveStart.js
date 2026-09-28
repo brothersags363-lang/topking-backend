@@ -31,7 +31,7 @@ try {
   console.log("Firebase architecture fallback inside LiveStart.");
 }
 
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { doc, setDoc, getDoc, collection, addDoc, getDocs, deleteDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 const { width } = Dimensions.get('window');
@@ -162,12 +162,10 @@ const [loadingButton, setLoadingButton] = useState(null);
         status: 'active', 
         type: 'audio', 
         roomType: roomType,
-        audienceList: {
-          [currentUid]: { name: hostName, img: hostAvatar }
-        }, 
-        chats: [
-          { id: "sys_init", senderName: "System", message: "Live Audio Chatroom setup successful.", isSystem: true }
-        ], 
+        // NOTE: chat + viewer presence now live in subcollections
+        // (rooms/{roomId}/chats, rooms/{roomId}/audience) instead of
+        // fields on this document — keeps this doc small and cheap to
+        // sync at 200-300 concurrent viewers. See LiveRoom.js.
         invitationIncoming: null, 
         seatsCount: 10,
         seatsData: initialSeatsObject, 
@@ -177,7 +175,32 @@ const [loadingButton, setLoadingButton] = useState(null);
       };
 
       if (db) {
+        // SAFETY NET: hosts reuse their own uid as roomId, so if a
+        // previous live ended abnormally (app crash / force-quit)
+        // without going through the normal cleanup, old chat/audience
+        // docs could still be sitting under this same roomId. Clear
+        // them out before this fresh room goes live so old messages
+        // never bleed into a new session.
+        try {
+          const [oldChatsSnap, oldAudienceSnap] = await Promise.all([
+            getDocs(collection(db, 'rooms', roomUniqueId, 'chats')),
+            getDocs(collection(db, 'rooms', roomUniqueId, 'audience')),
+          ]);
+          await Promise.all([
+            ...oldChatsSnap.docs.map(d => deleteDoc(d.ref)),
+            ...oldAudienceSnap.docs.map(d => deleteDoc(d.ref)),
+          ]);
+        } catch (cleanupErr) {
+          console.log("Old session cleanup skipped:", cleanupErr);
+        }
+
         await setDoc(doc(db, 'rooms', roomUniqueId), newRoomPayload);
+        await addDoc(collection(db, 'rooms', roomUniqueId, 'chats'), {
+          senderName: "System",
+          message: "Live Audio Chatroom setup successful.",
+          isSystem: true,
+          createdAt: Date.now(),
+        });
       }
 
       setIsUploading(false);

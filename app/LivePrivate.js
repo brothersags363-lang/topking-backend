@@ -1,4 +1,4 @@
-  import React, { useEffect, useState, useRef } from 'react';
+  import React, { useEffect, useState, useRef, useCallback, memo } from 'react';
 
   import {
   View,
@@ -33,6 +33,8 @@ import ReAnimated,{
 } from "react-native-reanimated";
 
 import { useLocalSearchParams, useRouter, useFocusEffect,  } from 'expo-router';
+import { useLive } from '../context/LiveContext';
+
 import { Ionicons, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 
 import {
@@ -40,6 +42,8 @@ import {
   collection,
   query,
   where,
+  orderBy,
+  limit,
   getDocs,
   onSnapshot,
   updateDoc,
@@ -49,19 +53,23 @@ import {
   setDoc,
   deleteField,
   addDoc,
+  getCountFromServer,
 serverTimestamp,
 } from 'firebase/firestore';
 
 import {
-RtcSurfaceView,
-createAgoraRtcEngine,
-ChannelProfileType,
-ClientRoleType
-} from 'react-native-agora';
+  createAgoraRtcEngine,
+  ChannelProfileType,
+  ClientRoleType,
+  AudioProfileType,
+  AudioScenarioType,
+} from "react-native-agora";
 
 import { gifts } from "../assets/giftsData";
 
 import LottieView from "lottie-react-native";
+import { WebView } from "react-native-webview";
+import { giftHtml } from "../assets/giftWeb";
 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -170,6 +178,441 @@ return null;
 
 
 
+
+// ============================================================
+// PERF: small memoized components that live OUTSIDE LiveRoom so a
+// re-render of the big room screen doesn't re-render / restart them.
+// ============================================================
+
+// Timer used to be `roomTimer` state inside LiveRoom -> setState every
+// second -> the ENTIRE 6000-line screen re-rendered 1x/sec. Now only this
+// tiny <Text> re-renders.
+const LiveTimer = memo(({ startTime }) => {
+  const [label, setLabel] = useState("00:00:00");
+
+  useEffect(() => {
+    if (!startTime) return;
+
+    const tick = () => {
+      const diff = Math.max(0, Date.now() - startTime);
+      const hrs = Math.floor(diff / 3600000);
+      const mins = Math.floor((diff % 3600000) / 60000);
+      const secs = Math.floor((diff % 60000) / 1000);
+      setLabel(
+        `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+      );
+    };
+
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [startTime]);
+
+  return <Text style={styles.liveTagText}>● LIVE {label}</Text>;
+});
+
+// Full-screen gift animation. Memoized so chat / seat / snapshot updates
+// in the room never re-render (or reload) the Lottie / WebView while a
+// gift is playing. `playKey` changes on every new gift so the same gift
+// sent twice in a row restarts instead of being ignored.
+const GiftOverlay = memo(({ activeGift, playKey, onFinish }) => {
+  const webSource = React.useMemo(
+    () =>
+      typeof activeGift === "string" && activeGift.startsWith("web:")
+        ? { html: giftHtml(activeGift.slice(4)), baseUrl: "https://localhost" }
+        : null,
+    [activeGift]
+  );
+
+  if (!activeGift) return null;
+
+  return (
+    <View
+      pointerEvents="none"
+      style={{
+        position: "absolute",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        justifyContent: "center",
+        alignItems: "center",
+        zIndex: 99999,
+        elevation: 99999,
+      }}
+    >
+      {webSource ? (
+        <WebView
+          key={playKey}
+          source={webSource}
+          originWhitelist={["*"]}
+          javaScriptEnabled
+          domStorageEnabled={false}
+          cacheEnabled
+          overScrollMode="never"
+          style={{ width: width, height: width * 1.3, backgroundColor: "transparent" }}
+          containerStyle={{ backgroundColor: "transparent" }}
+          androidLayerType="hardware"
+          scrollEnabled={false}
+          pointerEvents="none"
+        />
+      ) : (
+        <LottieView
+          key={playKey}
+          source={activeGift}
+          autoPlay
+          loop={false}
+          speed={2}
+          hardwareAccelerationAndroid={true}
+          renderMode="HARDWARE"
+          cacheComposition={true}
+          resizeMode="contain"
+          onAnimationFinish={(cancelled) => {
+            if (!cancelled) onFinish && onFinish();
+          }}
+          style={{
+            width: 350,
+            height: 350,
+            backgroundColor: "transparent",
+          }}
+        />
+      )}
+    </View>
+  );
+});
+
+// One chat row. Previously this was a ~340-line inline renderItem, so every
+// re-render of LiveRoom re-rendered every visible row. As a memo component it
+// only re-renders when that specific message object changes.
+const ChatItem = memo(({ chat }) => {
+
+        if (chat.type === "join") {
+
+            return (
+                <View
+                    style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        paddingHorizontal: 10,
+                        paddingVertical: 6,
+                    }}
+                >
+
+                    <View>
+
+                        <Image
+                            source={{
+                                uri:chat.userImg || STABLE_AVATAR
+                            }}
+                            style={{
+                                width:22,
+                                height:22,
+                                borderRadius:11,
+                                backgroundColor:'#2a2b38'
+                            }}
+                        />
+
+                        {
+                            chat.level>=10 && (
+
+                                <Image
+                                    source={
+                                        getLevelFrame(
+                                            chat.level
+                                        )
+                                    }
+                                    style={{
+                                        position:"absolute",
+                                        width:30,
+                                        height:30,
+                                        top:-4,
+                                        left:-4
+                                    }}
+                                />
+
+                            )
+                        }
+
+                    </View>
+
+                    <View
+                        style={{
+                            flexDirection: "row",
+                            alignItems: "center",
+                            flexWrap: "wrap",
+                        }}
+                    >
+
+                        <Text
+                            style={{
+                                color: "#d0d0d0",
+                                fontSize: 13,
+                                fontWeight: "600",
+                            }}
+                        >
+                            {chat.senderName}
+                        </Text>
+
+                        {chat.verified && (
+  <MaterialCommunityIcons
+  name="check-decagram"
+  size={17}
+  color={
+    chat?.verifiedColor === "yellow"
+      ? "#FFD700"
+      : "#ffffff"
+  }
+/>
+)}
+
+                        <View
+                            style={[
+                                styles.levelBadge,
+                                {
+                                    marginLeft: 5,
+                                    backgroundColor:
+                                        getLevelTheme(
+                                            chat.level || 1
+                                        ).bg,
+
+                                    borderColor:
+                                        getLevelTheme(
+                                            chat.level || 1
+                                        ).border,
+                                },
+                            ]}
+                        >
+
+                            <MaterialCommunityIcons
+                                name="diamond-stone"
+                                size={8}
+                                color={
+                                    getLevelTheme(
+                                        chat.level || 1
+                                    ).icon
+                                }
+                            />
+
+                            <Text
+                                style={{
+                                    color:
+                                        getLevelTheme(
+                                            chat.level || 1
+                                        ).text,
+                                    fontSize: 8,
+                                    fontWeight: "bold",
+                                    marginLeft: 2,
+                                }}
+                            >
+                                LV {chat.level || 1}
+                            </Text>
+
+                        </View>
+
+                        <Text
+                            style={{
+                                color: "#d0d0d0",
+                                fontSize: 13,
+                                fontWeight: "600",
+                                marginLeft: 5,
+                            }}
+                        >
+                            joined
+                        </Text>
+
+                    </View>
+
+                </View>
+            );
+        }
+
+        if (chat.type === "gift") {
+            const gd = gifts.find(g => String(g.id) === String(chat.giftId));
+            return (
+                <View
+                    style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                        paddingHorizontal: 10,
+                        paddingVertical: 6,
+                    }}
+                >
+                    <Image
+                        source={{ uri: chat.userImg || STABLE_AVATAR }}
+                        style={{ width:22, height:22, borderRadius:11, backgroundColor:'#2a2b38' }}
+                    />
+                    <Text style={{ color:"#d0d0d0", fontSize:13, fontWeight:"600", marginLeft:6 }}>
+                        {chat.senderName}
+                    </Text>
+                    {chat.verified && (
+                        <MaterialCommunityIcons
+                            name="check-decagram"
+                            size={17}
+                            color={chat?.verifiedColor === "yellow" ? "#FFD700" : "#ffffff"}
+                        />
+                    )}
+                    <Text style={{ color:"#d0d0d0", fontSize:13, marginLeft:5 }}>
+                        sent
+                    </Text>
+                    {gd?.icon ? (
+                        <Image
+                            source={gd.icon}
+                            style={{ width:24, height:24, resizeMode:"contain", marginHorizontal:4 }}
+                        />
+                    ) : (
+                        <Text style={{ color:"#00FFFF", fontWeight:"bold", marginHorizontal:4 }}>
+                            {chat.giftName}
+                        </Text>
+                    )}
+                    <Text style={{ color:"#d0d0d0", fontSize:13 }}>to </Text>
+                    <Text style={{ color:"#FFE600", fontSize:13, fontWeight:"bold" }}>
+                        @{chat.receiverName}
+                    </Text>
+                </View>
+            );
+        }
+
+        return (
+
+            <View style={styles.chatRow}>
+
+                <View
+                    style={{
+                        width:42,
+                        height:42,
+                        justifyContent:"center",
+                        alignItems:"center"
+                    }}
+                >
+
+                    <Image
+                        source={{
+                            uri:chat.userImg || STABLE_AVATAR
+                        }}
+                        style={styles.chatAva}
+                    />
+
+                    {
+                        chat.level>=10 && (
+
+                            <Image
+                                source={
+                                    getLevelFrame(
+                                        chat.level
+                                    )
+                                }
+                                style={styles.chatFrame}
+                            />
+
+                        )
+                    }
+
+                </View>
+
+                <View style={styles.chatContent}>
+
+                    <View
+                        style={{
+                            flexDirection: "row",
+                            alignItems: "center",
+                            flexWrap: "wrap",
+                        }}
+                    >
+
+                        <Text style={styles.chatUser}>
+                            {chat.senderName}
+                        </Text>
+
+                        {chat.verified && (
+                            <View style={styles.verifiedBadge}>
+                                
+<MaterialCommunityIcons
+  name="check-decagram"
+  size={15}
+  color={
+    chat?.verifiedColor === "yellow"
+      ? "#FFD700"
+      : "#ffffff"
+  }
+/>
+
+
+
+                            </View>
+                        )}
+
+                        <View
+                            style={[
+                                styles.levelBadge,
+                                {
+                                    marginLeft: 6,
+                                    backgroundColor:
+                                        getLevelTheme(
+                                            chat.level || 1
+                                        ).bg,
+
+                                    borderColor:
+                                        getLevelTheme(
+                                            chat.level || 1
+                                        ).border,
+                                },
+                            ]}
+                        >
+
+                            <MaterialCommunityIcons
+                                name="diamond-stone"
+                                size={9}
+                                color={
+                                    getLevelTheme(
+                                        chat.level || 1
+                                    ).icon
+                                }
+                            />
+
+                            <Text
+                                style={{
+                                    color:
+                                        getLevelTheme(
+                                            chat.level || 1
+                                        ).text,
+                                    fontSize: 8,
+                                    fontWeight: "bold",
+                                    marginLeft: 2,
+                                }}
+                            >
+                                LV {chat.level || 1}
+                            </Text>
+
+                        </View>
+
+                    </View>
+
+                    <Text
+                        style={{
+                            color:"#888",
+                            fontSize:11,
+                            marginTop:2,
+                        }}
+                    >
+                        @{chat.username}
+                    </Text>
+
+                    <View style={styles.bubble}>
+                        <Text style={styles.chatMsg}>
+                            {chat.message}
+                        </Text>
+                    </View>
+
+                </View>
+
+            </View>
+        );
+});
+
+const renderChatItem = ({ item }) => <ChatItem chat={item} />;
+const chatKeyExtractor = (item, index) => item.id || String(index);
+
 const AvatarWithFrame = ({ uri, level, size = 70 }) => {
   return (
     <View
@@ -191,7 +634,7 @@ const AvatarWithFrame = ({ uri, level, size = 70 }) => {
       />
 
       {level >= 10 && (
-        <ReAnimated.Image
+        <Image
           source={getLevelFrame(level)}
           style={{
             position: "absolute",
@@ -209,6 +652,12 @@ const AvatarWithFrame = ({ uri, level, size = 70 }) => {
 
 export default function LiveRoom() {
 const insets = useSafeAreaInsets();
+
+const {
+  startLive,
+  stopLive,
+  currentLive,
+} = useLive();
 
 
 const glow=useSharedValue(1);
@@ -259,8 +708,31 @@ const from = params?.from;
   const router = useRouter();
   const roomId = params?.id ? String(params.id) : null;
 
+  // ===== PRIVATE ROOM =====
+  // A room is private when its doc has `isPrivate: true`. Entry is allowed only
+  // for: the host, someone opening the host's invite link (link carries
+  // `?key=<inviteKey>`), or someone the host invited (`allowedUsers.<uid>`).
+  // Everything else (room listing, direct open, guessed room id) is refused.
+  const inviteKeyParam = params?.key
+    ? String(params.key)
+    : params?.inviteKey
+    ? String(params.inviteKey)
+    : null;
+
+  // Nothing about the room (audio, chat, presence) starts until this is true.
+  const [accessGranted, setAccessGranted] = useState(false);
+
   const [roomData, setRoomData] = useState(null);
-  const [currentUserRole, setCurrentUserRole] = useState('listener'); 
+  const [currentUserRole, setCurrentUserRole] = useState('listener');
+  // PERF/BUG FIX: the room's onSnapshot listener (set up once, deps below)
+  // used to read `currentUserRole` straight from this closure. Since that
+  // effect never re-runs when the role changes, it always saw the value
+  // from the render it was created in — so the "host removed me from the
+  // seat, demote back to Audience + leave/rejoin channel" branch could
+  // never fire (it always compared against a stale "listener"). A ref
+  // always reflects the latest value without re-subscribing the listener.
+  const currentUserRoleRef = useRef('listener');
+  useEffect(() => { currentUserRoleRef.current = currentUserRole; }, [currentUserRole]);
   const [loading, setLoading] = useState(true);
   const [chatMessage, setChatMessage] = useState('');
   const [controlModalVisible, setControlModalVisible] = useState(false);
@@ -306,15 +778,84 @@ const [selectedFriends, setSelectedFriends] = useState([]);
 
 const [profileUser, setProfileUser] = useState(null);
 
+// Live-room profile preview (tap on a speaker/host avatar): lightweight
+// follow state + stats, fetched once on open (no realtime listener) so it
+// never adds ongoing load to an already-busy room screen.
+const [previewFollowersCount, setPreviewFollowersCount] = useState(0);
+const [previewFollowingCount, setPreviewFollowingCount] = useState(0);
+const [previewLikesCount, setPreviewLikesCount] = useState(0);
+const [previewIsFollowing, setPreviewIsFollowing] = useState(false);
+const [previewIsFollowBack, setPreviewIsFollowBack] = useState(false);
+const [previewHasLiked, setPreviewHasLiked] = useState(false);
+const [previewStatsLoading, setPreviewStatsLoading] = useState(false);
+const [previewFollowBusy, setPreviewFollowBusy] = useState(false);
+const [previewLikeBusy, setPreviewLikeBusy] = useState(false);
+const previewRequestIdRef = useRef(0);
+
 const [activeGift, setActiveGift] = useState(null);
 
+// bumps on every gift so the overlay remounts and replays even when the
+// same gift is sent twice in a row
+const [giftPlayKey, setGiftPlayKey] = useState(0);
+
+// key (senderId_timestamp) of the last liveGift we've already handled. Seeded
+// from the FIRST room snapshot so a gift sent BEFORE we joined never replays.
+// (Key equality, not a timestamp comparison, so phones with different clocks
+// can't cause real gifts to be skipped.)
+const lastSeenGiftKeyRef = useRef("");
+const giftBaselineSetRef = useRef(false);
+
+// Start a gift animation instantly (used for own gifts AND remote gifts).
+const playGift = useCallback((animation, duration) => {
+  if (!animation) return;
+  setActiveGift(animation);
+  setGiftPlayKey(k => k + 1);
+  if (giftTimeoutRef.current) clearTimeout(giftTimeoutRef.current);
+  giftTimeoutRef.current = setTimeout(() => {
+    setActiveGift(null);
+  }, duration || 5000);
+}, []);
+
+const handleGiftFinish = useCallback(() => {
+  if (giftTimeoutRef.current) clearTimeout(giftTimeoutRef.current);
+  setActiveGift(null);
+}, []);
+
 const lastGiftRef = useRef(null);
+
+const liveContextSigRef = useRef("");
 
 const giftTimeoutRef = useRef(null);
 
 const [giftCombo, setGiftCombo] = useState(null);
 
 const comboTimeoutRef = useRef(null);
+
+// ===== JOIN BANNER ("Nawed joined") =====
+const [joinBanner, setJoinBanner] = useState(null);
+const joinAnim = useRef(new Animated.Value(-width)).current;
+const joinHideTimeoutRef = useRef(null);
+const chatsReadyRef = useRef(false);
+
+const showJoinBanner = (data) => {
+  if (joinHideTimeoutRef.current) clearTimeout(joinHideTimeoutRef.current);
+  setJoinBanner(data);
+  joinAnim.stopAnimation();
+  joinAnim.setValue(-width);
+  Animated.spring(joinAnim, {
+    toValue: 0,
+    speed: 14,
+    bounciness: 6,
+    useNativeDriver: true,
+  }).start();
+  joinHideTimeoutRef.current = setTimeout(() => {
+    Animated.timing(joinAnim, {
+      toValue: -width,
+      duration: 300,
+      useNativeDriver: true,
+    }).start(() => setJoinBanner(null));
+  }, 2800);
+};
 
 
 const [selectedGiftUser, setSelectedGiftUser] = useState(null);
@@ -325,7 +866,6 @@ const [stars, setStars] = useState(0);
 
 const [myStars,setMyStars] = useState(0);
 
-const [roomTimer, setRoomTimer] = useState("00:00");
 
 
 const [keyboardHeight, setKeyboardHeight] = useState(0);
@@ -333,6 +873,8 @@ const [keyboardHeight, setKeyboardHeight] = useState(0);
 const [roomStartTime, setRoomStartTime] = useState(null);
 
   const isJoinedRef = useRef(false);
+const agoraInitPromiseRef = useRef(null);
+const agoraJoinStartedRef = useRef(false);
 
 const agoraEngineRef = useRef(null);
 
@@ -345,8 +887,22 @@ const [mutedUsers,setMutedUsers]=useState([]);
 const [activeSpeakers, setActiveSpeakers] = useState({});
 
 const [myAgoraUid, setMyAgoraUid] = useState(null);
+// FIX: this was `useState`, but voiceDiagnostic is never read anywhere in
+// the JSX below — it's purely internal diagnostics. As state, every update
+// (which happens ~2x/second while Agora is connected, via
+// onAudioVolumeIndication) forced the ENTIRE room screen to re-render.
+// A ref keeps the exact same debug info available (voiceDiagnosticRef.current)
+// with zero re-render cost.
+const voiceDiagnosticRef = useRef({ agora: "Starting...", mic: false, remote: false, remoteCount: 0 });
 
 const currentUid = auth?.currentUser?.uid;
+
+// SCALE FIX: chat + audience no longer live inside the room doc.
+// They are separate Firestore subcollections so a chat message or a
+// viewer joining/leaving does NOT re-broadcast the entire room state
+// (seats, host info, etc.) to every connected client.
+const [chatMessages, setChatMessages] = useState([]);
+const [audienceMap, setAudienceMap] = useState({});
 
 
 
@@ -371,7 +927,7 @@ const chatScrollRef = useRef(null);
 
 useEffect(() => {
 
-  if (!roomData?.chats?.length) return;
+  if (!chatMessages?.length) return;
 
   requestAnimationFrame(() => {
     chatScrollRef.current?.scrollToEnd({
@@ -379,7 +935,7 @@ useEffect(() => {
     });
   });
 
-}, [roomData?.chats?.length]);
+}, [chatMessages?.length]);
 
 
 
@@ -403,9 +959,9 @@ walletRef,
 
 if(snap.exists()){
 
-setStars(
-snap.data()?.stars || 0
-);
+const v = snap.data()?.stars || 0;
+setStars(v);
+setMyStars(v);
 
 }
 
@@ -447,11 +1003,12 @@ try {
 
 const userRef = doc(db, "users", currentUid);
 
-const snap = await getDoc(userRef);
-
 const walletRef = doc(db,"wallets",currentUid);
 
-const walletSnap = await getDoc(walletRef);
+const [snap, walletSnap] = await Promise.all([
+  getDoc(userRef),
+  getDoc(walletRef),
+]);
 
 
 
@@ -568,97 +1125,282 @@ useNativeDriver:true,
 
 
 
+const friendsLoadedRef = useRef(false);
+
+// PERF: friends are only needed by the "invite friends" sheet, so load them
+// the first time that sheet opens (not on every room entry), and fetch all
+// user + wallet docs in parallel instead of 2 sequential reads per friend.
 useEffect(() => {
 
-  if (!db || !currentUid) return;
+  if (!db || !currentUid || !friendShareVisible || friendsLoadedRef.current) return;
+
+  friendsLoadedRef.current = true;
 
   const loadFriends = async () => {
 
-    const q = query(
-      collection(db, "follows"),
-      where("followerId", "==", currentUid)
-    );
+    try {
 
-    const followSnap = await getDocs(q);
-
-    let list = [];
-
-    for (const followDoc of followSnap.docs) {
-
-      const followingId = followDoc.data().followingId;
-
-      const userSnap = await getDoc(
-        doc(db, "users", followingId)
+      const q = query(
+        collection(db, "follows"),
+        where("followerId", "==", currentUid)
       );
 
-      if (userSnap.exists()) {
+      const followSnap = await getDocs(q);
 
-    const walletSnap = await getDoc(
-  doc(db, "wallets", followingId)
-);
+      const results = await Promise.all(
+        followSnap.docs.map(async (followDoc) => {
 
-list.push({
-  id: userSnap.id,
-  ...userSnap.data(),
+          const followingId = followDoc.data().followingId;
 
-  verified:
-    userSnap.data()?.verified || false,
+          const [userSnap, walletSnap] = await Promise.all([
+            getDoc(doc(db, "users", followingId)),
+            getDoc(doc(db, "wallets", followingId)),
+          ]);
 
-verifiedColor:
-  userSnap.data()?.verifiedColor || "white",
+          if (!userSnap.exists()) return null;
 
-  level:
-    walletSnap.exists()
-      ? walletSnap.data()?.level || 1
-      : 1,
-});
+          const u = userSnap.data();
 
-      }
+          return {
+            id: userSnap.id,
+            ...u,
+            verified: u?.verified || false,
+            verifiedColor: u?.verifiedColor || "white",
+            level: walletSnap.exists() ? walletSnap.data()?.level || 1 : 1,
+          };
 
+        })
+      );
+
+      setFriends(results.filter(Boolean));
+
+    } catch (e) {
+      friendsLoadedRef.current = false;
+      console.log("Load friends error:", e);
     }
-
-    setFriends(list);
 
   };
 
   loadFriends();
 
-}, [currentUid]);
+}, [currentUid, friendShareVisible]);
 
 
 
 
-useEffect(()=>{
+// ---------- Profile preview (dp tap popup) follow/likes logic ----------
+// Mirrors the exact same "follows" collection + doc-id convention used on
+// the full userProfile screen, so following someone here and following
+// them from their profile page always agree.
+const fetchProfilePreview = async (targetUserId) => {
 
-if(!db || !currentUid) return;
+  if (!db || !targetUserId || targetUserId === currentUid) {
+    setPreviewFollowersCount(0);
+    setPreviewFollowingCount(0);
+    setPreviewLikesCount(0);
+    setPreviewIsFollowing(false);
+    setPreviewIsFollowBack(false);
+    setPreviewHasLiked(false);
+    return;
+  }
 
-const walletRef = doc(
-db,
-"wallets",
-currentUid
-);
+  // Guards against a stale response landing after the user has already
+  // opened a different person's preview (fast taps in a busy room).
+  const requestId = ++previewRequestIdRef.current;
 
-const unsub = onSnapshot(
-walletRef,
-(snapshot)=>{
+  setPreviewStatsLoading(true);
 
-if(snapshot.exists()){
+  try {
 
-setMyStars(
-snapshot.data()?.stars || 0
-);
+    const followersQuery = query(
+      collection(db, "follows"),
+      where("followingId", "==", targetUserId)
+    );
 
-}
+    const followingQuery = query(
+      collection(db, "follows"),
+      where("followerId", "==", targetUserId)
+    );
 
-}
-);
+    const videosQuery = query(
+      collection(db, "all_videos"),
+      where("userId", "==", targetUserId)
+    );
 
-return ()=>unsub();
+    const followRef = currentUid
+      ? doc(db, "follows", `${currentUid}_${targetUserId}`)
+      : null;
 
-},[currentUid]);
+    const backRef = currentUid
+      ? doc(db, "follows", `${targetUserId}_${currentUid}`)
+      : null;
+
+    const likeRef = currentUid
+      ? doc(db, "profileLikes", `${currentUid}_${targetUserId}`)
+      : null;
+
+    const [
+      followersSnap,
+      followingSnap,
+      videosSnap,
+      followSnap,
+      backSnap,
+      likeSnap,
+    ] = await Promise.all([
+      getCountFromServer(followersQuery),
+      getCountFromServer(followingQuery),
+      getDocs(videosQuery),
+      followRef ? getDoc(followRef) : Promise.resolve(null),
+      backRef ? getDoc(backRef) : Promise.resolve(null),
+      likeRef ? getDoc(likeRef) : Promise.resolve(null),
+    ]);
+
+    if (requestId !== previewRequestIdRef.current) return; // stale, ignore
+
+    let likesCount = 0;
+    videosSnap.forEach((v) => {
+      likesCount += Number(v.data()?.likes || 0);
+    });
+
+    setPreviewFollowersCount(followersSnap.data().count);
+    setPreviewFollowingCount(followingSnap.data().count);
+    setPreviewLikesCount(likesCount);
+    setPreviewIsFollowing(followSnap ? followSnap.exists() : false);
+    setPreviewIsFollowBack(backSnap ? backSnap.exists() : false);
+    setPreviewHasLiked(likeSnap ? likeSnap.exists() : false);
+
+  } catch (error) {
+    if (__DEV__) console.log("PROFILE PREVIEW FETCH ERROR =", error);
+  } finally {
+    if (requestId === previewRequestIdRef.current) {
+      setPreviewStatsLoading(false);
+    }
+  }
+
+};
+
+const handlePreviewFollow = async (targetSpeaker) => {
+
+  const targetUserId = targetSpeaker?.userId;
+
+  if (!db || !currentUid || !targetUserId || previewFollowBusy) return;
+
+  setPreviewFollowBusy(true);
+
+  const followId = `${currentUid}_${targetUserId}`;
+  const followRef = doc(db, "follows", followId);
+
+  // Optimistic UI: flip the button instantly, reconcile with Firestore
+  // in the background so tapping never feels laggy in a live room.
+  const wasFollowing = previewIsFollowing;
+  setPreviewIsFollowing(!wasFollowing);
+  setPreviewFollowersCount((c) =>
+    Math.max(0, c + (wasFollowing ? -1 : 1))
+  );
+
+  try {
+
+    if (wasFollowing) {
+
+      await deleteDoc(followRef);
+
+    } else {
+
+      await setDoc(followRef, {
+        followerId: currentUid,
+        followingId: targetUserId,
+      });
+
+      const currentUserSnap = await getDoc(
+        doc(db, "users", currentUid)
+      );
+      const currentUserData = currentUserSnap.data();
+
+      await addDoc(
+        collection(db, "users", targetUserId, "notifications"),
+        {
+          type: "follow",
+          senderId: currentUid,
+          senderName: currentUserData?.username || currentName || "User",
+          senderPhoto:
+            currentUserData?.profileImg || currentAvatar || "",
+          createdAt: serverTimestamp(),
+        }
+      );
+
+    }
+
+  } catch (error) {
+
+    // Roll back the optimistic update if the write failed.
+    setPreviewIsFollowing(wasFollowing);
+    setPreviewFollowersCount((c) =>
+      Math.max(0, c + (wasFollowing ? 1 : -1))
+    );
+
+    if (__DEV__) console.log("PREVIEW FOLLOW ERROR =", error);
+
+  } finally {
+    setPreviewFollowBusy(false);
+  }
+
+};
+
+const handlePreviewLike = async (targetSpeaker) => {
+
+  const targetUserId = targetSpeaker?.userId;
+
+  if (!db || !currentUid || !targetUserId || previewLikeBusy) return;
+
+  setPreviewLikeBusy(true);
+
+  const likeId = `${currentUid}_${targetUserId}`;
+  const likeRef = doc(db, "profileLikes", likeId);
+
+  const wasLiked = previewHasLiked;
+  setPreviewHasLiked(!wasLiked); // optimistic, same pattern as follow
+
+  try {
+
+    if (wasLiked) {
+      await deleteDoc(likeRef);
+    } else {
+      await setDoc(likeRef, {
+        likerId: currentUid,
+        likedUserId: targetUserId,
+        createdAt: serverTimestamp(),
+      });
+    }
+
+  } catch (error) {
+
+    setPreviewHasLiked(wasLiked); // roll back on failure
+
+    if (__DEV__) console.log("PREVIEW LIKE ERROR =", error);
+
+  } finally {
+    setPreviewLikeBusy(false);
+  }
+
+};
+
+useEffect(() => {
+
+  if ((profileVisible || speakerModalVisible) && selectedSpeaker?.userId) {
+    fetchProfilePreview(selectedSpeaker.userId);
+  }
+
+}, [profileVisible, speakerModalVisible, selectedSpeaker?.userId]);
 
 
 
+
+// (myStars is now fed by the single wallet listener above)
+
+
+
+
+const pulseLoopRef = useRef(null);
 
 useEffect(() => {
 
@@ -667,7 +1409,9 @@ Object.keys(activeSpeakers).length > 0;
 
 if (speakingNow) {
 
-Animated.loop(
+if (!pulseLoopRef.current) {
+
+pulseLoopRef.current = Animated.loop(
 
 Animated.sequence([
 
@@ -685,10 +1429,19 @@ useNativeDriver:true
 
 ])
 
-).start();
+);
+
+pulseLoopRef.current.start();
+
+}
 
 }
 else{
+
+if (pulseLoopRef.current) {
+pulseLoopRef.current.stop();
+pulseLoopRef.current = null;
+}
 
 pulseAnim.stopAnimation();
 
@@ -700,6 +1453,8 @@ pulseAnim.setValue(1);
 
 
   // --- BackHandler Subscription Fix ---
+ // always points at the latest cleanAndExit (assigned after its definition)
+ const cleanAndExitRef = useRef(null);
  useEffect(() => {
 
   const backAction = () => {
@@ -713,7 +1468,7 @@ pulseAnim.setValue(1);
     }
 
     // baki sab direct exit
-    cleanAndExit();
+    cleanAndExitRef.current && cleanAndExitRef.current();
 
     return true;
   };
@@ -726,7 +1481,7 @@ pulseAnim.setValue(1);
 
   return () => subscription.remove();
 
-}, [currentUserRole, roomData]);
+}, [currentUserRole]);
 
 
 
@@ -753,10 +1508,81 @@ useEffect(() => {
 }, [requestModalVisible]);
 
 
+  // ---------- PRIVATE ROOM ACCESS GATE ----------
+  useEffect(() => {
+
+    if (!db || !roomId || !currentUid) return;
+
+    let cancelled = false;
+
+    const checkAccess = async () => {
+
+      try {
+
+        const roomRef = doc(db, 'rooms', roomId);
+        const snap = await getDoc(roomRef);
+
+        if (cancelled) return;
+
+        // Missing room: let the normal join logic handle the redirect.
+        if (!snap.exists()) {
+          setAccessGranted(true);
+          return;
+        }
+
+        const data = snap.data();
+
+        // Public room, or I'm the host -> straight in.
+        if (!data?.isPrivate || data?.hostId === currentUid) {
+          setAccessGranted(true);
+          return;
+        }
+
+        const hasValidKey =
+          !!inviteKeyParam &&
+          !!data?.inviteKey &&
+          inviteKeyParam === String(data.inviteKey);
+
+        const isInvited = !!data?.allowedUsers?.[currentUid];
+
+        if (hasValidKey || isInvited) {
+
+          // Remember this user so re-entering (mini-player, app restart,
+          // reconnect) works even without the link.
+          if (hasValidKey && !isInvited) {
+            updateDoc(roomRef, {
+              [`allowedUsers.${currentUid}`]: true,
+            }).catch(() => {});
+          }
+
+          setAccessGranted(true);
+          return;
+        }
+
+        alert("🔒 This is a private room. You can join only with the host's invite link.");
+        router.replace('/');
+
+      } catch (e) {
+        console.log("Private access check error:", e);
+        // Can't verify (network) -> don't lock people out of public rooms;
+        // the normal join flow will fail on its own if the room is unreachable.
+        if (!cancelled) setAccessGranted(true);
+      }
+
+    };
+
+    checkAccess();
+
+    return () => { cancelled = true; };
+
+  }, [roomId, currentUid, inviteKeyParam]);
+
+
   useEffect(() => {
 
 if (
  !db ||
+ !accessGranted ||
  !roomId ||
  !currentUid ||
  currentName === "User" ||
@@ -775,19 +1601,17 @@ if (!auth?.currentUser) return;
       if (isJoinedRef.current) return;
       isJoinedRef.current = true;
       try {
-        const roomSnap = await getDoc(roomRef);
-
-const userSnap = await getDoc(
-  doc(db, "users", currentUid)
-);
+        // Run all 3 reads in parallel instead of one-after-another —
+        // cuts join latency roughly to a third of what it was.
+        const [roomSnap, userSnap, walletSnap] = await Promise.all([
+          getDoc(roomRef),
+          getDoc(doc(db, "users", currentUid)),
+          getDoc(doc(db, "wallets", currentUid)),
+        ]);
 
 const userData = userSnap.exists()
   ? userSnap.data()
   : {};
-
-const walletSnap = await getDoc(
-  doc(db, "wallets", currentUid)
-);
 
 const walletData = walletSnap.exists()
   ? walletSnap.data()
@@ -813,16 +1637,19 @@ if (
 }
 
         const updates = {};
-updates[`audienceList.${currentUid}`] = {
-  uid: currentUid,
 
+// SCALE FIX: presence now goes to its own subcollection doc
+// (rooms/{roomId}/audience/{uid}) instead of a map field on the room
+// document, so this write no longer broadcasts to every other viewer.
+const audiencePayload = {
+  uid: currentUid,
   name: currentRealName,      // Real Name
   username: currentName,      // Username
-  img: currentAvatar,
+  img: currentAvatar || STABLE_AVATAR,
   level: currentLevel,
-verified: userData.verified || false,
-verifiedColor:
-  userData.verifiedColor || "#ffffff",
+  verified: userData.verified || false,
+  verifiedColor:
+    userData.verifiedColor || "#ffffff",
   joinedAt: Date.now(),
   online: true
 };
@@ -850,47 +1677,50 @@ userData.verifiedColor || "white",
 }
 
 
-   if (data?.hostId === currentUid)
-  
-
-
 console.log("Joining Room...");
 console.log("UID =", currentUid);
 console.log("Name =", currentName);
 console.log("Avatar =", currentAvatar);
-         
-        await updateDoc(roomRef, updates);
 
-        console.log("Audience Added =", updates);
+// Only post a fresh "X joined" chat message the FIRST time this user
+// shows up in this room's audience list. Without this check, every
+// screen refocus/reconnect (e.g. app backgrounded then reopened)
+// would spam another "joined" message at the bottom of the chat.
+const existingPresenceSnap = await getDoc(
+  doc(db, 'rooms', roomId, 'audience', currentUid)
+);
+const isFirstJoinThisSession = !existingPresenceSnap.exists();
 
-const roomSnap2 = await getDoc(roomRef);
+// Write seat/host updates (if any) to the room doc and presence to the
+// audience subcollection, in parallel — the join system-message only
+// goes out if this is genuinely a new join.
+const writeJobs = [
+  setDoc(doc(db, 'rooms', roomId, 'audience', currentUid), audiencePayload),
+];
 
-if(roomSnap2.exists()){
-
-const roomData2 = roomSnap2.data();
-
-const joinMsg = {
-id: Date.now().toString(),
-type: "join",
-senderName: currentRealName,
-username: currentName,
-userImg: currentAvatar,
- verified: userData.verified || false,
- verifiedColor:
-userData.verifiedColor || "white",
-  level: hostLevel,
-};
-
-const updatedChats = [
-...(roomData2.chats || []),
-joinMsg
-].slice(-50);
-
-await updateDoc(roomRef,{
-chats: updatedChats
-});
-
+if (isFirstJoinThisSession) {
+  writeJobs.push(
+    addDoc(collection(db, 'rooms', roomId, 'chats'), {
+      type: "join",
+      senderName: currentRealName,
+      username: currentName,
+      userImg: currentAvatar || STABLE_AVATAR,
+      verified: userData.verified || false,
+      verifiedColor: userData.verifiedColor || "white",
+      level: hostLevel,
+      createdAt: Date.now(),
+    })
+  );
 }
+
+if (Object.keys(updates).length > 0) {
+  writeJobs.push(updateDoc(roomRef, updates));
+}
+
+await Promise.all(writeJobs);
+
+console.log("Audience Added =", audiencePayload);
+
 
 
 
@@ -906,8 +1736,64 @@ chats: updatedChats
 
 
 
+        // First snapshot: remember whatever gift is already there so it
+        // doesn't get replayed for someone who just joined.
+        if (!giftBaselineSetRef.current) {
+          giftBaselineSetRef.current = true;
+          lastSeenGiftKeyRef.current = data?.liveGift
+            ? `${data.liveGift.senderId}_${data.liveGift.timestamp}`
+            : "";
+        }
+
         setRoomData(data);
         setLoading(false);
+
+const snapshotHostId = data?.hostId || data?.seatsData?.seat_1?.userId || null;
+const snapshotHostName =
+  data?.hostName ||
+  data?.seatsData?.seat_1?.userName ||
+  "Host";
+const snapshotHostImage =
+  data?.hostImg ||
+  data?.seatsData?.seat_1?.userImg ||
+  STABLE_AVATAR;
+const snapshotRole =
+  snapshotHostId === currentUid
+    ? "host"
+    : "listener";
+
+// PERF: only push to LiveContext when something it actually shows changed.
+// Gifts / seatStars / chat-side updates hit this listener constantly and
+// used to re-render every LiveContext consumer each time.
+let liveSig = "";
+try {
+  liveSig = JSON.stringify([
+    snapshotHostId,
+    snapshotHostName,
+    snapshotHostImage,
+    snapshotRole,
+    data?.roomName || data?.title || data?.name || "",
+    data?.seatsData || null,
+    data?.createdAt?.seconds ?? data?.createdAt ?? null,
+  ]);
+} catch (_) { liveSig = String(Date.now()); }
+
+if (liveSig !== liveContextSigRef.current) {
+  liveContextSigRef.current = liveSig;
+
+  startLive({
+    roomId,
+    roomName: data?.roomName || data?.title || data?.name || "Live Room",
+    hostName: snapshotHostName,
+    hostImage: snapshotHostImage,
+    hostId: snapshotHostId,
+    userRole: snapshotRole,
+    startTime: data?.createdAt || null,
+    roomData: data,
+  });
+}
+
+
 
 
 if (data.createdAt) {
@@ -959,7 +1845,8 @@ onPod=true;
 if(
 mySeat &&
 agoraEngineRef.current &&
-currentUserRole==="listener"
+currentUserRoleRef.current==="listener" &&
+   mySeat?.roleTag !== "HOST"
 ){
 
 setCurrentUserRole("speaker");
@@ -991,7 +1878,7 @@ role = "speaker";
 
 setTimeout(() => {
 initAgora(role);
-},500);
+},100);
 
 }
 
@@ -1000,7 +1887,7 @@ initAgora(role);
 // Agar host ne speaker ko remove kar diya hai
 if (
   !onPod &&
-  currentUserRole === "speaker" &&
+  currentUserRoleRef.current === "speaker" &&
   agoraEngineRef.current
 ) {
 
@@ -1066,122 +1953,151 @@ if (
   currentRealName,
   currentAvatar,
   hostLevel,
+  accessGranted,
 ]);
+
+
+// SCALE FIX: dedicated chat listener.
+// Only the last 50 messages are synced, and Firestore only pushes the
+// changed message(s) on each update instead of resending the whole room
+// document to every viewer (this was the main cause of lag at 200-300 users).
+useEffect(() => {
+
+  if (!db || !roomId || !accessGranted) return;
+
+  const chatsQuery = query(
+    collection(db, 'rooms', roomId, 'chats'),
+    orderBy('createdAt', 'desc'),
+    limit(50)
+  );
+
+  chatsReadyRef.current = false;
+
+  const unsubChats = onSnapshot(chatsQuery, (snap) => {
+    const msgs = snap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .reverse();
+    setChatMessages(msgs);
+
+    // Pehli baar (purani history load) pe banner nahi dikhana —
+    // sirf uske baad aane wale NAYE "join" par.
+    if (chatsReadyRef.current) {
+      snap.docChanges().forEach((ch) => {
+        if (ch.type !== "added") return;
+        const d = ch.doc.data();
+        if (d?.type === "join" && Date.now() - (d.createdAt || 0) < 15000) {
+          showJoinBanner(d);
+        }
+      });
+    }
+    chatsReadyRef.current = true;
+  }, (e) => console.log("Chat listener error:", e));
+
+  return () => {
+    unsubChats();
+    if (joinHideTimeoutRef.current) clearTimeout(joinHideTimeoutRef.current);
+  };
+
+}, [roomId, accessGranted]);
+
+
+// SCALE FIX: dedicated audience/presence listener.
+// Each viewer owns exactly one small doc (created on join, deleted on
+// leave), so joins/leaves no longer rewrite a giant map field that used
+// to live on the room document and fan out to everyone.
+useEffect(() => {
+
+  if (!db || !roomId || !accessGranted) return;
+
+  const audienceQuery = query(
+    collection(db, 'rooms', roomId, 'audience'),
+    orderBy('joinedAt', 'desc')
+  );
+
+  // PERF: when many people join/leave at once this fires in bursts and each
+  // one re-rendered the whole room. First load is instant, after that
+  // updates are coalesced to at most one render per 600ms.
+  let firstLoad = true;
+  let latestMap = {};
+  let flushTimer = null;
+
+  const unsubAudience = onSnapshot(audienceQuery, (snap) => {
+    const map = {};
+    snap.forEach(d => { map[d.id] = { uid: d.id, ...d.data() }; });
+    latestMap = map;
+
+    if (firstLoad) {
+      firstLoad = false;
+      setAudienceMap(map);
+      return;
+    }
+
+    if (!flushTimer) {
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        setAudienceMap(latestMap);
+      }, 600);
+    }
+  }, (e) => console.log("Audience listener error:", e));
+
+  return () => {
+    unsubAudience();
+    if (flushTimer) clearTimeout(flushTimer);
+  };
+
+}, [roomId, accessGranted]);
 
 
 
 
 useEffect(() => {
 
-if (!roomData?.liveGift) return;
+  const gift = roomData?.liveGift;
+  if (!gift) return;
 
-const gift = roomData.liveGift;
+  const giftKey = `${gift.senderId}_${gift.timestamp}`;
 
+  // Already handled (or it's the gift that existed before we joined).
+  if (giftKey === lastSeenGiftKeyRef.current) return;
+  lastSeenGiftKeyRef.current = giftKey;
 
-const now = Date.now();
+  // My own gift is already on screen (instant local display in the send
+  // handler). Replaying it from the Firestore echo made the banner + animation
+  // restart a moment later — that was the visible "double / late gift" glitch.
+  if (gift.senderId === currentUid) return;
 
-if (
-    lastGiftRef.current &&
-    lastGiftRef.current.senderId === gift.senderId &&
-    lastGiftRef.current.giftId === gift.giftId &&
-    now - lastGiftRef.current.time < 3000
-) {
+  const now = Date.now();
 
- setGiftCombo({
-senderName: gift.senderName,
-giftName: gift.giftName,
-count: gift.comboCount || 1
-});
-
-} else {
-
-   
   setGiftCombo({
-senderName: gift.senderName,
-giftName: gift.giftName,
-count: gift.comboCount || 1
-});
+    senderName: gift.senderName,
+    senderImg: gift.senderImg,
+    receiverName: gift.receiverName,
+    giftId: gift.giftId,
+    giftName: gift.giftName,
+    count: gift.comboCount || 1
+  });
 
-
-}
-
-lastGiftRef.current = {
+  lastGiftRef.current = {
     senderId: gift.senderId,
     giftId: gift.giftId,
     time: now
-};
+  };
 
+  if (comboTimeoutRef.current) clearTimeout(comboTimeoutRef.current);
 
+  comboTimeoutRef.current = setTimeout(() => {
+    setGiftCombo(null);
+    lastGiftRef.current = null;
+    global.giftComboCount = 0;
+  }, 2200);
 
-// Purana timer band karo
-if (comboTimeoutRef.current) {
-  clearTimeout(comboTimeoutRef.current);
-}
+  const giftData = gifts.find(g => String(g.id) === String(gift.giftId));
 
-// Har gift ke baad banner kam se kam 3 sec dikhe
-comboTimeoutRef.current = setTimeout(() => {
-  setGiftCombo(null);
-  lastGiftRef.current = null;
-  global.giftComboCount = 0;
-}, 2200);
+  if (!giftData || !giftData.animation) return;
 
+  playGift(giftData.animation, giftData.duration);
 
-
-
-
-console.log(
-"Firebase Gift =",
-gift
-);
-
-const giftData = gifts.find(
-g =>
-String(g.id) ===
-String(gift.giftId)
-);
-
-console.log(
-"Gift Data =",
-giftData
-);
-
-if (!giftData) return;
-
-if (!giftData.animation) return;
-
-
-
-// Purana timer band karo
-if (giftTimeoutRef.current) {
-
-clearTimeout(
-giftTimeoutRef.current
-);
-
-}
-
-
-
-// Animation start
-setActiveGift(
-giftData.animation
-);
-
-
-
-// Duration ke baad band
-giftTimeoutRef.current =
-setTimeout(() => {
-
-setActiveGift(null);
-
-},
-giftData.duration || 5000);
-
-},
-[
-roomData?.liveGift?.timestamp
-]);
+}, [roomData?.liveGift?.timestamp]);
 
 
 
@@ -1220,21 +2136,24 @@ Animated.timing(giftOpacity,{
   useNativeDriver:true,
 }),
 
+    // giftShake only ever drives a `rotate` transform (see the interpolate
+    // below), which the native driver fully supports — running it on the
+    // JS thread (false) was needless and made the shake stutter under load.
     Animated.sequence([
       Animated.timing(giftShake, {
         toValue: 1,
         duration: 60,
-        useNativeDriver: false,
+        useNativeDriver: true,
       }),
       Animated.timing(giftShake, {
         toValue: -1,
         duration: 60,
-        useNativeDriver: false,
+        useNativeDriver: true,
       }),
       Animated.timing(giftShake, {
         toValue: 0,
         duration: 60,
-        useNativeDriver: false,
+        useNativeDriver: true,
       }),
     ]),
   ]).start();
@@ -1244,70 +2163,49 @@ Animated.timing(giftOpacity,{
 
 
 
-useEffect(() => {
+// (room timer moved into <LiveTimer/> so it doesn't re-render the whole screen every second)
 
-if (!roomStartTime) return;
 
-const interval = setInterval(() => {
-
-const diff = Date.now() - roomStartTime;
-
-const hrs = Math.floor(diff / 3600000);
-const mins = Math.floor((diff % 3600000) / 60000);
-const secs = Math.floor((diff % 60000) / 1000);
-
-setRoomTimer(
-`${String(hrs).padStart(2,'0')}:${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`
-);
-
-},1000);
-
-return ()=>clearInterval(interval);
-
-},[roomStartTime]);
-
+  // SCALE + CLEANUP FIX: chats/audience are subcollections now, and
+  // Firestore does NOT auto-delete subcollection docs when the parent
+  // room doc is deleted. Without this, closing a live and starting a
+  // new one under the same roomId (hosts reuse their uid as roomId)
+  // would leave old chat history and stale viewers sitting there,
+  // which is exactly the "purana chat dikhता hai" bug.
+  const clearRoomSubcollection = async (subName) => {
+    try {
+      const snap = await getDocs(collection(db, 'rooms', roomId, subName));
+      if (snap.empty) return;
+      await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
+    } catch (e) {
+      console.log(`Clear ${subName} error:`, e);
+    }
+  };
 
   // --- CLEAN & EXIT: Direct Fix for Navigation ---
   const cleanAndExit = async () => {
     setControlModalVisible(false);
 
-    if(agoraEngineRef.current){
-
-await agoraEngineRef.current.leaveChannel();
-
-agoraEngineRef.current.release();
-
-agoraEngineRef.current = null;
-
-}
-    
-
-const endLiveRoom = async () => {
-
-  try {
-
     if (agoraEngineRef.current) {
-
-      await agoraEngineRef.current.leaveChannel();
-
-      agoraEngineRef.current.release();
-
+      // FIX: this used to be `await agoraEngineRef.current.leaveChannel()`
+      // before navigating, which meant tapping "exit" visibly paused for
+      // however long that network round-trip took. leaveChannel()/release()
+      // don't need to block the UI — fire them and move on immediately.
+      const engineToRelease = agoraEngineRef.current;
       agoraEngineRef.current = null;
+      // FIX: leaveChannel() is synchronous in this react-native-agora
+      // version — it returns a plain number, not a Promise — so calling
+      // `.catch()` on it directly throws "leaveChannel().catch is not a
+      // function". Wrap in try/catch, and only chain .catch() if the
+      // result actually is a Promise (keeps this safe across SDK versions).
+      try {
+        const leaveResult = engineToRelease.leaveChannel();
+        if (leaveResult && typeof leaveResult.catch === "function") {
+          leaveResult.catch(() => {});
+        }
+      } catch (_) {}
+      try { engineToRelease.release(); } catch (_) {}
     }
-
-    await deleteDoc(
-      doc(db, "rooms", roomId)
-    );
-
-    router.back();
-
-  } catch (e) {
-
-    console.log(e);
-
-  }
-
-};
 
     // Pehle navigate karein taaki user ko wait na karna pade
    if (from === "all-live") {
@@ -1329,76 +2227,50 @@ const endLiveRoom = async () => {
 
 if (currentUserRole === "host") {
 
-  // Sirf host hi live band kare
+  // Sirf host hi live band kare — room khatam hone par uske
+  // chats aur audience subcollections bhi saaf karo, warna agli
+  // baar live open karne par purana chat/audience dikhega.
+  await Promise.all([
+    clearRoomSubcollection('chats'),
+    clearRoomSubcollection('audience'),
+  ]);
   await deleteDoc(roomRef);
 
 } else {
 
-  const updates = {};
+  // SCALE FIX: presence removal is now a single delete on the
+  // viewer's own subcollection doc — no more broadcasting a full
+  // room-doc rewrite to every other person in the room just because
+  // one listener left. (Previously this ran as two separate,
+  // partially-redundant updateDoc calls on the same room document.)
+  const jobs = [
+    deleteDoc(doc(db, 'rooms', roomId, 'audience', currentUid)),
+  ];
 
-  updates[`audienceList.${currentUid}`] = null;
- 
-
+  const seatUpdates = {};
   if (roomData?.seatsData) {
-
     Object.keys(roomData.seatsData).forEach(key => {
-
       if (
         key !== "seat_1" &&
         roomData.seatsData[key]?.userId === currentUid
       ) {
-
-        updates[`seatsData.${key}`] = {
+        seatUpdates[`seatsData.${key}`] = {
           userId: null,
           userName: "Open",
           userImg: STABLE_AVATAR,
           isMuted: false
         };
-
       }
-
     });
-
   }
 
-  await updateDoc(roomRef, updates);
+  if (Object.keys(seatUpdates).length > 0) {
+    jobs.push(updateDoc(roomRef, seatUpdates));
+  }
+
+  await Promise.all(jobs);
 
 }
-
-
-       const updates = {};
-
-updates[
-`audienceList.${currentUid}`
-] = deleteField();
-
-
-
-// Agar speaker seat par tha to seat khali karo
-if (roomData?.seatsData) {
-
-  Object.keys(roomData.seatsData).forEach(key => {
-
-    if (
-      key !== "seat_1" &&
-      roomData.seatsData[key]?.userId === currentUid
-    ) {
-
-      updates[`seatsData.${key}`] = {
-        userId: null,
-        userName: "Open",
-        userImg: STABLE_AVATAR,
-        isMuted: false
-      };
-
-    }
-
-  });
-
-}
-
-await updateDoc(roomRef, updates);
-
 
       }
     } catch (e) { 
@@ -1406,6 +2278,8 @@ await updateDoc(roomRef, updates);
     }
   };
 
+
+cleanAndExitRef.current = cleanAndExit;
 
 const sendSeatRequest = async (seatKey) => {
 
@@ -1517,252 +2391,223 @@ const handleRaiseHand = async () => {
 
 
 const initAgora = async (userRole) => {
-
-if (Platform.OS === "android") {
-
-await PermissionsAndroid.requestMultiple([
-PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-PermissionsAndroid.PERMISSIONS.CAMERA,
-]);
-
-}
-
-
-const engine = createAgoraRtcEngine();
-
-engine.initialize({
-appId:'4e23c17b272f4a1c920c214be58486f4'
-});
-
-
-
-engine.registerEventHandler({
-
-onJoinChannelSuccess:(connection,uid)=>{
-
-console.log("JOIN SUCCESS",uid);
-
-setJoined(true);
-
-},
-
-onUserJoined:(connection,uid)=>{
-
-console.log("REMOTE USER JOINED",uid);
-
-console.log("Joined:",uid);
-
-setRemoteUsers(prev=>{
-if(prev.includes(uid)) return prev;
-return [...prev,uid];
-});
-
-},
-
-
-onUserOffline:(connection,uid)=>{
-console.log("Left:",uid);
-
-setRemoteUsers(prev=>
-prev.filter(id=>id!==uid)
-);
-
-},
-
-onRemoteAudioStateChanged:(connection,uid,state,reason)=>{
-
-console.log(
-"REMOTE AUDIO",
-uid,
-state,
-reason
-);
-
-},
-
-
-onAudioVolumeIndication: (
-connection,
-speakers,
-speakerNumber,
-totalVolume
-) => {
-
-let speakingMap = {};
-
-speakers.forEach(item => {
-
-if(item.volume > 10){
-
-speakingMap[item.uid] = true;
-
-}
-
-});
-
-setActiveSpeakers(speakingMap);
-
-},
-
-
-onLocalAudioStateChanged:(connection,state,error)=>{
-
-console.log("LOCAL AUDIO =",state);
-
-},
-
-onConnectionStateChanged:(state,reason)=>{
-
-console.log("CONNECTION =",state);
-
-},
-
-
-onError:(err)=>{
-console.log("Agora Error:",err);
-}
-
-});
-
-
-
-await engine.enableAudio();
-await engine.enableLocalAudio(true);
-await engine.setEnableSpeakerphone(true);
-
-engine.enableAudioVolumeIndication(
-500,
-3,
-true
-);
-
-await engine.setDefaultAudioRouteToSpeakerphone(true);
-
-
-
-const role =
-userRole === "listener"
-?
-ClientRoleType.ClientRoleAudience
-:
-ClientRoleType.ClientRoleBroadcaster;
-
-const numericUid = currentUid
-  ? currentUid.split("").reduce((a, c) => a + c.charCodeAt(0), 0)
-  : Math.floor(Math.random() * 1000000);
-
-
-
-const agoraUid = numericUid % 1000000;
-
-setMyAgoraUid(agoraUid);
-
-
-
-await engine.enableAudio();
-
-await engine.enableLocalAudio(true);
-
-await engine.setClientRole(role);
-
-if(role===ClientRoleType.ClientRoleAudience){
-
-await engine.enableLocalAudio(false);
-await engine.muteLocalAudioStream(true);
-
-}else{
-
-await engine.enableLocalAudio(true);
-await engine.muteLocalAudioStream(false);
-
-}
-
-const response = await fetch(
-`https://topking-backend.onrender.com/token?channel=${roomId}&uid=${agoraUid}`
-);
-
-const data = await response.json();
-
-
-
-const token = data.token;
-console.log("TOKEN =", token);
-console.log("TOKEN RESPONSE =", data);
-
-
-console.log("TOKEN =", token);
-console.log("ROOM =", roomId);
-console.log("UID =", agoraUid);
-
-
-await engine.joinChannel(
-token,
-roomId,
-agoraUid,
-{
-channelProfile:
-ChannelProfileType.ChannelProfileLiveBroadcasting,
-
-clientRoleType: role
-}
-);
-
-await engine.setEnableSpeakerphone(true);
-
-if(role===ClientRoleType.ClientRoleBroadcaster){
-
-await engine.enableLocalAudio(true);
-
-await engine.muteLocalAudioStream(false);
-
-}
-
-
-console.log("JOIN SUCCESS CALL");
-
-console.log("JOIN CALLED");
-
-
-agoraEngineRef.current=engine;
-
+  if (!roomId || !currentUid) return;
+  if (agoraEngineRef.current || agoraInitPromiseRef.current || agoraJoinStartedRef.current) return;
+
+  agoraJoinStartedRef.current = true;
+
+  const run = async () => {
+    let engine = null;
+    voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, agora: "Getting token..." };
+    try {
+      if (Platform.OS === "android") {
+        const permissions = await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+          PermissionsAndroid.PERMISSIONS.CAMERA,
+        ]);
+        if (permissions[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] !== PermissionsAndroid.RESULTS.GRANTED) {
+          throw new Error("Microphone permission denied");
+        }
+      }
+
+      const firebaseUser = auth?.currentUser;
+      if (!firebaseUser) throw new Error("Firebase user not available");
+      // no forced refresh: getIdToken() already refreshes when expired and saves a network round-trip
+      const firebaseIdToken = await firebaseUser.getIdToken();
+      if (!firebaseIdToken) throw new Error("Firebase ID token missing");
+
+      const numericUid = currentUid.split("").reduce((a,c) => a + c.charCodeAt(0), 0) % 1000000;
+      const role = userRole === "host" || userRole === "speaker"
+        ? ClientRoleType.ClientRoleBroadcaster
+        : ClientRoleType.ClientRoleAudience;
+
+      console.log("AGORA INIT ROLE =", userRole, "UID =", numericUid);
+      console.log("AGORA AUTH USER =", firebaseUser.uid);
+
+      const response = await fetch(
+        `https://topking-backend.onrender.com/token?channel=${encodeURIComponent(roomId)}&uid=${numericUid}`,
+        { headers: { Authorization: `Bearer ${firebaseIdToken}`, Accept: "application/json" } }
+      );
+      const tokenData = await response.json();
+      console.log("TOKEN HTTP STATUS =", response.status);
+      if (!response.ok || !tokenData?.success || !tokenData?.token) {
+        throw new Error(tokenData?.error || `Token request failed (${response.status})`);
+      }
+
+      const token = tokenData.token;
+      const backendUid = Number(tokenData.uid) || numericUid;
+      console.log("AGORA TOKEN OK = true, UID =", backendUid);
+      voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, agora: "Token OK / Joining..." };
+      setMyAgoraUid(backendUid);
+
+      engine = createAgoraRtcEngine();
+      engine.initialize({ appId: "4e23c17b272f4a1c920c214be58486f4" });
+      await engine.setAudioProfile(
+        AudioProfileType.AudioProfileSpeechStandard,
+        AudioScenarioType.AudioScenarioChatroom
+      );
+      await engine.setParameters(JSON.stringify({
+        "che.audio.ans.enable": true,
+        "che.audio.agc.enable": true,
+        "che.audio.aec.enable": true
+      }));
+
+      engine.registerEventHandler({
+        onJoinChannelSuccess: (connection, uid) => {
+          console.log("JOIN SUCCESS", uid, "ROLE =", userRole);
+          setJoined(true);
+          voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, agora: "Connected", mic: role === ClientRoleType.ClientRoleBroadcaster };
+          isJoinedRef.current = true;
+        },
+        onUserJoined: (connection, uid) => {
+          console.log("REMOTE USER JOINED =", uid);
+          setRemoteUsers(prev => { const next = prev.includes(uid) ? prev : [...prev, uid]; voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, remote: true, remoteCount: next.length }; return next; });
+        },
+        onUserOffline: (connection, uid) => {
+          console.log("REMOTE USER LEFT =", uid);
+          setRemoteUsers(prev => { const next = prev.filter(id => id !== uid); voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, remote: next.length > 0, remoteCount: next.length }; return next; });
+        },
+        onAudioVolumeIndication: (connection, speakers) => {
+          const map = {};
+          let remoteVoice = false;
+          (speakers || []).forEach(item => { if (item.volume > 10) { map[item.uid] = true; if (Number(item.uid) !== Number(backendUid)) remoteVoice = true; } });
+          if (remoteVoice) voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, remote: true };
+          // FIX: only push a new activeSpeakers object when the actual set of
+          // speaking uids changed. Agora fires this callback ~2x/second the
+          // entire time the call is connected, so without this guard the
+          // whole room screen (5000+ lines of JSX) was re-rendering twice a
+          // second even when nobody's speaking status changed — the single
+          // biggest cause of the "not smooth" feeling during a live.
+          setActiveSpeakers(prev => {
+            const prevKeys = Object.keys(prev).sort().join(',');
+            const nextKeys = Object.keys(map).sort().join(',');
+            return prevKeys === nextKeys ? prev : map;
+          });
+        },
+        onError: err => { console.log("Agora Error:", err); voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, agora: `Error ${err}` }; },
+      });
+
+      await engine.enableAudio();
+      await engine.setEnableSpeakerphone(true);
+      await engine.setClientRole(role);
+      engine.enableAudioVolumeIndication(500, 3, true);
+
+      if (role === ClientRoleType.ClientRoleBroadcaster) {
+        await engine.enableLocalAudio(true);
+        await engine.muteLocalAudioStream(false);
+      } else {
+        await engine.enableLocalAudio(false);
+        await engine.muteLocalAudioStream(true);
+      }
+
+      voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, mic: role === ClientRoleType.ClientRoleBroadcaster };
+
+      await engine.joinChannel(token, roomId, backendUid, {
+        channelProfile: ChannelProfileType.ChannelProfileLiveBroadcasting,
+        clientRoleType: role,
+      });
+
+      agoraEngineRef.current = engine;
+      console.log("AGORA JOINED ONCE =", backendUid);
+    } catch (error) {
+      console.log("AGORA INIT ERROR =", error?.message || error);
+      voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, agora: `Failed: ${error?.message || error}`, mic: false };
+      try { if (engine) engine.release(); } catch (_) {}
+      agoraEngineRef.current = null;
+      isJoinedRef.current = false;
+      setJoined(false);
+      throw error;
+    } finally {
+      agoraJoinStartedRef.current = false;
+      agoraInitPromiseRef.current = null;
+    }
+  };
+
+  agoraInitPromiseRef.current = run();
+  return agoraInitPromiseRef.current;
 };
 
 
   const handleSendChat = async () => {
     if (!chatMessage.trim()) return;
+    const messageText = chatMessage.trim();
+    Keyboard.dismiss();
+    setChatMessage('');
     try {
-      const roomRef = doc(db, 'rooms', roomId);
-
-      const newChat = {
-id: Date.now().toString(),
-
-senderName: currentRealName,
-username: currentName,
-
-message: chatMessage,
-userImg: currentAvatar,
-  verified: hostVerified,
-verifiedColor:
-  hostVerifiedColor || "white",
-
-  level: hostLevel,
-};
-
-      const updatedChats = [...(roomData.chats || []), newChat].slice(-30);
-      Keyboard.dismiss();
-      setChatMessage('');
-      await updateDoc(roomRef, { chats: updatedChats });
+      // SCALE FIX: append-only write (one small new doc) instead of
+      // reading + rewriting the entire chat array on every message.
+      // This also removes the race condition where two people sending
+      // at the same moment could overwrite each other's message.
+      await addDoc(collection(db, 'rooms', roomId, 'chats'), {
+        senderName: currentRealName,
+        username: currentName,
+        message: messageText,
+        userImg: currentAvatar || STABLE_AVATAR,
+        verified: hostVerified,
+        verifiedColor: hostVerifiedColor || "white",
+        level: hostLevel,
+        createdAt: Date.now(),
+      });
     } catch (e) { console.log(e); }
   };
 
 
+const togglePrivateRoom = async () => {
+
+  if (currentUserRole !== "host" || !db || !roomId) return;
+
+  try {
+
+    const roomRef = doc(db, "rooms", roomId);
+
+    if (roomData?.isPrivate) {
+
+      await updateDoc(roomRef, { isPrivate: false });
+      alert("Room is now Public");
+
+    } else {
+
+      // Fresh key every time private is switched on, so old links stop working.
+      const newKey =
+        Math.random().toString(36).slice(2, 10) +
+        Date.now().toString(36) +
+        Math.random().toString(36).slice(2, 10);
+
+      const updates = { isPrivate: true, inviteKey: newKey };
+
+      // People already inside stay allowed (they can re-enter later).
+      Object.keys(audienceMap || {}).forEach((uid) => {
+        updates[`allowedUsers.${uid}`] = true;
+      });
+
+      await updateDoc(roomRef, updates);
+      alert("🔒 Room is now Private. Only people with your invite link can join.");
+
+    }
+
+  } catch (e) {
+    console.log("Toggle private error:", e);
+    alert("Could not change room privacy");
+  }
+
+};
+
 const handleShare = async () => {
   try {
 
-    const shareLink = `https://topking.app/live/${roomId}`;
+    const isPrivateRoom = !!roomData?.isPrivate;
+
+    // Only the host can hand out links to a private room.
+    if (isPrivateRoom && currentUserRole !== "host") return;
+
+    const shareLink = isPrivateRoom && roomData?.inviteKey
+      ? `https://topking.app/live/${roomId}?key=${roomData.inviteKey}`
+      : `https://topking.app/live/${roomId}`;
 
     await Share.share({
-      message: `🎙 Join my Live Room\n${shareLink}`,
+      message: isPrivateRoom
+        ? `🔒 Join my Private Live Room\n${shareLink}`
+        : `🎙 Join my Live Room\n${shareLink}`,
     });
 
 setShareModalVisible(false);
@@ -1804,6 +2649,23 @@ id
 const sendInvite = async () => {
   try {
 
+    const isPrivateRoom = !!roomData?.isPrivate;
+
+    // Only the host can invite people into a private room.
+    if (isPrivateRoom && currentUserRole !== "host") return;
+
+    const inviteLink = isPrivateRoom && roomData?.inviteKey
+      ? `https://topking.app/live/${roomId}?key=${roomData.inviteKey}`
+      : `https://topking.app/live/${roomId}`;
+
+    // Invited friends are whitelisted, so tapping the invite always gets
+    // them in — even if the chat screen doesn't forward the `key` param.
+    if (isPrivateRoom && selectedFriends.length > 0) {
+      const allow = {};
+      selectedFriends.forEach((u) => { allow[`allowedUsers.${u}`] = true; });
+      await updateDoc(doc(db, "rooms", roomId), allow);
+    }
+
     for (const uid of selectedFriends) {
 
       const chatId =
@@ -1827,8 +2689,10 @@ const sendInvite = async () => {
 
           roomId: roomId,
 
-          roomLink:
-            `https://topking.app/live/${roomId}`,
+          roomLink: inviteLink,
+
+          isPrivate: isPrivateRoom,
+          inviteKey: isPrivateRoom ? (roomData?.inviteKey || null) : null,
 
           text:
             `${currentName} invited you to join live`,
@@ -1882,7 +2746,7 @@ await setDoc(
 
 
 
-      console.log("LIVE INVITE SAVED =", docRef.id);
+      console.log("LIVE INVITE SAVED =", uid);
 
       // Notification
       await setDoc(
@@ -1956,26 +2820,6 @@ if (!targetSeat) {
   alert("No Empty Seat Available");
 
   return;
-
-}
-
-
-
-if (!targetSeat) {
-
-  for (let i = 2; i <= 8; i++) {
-
-    const key = `seat_${i}`;
-
-    if (!roomData?.seatsData?.[key]?.userId) {
-
-      targetSeat = key;
-
-      break;
-
-    }
-
-  }
 
 }
 
@@ -2201,30 +3045,225 @@ const leaveOwnSeat = async () => {
 
 
 
+
+// ============================================================
+// SEND GIFT
+// Order matters for speed:
+//   1) close the gift sheet + show animation/banner IMMEDIATELY
+//      (the Modal used to stay open until ~10 network calls finished,
+//       and it sits ON TOP of the animation -> gift looked "late")
+//   2) do all Firestore / backend work in the background, in parallel
+// ============================================================
+const handleSendGift = (item) => {
+
+  if (!selectedGiftUser || typeof selectedGiftUser !== "string") {
+    alert("Please select user");
+    return;
+  }
+
+  if (stars < item.price) {
+    alert("Not enough stars");
+    return;
+  }
+
+  const receiverId = selectedGiftUser;
+
+  // hard guard: never gift yourself, and only users that are in the list
+  if (
+    receiverId === currentUid ||
+    !giftUsers.some(u => u.uid === receiverId)
+  ) {
+    alert("Please select another user");
+    return;
+  }
+
+  // 1) close the sheet right now
+  setGiftModalVisible(false);
+
+  // 2) instant local animation + banner
+  if (item.animation) {
+    playGift(item.animation, item.duration);
+  }
+
+  const isComboContinue =
+    lastGiftRef.current &&
+    lastGiftRef.current.senderId === currentUid &&
+    lastGiftRef.current.giftId === item.id &&
+    (Date.now() - lastGiftRef.current.time) < 3000;
+
+  if (!global.giftComboCount || !isComboContinue) {
+    global.giftComboCount = 1;
+  } else {
+    global.giftComboCount++;
+  }
+
+  const comboCount = global.giftComboCount;
+
+  lastGiftRef.current = {
+    senderId: currentUid,
+    giftId: item.id,
+    time: Date.now()
+  };
+
+  if (comboTimeoutRef.current) clearTimeout(comboTimeoutRef.current);
+
+  const _receiver = giftUsers.find(u => u.uid === receiverId);
+  const _receiverName =
+    _receiver?.name ||
+    audienceMap?.[receiverId]?.name ||
+    audienceMap?.[receiverId]?.username ||
+    "user";
+  const _senderDisplay =
+    (currentRealName && currentRealName !== "User") ? currentRealName : currentName;
+
+  setGiftCombo({
+    senderName: _senderDisplay,
+    senderImg: currentAvatar || STABLE_AVATAR,
+    receiverName: _receiverName,
+    giftId: item.id,
+    giftName: item.name,
+    count: comboCount
+  });
+
+  comboTimeoutRef.current = setTimeout(() => {
+    setGiftCombo(null);
+    lastGiftRef.current = null;
+    global.giftComboCount = 0;
+  }, 2200);
+
+  // Own gift timestamp: mark as seen so the Firestore echo is ignored.
+  const giftTimestamp = Date.now();
+  lastSeenGiftKeyRef.current = `${currentUid}_${giftTimestamp}`;
+
+  // 3) everything else in the background (never awaited by the UI)
+  sendGiftInBackground({
+    item,
+    receiverId,
+    receiverName: _receiverName,
+    senderDisplay: _senderDisplay,
+    comboCount,
+    giftTimestamp,
+  });
+
+};
+
+const sendGiftInBackground = async ({
+  item,
+  receiverId,
+  receiverName,
+  senderDisplay,
+  comboCount,
+  giftTimestamp,
+}) => {
+
+  if (!db || !roomId || !currentUid) return;
+
+  const price = Number(item.price || 0);
+  const roomRef = doc(db, "rooms", roomId);
+  const receiverWalletRef = doc(db, "wallets", receiverId);
+  const receiverUserRef = doc(db, "users", receiverId);
+
+  const jobs = [
+
+    // sender wallet
+    updateDoc(doc(db, "wallets", currentUid), { stars: increment(-price) }),
+
+    // seatStars + liveGift in ONE write -> every viewer gets ONE snapshot
+    // (used to be 2 separate updateDoc calls = 2 snapshots per gift)
+    updateDoc(roomRef, {
+      [`seatStars.${receiverId}`]: increment(price),
+      liveGift: {
+        giftId: item.id,
+        giftName: item.name,
+        senderId: currentUid,
+        senderName: senderDisplay,
+        senderImg: currentAvatar || STABLE_AVATAR,
+        receiverId,
+        receiverName,
+        timestamp: giftTimestamp,
+        comboCount,
+      },
+    }),
+
+    // receiver wallet: earnings + receivedStars in one merge-write
+    // (no read-then-write, creates the wallet if it doesn't exist)
+    setDoc(
+      receiverWalletRef,
+      {
+        earnings: increment(price),
+        receivedStars: increment(price),
+      },
+      { merge: true }
+    ),
+
+    // receiver's top-gifters: atomic increment on just this sender's entry
+    // instead of reading 2 user docs + rewriting the whole topGifters map
+    updateDoc(receiverUserRef, {
+      [`topGifters.${currentUid}.uid`]: currentUid,
+      [`topGifters.${currentUid}.username`]: currentName || "",
+      [`topGifters.${currentUid}.name`]: currentRealName || currentName || "User",
+      [`topGifters.${currentUid}.profileImg`]: currentAvatar || "",
+      [`topGifters.${currentUid}.stars`]: increment(price),
+    }),
+
+  ];
+
+  // chat line only on the first tap of a combo (avoid spam)
+  if (comboCount === 1) {
+    jobs.push(
+      addDoc(collection(db, "rooms", roomId, "chats"), {
+        type: "gift",
+        senderName: senderDisplay,
+        username: currentName,
+        userImg: currentAvatar || STABLE_AVATAR,
+        level: hostLevel,
+        verified: hostVerified,
+        verifiedColor: hostVerifiedColor || "white",
+        receiverName,
+        giftId: item.id,
+        giftName: item.name,
+        createdAt: Date.now(),
+      })
+    );
+  }
+
+  // one failing write must not cancel the others
+  const results = await Promise.allSettled(jobs);
+  results.forEach((r, idx) => {
+    if (r.status === "rejected" && __DEV__) {
+      console.log("GIFT WRITE FAILED #" + idx, r.reason);
+    }
+  });
+
+  // agency stars: fire-and-forget. The Render backend can take 30s+ on a
+  // cold start, so this must never sit in the UI path.
+  fetch("https://topking-backend.onrender.com/update-agency-stars", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ receiverUid: receiverId, stars: price }),
+  })
+    .then(r => r.json())
+    .then(res => { if (__DEV__) console.log("AGENCY UPDATE RESPONSE =", res); })
+    .catch(e => { if (__DEV__) console.log("Agency Update Error =", e); });
+
+};
+
   if (loading) return <View style={styles.loader}><Text style={{color:'#fff'}}>Entering Live Room...</Text></View>;
 
-  const audienceArray =
-roomData?.audienceList
-? Object.values(roomData.audienceList)
-    .filter(
-      user =>
-        user &&
-        user.uid &&
-        user.uid !== roomData?.hostId
-    )
-: [];
+  // SCALE FIX: sourced from the audience subcollection listener now.
+  // A doc only exists here while that viewer is actually present, so
+  // there's no separate "online" flag to check anymore — presence IS
+  // document existence.
+  const audienceArray = Object.values(audienceMap).filter(
+    user =>
+      user &&
+      user.uid &&
+      user.uid !== roomData?.hostId
+  );
 
 const topUsers = audienceArray.slice(0,3);
 
-const onlineUsers = audienceArray.filter(
-  user =>
-    user &&
-    user.uid &&
-    user.uid !== roomData?.hostId && // Host remove
-    user.online === true
-);
-
-const totalViewers = onlineUsers.length;
+const totalViewers = audienceArray.length;
 
 const topSeatUsers = Object.values(
   roomData?.seatsData || {}
@@ -2240,6 +3279,9 @@ Object.values(roomData?.seatsData || {}).forEach((seat) => {
 
   if (!seat || !seat.userId) return;
 
+  // nobody can gift themselves (host included)
+  if (seat.userId === currentUid) return;
+
   giftUsers.push({
     uid: seat.userId,
     name: seat.userName,
@@ -2251,6 +3293,12 @@ Object.values(roomData?.seatsData || {}).forEach((seat) => {
 audienceArray.forEach((user) => {
 
   if (!user || !user.uid) return;
+
+  // nobody can gift themselves
+  if (user.uid === currentUid) return;
+
+  // listeners can only gift people who are sitting on a seat
+  if (currentUserRole === "listener") return;
 
   const alreadyExist = giftUsers.find(
     u => u && u.uid === user.uid
@@ -2400,10 +3448,14 @@ roomData?.seatsData?.seat_1?.verifiedColor
 </Text>
 
             <View style={styles.liveTag}>
-<Text style={styles.liveTagText}>
-● LIVE {roomTimer}
-</Text>
+<LiveTimer startTime={roomStartTime} />
 </View>
+
+{roomData?.isPrivate && (
+  <Text style={{ color:"#FFD700", fontSize:9, fontWeight:"bold", marginLeft:6 }}>
+    🔒 PRIVATE
+  </Text>
+)}
 
 
 
@@ -2434,7 +3486,7 @@ roomData?.seatsData?.seat_1?.verifiedColor
 {
 (user.level || 0) >= 10 && (
 
-<ReAnimated.Image
+<Image
     source={getLevelFrame(user.level)}
     style={{
         position:"absolute",
@@ -2616,7 +3668,7 @@ scale:pulseAnim
         />
 
         {seat.level >= 10 && (
-            <ReAnimated.Image
+            <Image
                 source={getLevelFrame(seat.level)}
                 style={{
                     position: "absolute",
@@ -2708,308 +3760,24 @@ marginLeft:3
       {/* CHAT */}
 <FlatList
     ref={chatScrollRef}
-    data={roomData?.chats || []}
+    data={chatMessages}
     style={styles.chatArea}
     keyboardShouldPersistTaps="handled"
     contentContainerStyle={{
         paddingBottom:120
     }}
     showsVerticalScrollIndicator={false}
-    initialNumToRender={10}
-    maxToRenderPerBatch={20}
-    windowSize={10}
-   removeClippedSubviews={true}
-   windowSize={5}
-updateCellsBatchingPeriod={50}
-    keyExtractor={(item,index)=>
-        item.id || index.toString()
-    }
+    initialNumToRender={12}
+    maxToRenderPerBatch={8}
+    windowSize={7}
+    removeClippedSubviews={false}
+    updateCellsBatchingPeriod={40}
+    keyExtractor={chatKeyExtractor}
    
 
 
 
-    renderItem={({item,index})=>{
-
-        const chat = item;
-
-        if (chat.type === "join") {
-
-            return (
-                <View
-                    style={{
-                        flexDirection: "row",
-                        alignItems: "center",
-                        paddingHorizontal: 10,
-                        paddingVertical: 6,
-                    }}
-                >
-
-                    <View>
-
-                        <Image
-                            source={{
-                                uri:chat.userImg
-                            }}
-                            style={{
-                                width:22,
-                                height:22,
-                                borderRadius:11
-                            }}
-                        />
-
-                        {
-                            chat.level>=10 && (
-
-                                <ReAnimated.Image
-                                    source={
-                                        getLevelFrame(
-                                            chat.level
-                                        )
-                                    }
-                                    style={{
-                                        position:"absolute",
-                                        width:30,
-                                        height:30,
-                                        top:-4,
-                                        left:-4
-                                    }}
-                                />
-
-                            )
-                        }
-
-                    </View>
-
-                    <View
-                        style={{
-                            flexDirection: "row",
-                            alignItems: "center",
-                            flexWrap: "wrap",
-                        }}
-                    >
-
-                        <Text
-                            style={{
-                                color: "#d0d0d0",
-                                fontSize: 13,
-                                fontWeight: "600",
-                            }}
-                        >
-                            {chat.senderName}
-                        </Text>
-
-                        {chat.verified && (
-  <MaterialCommunityIcons
-  name="check-decagram"
-  size={17}
-  color={
-    chat?.verifiedColor === "yellow"
-      ? "#FFD700"
-      : "#ffffff"
-  }
-/>
-)}
-
-                        <View
-                            style={[
-                                styles.levelBadge,
-                                {
-                                    marginLeft: 5,
-                                    backgroundColor:
-                                        getLevelTheme(
-                                            chat.level || 1
-                                        ).bg,
-
-                                    borderColor:
-                                        getLevelTheme(
-                                            chat.level || 1
-                                        ).border,
-                                },
-                            ]}
-                        >
-
-                            <MaterialCommunityIcons
-                                name="diamond-stone"
-                                size={8}
-                                color={
-                                    getLevelTheme(
-                                        chat.level || 1
-                                    ).icon
-                                }
-                            />
-
-                            <Text
-                                style={{
-                                    color:
-                                        getLevelTheme(
-                                            chat.level || 1
-                                        ).text,
-                                    fontSize: 8,
-                                    fontWeight: "bold",
-                                    marginLeft: 2,
-                                }}
-                            >
-                                LV {chat.level || 1}
-                            </Text>
-
-                        </View>
-
-                        <Text
-                            style={{
-                                color: "#d0d0d0",
-                                fontSize: 13,
-                                fontWeight: "600",
-                                marginLeft: 5,
-                            }}
-                        >
-                            joined
-                        </Text>
-
-                    </View>
-
-                </View>
-            );
-        }
-
-        return (
-
-            <View style={styles.chatRow}>
-
-                <View
-                    style={{
-                        width:42,
-                        height:42,
-                        justifyContent:"center",
-                        alignItems:"center"
-                    }}
-                >
-
-                    <Image
-                        source={{
-                            uri:chat.userImg
-                        }}
-                        style={styles.chatAva}
-                    />
-
-                    {
-                        chat.level>=10 && (
-
-                            <ReAnimated.Image
-                                source={
-                                    getLevelFrame(
-                                        chat.level
-                                    )
-                                }
-                                style={[
-                                    styles.chatFrame,
-                                    frameAnimation
-                                ]}
-                            />
-
-                        )
-                    }
-
-                </View>
-
-                <View style={styles.chatContent}>
-
-                    <View
-                        style={{
-                            flexDirection: "row",
-                            alignItems: "center",
-                            flexWrap: "wrap",
-                        }}
-                    >
-
-                        <Text style={styles.chatUser}>
-                            {chat.senderName}
-                        </Text>
-
-                        {chat.verified && (
-                            <View style={styles.verifiedBadge}>
-                                
-<MaterialCommunityIcons
-  name="check-decagram"
-  size={15}
-  color={
-    chat?.verifiedColor === "yellow"
-      ? "#FFD700"
-      : "#ffffff"
-  }
-/>
-
-
-
-                            </View>
-                        )}
-
-                        <View
-                            style={[
-                                styles.levelBadge,
-                                {
-                                    marginLeft: 6,
-                                    backgroundColor:
-                                        getLevelTheme(
-                                            chat.level || 1
-                                        ).bg,
-
-                                    borderColor:
-                                        getLevelTheme(
-                                            chat.level || 1
-                                        ).border,
-                                },
-                            ]}
-                        >
-
-                            <MaterialCommunityIcons
-                                name="diamond-stone"
-                                size={9}
-                                color={
-                                    getLevelTheme(
-                                        chat.level || 1
-                                    ).icon
-                                }
-                            />
-
-                            <Text
-                                style={{
-                                    color:
-                                        getLevelTheme(
-                                            chat.level || 1
-                                        ).text,
-                                    fontSize: 8,
-                                    fontWeight: "bold",
-                                    marginLeft: 2,
-                                }}
-                            >
-                                LV {chat.level || 1}
-                            </Text>
-
-                        </View>
-
-                    </View>
-
-                    <Text
-                        style={{
-                            color:"#888",
-                            fontSize:11,
-                            marginTop:2,
-                        }}
-                    >
-                        @{chat.username}
-                    </Text>
-
-                    <View style={styles.bubble}>
-                        <Text style={styles.chatMsg}>
-                            {chat.message}
-                        </Text>
-                    </View>
-
-                </View>
-
-            </View>
-        );
-    }}
+    renderItem={renderChatItem}
 />
 
 
@@ -3022,225 +3790,160 @@ updateCellsBatchingPeriod={50}
 
 
 
-{
-activeGift && (
-
-<View
-style={{
-position:"absolute",
-
-top:0,
-left:0,
-right:0,
-bottom:0,
-
-justifyContent:"center",
-alignItems:"center",
-
-zIndex:99999,
-elevation:99999,
-
-pointerEvents:"none"
-}}
->
-
-<LottieView
-source={activeGift}
-
-autoPlay
-loop={false}
-speed={2}
-hardwareAccelerationAndroid={true}
-
-renderMode="HARDWARE"
-cacheComposition={true}
-resizeMode="contain"
-
-style={{
-width:350,
-height:350,
- backgroundColor: "transparent",
-}}
+<GiftOverlay
+  activeGift={activeGift}
+  playKey={giftPlayKey}
+  onFinish={handleGiftFinish}
 />
 
-
-
-
-
-
-
+{/* ================= GIFT BANNER (always visible, independent of animation) ================= */}
 {
 giftCombo && (
-
   <Animated.View
+    pointerEvents="none"
+    style={{
+      position:"absolute",
+      top: height*0.45,
+      left:10,
+      zIndex:99998,
+      elevation:99998,
+      flexDirection:"row",
+      alignItems:"center",
+      opacity: giftOpacity,
+      transform:[
+        { translateX: giftTranslateX },
+        { scale: giftScale }
+      ]
+    }}
+  >
+    {/* Pill: avatar + name + "send @receiver" */}
+    <View
+      style={{
+        flexDirection:"row",
+        alignItems:"center",
+        paddingLeft:6,
+        paddingRight:14,
+        paddingVertical:6,
+        borderRadius:30,
+        backgroundColor:"rgba(0,0,0,0.55)",
+        borderWidth:1.5,
+        borderColor:"rgba(255,105,180,0.8)",
+        maxWidth: width*0.62
+      }}
+    >
+      <Animated.Image
+        source={{ uri: giftCombo.senderImg || audienceMap?.[lastGiftRef.current?.senderId]?.img || STABLE_AVATAR }}
+        style={{
+          width:44,
+          height:44,
+          borderRadius:22,
+          marginRight:8,
+          backgroundColor:"#2a2b38",
+          transform:[{
+            rotate: giftShake.interpolate({
+              inputRange:[-1,1],
+              outputRange:["-8deg","8deg"]
+            })
+          }]
+        }}
+      />
+      <View style={{ flexShrink:1 }}>
+        <Text numberOfLines={1} style={{ color:"#fff", fontWeight:"bold", fontSize:14 }}>
+          {giftCombo.senderName}
+        </Text>
+        <Text numberOfLines={1} style={{ color:"#fff", fontSize:13, marginTop:1 }}>
+          send{" "}
+          <Text style={{ color:"#FFE600", fontWeight:"bold" }}>
+            @{giftCombo.receiverName || "user"}
+          </Text>
+        </Text>
+      </View>
+    </View>
 
-style={{
+    {/* Gift PNG */}
+    {(() => {
+      const gd = gifts.find(g => String(g.id) === String(giftCombo.giftId));
+      return gd?.icon ? (
+        <Image
+          source={gd.icon}
+          style={{ width:58, height:58, resizeMode:"contain", marginLeft:6 }}
+        />
+      ) : null;
+    })()}
 
-position:"absolute",
-
-top:550,
-
-left:15,
-
-flexDirection:"row",
-
-alignItems:"center",
-
-paddingHorizontal:14,
-
-paddingVertical:10,
-
-borderRadius:35,
-
-borderWidth:2,
-
-maxWidth:"88%",
-
-backgroundColor:"rgba(255,20,147,0.95)",
-
-borderColor:"#FFD700",
-
-shadowOpacity:0.4,
-
-
-
-elevation:20,
-
-transform:[
-{
-translateX:giftTranslateX
-},
-{
-scale:giftScale
-}
-]
-
-}}
->
-
-
-
-<Animated.Image
-source={{
-uri:
-roomData?.audienceList?.[
-lastGiftRef.current?.senderId
-]?.img || STABLE_AVATAR
-}}
-
-style={{
-width:42,
-height:42,
-borderRadius:21,
-marginRight:10,
-
-transform:[
-
-{
-
-rotate:giftShake.interpolate({
-
-inputRange:[-1,1],
-
-outputRange:["-8deg","8deg"]
-
-})
-
-}
-
-]
-
-}}
-/>
-
-<View
-style={{
-flex:1
-}}
->
-
-<Text
-style={{
-color:"#FFD700",
-fontWeight:"bold",
-fontSize:15
-}}
-numberOfLines={1}
->
-{giftCombo.senderName}
-</Text>
-
-<Text
-style={{
-color:"#fff",
-fontSize:14,
-marginTop:2
-}}
-numberOfLines={1}
->
-
-sent 🎁
-
-<Text
-style={{
-fontWeight:"bold",
-color:"#00FFFF"
-}}
->
-
- {giftCombo.giftName}
-
-</Text>
-
-</Text>
-
-</View>
-
-{
-giftCombo.count>1 && (
-
-<View
-style={{
-backgroundColor:"#ffe710",
-
-paddingHorizontal:10,
-
-paddingVertical:5,
-
-borderRadius:20,
-
-marginLeft:8
-}}
->
-
-<Text
-style={{
-color:"#121111",
-fontWeight:"bold",
-fontSize:18
-}}
->
-
-x{giftCombo.count}
-
-</Text>
-
-</View>
-
-)
-
-}
-
-</Animated.View>
-
+    {/* x1 / x2 ... */}
+    <Text
+      style={{
+        color:"#FF69B4",
+        fontSize:34,
+        fontWeight:"900",
+        fontStyle:"italic",
+        marginLeft:4,
+        textShadowColor:"rgba(0,0,0,0.6)",
+        textShadowOffset:{ width:1, height:1 },
+        textShadowRadius:3
+      }}
+    >
+      x{giftCombo.count || 1}
+    </Text>
+  </Animated.View>
 )
 }
 
-
-</View>
-
+{/* ================= JOIN BANNER ("Nawed joined") ================= */}
+{
+joinBanner && (
+  <Animated.View
+    pointerEvents="none"
+    style={{
+      position:"absolute",
+      top: height*0.45,
+      left:10,
+      zIndex:99997,
+      elevation:99997,
+      flexDirection:"row",
+      alignItems:"center",
+      paddingLeft:5,
+      paddingRight:18,
+      paddingVertical:5,
+      borderRadius:30,
+      backgroundColor:"rgba(0,0,0,0.6)",
+      borderWidth:2,
+      borderColor:"rgba(255,255,255,0.85)",
+      maxWidth: width*0.8,
+      transform:[{ translateX: joinAnim }]
+    }}
+  >
+    <View style={{ width:44, height:44, justifyContent:"center", alignItems:"center" }}>
+      <Image
+        source={{ uri: joinBanner.userImg || STABLE_AVATAR }}
+        style={{ width:38, height:38, borderRadius:19, backgroundColor:"#2a2b38" }}
+      />
+      {joinBanner.level >= 10 && (
+        <Image
+          source={getLevelFrame(joinBanner.level)}
+          style={{ position:"absolute", width:50, height:50, resizeMode:"contain" }}
+        />
+      )}
+    </View>
+    <Text numberOfLines={1} style={{ color:"#fff", fontWeight:"bold", fontSize:16, marginLeft:8, flexShrink:1 }}>
+      {joinBanner.senderName}
+    </Text>
+    {joinBanner.verified && (
+      <MaterialCommunityIcons
+        name="check-decagram"
+        size={16}
+        color={joinBanner.verifiedColor === "yellow" ? "#FFD700" : "#4FC3F7"}
+        style={{ marginLeft:3 }}
+      />
+    )}
+    <Text style={{ color:"#fff", fontWeight:"bold", fontSize:16, marginLeft:6 }}>
+      joined
+    </Text>
+  </Animated.View>
 )
 }
+
 
 
     {/* ================= BOTTOM BAR ================= */}
@@ -3271,6 +3974,7 @@ x{giftCombo.count}
       </View>
 
 
+{(!roomData?.isPrivate || currentUserRole === 'host') && (
 <TouchableOpacity
     style={styles.shareCircle}
    onPress={() => setFriendShareVisible(true)}
@@ -3281,6 +3985,20 @@ x{giftCombo.count}
         color="#fff"
     />
 </TouchableOpacity>
+)}
+
+{currentUserRole === 'host' && (
+<TouchableOpacity
+    style={styles.shareCircle}
+    onPress={togglePrivateRoom}
+>
+    <Ionicons
+        name={roomData?.isPrivate ? "lock-closed" : "lock-open-outline"}
+        size={22}
+        color={roomData?.isPrivate ? "#FFD700" : "#fff"}
+    />
+</TouchableOpacity>
+)}
 
 
       {currentUserRole === 'listener' && (
@@ -3323,7 +4041,12 @@ x{giftCombo.count}
      
      <TouchableOpacity
   style={styles.giftCircle}
-  onPress={() => setGiftModalVisible(true)}
+  onPress={() => {
+    if (!giftUsers.some(u => u.uid === selectedGiftUser)) {
+      setSelectedGiftUser(null);
+    }
+    setGiftModalVisible(true);
+  }}
 >
   
 <LottieView
@@ -3381,7 +4104,7 @@ onRequestClose={() => setRequestModalVisible(false)}
         <View style={styles.requestSheet}>
 
           <Text style={{color:'#fff', fontSize:20, fontWeight:'bold', marginBottom:20}}>
-            🎤 Speaker Requests
+            🔊 Speaker Requests
           </Text>
 
           <ScrollView>
@@ -3666,215 +4389,7 @@ style={styles.giftCard}
 
 
 
-onPress={async () => {
-
-if(
- !selectedGiftUser ||
- typeof selectedGiftUser !== "string"
-){
- alert("Please select user");
- return;
-
-}
-console.log(
-"RECEIVER UID =",
-selectedGiftUser
-);
-
-
-if(stars < item.price){
-alert("Not enough stars");
-return;
-}
-
-try{
-
-// INSTANT LOCAL ANIMATION
-if (item.animation) {
-
-  setActiveGift(item.animation);
-
-  setTimeout(() => {
-    setActiveGift(null);
-  }, item.duration || 5000);
-
-}
-
-
-
-await updateDoc(
-doc(db,"wallets",currentUid),
-{
-stars: increment(-item.price)
-}
-);
-
-const roomRef = doc(db,"rooms",roomId);
-
-await updateDoc(roomRef,{
-[`seatStars.${selectedGiftUser}`]:
-increment(item.price)
-});
-
-
-
-if (!global.giftComboCount) {
-    global.giftComboCount = 1;
-} else {
-    global.giftComboCount++;
-}
-
-
-await updateDoc(roomRef,{
-liveGift:{
-giftId:item.id,
-giftName:item.name,
-
-senderId:currentUid,
-senderName:currentName,
-
-receiverId:selectedGiftUser,
-
-timestamp:Date.now(),
-comboCount: global.giftComboCount
-
-}
-});
-
-// Receiver Wallet Earnings Update
-console.log(
-"RECEIVER WALLET UID =",
-selectedGiftUser
-);
-
-console.log(
-"CURRENT USER =",
-currentUid
-);
-
-
-
-console.log(
-  "========== GIFT DEBUG =========="
-);
-
-console.log(
-  "CURRENT USER =",
-  currentUid
-);
-
-console.log(
-  "SELECTED GIFT USER =",
-  selectedGiftUser
-);
-
-console.log(
-  "GIFT PRICE =",
-  item.price
-);
-
-console.log(
-  "ROOM ID =",
-  roomId
-);
-
-console.log("CURRENT USER =", currentUid);
-console.log("SELECTED USER =", selectedGiftUser);
-console.log("GIFT =", item);
-
-const receiverWalletRef = doc(
-  db,
-  "wallets",
-  selectedGiftUser
-);
-
-
-const receiverSnap = await getDoc(receiverWalletRef);
-
-console.log(
-  "RECEIVER WALLET EXISTS =",
-  receiverSnap.exists()
-);
-
-if (receiverSnap.exists()) {
-
-  console.log(
-    "UPDATING WALLET"
-  );
-
-  await updateDoc(
-    receiverWalletRef,
-    {
-      earnings:
-      increment(item.price)
-    }
-  );
-
-  console.log(
-    "WALLET UPDATED"
-  );
-
-} else {
-
-  console.log(
-    "CREATING WALLET"
-  );
-
-  await setDoc(
-    receiverWalletRef,
-    {
-      stars:0,
-      earnings:item.price
-    }
-  );
-
-  console.log(
-    "WALLET CREATED"
-  );
-
-} 
-
-
-await updateDoc(
-receiverWalletRef,
-{
-receivedStars:
-increment(item.price)
-}
-);
-
-
-try {
-
-  await fetch(
-    "https://YOUR_RENDER_URL/update-agency-stars",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        receiverUid: selectedGiftUser,
-        stars: item.price,
-      }),
-    }
-  );
-
-} catch (e) {
-  console.log("Agency Update Error", e);
-}
-
-
-
-}catch(e){
-console.log(e);
-}
-
-setGiftModalVisible(false);
-
-
-
-}}
+onPress={() => handleSendGift(item)}
 
 
 >
@@ -3936,10 +4451,11 @@ backgroundColor:'rgba(0,0,0,0.5)'
 
 <View style={{
 backgroundColor:'#000',
-height:height*0.40,
+height:height*0.55,
 borderTopLeftRadius:30,
 borderTopRightRadius:30,
-alignItems:'center'
+alignItems:'center',
+paddingBottom: insets.bottom + 20,
 }}>
 
 <View style={{
@@ -3977,7 +4493,7 @@ color:'#fff',
 fontSize:20,
 fontWeight:'bold'
 }}>
-{selectedSpeaker?.isMuted ? "🎤 Unmute" : "🔇 Mute"}
+{selectedSpeaker?.isMuted ? "🔇 Unmute" : "🔊 Mute"}
 </Text>
 
 </TouchableOpacity>
@@ -4022,7 +4538,7 @@ borderRadius:50
 {
   selectedSpeaker?.level >= 10 && (
 
-    <ReAnimated.Image
+    <Image
       source={
         getLevelFrame(
           selectedSpeaker?.level
@@ -4045,7 +4561,7 @@ borderRadius:50
 {
 selectedSpeaker?.level>=10 && (
 
-<ReAnimated.Image
+<Image
 source={
 getLevelFrame(
 selectedSpeaker?.level
@@ -4145,6 +4661,114 @@ selectedSpeaker?.verifiedColor
 
 </View>
 
+{/* Followers / Following / Likes — host can see this too, same as viewer popup */}
+<View
+  style={{
+    flexDirection: "row",
+    justifyContent: "center",
+    marginTop: 16,
+    width: "100%",
+  }}
+>
+  <View style={{ alignItems: "center", paddingHorizontal: 18 }}>
+    <Text style={{ color: "#fff", fontSize: 16, fontWeight: "bold" }}>
+      {previewStatsLoading ? "—" : previewFollowersCount}
+    </Text>
+    <Text style={{ color: "#888", fontSize: 12, marginTop: 2 }}>
+      Followers
+    </Text>
+  </View>
+
+  <View style={{ width: 1, backgroundColor: "#222" }} />
+
+  <View style={{ alignItems: "center", paddingHorizontal: 18 }}>
+    <Text style={{ color: "#fff", fontSize: 16, fontWeight: "bold" }}>
+      {previewStatsLoading ? "—" : previewFollowingCount}
+    </Text>
+    <Text style={{ color: "#888", fontSize: 12, marginTop: 2 }}>
+      Following
+    </Text>
+  </View>
+
+  <View style={{ width: 1, backgroundColor: "#222" }} />
+
+  <View style={{ alignItems: "center", paddingHorizontal: 18 }}>
+    <Text style={{ color: "#fff", fontSize: 16, fontWeight: "bold" }}>
+      {previewStatsLoading ? "—" : previewLikesCount}
+    </Text>
+    <Text style={{ color: "#888", fontSize: 12, marginTop: 2 }}>
+      Likes
+    </Text>
+  </View>
+</View>
+
+{/* Follow / Like — host can follow/like a speaker right from this same panel */}
+{selectedSpeaker?.userId && selectedSpeaker.userId !== currentUid && (
+  <View
+    style={{
+      flexDirection: "row",
+      alignItems: "center",
+      marginTop: 18,
+      width: "88%",
+    }}
+  >
+    <TouchableOpacity
+      disabled={previewFollowBusy}
+      onPress={() => handlePreviewFollow(selectedSpeaker)}
+      style={{
+        flex: 1,
+        backgroundColor: previewIsFollowing ? "#1C1E2E" : "#f71084",
+        borderWidth: previewIsFollowing ? 1 : 0,
+        borderColor: "#3a3d52",
+        paddingVertical: 12,
+        borderRadius: 22,
+        alignItems: "center",
+        marginRight: 10,
+        opacity: previewFollowBusy ? 0.6 : 1,
+      }}
+    >
+      <Text style={{ color: "#fff", fontWeight: "bold", fontSize: 14 }}>
+        {previewIsFollowing
+          ? "Following"
+          : previewIsFollowBack
+          ? "Follow Back"
+          : "Follow"}
+      </Text>
+    </TouchableOpacity>
+
+    <TouchableOpacity
+      disabled={previewLikeBusy}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "#1C1E2E",
+        paddingVertical: 12,
+        paddingHorizontal: 20,
+        borderRadius: 22,
+        opacity: previewLikeBusy ? 0.6 : 1,
+      }}
+      onPress={() => handlePreviewLike(selectedSpeaker)}
+    >
+      <Ionicons
+        name={previewHasLiked ? "heart" : "heart-outline"}
+        size={16}
+        color="#ff1493"
+      />
+      <Text
+        style={{
+          color: "#fff",
+          fontWeight: "bold",
+          fontSize: 14,
+          marginLeft: 6,
+        }}
+      >
+        {previewHasLiked ? "Liked" : "Like"}
+      </Text>
+    </TouchableOpacity>
+  </View>
+)}
+
 </View>
 
 </View>
@@ -4171,10 +4795,12 @@ backgroundColor:"rgba(0,0,0,0.5)"
 <View
 style={{
 backgroundColor:"#000",
-height:height*0.35,
+height:height*0.42,
 borderTopLeftRadius:30,
 borderTopRightRadius:30,
-alignItems:"center"
+alignItems:"center",
+paddingTop:20,
+paddingBottom: insets.bottom + 15,
 }}
 >
 
@@ -4215,7 +4841,7 @@ borderRadius:50
 {
 selectedSpeaker?.level>=10 && (
 
-<ReAnimated.Image
+<Image
 source={
 getLevelFrame(
 selectedSpeaker?.level
@@ -4238,7 +4864,7 @@ left:-10
 {
 selectedSpeaker?.level>=10 && (
 
-<ReAnimated.Image
+<Image
 source={
 getLevelFrame(
 selectedSpeaker?.level
@@ -4338,6 +4964,131 @@ selectedSpeaker?.verifiedColor
   </View>
 </View>
 
+{/* Followers / Following / Likes — same numbers as the full profile */}
+<View
+  style={{
+    flexDirection: "row",
+    justifyContent: "center",
+    marginTop: 18,
+    width: "100%",
+  }}
+>
+  <TouchableOpacity
+    style={{ alignItems: "center", paddingHorizontal: 18 }}
+    onPress={() => {
+      setProfileVisible(false);
+      router.push({
+        pathname: "/userProfile",
+        params: { userId: selectedSpeaker?.userId, roomId: roomId },
+      });
+    }}
+  >
+    <Text style={{ color: "#fff", fontSize: 16, fontWeight: "bold" }}>
+      {previewStatsLoading ? "—" : previewFollowersCount}
+    </Text>
+    <Text style={{ color: "#888", fontSize: 12, marginTop: 2 }}>
+      Followers
+    </Text>
+  </TouchableOpacity>
+
+  <View style={{ width: 1, backgroundColor: "#222" }} />
+
+  <TouchableOpacity
+    style={{ alignItems: "center", paddingHorizontal: 18 }}
+    onPress={() => {
+      setProfileVisible(false);
+      router.push({
+        pathname: "/userProfile",
+        params: { userId: selectedSpeaker?.userId, roomId: roomId },
+      });
+    }}
+  >
+    <Text style={{ color: "#fff", fontSize: 16, fontWeight: "bold" }}>
+      {previewStatsLoading ? "—" : previewFollowingCount}
+    </Text>
+    <Text style={{ color: "#888", fontSize: 12, marginTop: 2 }}>
+      Following
+    </Text>
+  </TouchableOpacity>
+
+  <View style={{ width: 1, backgroundColor: "#222" }} />
+
+  <View style={{ alignItems: "center", paddingHorizontal: 18 }}>
+    <Text style={{ color: "#fff", fontSize: 16, fontWeight: "bold" }}>
+      {previewStatsLoading ? "—" : previewLikesCount}
+    </Text>
+    <Text style={{ color: "#888", fontSize: 12, marginTop: 2 }}>
+      Likes
+    </Text>
+  </View>
+</View>
+
+{/* Follow / Following / Like — act on this person right from the room */}
+{selectedSpeaker?.userId && selectedSpeaker.userId !== currentUid && (
+  <View
+    style={{
+      flexDirection: "row",
+      alignItems: "center",
+      marginTop: 20,
+      width: "88%",
+    }}
+  >
+    <TouchableOpacity
+      disabled={previewFollowBusy}
+      onPress={() => handlePreviewFollow(selectedSpeaker)}
+      style={{
+        flex: 1,
+        backgroundColor: previewIsFollowing ? "#1C1E2E" : "#f71084",
+        borderWidth: previewIsFollowing ? 1 : 0,
+        borderColor: "#3a3d52",
+        paddingVertical: 12,
+        borderRadius: 22,
+        alignItems: "center",
+        marginRight: 10,
+        opacity: previewFollowBusy ? 0.6 : 1,
+      }}
+    >
+      <Text style={{ color: "#fff", fontWeight: "bold", fontSize: 14 }}>
+        {previewIsFollowing
+          ? "Following"
+          : previewIsFollowBack
+          ? "Follow Back"
+          : "Follow"}
+      </Text>
+    </TouchableOpacity>
+
+    <TouchableOpacity
+      disabled={previewLikeBusy}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "#1C1E2E",
+        paddingVertical: 12,
+        paddingHorizontal: 20,
+        borderRadius: 22,
+        opacity: previewLikeBusy ? 0.6 : 1,
+      }}
+      onPress={() => handlePreviewLike(selectedSpeaker)}
+    >
+      <Ionicons
+        name={previewHasLiked ? "heart" : "heart-outline"}
+        size={16}
+        color="#ff1493"
+      />
+      <Text
+        style={{
+          color: "#fff",
+          fontWeight: "bold",
+          fontSize: 14,
+          marginLeft: 6,
+        }}
+      >
+        {previewHasLiked ? "Liked" : "Like"}
+      </Text>
+    </TouchableOpacity>
+  </View>
+)}
 
 </View>
 
@@ -4404,7 +5155,7 @@ marginBottom:12
 {
 selectedSpeaker?.level>=10 && (
 
-<ReAnimated.Image
+<Image
 source={
 getLevelFrame(
 selectedSpeaker?.level
@@ -4452,7 +5203,7 @@ marginTop:8,
 fontWeight:"bold"
 }}
 >
-{currentUserRole==="host" ? "👤 Host" : "👤 Speaker"}
+ {currentUserRole === "host" ? "👤 Host" : "👤 Speaker"}
 </Text>
 
 </View>
@@ -4474,7 +5225,7 @@ color:"#fff",
 fontSize:18
 }}
 >
-{selfMuted ? "🎤 Unmute" : "🔇 Mute"}
+{selfMuted ? "🔇 Unmute" : "🔉 Mute"}
 </Text>
 
 </TouchableOpacity>
@@ -4600,7 +5351,7 @@ style={styles.friendImg}
 {
 item.level>=10 && (
 
-<ReAnimated.Image
+<Image
 source={
 getLevelFrame(
 item.level
@@ -4816,7 +5567,7 @@ chatArea:{
 },  
 
   chatRow: { flexDirection: 'row', marginBottom: 15, alignItems: 'flex-start' },
-  chatAva: { width: 36, height: 36, borderRadius: 18 },
+  chatAva: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#2a2b38' },
   chatContent: { flex: 1, marginLeft: 10 },
   chatHeaderInline: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
   chatUser: { color: '#fff', fontWeight: 'bold', fontSize: 13 },
@@ -4970,12 +5721,6 @@ fontSize:12,
 marginTop:5,
 width:70,
 textAlign:'center'
-},
-
-giftCoin:{
-color:'#999',
-fontSize:13,
-marginTop:5
 },
 
 speakingBorder:{
@@ -5224,39 +5969,10 @@ resizeMode:"contain"
 
 chatFrame:{
 position:"absolute",
-width:50,
-height:50,
-resizeMode:"contain"
-},
-
-hostAvatarContainer:{
-position:"relative",
-justifyContent:"center",
-alignItems:"center"
-},
-
-hostLevelFrame:{
-position:"absolute",
-width:70,
-height:70,
-resizeMode:"contain"
-},
-
-seatFrame:{
-position:"absolute",
-width:85,
-height:85,
-top:-8,
-left:-8,
-resizeMode:"contain"
-},
-
-chatFrame:{
-position:"absolute",
 width:55,
 height:55,
 resizeMode:"contain"
 },
 
 
-});    
+});         
