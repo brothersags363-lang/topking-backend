@@ -93,6 +93,8 @@ const [userData, setUserData] = useState(null);
 
 const [userLevel, setUserLevel] = useState(0);
 
+const [userRank, setUserRank] = useState(null);
+
 const [isVerified, setIsVerified] = useState(false);
 
 const [loading, setLoading] = useState(true);
@@ -1146,6 +1148,29 @@ if (myId) {
 
 
 
+// Rank via a count aggregation query (same logic as profile.tsx) — counts how
+// many wallets have more receivedStars than this user, so rank = count + 1.
+const loadUserRank = async (myReceivedStars = 0) => {
+
+  try {
+
+    const q = query(
+      collection(db, "wallets"),
+      where("receivedStars", ">", myReceivedStars)
+    );
+
+    const countSnap = await getCountFromServer(q);
+
+    setUserRank(countSnap.data().count + 1);
+
+  } catch (e) {
+
+    if (__DEV__) console.log(e);
+
+  }
+
+};
+
 const fetchUser = async () => {
   setLoading(true);
 
@@ -1189,6 +1214,13 @@ const fetchUser = async () => {
       if (walletSnap.exists()) {
         setUserLevel(walletSnap.data().level || 0);
       }
+
+      // Real rank of the profile being viewed (not the logged-in user)
+      const receivedStars = walletSnap.exists()
+        ? (walletSnap.data().receivedStars || 0)
+        : 0;
+
+      loadUserRank(receivedStars);
 
       setIsVerified(data.verified === true);
     }
@@ -1589,7 +1621,11 @@ Follow
       </Text>
 
       <Text style={styles.premiumTitle}>
-        No.1
+        {userRank == null
+          ? "--"
+          : userRank > 500
+          ? "500+"
+          : `No.${userRank}`}
       </Text>
     </View>
 

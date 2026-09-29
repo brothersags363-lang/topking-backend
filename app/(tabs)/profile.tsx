@@ -1,4 +1,4 @@
- import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useIsFocused } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -1348,7 +1348,11 @@ getLevelTheme(profileData.level || 1);
   <View style={styles.topActionNavigation}>
 
   {/* Left Side */}
-  <TouchableOpacity style={styles.starBox}>
+  <TouchableOpacity
+    style={styles.starBox}
+    activeOpacity={0.7}
+    onPress={() => router.push('/claim')}
+  >
     <Ionicons
       name="star"
       size={22}
@@ -1356,7 +1360,7 @@ getLevelTheme(profileData.level || 1);
     />
 
     <Text style={styles.starValue}>
-      2500
+      Claim
     </Text>
   </TouchableOpacity>
 
@@ -3358,4 +3362,4 @@ memberImg:{
     borderColor:"#181818",
 },
 
-});       
+}); 

@@ -14,6 +14,7 @@
   Platform,
   StatusBar,
   BackHandler,
+  AppState,
    FlatList,
   KeyboardAvoidingView,
   Keyboard,
@@ -822,6 +823,8 @@ const [joinBanner, setJoinBanner] = useState(null);
 const joinAnim = useRef(new Animated.Value(-width)).current;
 const joinHideTimeoutRef = useRef(null);
 const chatsReadyRef = useRef(false);
+// ids of "joined" messages that already existed BEFORE I entered -> never shown to me
+const oldJoinIdsRef = useRef(new Set());
 
 const showJoinBanner = (data) => {
   if (joinHideTimeoutRef.current) clearTimeout(joinHideTimeoutRef.current);
@@ -863,6 +866,45 @@ const agoraInitPromiseRef = useRef(null);
 const agoraJoinStartedRef = useRef(false);
 
 const agoraEngineRef = useRef(null);
+
+// ===== LIVE LIFECYCLE (host end / host app killed) =====
+const exitingRef = useRef(false);          // I am leaving on my own (cleanAndExit running)
+const roomEndedRef = useRef(false);        // host ended / disappeared
+const isFocusedRef = useRef(true);
+const lastHeartbeatRef = useRef(null);     // last hostHeartbeat value we saw
+const lastHeartbeatSeenAtRef = useRef(0);  // LOCAL time we saw it change (no clock-skew issues)
+const lastRoomSigRef = useRef(null);       // room doc signature WITHOUT heartbeat
+
+const releaseAgora = () => {
+  const e = agoraEngineRef.current;
+  if (!e) return;
+  agoraEngineRef.current = null;
+  try { e.leaveChannel(); } catch (_) {}
+  try { e.release(); } catch (_) {}
+};
+
+const navigateAfterEnd = () => {
+  if (from === "all-live") router.replace("/all-live");
+  else router.replace("/");
+};
+
+// Host ended the live (or host's app died). Stop audio + mini-live instantly.
+// Only navigate if this screen is in front; otherwise navigate when user returns.
+const handleRoomEnded = () => {
+  if (exitingRef.current || roomEndedRef.current) return;
+  roomEndedRef.current = true;
+  releaseAgora();
+  try { stopLive(); } catch (_) {}
+  if (isFocusedRef.current) navigateAfterEnd();
+};
+
+useFocusEffect(
+  useCallback(() => {
+    isFocusedRef.current = true;
+    if (roomEndedRef.current && !exitingRef.current) navigateAfterEnd();
+    return () => { isFocusedRef.current = false; };
+  }, [])
+);
 
 const [joined,setJoined]=useState(false);
 
@@ -1473,6 +1515,55 @@ pulseAnim.setValue(1);
 
 
 
+// ---------- HOST HEARTBEAT ----------
+// Host writes a tiny "I'm alive" stamp every 20s. If the host's app is killed
+// / removed from recents, the stamp stops and everyone (list + room) treats the
+// live as ended. updateDoc on a deleted room fails silently (never re-creates).
+useEffect(() => {
+  if (!db || !roomId || currentUserRole !== "host") return;
+  const roomRef = doc(db, "rooms", roomId);
+  const beat = () => { updateDoc(roomRef, { hostHeartbeat: serverTimestamp() }).catch(() => {}); };
+  beat();
+  const timer = setInterval(beat, 20000);
+  const sub = AppState.addEventListener("change", (st) => { if (st === "active") beat(); });
+  return () => { clearInterval(timer); sub.remove(); };
+}, [roomId, currentUserRole]);
+
+// ---------- VIEWER: detect host app killed ----------
+useEffect(() => {
+  if (!db || !roomId || currentUserRole === "host") return;
+  const roomRef = doc(db, "rooms", roomId);
+
+  const timer = setInterval(async () => {
+    if (!lastHeartbeatSeenAtRef.current) return;                  // old room without heartbeat
+    if (Date.now() - lastHeartbeatSeenAtRef.current < 75000) return;
+    try {
+      const snap = await getDoc(roomRef);
+      if (snap.metadata?.fromCache) return;                       // offline: don't guess
+      if (!snap.exists()) { handleRoomEnded(); return; }
+      const hb = snap.data()?.hostHeartbeat;
+      const hbKey = hb?.toMillis ? hb.toMillis() : (hb ?? null);
+      if (hbKey !== lastHeartbeatRef.current) {                   // host is alive after all
+        lastHeartbeatRef.current = hbKey;
+        lastHeartbeatSeenAtRef.current = Date.now();
+        return;
+      }
+      // Host really gone: end for this viewer.
+      handleRoomEnded();
+    } catch (_) {}
+  }, 15000);
+
+  // our own timers pause in background -> give a fresh grace period on return
+  const sub = AppState.addEventListener("change", (st) => {
+    if (st === "active" && lastHeartbeatSeenAtRef.current) {
+      lastHeartbeatSeenAtRef.current = Date.now();
+    }
+  });
+
+  return () => { clearInterval(timer); sub.remove(); };
+}, [roomId, currentUserRole]);
+
+
 useEffect(() => {
 
   if (!requestModalVisible) return;
@@ -1648,6 +1739,24 @@ console.log("Audience Added =", audiencePayload);
     const unsubscribe = onSnapshot(roomRef, (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data();
+
+        // Host heartbeat: remember WHEN (local time) it last changed.
+        const hb = data?.hostHeartbeat;
+        const hbKey = hb?.toMillis ? hb.toMillis() : (hb ?? null);
+        if (hbKey !== null && hbKey !== lastHeartbeatRef.current) {
+          lastHeartbeatRef.current = hbKey;
+          lastHeartbeatSeenAtRef.current = Date.now();
+        }
+
+        // SPEED: heartbeat arrives every 20s. If nothing else changed, do NOT
+        // re-render the whole room screen.
+        let roomSig = null;
+        try {
+          const { hostHeartbeat, ...restOfRoom } = data;
+          roomSig = JSON.stringify(restOfRoom);
+        } catch (_) {}
+        if (roomSig && roomSig === lastRoomSigRef.current) return;
+        lastRoomSigRef.current = roomSig;
 
 
 
@@ -1855,7 +1964,8 @@ if (
 
 
       } else {
-        router.replace('/'); // Path updated to root
+        // Room doc gone = host ended the live.
+        handleRoomEnded();
       }
     });
 
@@ -1886,11 +1996,21 @@ useEffect(() => {
   );
 
   chatsReadyRef.current = false;
+  oldJoinIdsRef.current = new Set();
 
   const unsubChats = onSnapshot(chatsQuery, (snap) => {
-    const msgs = snap.docs
+    let msgs = snap.docs
       .map(d => ({ id: d.id, ...d.data() }))
       .reverse();
+
+    // First load = old history. Remember every old "joined" message so it is
+    // hidden; only people who join AFTER I entered will show "X joined".
+    // (Id based, so different phone clocks can't break it.)
+    if (!chatsReadyRef.current) {
+      msgs.forEach(m => { if (m.type === "join") oldJoinIdsRef.current.add(m.id); });
+    }
+    msgs = msgs.filter(m => !(m.type === "join" && oldJoinIdsRef.current.has(m.id)));
+
     setChatMessages(msgs);
 
     // Pehli baar (purani history load) pe banner nahi dikhana —
@@ -2098,7 +2218,9 @@ Animated.timing(giftOpacity,{
 
   // --- CLEAN & EXIT: Direct Fix for Navigation ---
   const cleanAndExit = async () => {
+    exitingRef.current = true;   // stops handleRoomEnded from double-navigating
     setControlModalVisible(false);
+    try { stopLive(); } catch (_) {}
 
     if (agoraEngineRef.current) {
       // FIX: this used to be `await agoraEngineRef.current.leaveChannel()`
@@ -2144,11 +2266,11 @@ if (currentUserRole === "host") {
   // Sirf host hi live band kare — room khatam hone par uske
   // chats aur audience subcollections bhi saaf karo, warna agli
   // baar live open karne par purana chat/audience dikhega.
-  await Promise.all([
-    clearRoomSubcollection('chats'),
-    clearRoomSubcollection('audience'),
-  ]);
+  // SPEED: delete the room doc FIRST -> it vanishes from every "All Live"
+  // list immediately. Chat/audience cleanup runs in the background.
   await deleteDoc(roomRef);
+  clearRoomSubcollection('chats');
+  clearRoomSubcollection('audience');
 
 } else {
 
@@ -4624,7 +4746,7 @@ height:height*0.42,
 borderTopLeftRadius:30,
 borderTopRightRadius:30,
 alignItems:"center",
-paddingTop:20,
+paddingTop:5,
 paddingBottom: insets.bottom + 15,
 }}
 >

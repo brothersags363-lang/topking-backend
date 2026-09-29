@@ -20,7 +20,19 @@ import {
 Modal,
 Pressable,
  Linking,
+ ActivityIndicator,
 } from "react-native";
+
+import * as ImagePicker from "expo-image-picker";
+import * as VideoThumbnails from "expo-video-thumbnails";
+import { VideoView, useVideoPlayer } from "expo-video";
+import {
+  getStorage,
+  ref as storageRef,
+  uploadBytesResumable,
+  getDownloadURL,
+  deleteObject,
+} from "firebase/storage";
 
 import {
   Ionicons,
@@ -130,6 +142,25 @@ const formatDateLabel = (createdAt) => {
   });
 };
 
+// Full-screen video player used by the media viewer (mounted only while open)
+const ViewerVideo = ({ url }) => {
+  const player = useVideoPlayer(url, (p) => {
+    p.loop = false;
+    p.play();
+  });
+  return (
+    <VideoView
+      player={player}
+      style={{ width: "100%", height: "80%" }}
+      contentFit="contain"
+      nativeControls
+      allowsFullscreen
+    />
+  );
+};
+
+const MAX_MEDIA_MB = 50;
+
 export default function ChatScreen() {
   const router = useRouter();
 
@@ -172,6 +203,10 @@ const [isBlocked, setIsBlocked] = useState(false);
 const [blockedByOther, setBlockedByOther] = useState(false);
 const [loadingMessages, setLoadingMessages] = useState(true);
 const [sending, setSending] = useState(false);
+// gallery uploads in progress (shown at the bottom of the chat with a % loader)
+const [uploads, setUploads] = useState([]);
+// full-screen photo/video viewer: { type: "image" | "video", url }
+const [viewer, setViewer] = useState(null);
 
 
 const getLevelTheme = (level = 1) => {
@@ -693,28 +728,45 @@ Keyboard.dismiss();
 
 
 
+// ================================
+// POPUP HELPERS - tapping anywhere outside closes the popup
+// ================================
+const closeMenu = () => {
+  setMenuVisible(false);
+  setSelectedMessage(null);
+};
+
+const closeEdit = () => {
+  Keyboard.dismiss();
+  setEditModal(false);
+  setSelectedMessage(null);
+};
+
 const deleteMessage = async () => {
+
+  const target = selectedMessage;
+
+  // close instantly (feels fast), delete in background
+  closeMenu();
+
+  if (!target?.id) return;
 
   try {
 
-   await deleteDoc(
-  doc(
-    db,
-    "chats",
-    chatId,
-    "messages",
-    selectedMessage.id
-  )
-);
+    await deleteDoc(
+      doc(db, "chats", chatId, "messages", target.id)
+    );
 
-setSelectedMessage(null);
-
-setMenuVisible(false);
+    // best-effort: also remove the uploaded photo/video file
+    if (target.type === "media") {
+      [target.mediaUrl, target.thumbnail].forEach((u) => {
+        if (!u) return;
+        deleteObject(storageRef(getStorage(), u)).catch(() => {});
+      });
+    }
 
   } catch (e) {
-
     console.log(e);
-
   }
 
 };
@@ -722,31 +774,254 @@ setMenuVisible(false);
 
 const updateMessage = async () => {
 
+  const target = selectedMessage;
+  const newText = editText.trim();
+
+  closeEdit();
+
+  if (!target?.id || !newText) return;
+  if (newText === (target.text || "")) return;   // nothing changed
+
   try {
 
     await updateDoc(
-      doc(
-        db,
-        "chats",
-        chatId,
-        "messages",
-        selectedMessage.id
-      ),
+      doc(db, "chats", chatId, "messages", target.id),
       {
-        text: editText,
+        text: newText,
         edited: true,
       }
     );
 
-    setEditModal(false);
-
   } catch (e) {
-
     console.log(e);
-
   }
 
 };
+
+
+// ================================
+// SEND PHOTO / VIDEO FROM GALLERY
+// ================================
+const uploadFile = (uri, path, contentType, onProgress) =>
+  new Promise(async (resolve, reject) => {
+    try {
+      const blob = await (await fetch(uri)).blob();
+      const task = uploadBytesResumable(
+        storageRef(getStorage(), path),
+        blob,
+        { contentType }
+      );
+      task.on(
+        "state_changed",
+        (snap) => {
+          if (onProgress && snap.totalBytes) {
+            onProgress(snap.bytesTransferred / snap.totalBytes);
+          }
+        },
+        reject,
+        async () => {
+          try {
+            resolve(await getDownloadURL(task.snapshot.ref));
+          } catch (e) {
+            reject(e);
+          }
+        }
+      );
+    } catch (e) {
+      reject(e);
+    }
+  });
+
+const sendOneMedia = async (asset) => {
+
+  const isVideo = asset.type === "video";
+  const localId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+  setUploads((prev) => [
+    { id: localId, asset, isVideo, progress: 0, failed: false },
+    ...prev,
+  ]);
+
+  const setProgress = (p) =>
+    setUploads((prev) =>
+      prev.map((u) => (u.id === localId ? { ...u, progress: p } : u))
+    );
+
+  try {
+
+    const extFromUri = (asset.uri.split(".").pop() || "").split("?")[0].toLowerCase();
+    const ext = extFromUri && extFromUri.length <= 5 ? extFromUri : isVideo ? "mp4" : "jpg";
+    const contentType =
+      asset.mimeType || (isVideo ? `video/${ext}` : `image/${ext === "jpg" ? "jpeg" : ext}`);
+    const base = `chatMedia/${chatId}/${currentUid}_${localId}`;
+
+    // small thumbnail for videos (uploaded in parallel-ish, tiny file)
+    let thumbUrl = "";
+    if (isVideo) {
+      try {
+        const t = await VideoThumbnails.getThumbnailAsync(asset.uri, { time: 500 });
+        thumbUrl = await uploadFile(t.uri, `${base}_thumb.jpg`, "image/jpeg");
+      } catch (e) {
+        console.log("THUMB ERROR =", e);
+      }
+    }
+
+    const mediaUrl = await uploadFile(
+      asset.uri,
+      `${base}.${ext}`,
+      contentType,
+      setProgress
+    );
+
+    await addDoc(
+      collection(db, "chats", chatId, "messages"),
+      {
+        type: "media",
+        mediaType: isVideo ? "video" : "image",
+        mediaUrl,
+        thumbnail: thumbUrl,
+        width: asset.width || 0,
+        height: asset.height || 0,
+        senderId: currentUid,
+        receiverId: userId,
+        read: false,
+        createdAt: serverTimestamp(),
+      }
+    );
+
+    // chat list preview + push notification (same as text messages)
+    const label = isVideo ? "🎥 Video" : "📷 Photo";
+    const myData = (await getDoc(doc(db, "users", currentUid))).data();
+
+    await Promise.all([
+      setDoc(
+        doc(db, "userChats", currentUid, "friends", userId),
+        {
+          userId,
+          username,
+          profileImg,
+          lastMessage: label,
+          updatedAt: serverTimestamp(),
+          unreadCount: 0,
+        },
+        { merge: true }
+      ),
+      setDoc(
+        doc(db, "userChats", userId, "friends", currentUid),
+        {
+          userId: currentUid,
+          username: myData?.username || currentUser?.displayName || "User",
+          profileImg: myData?.profileImg || currentUser?.photoURL || "",
+          lastMessage: label,
+          hasNewMessage: true,
+          unreadCount: increment(1),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      ),
+    ]);
+
+    fetch("https://topking-backend.onrender.com/send-message-notification", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        receiverUid: userId,
+        senderUid: currentUid,
+        senderName: myData?.username || currentUser?.displayName || "User",
+        message: label,
+      }),
+    }).catch(() => {});
+
+    setUploads((prev) => prev.filter((u) => u.id !== localId));
+
+  } catch (err) {
+    console.log("MEDIA SEND ERROR =", err);
+    setUploads((prev) =>
+      prev.map((u) => (u.id === localId ? { ...u, failed: true } : u))
+    );
+  }
+};
+
+const pickAndSendMedia = async () => {
+
+  if (isBlocked) {
+    Alert.alert("Blocked", "Please unblock this user first.");
+    return;
+  }
+
+  if (blockedByOther) {
+    Alert.alert("Blocked", "This user has blocked you.");
+    return;
+  }
+
+  try {
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images", "videos"],
+      allowsMultipleSelection: true,
+      selectionLimit: 5,
+      quality: 0.8,
+    });
+
+    if (result.canceled || !result.assets?.length) return;
+
+    result.assets.forEach((asset) => {
+
+      if (asset.fileSize && asset.fileSize > MAX_MEDIA_MB * 1024 * 1024) {
+        Alert.alert(
+          "File too large",
+          `Please choose a file smaller than ${MAX_MEDIA_MB} MB.`
+        );
+        return;
+      }
+
+      sendOneMedia(asset);
+
+    });
+
+  } catch (e) {
+    console.log("PICK MEDIA ERROR =", e);
+    Alert.alert("Error", "Could not open gallery.");
+  }
+
+};
+
+// pending uploads shown at the bottom of the (inverted) list
+const renderUploads = () =>
+  uploads.length === 0 ? null : (
+    <View>
+      {uploads.map((u) => (
+        <View key={u.id} style={[styles.row, styles.myRow]}>
+          <TouchableOpacity
+            activeOpacity={u.failed ? 0.7 : 1}
+            onPress={() => {
+              if (!u.failed) return;
+              setUploads((prev) => prev.filter((x) => x.id !== u.id));
+              sendOneMedia(u.asset);      // retry
+            }}
+            style={styles.mediaBubble}
+          >
+            <Image source={{ uri: u.asset.uri }} style={styles.mediaImg} />
+            <View style={styles.mediaUploadOverlay}>
+              {u.failed ? (
+                <>
+                  <Ionicons name="refresh" size={30} color="#fff" />
+                  <Text style={styles.mediaUploadText}>Tap to retry</Text>
+                </>
+              ) : (
+                <>
+                  <ActivityIndicator color="#fff" />
+                  <Text style={styles.mediaUploadText}>
+                    {Math.round(u.progress * 100)}%
+                  </Text>
+                </>
+              )}
+            </View>
+          </TouchableOpacity>
+        </View>
+      ))}
+    </View>
+  );
 
 
 
@@ -935,6 +1210,86 @@ delayLongPress={400}
 }
 
 
+
+
+if (item.type === "media") {
+
+  const isVideoMsg = item.mediaType === "video";
+
+  return (
+    <>
+    {DateSeparator}
+    <View
+      style={[
+        styles.row,
+        mine ? styles.myRow : styles.otherRow,
+      ]}
+    >
+
+      {!mine && (
+        <Image
+          source={{
+            uri:
+              profileImg ||
+              "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
+          }}
+          style={styles.chatAvatar}
+        />
+      )}
+
+      <TouchableOpacity
+        activeOpacity={0.9}
+        delayLongPress={400}
+        style={styles.mediaBubble}
+        onPress={() =>
+          setViewer({
+            type: isVideoMsg ? "video" : "image",
+            url: item.mediaUrl,
+          })
+        }
+        onLongPress={() => {
+          if (!mine) return;
+          setSelectedMessage(item);
+          setMenuVisible(true);
+        }}
+      >
+
+        <Image
+          source={{
+            uri: isVideoMsg ? item.thumbnail || undefined : item.mediaUrl,
+          }}
+          style={styles.mediaImg}
+        />
+
+        {isVideoMsg && (
+          <Ionicons
+            name="play-circle"
+            size={50}
+            color="#fff"
+            style={styles.mediaPlayIcon}
+          />
+        )}
+
+        <View style={styles.mediaMeta}>
+          <Text style={styles.mediaTime}>
+            {formatMessageTime(item.createdAt)}
+          </Text>
+          {mine && (
+            <Ionicons
+              name={item.read ? "checkmark-done" : "checkmark"}
+              size={14}
+              color={item.read ? "#4DA6FF" : "#fff"}
+              style={{ marginLeft: 4 }}
+            />
+          )}
+        </View>
+
+      </TouchableOpacity>
+
+    </View>
+    </>
+  );
+}
 
 
   return (
@@ -1354,6 +1709,13 @@ inverted
   }
 
   showsVerticalScrollIndicator={false}
+
+  // tap on the chat area closes the keyboard; scrolling does too
+  keyboardShouldPersistTaps="handled"
+  onScrollBeginDrag={Keyboard.dismiss}
+
+  // (inverted list) header = very bottom => pending uploads
+  ListHeaderComponent={renderUploads}
 />
 
 
@@ -1383,6 +1745,18 @@ style={styles.previewText}
 
 
       <View style={styles.bottomBar}>
+
+        <TouchableOpacity
+          disabled={isBlocked || blockedByOther}
+          style={[
+            styles.attachBtn,
+            { opacity: isBlocked || blockedByOther ? 0.5 : 1 },
+          ]}
+          onPress={pickAndSendMedia}
+        >
+          <Ionicons name="images" size={26} color="#fff" />
+        </TouchableOpacity>
+
        <TextInput
   value={message}
   onChangeText={handleTyping}
@@ -1442,141 +1816,122 @@ style={styles.previewText}
 
 
 
+{/* ============ MESSAGE MENU (tap anywhere outside = close) ============ */}
 <Modal
   visible={menuVisible}
   transparent
   animationType="fade"
+  statusBarTranslucent
+  onRequestClose={closeMenu}
 >
 
-<View
-  style={{
-    flex:1,
-    justifyContent:"center",
-    alignItems:"center",
-    backgroundColor:"rgba(0,0,0,0.6)",
-  }}
->
+  <Pressable style={styles.modalOverlay} onPress={closeMenu}>
 
-<View
-  style={{
-    width:250,
-    backgroundColor:"#111",
-    borderRadius:15,
-    padding:15,
-  }}
->
+    {/* inner Pressable swallows taps so touching the box doesn't close it */}
+    <Pressable style={styles.menuBox} onPress={() => {}}>
 
-{selectedMessage?.type !== "video" &&
- selectedMessage?.type !== "liveInvite" && (
+      {selectedMessage?.type !== "video" &&
+       selectedMessage?.type !== "liveInvite" &&
+       selectedMessage?.type !== "media" && (
 
-<TouchableOpacity
-  onPress={() => {
+        <TouchableOpacity
+          onPress={() => {
+            setMenuVisible(false);
+            setEditModal(true);
+          }}
+        >
+          <Text style={styles.menuEditText}>Edit Message</Text>
+        </TouchableOpacity>
 
-    setMenuVisible(false);
+      )}
 
-    setEditModal(true);
+      <TouchableOpacity onPress={deleteMessage}>
+        <Text style={styles.menuDeleteText}>Delete</Text>
+      </TouchableOpacity>
 
-  }}
->
+    </Pressable>
 
-<Text
-  style={{
-    color:"#fff",
-    fontSize:18,
-    padding:15,
-  }}
->
-  Edit Message
-</Text>
-
-</TouchableOpacity>
-
-)}
-
-<TouchableOpacity
-  onPress={deleteMessage}
->
-
-<Text
-  style={{
-    color:"red",
-    fontSize:18,
-    padding:15,
-  }}
->
-  Delete
-</Text>
-
-</TouchableOpacity>
-
-</View>
-
-</View>
+  </Pressable>
 
 </Modal>
 
 
 
+{/* ============ EDIT MESSAGE (tap anywhere outside = close) ============ */}
 <Modal
   visible={editModal}
   transparent
+  animationType="fade"
+  statusBarTranslucent
+  onRequestClose={closeEdit}
 >
 
-<View
-  style={{
-    flex:1,
-    justifyContent:"center",
-    alignItems:"center",
-    backgroundColor:"rgba(0,0,0,0.6)",
-  }}
+  <Pressable style={styles.modalOverlay} onPress={closeEdit}>
+
+    <KeyboardAvoidingView
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      style={{ width: "100%", alignItems: "center" }}
+    >
+
+      <Pressable style={styles.editBox} onPress={() => {}}>
+
+        <TextInput
+          value={editText}
+          onChangeText={setEditText}
+          autoFocus
+          multiline
+          style={styles.editInput}
+        />
+
+        <TouchableOpacity
+          onPress={updateMessage}
+          style={styles.editSaveBtn}
+        >
+          <Text style={styles.editSaveText}>Save</Text>
+        </TouchableOpacity>
+
+      </Pressable>
+
+    </KeyboardAvoidingView>
+
+  </Pressable>
+
+</Modal>
+
+
+
+{/* ============ PHOTO / VIDEO VIEWER ============ */}
+<Modal
+  visible={!!viewer}
+  transparent
+  animationType="fade"
+  statusBarTranslucent
+  onRequestClose={() => setViewer(null)}
 >
 
-<View
-  style={{
-    width:"90%",
-    backgroundColor:"#111",
-    borderRadius:15,
-    padding:20,
-  }}
->
+  <Pressable
+    style={styles.viewerOverlay}
+    onPress={() => setViewer(null)}
+  >
 
-<TextInput
-  value={editText}
-  onChangeText={setEditText}
-  style={{
-    color:"#fff",
-    borderWidth:1,
-    borderColor:"#333",
-    borderRadius:10,
-    padding:12,
-  }}
-/>
+    {viewer?.type === "image" && (
+      <Image
+        source={{ uri: viewer.url }}
+        style={{ width: "100%", height: "85%" }}
+        resizeMode="contain"
+      />
+    )}
 
-<TouchableOpacity
-  onPress={updateMessage}
-  style={{
-    backgroundColor:"#00C853",
-    padding:15,
-    borderRadius:10,
-    marginTop:15,
-  }}
->
+    {viewer?.type === "video" && <ViewerVideo url={viewer.url} />}
 
-<Text
-  style={{
-    color:"#fff",
-    textAlign:"center",
-    fontWeight:"bold",
-  }}
->
-  Save
-</Text>
+    <TouchableOpacity
+      style={styles.viewerClose}
+      onPress={() => setViewer(null)}
+    >
+      <Ionicons name="close" size={32} color="#fff" />
+    </TouchableOpacity>
 
-</TouchableOpacity>
-
-</View>
-
-</View>
+  </Pressable>
 
 </Modal>
 
@@ -1856,6 +2211,136 @@ emptyChatWrap: {
 emptyChatText: {
   color: "#777",
   fontSize: 14,
+},
+
+attachBtn: {
+  width: 45,
+  height: 45,
+  borderRadius: 25,
+  backgroundColor: "#2a2a2a",
+  justifyContent: "center",
+  alignItems: "center",
+  marginRight: 10,
+},
+
+mediaBubble: {
+  width: 210,
+  height: 250,
+  borderRadius: 15,
+  overflow: "hidden",
+  backgroundColor: "#1a1a1a",
+  marginVertical: 5,
+},
+
+mediaImg: {
+  width: "100%",
+  height: "100%",
+},
+
+mediaPlayIcon: {
+  position: "absolute",
+  top: "40%",
+  alignSelf: "center",
+  left: "38%",
+},
+
+mediaMeta: {
+  position: "absolute",
+  right: 8,
+  bottom: 6,
+  flexDirection: "row",
+  alignItems: "center",
+  backgroundColor: "rgba(0,0,0,0.45)",
+  paddingHorizontal: 6,
+  paddingVertical: 2,
+  borderRadius: 10,
+},
+
+mediaTime: {
+  color: "#fff",
+  fontSize: 10,
+},
+
+mediaUploadOverlay: {
+  ...StyleSheet.absoluteFillObject,
+  backgroundColor: "rgba(0,0,0,0.55)",
+  justifyContent: "center",
+  alignItems: "center",
+},
+
+mediaUploadText: {
+  color: "#fff",
+  marginTop: 6,
+  fontWeight: "600",
+},
+
+modalOverlay: {
+  flex: 1,
+  justifyContent: "center",
+  alignItems: "center",
+  backgroundColor: "rgba(0,0,0,0.6)",
+},
+
+menuBox: {
+  width: 250,
+  backgroundColor: "#111",
+  borderRadius: 15,
+  padding: 15,
+},
+
+menuEditText: {
+  color: "#fff",
+  fontSize: 18,
+  padding: 15,
+},
+
+menuDeleteText: {
+  color: "red",
+  fontSize: 18,
+  padding: 15,
+},
+
+editBox: {
+  width: "90%",
+  backgroundColor: "#111",
+  borderRadius: 15,
+  padding: 20,
+},
+
+editInput: {
+  color: "#fff",
+  borderWidth: 1,
+  borderColor: "#333",
+  borderRadius: 10,
+  padding: 12,
+  maxHeight: 160,
+},
+
+editSaveBtn: {
+  backgroundColor: "#00C853",
+  padding: 15,
+  borderRadius: 10,
+  marginTop: 15,
+},
+
+editSaveText: {
+  color: "#fff",
+  textAlign: "center",
+  fontWeight: "bold",
+},
+
+viewerOverlay: {
+  flex: 1,
+  backgroundColor: "rgba(0,0,0,0.95)",
+  justifyContent: "center",
+  alignItems: "center",
+},
+
+viewerClose: {
+  position: "absolute",
+  top: 50,
+  right: 20,
+  padding: 6,
 },
 
 

@@ -14,6 +14,8 @@ import {
   Alert,
   Image,
   BackHandler,
+  PanResponder,
+  Animated,
 } from 'react-native';
 
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -44,6 +46,279 @@ import {
 } from 'firebase/auth';
 
 import { db } from './firebaseConfig';
+
+
+// ==================================================
+// PINCH ZOOM CAMERA
+// --------------------------------------------------
+// Do ungliyon se pinch karke zoom in / zoom out.
+// Photo/video banane se pehle bhi chalta hai aur
+// recording ke dauran bhi.
+//
+// SMOOTH kyu hai:
+//  - Zoom state sirf is chhote component me hai, isliye
+//    poora page re-render nahi hota.
+//  - Har frame me sirf ek baar update (requestAnimationFrame).
+// ==================================================
+
+// Kitne pixel ki pinch se poora zoom (0 -> 1) ho.
+// Chhota number = zoom tez, bada number = zoom dheere.
+const PINCH_RANGE = 450;
+
+const getDistance = (touches: any[]) => {
+  const dx = touches[0].pageX - touches[1].pageX;
+  const dy = touches[0].pageY - touches[1].pageY;
+  return Math.sqrt(dx * dx + dy * dy);
+};
+
+const ZoomableCamera = React.memo(
+  React.forwardRef<any, any>(
+    ({ facing, onCameraReady, onMountError }, ref) => {
+
+      const [zoom, setZoom] = useState(0);
+      const [showIndicator, setShowIndicator] = useState(false);
+
+      const zoomRef = useRef(0);
+      const startZoomRef = useRef(0);
+      const startDistRef = useRef(0);
+      const rafRef = useRef<number | null>(null);
+      const hideTimerRef = useRef<any>(null);
+
+
+      // Camera switch hone par zoom reset
+      useEffect(() => {
+        zoomRef.current = 0;
+        setZoom(0);
+      }, [facing]);
+
+
+      useEffect(() => {
+        return () => {
+          if (rafRef.current) {
+            cancelAnimationFrame(rafRef.current);
+          }
+          if (hideTimerRef.current) {
+            clearTimeout(hideTimerRef.current);
+          }
+        };
+      }, []);
+
+
+      const scheduleUpdate = () => {
+        if (rafRef.current) {
+          return;
+        }
+        rafRef.current = requestAnimationFrame(() => {
+          rafRef.current = null;
+          setZoom(zoomRef.current);
+        });
+      };
+
+
+      const endPinch = () => {
+        startDistRef.current = 0;
+
+        if (hideTimerRef.current) {
+          clearTimeout(hideTimerRef.current);
+        }
+        hideTimerRef.current = setTimeout(() => {
+          setShowIndicator(false);
+        }, 900);
+      };
+
+
+      const panResponder = useRef(
+        PanResponder.create({
+
+          onStartShouldSetPanResponder: () => true,
+          onMoveShouldSetPanResponder: () => true,
+          onPanResponderTerminationRequest: () => false,
+
+          onPanResponderMove: (evt) => {
+
+            const touches = evt.nativeEvent.touches;
+
+            // Ek ungli = kuch nahi. Pinch ke liye 2 ungliyan chahiye.
+            if (touches.length < 2) {
+              startDistRef.current = 0;
+              return;
+            }
+
+            const distance = getDistance(touches);
+
+            // Pinch ki shuruaat
+            if (!startDistRef.current) {
+              startDistRef.current = distance;
+              startZoomRef.current = zoomRef.current;
+
+              if (hideTimerRef.current) {
+                clearTimeout(hideTimerRef.current);
+              }
+              setShowIndicator(true);
+              return;
+            }
+
+            const next = Math.min(
+              1,
+              Math.max(
+                0,
+                startZoomRef.current +
+                  (distance - startDistRef.current) / PINCH_RANGE
+              )
+            );
+
+            if (Math.abs(next - zoomRef.current) > 0.002) {
+              zoomRef.current = next;
+              scheduleUpdate();
+            }
+          },
+
+          onPanResponderRelease: endPinch,
+          onPanResponderTerminate: endPinch,
+
+        })
+      ).current;
+
+
+      return (
+        <>
+          <CameraView
+            style={StyleSheet.absoluteFill}
+            ref={ref}
+            mode="video"
+            facing={facing}
+            zoom={zoom}
+            onCameraReady={onCameraReady}
+            onMountError={onMountError}
+          />
+
+          {/* Pinch touch layer (controls iske upar hain) */}
+          <View
+            style={[StyleSheet.absoluteFill, { zIndex: 1 }]}
+            {...panResponder.panHandlers}
+          />
+
+          {/* Zoom indicator */}
+          {showIndicator && (
+            <View style={zoomStyles.indicator} pointerEvents="none">
+              <Ionicons name="search" size={16} color="#fff" />
+              <View style={zoomStyles.track}>
+                <View
+                  style={[
+                    zoomStyles.fill,
+                    { width: `${Math.round(zoom * 100)}%` },
+                  ]}
+                />
+              </View>
+              <Text style={zoomStyles.pct}>
+                {Math.round(zoom * 100)}%
+              </Text>
+            </View>
+          )}
+        </>
+      );
+    }
+  )
+);
+
+
+// ==================================================
+// COUNTDOWN OVERLAY (3 / 2 / 1)
+// Native driver animation = bilkul smooth
+// ==================================================
+
+const CountdownOverlay = ({ value }: { value: number }) => {
+
+  const scale = useRef(new Animated.Value(1.6)).current;
+  const opacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    scale.setValue(1.6);
+    opacity.setValue(0);
+
+    Animated.parallel([
+      Animated.timing(scale, {
+        toValue: 1,
+        duration: 350,
+        useNativeDriver: true,
+      }),
+      Animated.timing(opacity, {
+        toValue: 1,
+        duration: 250,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [value, scale, opacity]);
+
+  return (
+    <View style={zoomStyles.countWrap} pointerEvents="none">
+      <Animated.Text
+        style={[
+          zoomStyles.countText,
+          { opacity, transform: [{ scale }] },
+        ]}
+      >
+        {value}
+      </Animated.Text>
+    </View>
+  );
+};
+
+
+const zoomStyles = StyleSheet.create({
+
+  indicator: {
+    position: 'absolute',
+    bottom: 235,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    zIndex: 15,
+    gap: 8,
+  },
+
+  track: {
+    width: 120,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    overflow: 'hidden',
+  },
+
+  fill: {
+    height: 4,
+    backgroundColor: '#fff',
+  },
+
+  pct: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 'bold',
+    minWidth: 34,
+    textAlign: 'right',
+  },
+
+  countWrap: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 25,
+  },
+
+  countText: {
+    fontSize: 150,
+    fontWeight: '800',
+    color: '#fff',
+    textShadowColor: 'rgba(0,0,0,0.6)',
+    textShadowOffset: { width: 0, height: 4 },
+    textShadowRadius: 12,
+  },
+
+});
 
 
 export default function CameraPage() {
@@ -98,6 +373,73 @@ export default function CameraPage() {
   const musicSoundRef = useRef(null);
   const autoRecordStartedRef = useRef(false);
   const recordingStartedAtRef = useRef(0);
+
+
+  // --------------------------------------------------
+  // SELF TIMER (Off / 3s / 5s / 10s)
+  // --------------------------------------------------
+
+  const TIMER_OPTIONS = [0, 3, 5, 10];
+
+  const [timerDelay, setTimerDelay] = useState(0);
+
+  const [showTimerOptions, setShowTimerOptions] =
+    useState(false);
+
+  // null = countdown chal nahi raha, warna 3, 2, 1...
+  const [countdown, setCountdown] =
+    useState<number | null>(null);
+
+  const countdownTimeoutRef = useRef<any>(null);
+
+  // startRecording ka latest version (stale closure se bachne ke liye)
+  const startRecordingRef = useRef<() => void>(() => {});
+
+
+  const cancelCountdown = useCallback(() => {
+
+    if (countdownTimeoutRef.current) {
+      clearTimeout(countdownTimeoutRef.current);
+      countdownTimeoutRef.current = null;
+    }
+
+    setCountdown(null);
+
+  }, []);
+
+
+  const beginCountdown = useCallback((from: number) => {
+
+    let remaining = from;
+
+    setCountdown(remaining);
+
+    const tick = () => {
+
+      remaining -= 1;
+
+      if (!mountedRef.current) {
+        return;
+      }
+
+      if (remaining <= 0) {
+        countdownTimeoutRef.current = null;
+        setCountdown(null);
+
+        // Countdown khatam -> camera chalu
+        startRecordingRef.current();
+
+        return;
+      }
+
+      setCountdown(remaining);
+
+      countdownTimeoutRef.current = setTimeout(tick, 1000);
+    };
+
+    countdownTimeoutRef.current = setTimeout(tick, 1000);
+
+  }, []);
 
 
   // --------------------------------------------------
@@ -158,6 +500,11 @@ export default function CameraPage() {
 
       recordingRef.current = false;
 
+      if (countdownTimeoutRef.current) {
+        clearTimeout(countdownTimeoutRef.current);
+        countdownTimeoutRef.current = null;
+      }
+
     };
 
   }, []);
@@ -172,6 +519,12 @@ export default function CameraPage() {
     const backAction = () => {
 
       if (recordingRef.current) {
+        return true;
+      }
+
+      // Countdown chal raha ho to pehle back se sirf countdown cancel ho
+      if (countdownTimeoutRef.current) {
+        cancelCountdown();
         return true;
       }
 
@@ -196,7 +549,7 @@ export default function CameraPage() {
       subscription.remove();
     };
 
-  }, [router]);
+  }, [router, cancelCountdown]);
 
 
   // --------------------------------------------------
@@ -842,22 +1195,53 @@ export default function CameraPage() {
   // RECORD BUTTON
   // --------------------------------------------------
 
+  // Latest startRecording hamesha ref me rakho (countdown ke liye)
+  startRecordingRef.current = startRecording;
+
   const handleRecord =
     useCallback(async () => {
 
+      // 1) Countdown chal raha hai -> cancel
+      if (countdownTimeoutRef.current) {
+        cancelCountdown();
+        return;
+      }
+
+      // 2) Recording chal rahi hai -> stop
       if (recordingRef.current) {
 
         await stopRecording();
 
-      } else {
-
-        await startRecording();
-
+        return;
       }
+
+      setShowTimerOptions(false);
+
+      // 3) Timer laga hai -> countdown, phir recording
+      const ready =
+        cameraPermission?.granted &&
+        microphonePermission?.granted &&
+        isCameraReady;
+
+      if (timerDelay > 0 && ready) {
+
+        beginCountdown(timerDelay);
+
+        return;
+      }
+
+      // 4) Timer nahi -> turant recording
+      await startRecording();
 
     }, [
       startRecording,
       stopRecording,
+      cancelCountdown,
+      beginCountdown,
+      timerDelay,
+      isCameraReady,
+      cameraPermission?.granted,
+      microphonePermission?.granted,
     ]);
 
 
@@ -879,25 +1263,62 @@ export default function CameraPage() {
 
       {/* CAMERA */}
 
-      <CameraView
-
-        style={StyleSheet.absoluteFill}
-
+      <ZoomableCamera
         ref={cameraRef}
-
-        mode="video"
-
         facing={facing}
-
-        onCameraReady={
-          handleCameraReady
-        }
-
-        onMountError={
-          handleCameraMountError
-        }
-
+        onCameraReady={handleCameraReady}
+        onMountError={handleCameraMountError}
       />
+
+
+      {/* COUNTDOWN 3 / 2 / 1 */}
+
+      {countdown !== null && (
+        <CountdownOverlay value={countdown} />
+      )}
+
+
+      {/* TIMER OPTIONS (Off / 3s / 5s / 10s) */}
+
+      {showTimerOptions &&
+        !isRecording &&
+        countdown === null && (
+
+        <View style={styles.timerOptions}>
+
+          {TIMER_OPTIONS.map((value) => (
+
+            <TouchableOpacity
+              key={value}
+              activeOpacity={0.8}
+              style={[
+                styles.timerChip,
+                timerDelay === value &&
+                  styles.timerChipActive,
+              ]}
+              onPress={() => {
+                setTimerDelay(value);
+                setShowTimerOptions(false);
+              }}
+            >
+
+              <Text
+                style={[
+                  styles.timerChipText,
+                  timerDelay === value &&
+                    styles.timerChipTextActive,
+                ]}
+              >
+                {value === 0 ? 'Off' : `${value}s`}
+              </Text>
+
+            </TouchableOpacity>
+
+          ))}
+
+        </View>
+
+      )}
 
 
       {/* RECORDING TIMER */}
@@ -945,7 +1366,10 @@ export default function CameraPage() {
           onPress={
             toggleCameraFacing
           }
-          disabled={isRecording}
+          disabled={
+            isRecording ||
+            countdown !== null
+          }
           activeOpacity={0.8}
         >
 
@@ -966,23 +1390,44 @@ export default function CameraPage() {
 
         {/* TIMER */}
 
-        <View
+        <TouchableOpacity
           style={styles.icnGrp}
+          activeOpacity={0.8}
+          disabled={
+            isRecording ||
+            countdown !== null
+          }
+          onPress={() =>
+            setShowTimerOptions(
+              (current) => !current
+            )
+          }
         >
 
           <Ionicons
             name="timer-outline"
             size={30}
-            color="#fff"
+            color={
+              timerDelay > 0
+                ? '#ffd400'
+                : '#fff'
+            }
           />
 
           <Text
-            style={styles.fTxt}
+            style={[
+              styles.fTxt,
+              timerDelay > 0 && {
+                color: '#ffd400',
+              },
+            ]}
           >
-            Timer
+            {timerDelay > 0
+              ? `${timerDelay}s`
+              : 'Timer'}
           </Text>
 
-        </View>
+        </TouchableOpacity>
 
 
         {/* SPEED */}
@@ -1078,7 +1523,8 @@ export default function CameraPage() {
             style={[
               styles.mainRecOuter,
 
-              isRecording && {
+              (isRecording ||
+                countdown !== null) && {
                 borderColor: 'red',
               },
 
@@ -1089,7 +1535,8 @@ export default function CameraPage() {
               style={[
                 styles.mainRecInner,
 
-                isRecording && {
+                (isRecording ||
+                  countdown !== null) && {
                   borderRadius: 10,
                 },
 
@@ -1343,6 +1790,45 @@ const styles = StyleSheet.create({
 
   icnGrp: {
     alignItems: 'center',
+  },
+
+
+  timerOptions: {
+    position: 'absolute',
+    top: 100,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 10,
+    zIndex: 15,
+  },
+
+
+  timerChip: {
+    minWidth: 54,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+  },
+
+
+  timerChipActive: {
+    backgroundColor: '#ffd400',
+  },
+
+
+  timerChipText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: 'bold',
+  },
+
+
+  timerChipTextActive: {
+    color: '#000',
   },
 
 

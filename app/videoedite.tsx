@@ -14,6 +14,7 @@ import {
   FlatList,
   Image,
   Keyboard,
+  Platform,
   Share,
   StatusBar,
   StyleSheet,
@@ -201,8 +202,10 @@ useEffect(() => {
 
   return () => {
 
-    statusSubscription.remove();
-    playingSubscription.remove();
+    // Player pehle release ho sakta hai (video delete / unmount),
+    // isliye remove() ko safe rakho warna crash aata hai.
+    try { statusSubscription.remove(); } catch (e) {}
+    try { playingSubscription.remove(); } catch (e) {}
 
   };
 
@@ -599,41 +602,145 @@ const handleLike = async (videoId) => {
 
 
 
-const handleShare =
-  async (
-    videoUrl,
-    videoId
-  ) => {
+const handleShare = async (videoUrl, videoId) => {
 
-    try {
+  if (!videoUrl) {
+    Alert.alert("Share", "Is video ka link nahi mila.");
+    return;
+  }
 
-      const result =
-        await Share.share({
-          message:
-            videoUrl,
-        });
+  try {
 
-      if (
-        result.action ===
-        Share.sharedAction
-      ) {
+    const result = await Share.share(
+      Platform.OS === "ios"
+        ? { url: videoUrl, message: videoUrl }
+        : { message: videoUrl }
+    );
 
+    if (result.action === Share.sharedAction) {
+
+      // Local count turant badhao
+      setAllVideos(prev =>
+        prev.map(v =>
+          v.id === videoId
+            ? { ...v, shares: (v.shares || 0) + 1 }
+            : v
+        )
+      );
+
+      try {
         await updateDoc(
-          doc(
-            db,
-            'all_videos',
-            videoId
-          ),
-          {
-            shares:
-              increment(1),
-          }
+          doc(db, "all_videos", videoId),
+          { shares: increment(1) }
         );
+      } catch (e) {
+        console.log("SHARE COUNT ERROR =", e);
       }
 
-    } catch (e) {
-      console.log(e);
     }
+
+  } catch (e) {
+    console.log("SHARE ERROR =", e);
+    Alert.alert("Share", "Share nahi ho paya, dobara try karo.");
+  }
+
+};
+
+
+const deletingRef = useRef(false);
+
+const deleteVideo = (videoId, ownerId) => {
+
+  const user = auth.currentUser;
+
+  if (!user) {
+    Alert.alert("Login Required");
+    return;
+  }
+
+  if (ownerId && ownerId !== user.uid) {
+    Alert.alert("Not allowed", "Aap sirf apni video delete kar sakte ho.");
+    return;
+  }
+
+  if (deletingRef.current) return;
+
+  Alert.alert(
+    "Delete Video",
+    "Kya aap ye video delete karna chahte ho?",
+    [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+
+          if (deletingRef.current) return;
+          deletingRef.current = true;
+
+          try {
+
+            // 1) Pehle server se delete
+            await deleteDoc(doc(db, "all_videos", videoId));
+
+            // 2) Phir UI update (refs se latest data)
+            const list = videoDataRef.current || [];
+            const deletedIndex = list.findIndex(v => v.id === videoId);
+            const remaining = list.length - 1;
+
+            setShowComments(false);
+            setShowSharePopup(false);
+            setSelectedShareVideo(null);
+
+            if (remaining <= 0) {
+              // Ye aakhri video thi -> wapas Profile par bhejo
+              // (back button jaisa hi navigation)
+              setAllVideos([]);
+              router.replace({
+                pathname: "../Profile",
+                params: {
+                  userId: profileUserId || user.uid,
+                },
+              });
+              return;
+            }
+
+            const nextIndex = Math.min(
+              Math.max(deletedIndex, 0),
+              remaining - 1
+            );
+
+            // Active video pehle badlo taaki purana player pause ho jaye
+            setActiveVideo(nextIndex);
+
+            setAllVideos(prev =>
+              prev.filter(v => v.id !== videoId)
+            );
+
+            setTimeout(() => {
+              try {
+                flatListRef.current?.scrollToIndex({
+                  index: nextIndex,
+                  animated: false,
+                });
+              } catch (e) {}
+            }, 80);
+
+          } catch (e) {
+
+            console.log("DELETE VIDEO ERROR =", e);
+            Alert.alert("Error", "Video delete nahi ho paya.");
+
+          } finally {
+
+            deletingRef.current = false;
+
+          }
+
+        },
+      },
+    ]
+  );
 
 };
 
@@ -945,6 +1052,10 @@ const videoData = React.useMemo(
   ),
   [allVideos, blockedUsers]
 );
+
+// Latest values callbacks ke liye (stale closure se bachne ke liye)
+const videoDataRef = useRef(videoData);
+videoDataRef.current = videoData;
 
 
 const loadedLikeIdsRef = useRef(new Set());
@@ -1525,6 +1636,7 @@ onPress={() => {
       {item.shares || 0}
     </Text>
   </TouchableOpacity>
+  {auth.currentUser?.uid === item.userId && (
   <TouchableOpacity
     style={styles.iconBox}
     onPress={() => deleteVideo(item.id, item.userId)}
@@ -1532,6 +1644,7 @@ onPress={() => {
     <Ionicons name="trash-outline" size={35} color="#FF4D4D" />
     <Text style={styles.iconText}>Delete</Text>
   </TouchableOpacity>
+  )}
 
 </View>
       {/* Bottom Info */}
@@ -1702,7 +1815,8 @@ activeVideo,
 screenFocused,
 localLikes,
 comments,
-starAnimationVideoId
+starAnimationVideoId,
+currentUserData
 ]);
 
 
@@ -1725,9 +1839,7 @@ starAnimationVideoId
   activeVideo,
   starAnimationVideoId,
 }}
- keyExtractor={(item, i) =>
-  item.id + i
-}
+ keyExtractor={(item) => String(item.id)}
         pagingEnabled
 
 getItemLayout={(data, index) => ({
@@ -2515,8 +2627,9 @@ Video Save
       setShowSharePopup(false);
 
       handleShare(
-        selectedShareVideo.videoUrl,
-        selectedShareVideo.id
+        selectedShareVideo?.videoUrl ||
+          selectedShareVideo?.video,
+        selectedShareVideo?.id
       );
 
     }}
