@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -31,11 +31,15 @@ try {
   console.log("Firebase architecture fallback inside LiveStart.");
 }
 
-import { doc, setDoc, getDoc, collection, addDoc, getDocs, deleteDoc } from 'firebase/firestore';
+import { doc, setDoc, getDoc, collection, getDocs, writeBatch } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 const { width } = Dimensions.get('window');
 const DEFAULT_AVATAR = 'https://avatar.iran.liara.run/public/65';
+
+// Fixed room notice (TopKing rules). Hosts cannot edit or replace it.
+const ROOM_NOTICE =
+  "Welcome to TopKing! Please keep this room safe and respectful. As per TopKing app rules, abusive language, bad talk or any inappropriate behavior is strictly prohibited. Anyone who breaks these rules will have their live shut down.";
 
 export default function LiveStart() {
   const router = useRouter();
@@ -45,7 +49,7 @@ export default function LiveStart() {
   const [roomDescription, setRoomDescription] = useState('');
   const [isUploading, setIsUploading] = useState(false); 
 const [loadingButton, setLoadingButton] = useState(null);
-
+  const startingRef = useRef(false);   // double-tap guard (state async hota hai)
 
   // FIXED & ADDED: MOBILE HARDWARE BACK BUTTON LOGIC WITH MODERN CRASH PROTECTION
   useEffect(() => {
@@ -104,17 +108,36 @@ const [loadingButton, setLoadingButton] = useState(null);
     }
   };
 
+  // Purane chat/audience docs ko 400-400 ke batch me delete karo (1-1 karke nahi).
+  const clearOldSession = async (roomUniqueId) => {
+    try {
+      const [oldChatsSnap, oldAudienceSnap] = await Promise.all([
+        getDocs(collection(db, 'rooms', roomUniqueId, 'chats')),
+        getDocs(collection(db, 'rooms', roomUniqueId, 'audience')),
+      ]);
+      const refs = [...oldChatsSnap.docs, ...oldAudienceSnap.docs].map(d => d.ref);
+      for (let i = 0; i < refs.length; i += 400) {
+        const batch = writeBatch(db);
+        refs.slice(i, i + 400).forEach(r => batch.delete(r));
+        await batch.commit();
+      }
+    } catch (cleanupErr) {
+      console.log("Old session cleanup skipped:", cleanupErr);
+    }
+  };
+
   const handleStartLive = async (roomType = "public") => {
-    setLoadingButton(roomType);
+    if (startingRef.current) return;
     if (!roomTitle.trim()) {
-      setLoadingButton(null);
       Alert.alert("Required", "Please provide a catchy room title first.");
       return;
     }
+    startingRef.current = true;
+    setLoadingButton(roomType);
 
     setIsUploading(true);
     const finalTitle = roomTitle.trim();
-    const finalDescription = roomDescription.trim();
+    const finalDescription = ROOM_NOTICE;
 
     const currentUser = auth?.currentUser;
     const currentUid = currentUser?.uid || "guest_host_" + Math.floor(Math.random() * 10000);
@@ -123,23 +146,26 @@ const [loadingButton, setLoadingButton] = useState(null);
     let hostAvatar = currentUser?.photoURL || DEFAULT_AVATAR;
 
     try {
-      if (db && currentUser?.uid) {
-        const userDocRef = doc(db, "users", currentUser.uid);
-        const userSnapshot = await getDoc(userDocRef);
-        if (userSnapshot.exists()) {
-          const userData = userSnapshot.data();
-          hostName = userData.name || userData.username || hostName;
-          hostAvatar = userData.profileImg || userData.photoURL || hostAvatar;
+      const roomUniqueId = currentUid.includes("guest_host") ? 'room_' + Date.now() : currentUid;
+
+      // Teeno kaam ek saath: user profile read, purana session saaf, cover upload.
+      // (Pehle ye ek ke baad ek chalte the -> live start hone me der lagti thi.)
+      const userTask = (async () => {
+        if (db && currentUser?.uid) {
+          const userSnapshot = await getDoc(doc(db, "users", currentUser.uid));
+          if (userSnapshot.exists()) {
+            const userData = userSnapshot.data();
+            hostName = userData.name || userData.username || hostName;
+            hostAvatar = userData.profileImg || userData.photoURL || hostAvatar;
+          }
         }
-      }
+      })();
+      const cleanupTask = db ? clearOldSession(roomUniqueId) : Promise.resolve();
+      const uploadTask = roomPhoto ? uploadImageAsync(roomPhoto, roomUniqueId) : Promise.resolve(null);
 
-      const roomUniqueId = currentUid.includes("guest_host") ? 'room_' + Date.now() : currentUid; 
+      const [, , cloudUrl] = await Promise.all([userTask, cleanupTask, uploadTask]);
 
-      let finalCover = hostAvatar;
-      if (roomPhoto) {
-        const cloudUrl = await uploadImageAsync(roomPhoto, roomUniqueId);
-        if (cloudUrl) finalCover = cloudUrl;
-      }
+      let finalCover = cloudUrl || hostAvatar;
 
       const initialSeatsObject = {};
       for (let i = 1; i <= 10; i++) {
@@ -175,36 +201,14 @@ const [loadingButton, setLoadingButton] = useState(null);
       };
 
       if (db) {
-        // SAFETY NET: hosts reuse their own uid as roomId, so if a
-        // previous live ended abnormally (app crash / force-quit)
-        // without going through the normal cleanup, old chat/audience
-        // docs could still be sitting under this same roomId. Clear
-        // them out before this fresh room goes live so old messages
-        // never bleed into a new session.
-        try {
-          const [oldChatsSnap, oldAudienceSnap] = await Promise.all([
-            getDocs(collection(db, 'rooms', roomUniqueId, 'chats')),
-            getDocs(collection(db, 'rooms', roomUniqueId, 'audience')),
-          ]);
-          await Promise.all([
-            ...oldChatsSnap.docs.map(d => deleteDoc(d.ref)),
-            ...oldAudienceSnap.docs.map(d => deleteDoc(d.ref)),
-          ]);
-        } catch (cleanupErr) {
-          console.log("Old session cleanup skipped:", cleanupErr);
-        }
-
         await setDoc(doc(db, 'rooms', roomUniqueId), newRoomPayload);
-        await addDoc(collection(db, 'rooms', roomUniqueId, 'chats'), {
-          senderName: "System",
-          message: "Live Audio Chatroom setup successful.",
-          isSystem: true,
-          createdAt: Date.now(),
-        });
       }
 
       setIsUploading(false);
-      
+      startingRef.current = false;
+      // Wapas aane par button par spinner atka na rahe
+      setTimeout(() => setLoadingButton(null), 600);
+
 if (roomType === "private") {
 
   router.push({
@@ -229,10 +233,9 @@ if (roomType === "private") {
 
 }
 
-
-
     } catch (error) {
       setIsUploading(false);
+      startingRef.current = false;
       setLoadingButton(null);
       Alert.alert("Error", "Could not create structural audio engine stream.");
     }
@@ -292,6 +295,18 @@ if (roomType === "private") {
               />
             </View>
           </View>
+
+          <View style={[styles.individualFieldRow, { marginTop: 14 }]}>
+            <View style={styles.labelIndicatorRow}>
+              <View style={styles.yellowIndicatorDot} />
+              <Text style={styles.formSectionLabel}>Room notice (fixed)</Text>
+            </View>
+            <View style={[styles.glassmorphicTextContainer, { paddingVertical: 10 }]}>
+              <Text style={[styles.primaryTextInputElement, { fontSize: 12, lineHeight: 17 }]}>
+                {ROOM_NOTICE}
+              </Text>
+            </View>
+          </View>
         </View>
 
         {/* SUBMIT LAUNCH ACTION BUTTON */}
@@ -338,8 +353,6 @@ if (roomType === "private") {
 
   </TouchableOpacity>
 
-
-
   {/* PRIVATE */}
 
   <TouchableOpacity
@@ -381,7 +394,6 @@ if (roomType === "private") {
   </TouchableOpacity>
 
 </View>
-
 
       </ScrollView>
     </SafeAreaView>
@@ -435,7 +447,6 @@ const styles = StyleSheet.create({
   buttonDisabledState: { opacity: 0.9 },
   buttonTextWrapper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
   launchButtonLabelText: { fontSize: 15, fontWeight: '900', color: '#000000', letterSpacing: 0.3 },
-
 
 roomButtonsContainer: {
   marginTop: 20,

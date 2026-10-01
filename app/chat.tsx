@@ -1,8 +1,14 @@
-import React, {
-  useEffect,
-  useState,
-  useRef,
-} from "react";
+// ============================================================================
+// chat.tsx  -  1-to-1 chat screen
+//
+// Needs one new package:   npx expo install expo-clipboard
+//
+// Firestore rules must allow BOTH users to update these fields on a message:
+//   read, reactions, deletedFor
+// and the sender to update: text, edited, deletedForEveryone, mediaUrl,
+//   thumbnail, replyTo
+// ============================================================================
+import React, { useEffect, useState, useRef, useMemo } from "react";
 
 import {
   View,
@@ -15,16 +21,19 @@ import {
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
-    Keyboard,
-    Alert,
-Modal,
-Pressable,
- Linking,
- ActivityIndicator,
+  Keyboard,
+  Alert,
+  Modal,
+  Pressable,
+  Linking,
+  ActivityIndicator,
+  Animated,
+  PanResponder,
 } from "react-native";
 
 import * as ImagePicker from "expo-image-picker";
 import * as VideoThumbnails from "expo-video-thumbnails";
+import * as Clipboard from "expo-clipboard";
 import { VideoView, useVideoPlayer } from "expo-video";
 import {
   getStorage,
@@ -34,10 +43,7 @@ import {
   deleteObject,
 } from "firebase/storage";
 
-import {
-  Ionicons,
-  MaterialCommunityIcons,
-} from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
 import { auth, db } from "./firebaseConfig";
@@ -47,6 +53,7 @@ import {
   addDoc,
   query,
   orderBy,
+  limit,
   onSnapshot,
   serverTimestamp,
   setDoc,
@@ -55,18 +62,24 @@ import {
   increment,
   deleteDoc,
   updateDoc,
+  deleteField,
+  arrayUnion,
 } from "firebase/firestore";
 
+// ==========================================
+// CONSTANTS
+// ==========================================
+const MAX_MEDIA_MB = 50;
+const PAGE_SIZE = 40; // messages loaded at a time (older ones load on scroll up)
+const SWIPE_TRIGGER = 60; // px to swipe right to reply
+const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
+const DEFAULT_AVATAR =
+  "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 
 // ==========================================
 // CHAT MESSAGE WITH CLICKABLE LINKS
 // ==========================================
-const ChatMessageText = ({
-  text,
-  style,
-  onLinkPress,
-}) => {
-
+const ChatMessageText = ({ text, style, onLinkPress }: any) => {
   // http://, https:// aur www. links detect karega
   const parts = String(text || "").split(
     /(https?:\/\/[^\s]+|www\.[^\s]+)/gi
@@ -74,18 +87,11 @@ const ChatMessageText = ({
 
   return (
     <Text style={style}>
-
       {parts.map((part, index) => {
-
-        const isLink =
-          /^(https?:\/\/|www\.)/i.test(part);
+        const isLink = /^(https?:\/\/|www\.)/i.test(part);
 
         if (!isLink) {
-          return (
-            <Text key={index}>
-              {part}
-            </Text>
-          );
+          return <Text key={index}>{part}</Text>;
         }
 
         return (
@@ -100,9 +106,7 @@ const ChatMessageText = ({
             {part}
           </Text>
         );
-
       })}
-
     </Text>
   );
 };
@@ -110,7 +114,7 @@ const ChatMessageText = ({
 // ==========================================
 // TIME / DATE HELPERS
 // ==========================================
-const formatMessageTime = (createdAt) => {
+const formatMessageTime = (createdAt: any) => {
   if (!createdAt?.toDate) return "";
   const d = createdAt.toDate();
   let hours = d.getHours();
@@ -120,14 +124,14 @@ const formatMessageTime = (createdAt) => {
   return `${hours}:${minutes} ${ampm}`;
 };
 
-const formatDateLabel = (createdAt) => {
+const formatDateLabel = (createdAt: any) => {
   if (!createdAt?.toDate) return "";
   const d = createdAt.toDate();
   const today = new Date();
   const yesterday = new Date();
   yesterday.setDate(today.getDate() - 1);
 
-  const sameDay = (a, b) =>
+  const sameDay = (a: Date, b: Date) =>
     a.getDate() === b.getDate() &&
     a.getMonth() === b.getMonth() &&
     a.getFullYear() === b.getFullYear();
@@ -142,133 +146,55 @@ const formatDateLabel = (createdAt) => {
   });
 };
 
-// Full-screen video player used by the media viewer (mounted only while open)
-const ViewerVideo = ({ url }) => {
-  const player = useVideoPlayer(url, (p) => {
-    p.loop = false;
-    p.play();
-  });
-  return (
-    <VideoView
-      player={player}
-      style={{ width: "100%", height: "80%" }}
-      contentFit="contain"
-      nativeControls
-      allowsFullscreen
-    />
-  );
+const formatLastSeen = (ts: any) => {
+  if (!ts?.toDate) return "";
+  const label = formatDateLabel(ts);
+  const time = formatMessageTime(ts);
+  if (label === "Today") return `last seen today at ${time}`;
+  if (label === "Yesterday") return `last seen yesterday at ${time}`;
+  return `last seen ${label}`;
 };
 
-const MAX_MEDIA_MB = 50;
+// one-line preview of any message (reply quote, reply bar, chat list)
+const getMessagePreview = (m: any) => {
+  if (!m) return "";
+  if (m.deletedForEveryone) return "🚫 This message was deleted";
+  if (m.type === "media") {
+    return m.mediaType === "video" ? "🎥 Video" : "📷 Photo";
+  }
+  if (m.type === "video") return "🎬 Video";
+  if (m.type === "liveInvite") return "🎙 Live Invite";
+  return String(m.text || "");
+};
 
-export default function ChatScreen() {
-  const router = useRouter();
+const isTextMessage = (m: any) => !!m && (!m.type || m.type === "text");
 
-  const params = useLocalSearchParams();
-
-  const userId = Array.isArray(params.userId)
-    ? params.userId[0]
-    : params.userId || "";
-
-  const username = Array.isArray(params.username)
-    ? params.username[0]
-    : params.username || "User";
-
-  const profileImg = Array.isArray(params.profileImg)
-    ? params.profileImg[0]
-    : params.profileImg || "";
-
-  const [message, setMessage] = useState("");
-  const [messages, setMessages] = useState([]);
-
-const [menuVisible, setMenuVisible] = useState(false);
-
-const [selectedMessage, setSelectedMessage] =
-  useState(null);
-
-const [editModal, setEditModal] =
-  useState(false);
-
-const [editText, setEditText] =
-  useState("");
-
-const [userLevel, setUserLevel] = useState(1);
-const flatListRef = useRef(null);
-const [verified, setVerified] = useState(false);
-const [verifiedColor, setVerifiedColor] = useState("white");
-const [showPreview, setShowPreview] = useState(false);
-const [keyboardHeight, setKeyboardHeight] = useState(0);
-const [headerMenuVisible, setHeaderMenuVisible] = useState(false);
-const [isBlocked, setIsBlocked] = useState(false);
-const [blockedByOther, setBlockedByOther] = useState(false);
-const [loadingMessages, setLoadingMessages] = useState(true);
-const [sending, setSending] = useState(false);
-// gallery uploads in progress (shown at the bottom of the chat with a % loader)
-const [uploads, setUploads] = useState([]);
-// full-screen photo/video viewer: { type: "image" | "video", url }
-const [viewer, setViewer] = useState(null);
-
-
+// ================================
+// LEVEL BADGE THEME
+// ================================
 const getLevelTheme = (level = 1) => {
-
   if (level >= 50) {
-    return {
-      bg: "#7B1FFF",
-      border: "#FFD700",
-      text: "#fff",
-      icon: "#FFD700",
-    };
+    return { bg: "#7B1FFF", border: "#FFD700", text: "#fff", icon: "#FFD700" };
   }
-
   if (level >= 40) {
-    return {
-      bg: "#00BFFF",
-      border: "#9EF8FF",
-      text: "#fff",
-      icon: "#fff",
-    };
+    return { bg: "#00BFFF", border: "#9EF8FF", text: "#fff", icon: "#fff" };
   }
-
   if (level >= 30) {
-    return {
-      bg: "#FF0066",
-      border: "#FFB6C1",
-      text: "#fff",
-      icon: "#fff",
-    };
+    return { bg: "#FF0066", border: "#FFB6C1", text: "#fff", icon: "#fff" };
   }
-
   if (level >= 20) {
-    return {
-      bg: "#FFC107",
-      border: "#FFE082",
-      text: "#000",
-      icon: "#fff",
-    };
+    return { bg: "#FFC107", border: "#FFE082", text: "#000", icon: "#fff" };
   }
-
   if (level >= 10) {
-    return {
-      bg: "#BDBDBD",
-      border: "#fff",
-      text: "#fff",
-      icon: "#fff",
-    };
+    return { bg: "#BDBDBD", border: "#fff", text: "#fff", icon: "#fff" };
   }
-
-  return {
-    bg: "#222",
-    border: "#555",
-    text: "#FFD700",
-    icon: "#00E5FF",
-  };
+  return { bg: "#222", border: "#555", text: "#FFD700", icon: "#00E5FF" };
 };
-
 
 // ================================
 // OPEN ANY LINK FROM CHAT
 // ================================
-const openChatLink = async (url) => {
+const openChatLink = async (url: string) => {
   try {
     let cleanUrl = String(url).trim();
 
@@ -289,7 +215,6 @@ const openChatLink = async (url) => {
     }
   } catch (error) {
     console.log("OPEN LINK ERROR =", error);
-
     Alert.alert(
       "Unable to open link",
       "Something went wrong while opening this link."
@@ -297,11 +222,208 @@ const openChatLink = async (url) => {
   }
 };
 
+// Full-screen video player used by the media viewer (mounted only while open)
+const ViewerVideo = ({ url }: any) => {
+  const player = useVideoPlayer(url, (p) => {
+    p.loop = false;
+    p.play();
+  });
+  return (
+    <VideoView
+      player={player}
+      style={{ width: "100%", height: "80%" }}
+      contentFit="contain"
+      nativeControls
+      allowsFullscreen
+    />
+  );
+};
 
-  // NOTE: hooks (useEffect below) must always run in the same order on
-  // every render, so we no longer "return" before they are declared.
-  // Missing user/userId is handled with a guarded render further down,
-  // after every hook has been called.
+// ==========================================
+// SWIPE RIGHT TO REPLY (like WhatsApp)
+// ==========================================
+const SwipeToReply = ({ children, onReply, enabled = true }: any) => {
+  const translateX = useRef(new Animated.Value(0)).current;
+
+  const onReplyRef = useRef(onReply);
+  onReplyRef.current = onReply;
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
+
+  const reset = () =>
+    Animated.spring(translateX, {
+      toValue: 0,
+      useNativeDriver: false,
+      bounciness: 6,
+    }).start();
+
+  const panResponder = useRef(
+    PanResponder.create({
+      // only grab clearly horizontal swipes to the right,
+      // so normal vertical scrolling is never blocked
+      onMoveShouldSetPanResponderCapture: (_e, g) =>
+        enabledRef.current &&
+        g.dx > 12 &&
+        Math.abs(g.dx) > Math.abs(g.dy) * 2,
+      onPanResponderMove: (_e, g) => {
+        translateX.setValue(Math.max(0, Math.min(g.dx, 80)));
+      },
+      onPanResponderRelease: (_e, g) => {
+        if (g.dx >= SWIPE_TRIGGER) onReplyRef.current?.();
+        reset();
+      },
+      onPanResponderTerminate: () => reset(),
+    })
+  ).current;
+
+  const iconOpacity = translateX.interpolate({
+    inputRange: [0, SWIPE_TRIGGER],
+    outputRange: [0, 1],
+    extrapolate: "clamp",
+  });
+
+  return (
+    <View {...panResponder.panHandlers}>
+      <Animated.View
+        pointerEvents="none"
+        style={[styles.swipeIcon, { opacity: iconOpacity }]}
+      >
+        <Ionicons name="arrow-undo" size={20} color="#fff" />
+      </Animated.View>
+
+      <Animated.View style={{ transform: [{ translateX }] }}>
+        {children}
+      </Animated.View>
+    </View>
+  );
+};
+
+// quoted message shown inside a reply bubble
+const ReplyQuote = ({ reply, mine, myUid, otherName, onPress }: any) => (
+  <TouchableOpacity
+    activeOpacity={0.8}
+    onPress={onPress}
+    style={[
+      styles.replyQuote,
+      mine ? styles.replyQuoteMine : styles.replyQuoteOther,
+    ]}
+  >
+    <Text style={styles.replyQuoteName} numberOfLines={1}>
+      {reply?.senderId === myUid ? "You" : otherName}
+    </Text>
+    <Text style={styles.replyQuoteText} numberOfLines={2}>
+      {getMessagePreview(reply)}
+    </Text>
+  </TouchableOpacity>
+);
+
+// emoji reactions pill under a bubble
+const ReactionsPill = ({ reactions, mine, onPress }: any) => {
+  const list = Object.values(reactions || {}).filter(Boolean) as string[];
+  if (!list.length) return null;
+
+  const unique = Array.from(new Set(list));
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={[
+        styles.reactionPill,
+        mine
+          ? { alignSelf: "flex-end", marginRight: 8 }
+          : { alignSelf: "flex-start", marginLeft: 8 },
+      ]}
+    >
+      <Text style={styles.reactionPillEmoji}>{unique.join("")}</Text>
+      {list.length > 1 && (
+        <Text style={styles.reactionPillCount}>{list.length}</Text>
+      )}
+    </Pressable>
+  );
+};
+
+const MenuRow = ({ icon, label, onPress, danger }: any) => (
+  <TouchableOpacity style={styles.menuRow} onPress={onPress}>
+    <Ionicons name={icon} size={20} color={danger ? "#ff5252" : "#fff"} />
+    <Text style={[styles.menuRowText, danger && { color: "#ff5252" }]}>
+      {label}
+    </Text>
+  </TouchableOpacity>
+);
+
+// ==========================================
+// SCREEN
+// ==========================================
+export default function ChatScreen() {
+  const router = useRouter();
+
+  const params = useLocalSearchParams();
+
+  const userId = Array.isArray(params.userId)
+    ? params.userId[0]
+    : params.userId || "";
+
+  const username = Array.isArray(params.username)
+    ? params.username[0]
+    : params.username || "User";
+
+  const profileImg = Array.isArray(params.profileImg)
+    ? params.profileImg[0]
+    : params.profileImg || "";
+
+  // ---------- state ----------
+  const [message, setMessage] = useState("");
+  const [rawMessages, setRawMessages] = useState<any[]>([]);
+  const [msgLimit, setMsgLimit] = useState(PAGE_SIZE);
+  const [deletedAt, setDeletedAt] = useState<any>(null);
+
+  const [menuVisible, setMenuVisible] = useState(false);
+  const [selectedMessage, setSelectedMessage] = useState<any>(null);
+  const [editModal, setEditModal] = useState(false);
+  const [editText, setEditText] = useState("");
+
+  const [replyingTo, setReplyingTo] = useState<any>(null);
+  const [attachVisible, setAttachVisible] = useState(false);
+
+  const [searchMode, setSearchMode] = useState(false);
+  const [searchText, setSearchText] = useState("");
+
+  const [userLevel, setUserLevel] = useState(1);
+  const [verified, setVerified] = useState(false);
+  const [verifiedColor, setVerifiedColor] = useState("white");
+  const [otherOnline, setOtherOnline] = useState(false);
+  const [otherLastSeen, setOtherLastSeen] = useState<any>(null);
+  const [otherTyping, setOtherTyping] = useState(false);
+
+  const [showPreview, setShowPreview] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [headerMenuVisible, setHeaderMenuVisible] = useState(false);
+  const [isBlocked, setIsBlocked] = useState(false);
+  const [blockedByOther, setBlockedByOther] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(true);
+
+  // gallery uploads in progress (shown at the bottom of the chat with a % loader)
+  const [uploads, setUploads] = useState<any[]>([]);
+  // full-screen photo/video viewer: { type: "image" | "video", url }
+  const [viewer, setViewer] = useState<any>(null);
+
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const [newCount, setNewCount] = useState(0);
+  const [highlightId, setHighlightId] = useState<any>(null);
+  const [toast, setToast] = useState("");
+
+  // ---------- refs ----------
+  const flatListRef = useRef<any>(null);
+  const inputRef = useRef<any>(null);
+  const typingTimeoutRef = useRef<any>(null);
+  const isTypingRef = useRef(false);
+  const myDataRef = useRef<any>(null);
+  const atBottomRef = useRef(true);
+  const topIdRef = useRef<any>(null);
+  const toastTimerRef = useRef<any>(null);
+
+  // NOTE: every hook below must run on every render, so the "not logged in"
+  // early returns are placed AFTER all hooks.
   const currentUser = auth.currentUser;
   const currentUid = currentUser?.uid || "";
 
@@ -312,570 +434,672 @@ const openChatLink = async (url) => {
         : `${userId}_${currentUid}`
       : "";
 
+  // ================================
+  // LOAD OTHER USER INFO (wallet level + my own profile, once)
+  // ================================
+  useEffect(() => {
+    if (!currentUid || !userId) return;
 
+    const loadUser = async () => {
+      try {
+        const walletSnap = await getDoc(doc(db, "wallets", userId));
+        if (walletSnap.exists()) {
+          setUserLevel(walletSnap.data().level || 1);
+        }
+      } catch (e) {
+        console.log("WALLET LOAD ERROR =", e);
+      }
 
+      try {
+        const mySnap = await getDoc(doc(db, "users", currentUid));
+        myDataRef.current = mySnap.data() || null;
+      } catch (e) {
+        console.log("MY USER LOAD ERROR =", e);
+      }
+    };
 
-useEffect(() => {
+    loadUser();
+  }, [currentUid, userId]);
 
-  if (!currentUid || !userId) return;
+  // other user: verified badge + online / last seen (live)
+  useEffect(() => {
+    if (!userId) return;
 
-  const loadUser = async () => {
+    return onSnapshot(
+      doc(db, "users", userId),
+      (snap) => {
+        if (!snap.exists()) return;
+        const d: any = snap.data();
+        setVerified(d.verified === true);
+        setVerifiedColor(d.verifiedColor || "white");
+        setOtherOnline(d.online === true);
+        setOtherLastSeen(d.lastSeen || null);
+      },
+      () => {}
+    );
+  }, [userId]);
 
-    // Wallet
-    const walletSnap = await getDoc(
-      doc(db, "wallets", userId)
+  // block status (live, both directions)
+  useEffect(() => {
+    if (!currentUid || !userId) return;
+
+    const u1 = onSnapshot(
+      doc(db, "blockedUsers", currentUid, "users", userId),
+      (s) => setIsBlocked(s.exists()),
+      () => {}
+    );
+    const u2 = onSnapshot(
+      doc(db, "blockedUsers", userId, "users", currentUid),
+      (s) => setBlockedByOther(s.exists()),
+      () => {}
     );
 
-    if (walletSnap.exists()) {
-      setUserLevel(
-        walletSnap.data().level || 1
-      );
-    }
+    return () => {
+      u1();
+      u2();
+    };
+  }, [currentUid, userId]);
 
-    // User
-    const userSnap = await getDoc(
-      doc(db, "users", userId)
+  // "clear chat" marker - messages older than this are hidden for me
+  useEffect(() => {
+    if (!currentUid || !userId) return;
+
+    return onSnapshot(
+      doc(db, "deletedChats", currentUid, "users", userId),
+      (snap) => {
+        const data: any = snap.exists()
+          ? snap.data({ serverTimestamps: "estimate" })
+          : null;
+        setDeletedAt(data?.deletedAt || null);
+      },
+      () => {}
+    );
+  }, [currentUid, userId]);
+
+  // ================================
+  // MESSAGES (live, paginated - only the latest `msgLimit` are loaded)
+  // ================================
+  useEffect(() => {
+    if (!chatId || !currentUid) return;
+
+    const q = query(
+      collection(db, "chats", chatId, "messages"),
+      orderBy("createdAt", "desc"),
+      limit(msgLimit)
     );
 
-    if (userSnap.exists()) {
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const list = snapshot.docs.map((d) => ({
+        id: d.id,
+        // "estimate" => a message that is still sending already has a time
+        ...d.data({ serverTimestamps: "estimate" }),
+        pending: d.metadata.hasPendingWrites,
+      }));
 
-  const userData = userSnap.data();
+      setRawMessages(list);
+      setLoadingMessages(false);
 
-  setVerified(
-    userData.verified === true
-  );
-
-  setVerifiedColor(
-    userData.verifiedColor || "white"
-  );
-
-}
-
-const blockSnap = await getDoc(
-  doc(
-    db,
-    "blockedUsers",
-    currentUid,
-    "users",
-    userId
-  )
-);
-
-setIsBlocked(blockSnap.exists());
-
-const blockedByOtherSnap = await getDoc(
-  doc(
-    db,
-    "blockedUsers",
-    userId,
-    "users",
-    currentUid
-  )
-);
-
-setBlockedByOther(
-  blockedByOtherSnap.exists()
-);
-
-
-
-  };
-
-  loadUser();
-
-}, [userId]);
-
-
-useEffect(() => {
-
-  if (!chatId || !currentUid) return;
-
-  let deletedAt = null;
-  let unsubscribeDeleted = () => {};
-
-  // Watch the "deletedAt" marker separately (once), instead of doing a
-  // getDoc on every single incoming message snapshot - that was causing
-  // extra network round-trips and laggy/flickery message updates.
-  unsubscribeDeleted = onSnapshot(
-    doc(db, "deletedChats", currentUid, "users", userId),
-    (snap) => {
-      deletedAt = snap.exists() ? snap.data().deletedAt : null;
-    }
-  );
-
-  const q = query(
-    collection(db, "chats", chatId, "messages"),
-    orderBy("createdAt", "desc")
-  );
-
-  const unsubscribe = onSnapshot(q, (snapshot) => {
-
-    let list = snapshot.docs.map((d) => ({
-      id: d.id,
-      ...d.data(),
-    }));
-
-    if (deletedAt) {
-      list = list.filter((msg) => {
-        if (!msg.createdAt) return false;
-        return msg.createdAt.toMillis() > deletedAt.toMillis();
+      // Mark incoming messages as read (blue ticks on the sender's side)
+      snapshot.docs.forEach((d) => {
+        const data: any = d.data();
+        if (data.senderId === userId && data.read !== true) {
+          updateDoc(doc(db, "chats", chatId, "messages", d.id), {
+            read: true,
+          }).catch(() => {});
+        }
       });
-    }
-
-    setMessages(list);
-    setLoadingMessages(false);
-
-    // Mark incoming messages from the other user as read (real "seen"
-    // behaviour), so blue-tick status can be shown on our own messages.
-    const unreadIds = snapshot.docs
-      .filter((d) => {
-        const data = d.data();
-        return data.senderId === userId && data.read !== true;
-      })
-      .map((d) => d.id);
-
-    unreadIds.forEach((id) => {
-      updateDoc(
-        doc(db, "chats", chatId, "messages", id),
-        { read: true }
-      ).catch(() => {});
     });
 
-  });
+    return unsubscribe;
+  }, [chatId, currentUid, userId, msgLimit]);
 
-  return () => {
-    unsubscribe();
-    unsubscribeDeleted();
-  };
+  // what is actually shown (clear-chat, delete-for-me and search applied)
+  const messages = useMemo(() => {
+    let list = rawMessages;
 
-}, [chatId, currentUid, userId]);
+    if (deletedAt?.toMillis) {
+      const ms = deletedAt.toMillis();
+      list = list.filter(
+        (m) => m.createdAt?.toMillis && m.createdAt.toMillis() > ms
+      );
+    }
 
-
-
-
-useEffect(() => {
-
-  if (!currentUid || !userId) return;
-
-  const clearNewMessage = async () => {
-
-    await setDoc(
-      doc(
-        db,
-        "userChats",
-        currentUid,
-        "friends",
-        userId
-      ),
-      {
-        hasNewMessage: false,
-        unreadCount: 0,
-      },
-      {
-        merge: true,
-      }
+    list = list.filter(
+      (m) => !(Array.isArray(m.deletedFor) && m.deletedFor.includes(currentUid))
     );
 
-  };
+    const q = searchText.trim().toLowerCase();
+    if (searchMode && q) {
+      list = list.filter(
+        (m) =>
+          !m.deletedForEveryone &&
+          isTextMessage(m) &&
+          String(m.text || "").toLowerCase().includes(q)
+      );
+    }
 
-  clearNewMessage();
+    return list;
+  }, [rawMessages, deletedAt, currentUid, searchMode, searchText]);
 
-}, [currentUid, userId]);
-
-
-// ================================
-// TYPING INDICATOR (real WhatsApp-style "typing...")
-// ================================
-const [otherTyping, setOtherTyping] = useState(false);
-const typingTimeoutRef = useRef(null);
-
-useEffect(() => {
-
-  if (!chatId || !userId) return;
-
-  const unsubscribeTyping = onSnapshot(
-    doc(db, "chats", chatId, "typing", userId),
-    (snap) => {
-      if (snap.exists()) {
-        setOtherTyping(snap.data().isTyping === true);
-      } else {
-        setOtherTyping(false);
+  // are there older messages left to load?
+  const hasMore = useMemo(() => {
+    if (rawMessages.length < msgLimit) return false;
+    if (deletedAt?.toMillis) {
+      const oldest = rawMessages[rawMessages.length - 1];
+      if (
+        oldest?.createdAt?.toMillis &&
+        oldest.createdAt.toMillis() <= deletedAt.toMillis()
+      ) {
+        return false;
       }
     }
-  );
+    return true;
+  }, [rawMessages, msgLimit, deletedAt]);
 
-  return unsubscribeTyping;
+  // new incoming message while scrolled up => badge on the scroll-down button
+  useEffect(() => {
+    const top = messages[0];
+    if (!top) return;
 
-}, [chatId, userId]);
+    if (
+      topIdRef.current &&
+      topIdRef.current !== top.id &&
+      top.senderId !== currentUid &&
+      !atBottomRef.current &&
+      !searchMode
+    ) {
+      setNewCount((c) => c + 1);
+    }
 
-const handleTyping = (text) => {
+    topIdRef.current = top.id;
+  }, [messages, currentUid, searchMode]);
 
-  setMessage(text);
+  // opening the chat clears the unread badge in the chat list
+  useEffect(() => {
+    if (!currentUid || !userId) return;
 
-  if (!chatId || !currentUid) return;
+    setDoc(
+      doc(db, "userChats", currentUid, "friends", userId),
+      { hasNewMessage: false, unreadCount: 0 },
+      { merge: true }
+    ).catch(() => {});
+  }, [currentUid, userId]);
 
-  setDoc(
-    doc(db, "chats", chatId, "typing", currentUid),
-    { isTyping: text.length > 0, updatedAt: serverTimestamp() },
-    { merge: true }
-  ).catch(() => {});
+  // ================================
+  // TYPING INDICATOR
+  // ================================
+  useEffect(() => {
+    if (!chatId || !userId) return;
 
-  if (typingTimeoutRef.current) {
-    clearTimeout(typingTimeoutRef.current);
-  }
+    return onSnapshot(
+      doc(db, "chats", chatId, "typing", userId),
+      (snap) => {
+        setOtherTyping(snap.exists() && snap.data().isTyping === true);
+      },
+      () => {}
+    );
+  }, [chatId, userId]);
 
-  typingTimeoutRef.current = setTimeout(() => {
+  const stopTyping = () => {
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    if (!chatId || !currentUid) return;
+    if (!isTypingRef.current) return;
+
+    isTypingRef.current = false;
     setDoc(
       doc(db, "chats", chatId, "typing", currentUid),
       { isTyping: false },
       { merge: true }
     ).catch(() => {});
-  }, 2000);
-
-};
-
-
-
-
-
-
-useEffect(() => {
-
-  const showListener = Keyboard.addListener(
-    "keyboardDidShow",
-    (e) => {
-
-      setKeyboardHeight(e.endCoordinates.height);
-      setShowPreview(true);
-
-    }
-  );
-
-  const hideListener = Keyboard.addListener(
-    "keyboardDidHide",
-    () => {
-
-      setShowPreview(false);
-      setKeyboardHeight(0);
-
-    }
-  );
-
-  return () => {
-
-    showListener.remove();
-    hideListener.remove();
-
   };
 
-}, []);
+  const handleTyping = (text: string) => {
+    setMessage(text);
 
+    if (!chatId || !currentUid) return;
 
+    if (text.length === 0) {
+      stopTyping();
+      return;
+    }
 
+    // only write when we START typing (not on every keystroke)
+    if (!isTypingRef.current) {
+      isTypingRef.current = true;
+      setDoc(
+        doc(db, "chats", chatId, "typing", currentUid),
+        { isTyping: true, updatedAt: serverTimestamp() },
+        { merge: true }
+      ).catch(() => {});
+    }
 
-  const sendMessage = async () => {
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(stopTyping, 2000);
+  };
 
-if (isBlocked) {
+  // leaving the screen => stop typing + clear timers
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      if (chatId && currentUid) {
+        setDoc(
+          doc(db, "chats", chatId, "typing", currentUid),
+          { isTyping: false },
+          { merge: true }
+        ).catch(() => {});
+      }
+    };
+  }, [chatId, currentUid]);
 
-  Alert.alert(
-    "Blocked",
-    "Please unblock this user first."
-  );
+  // ================================
+  // KEYBOARD
+  // ================================
+  useEffect(() => {
+    const showListener = Keyboard.addListener("keyboardDidShow", (e) => {
+      setKeyboardHeight(e.endCoordinates.height);
+      setShowPreview(true);
+    });
 
-  return;
+    const hideListener = Keyboard.addListener("keyboardDidHide", () => {
+      setShowPreview(false);
+      setKeyboardHeight(0);
+    });
 
-}
+    return () => {
+      showListener.remove();
+      hideListener.remove();
+    };
+  }, []);
 
-if (blockedByOther) {
+  // ================================
+  // SMALL HELPERS
+  // ================================
+  const showToast = (t: string) => {
+    setToast(t);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(""), 1600);
+  };
 
-  Alert.alert(
-    "Blocked",
-    "This user has blocked you."
-  );
+  const getMyData = async () => {
+    if (myDataRef.current) return myDataRef.current;
+    try {
+      const snap = await getDoc(doc(db, "users", currentUid));
+      myDataRef.current = snap.data() || null;
+    } catch (e) {
+      console.log(e);
+    }
+    return myDataRef.current;
+  };
 
-  return;
+  // returns true (and tells the user) if sending is not allowed
+  const guardBlocked = () => {
+    if (isBlocked) {
+      Alert.alert("Blocked", "Please unblock this user first.");
+      return true;
+    }
+    if (blockedByOther) {
+      Alert.alert("Blocked", "This user has blocked you.");
+      return true;
+    }
+    return false;
+  };
 
-}
-
-
-    if (!message.trim() || sending) return;
-
-    const outgoingText = message.trim();
-    setMessage("");
-    setSending(true);
-
-    // Stop the typing indicator immediately once we send
+  // keep the chat-list preview in sync after edit / delete of the last message
+  const syncLastMessage = (text: string) => {
+    if (!currentUid || !userId) return;
     setDoc(
-      doc(db, "chats", chatId, "typing", currentUid),
-      { isTyping: false },
+      doc(db, "userChats", currentUid, "friends", userId),
+      { lastMessage: text },
       { merge: true }
     ).catch(() => {});
+    setDoc(
+      doc(db, "userChats", userId, "friends", currentUid),
+      { lastMessage: text },
+      { merge: true }
+    ).catch(() => {});
+  };
+
+  const scrollToBottom = () => {
+    flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
+    setNewCount(0);
+  };
+
+  // ================================
+  // SEND TEXT MESSAGE
+  // ================================
+  const sendMessage = async () => {
+    if (guardBlocked()) return;
+
+    const outgoingText = message.trim();
+    if (!outgoingText) return;
+
+    const reply = replyingTo;
+
+    // clear the input instantly (real apps never wait for the network)
+    setMessage("");
+    setReplyingTo(null);
+    stopTyping();
+    requestAnimationFrame(() =>
+      flatListRef.current?.scrollToOffset({ offset: 0, animated: true })
+    );
 
     try {
-      const myDoc = await getDoc(
-        doc(db, "users", currentUser.uid)
-      );
+      const myData = await getMyData();
 
-      const myData = myDoc.data();
+      const payload: any = {
+        text: outgoingText,
+        senderId: currentUid,
+        receiverId: userId,
+        read: false,
+        createdAt: serverTimestamp(),
+      };
+      if (reply) payload.replyTo = reply;
 
-      await addDoc(
-        collection(db, "chats", chatId, "messages"),
-        {
-          text: outgoingText,
-          senderId: currentUser.uid,
-          receiverId: userId,
-          read: false,
-          createdAt: serverTimestamp(),
-        }
-      );
+      await addDoc(collection(db, "chats", chatId, "messages"), payload);
 
-   await setDoc(
-  doc(
-    db,
-    "userChats",
-    currentUser.uid,
-    "friends",
-    userId
-  ),
-  {
-    userId,
-    username,
-    profileImg,
-    lastMessage: outgoingText,
-    updatedAt: serverTimestamp(),
-    unreadCount: 0,
-  },
-  { merge: true }
-);
+      await Promise.all([
+        setDoc(
+          doc(db, "userChats", currentUid, "friends", userId),
+          {
+            userId,
+            username,
+            profileImg,
+            lastMessage: outgoingText,
+            updatedAt: serverTimestamp(),
+            unreadCount: 0,
+          },
+          { merge: true }
+        ),
+        setDoc(
+          doc(db, "userChats", userId, "friends", currentUid),
+          {
+            userId: currentUid,
+            username:
+              myData?.username || currentUser?.displayName || "User",
+            profileImg: myData?.profileImg || currentUser?.photoURL || "",
+            lastMessage: outgoingText,
+            hasNewMessage: true,
+            unreadCount: increment(1),
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        ),
+      ]);
 
-
-
-    await setDoc(
-  doc(
-    db,
-    "userChats",
-    userId,
-    "friends",
-    currentUser.uid
-  ),
-  {
-    userId: currentUser.uid,
-    username:
-      myData?.username ||
-      currentUser.displayName ||
-      "User",
-    profileImg:
-      myData?.profileImg ||
-      currentUser.photoURL ||
-      "",
-    lastMessage: outgoingText,
-
-hasNewMessage: true,
-   unreadCount: increment(1),
-
-    updatedAt: serverTimestamp(),
-
-    
-  },
-  { merge: true }
-);
-
-
-      // Best-effort push notification - failure here shouldn't block the
-      // message from having been sent already.
-      try {
-
-  await fetch(
-    "https://topking-backend.onrender.com/send-message-notification",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-  receiverUid: userId,
-  senderUid: currentUser.uid,
-  senderName:
-    myData?.username ||
-    currentUser.displayName ||
-    "User",
-  message: outgoingText,
-}),
-    }
-  );
-
-} catch (e) {
-  console.log(e);
-}
-
-setShowPreview(false);
-Keyboard.dismiss();
-
+      // Best-effort push notification - failure here shouldn't matter
+      fetch("https://topking-backend.onrender.com/send-message-notification", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          receiverUid: userId,
+          senderUid: currentUid,
+          senderName: myData?.username || currentUser?.displayName || "User",
+          message: outgoingText,
+        }),
+      }).catch((e) => console.log(e));
     } catch (err) {
       console.log("SEND ERROR =", err);
       // Message failed - restore the text so the user doesn't lose it
-      setMessage(outgoingText);
-      Alert.alert("Message not sent", "Please check your connection and try again.");
-    } finally {
-      setSending(false);
-      // Jump to the newest message (list is inverted, so index 0 = bottom)
-      requestAnimationFrame(() => {
-        flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
-      });
+      setMessage((prev) => prev || outgoingText);
+      setReplyingTo((prev: any) => prev || reply);
+      Alert.alert(
+        "Message not sent",
+        "Please check your connection and try again."
+      );
     }
   };
 
+  // ================================
+  // MESSAGE POPUP (long press) - tap anywhere outside = close
+  // ================================
+  const openMessageMenu = (item: any) => {
+    Keyboard.dismiss();
+    setSelectedMessage(item);
+    setMenuVisible(true);
+  };
 
+  const closeMenu = () => {
+    setMenuVisible(false);
+    setSelectedMessage(null);
+  };
 
+  const closeEdit = () => {
+    Keyboard.dismiss();
+    setEditModal(false);
+    setSelectedMessage(null);
+    setEditText("");
+  };
 
-// ================================
-// POPUP HELPERS - tapping anywhere outside closes the popup
-// ================================
-const closeMenu = () => {
-  setMenuVisible(false);
-  setSelectedMessage(null);
-};
+  // ---------- reply ----------
+  const startReply = (msg: any) => {
+    if (!msg || msg.deletedForEveryone) return;
 
-const closeEdit = () => {
-  Keyboard.dismiss();
-  setEditModal(false);
-  setSelectedMessage(null);
-};
+    setReplyingTo({
+      id: msg.id,
+      senderId: msg.senderId,
+      text: String(msg.text || "").slice(0, 200),
+      type: msg.type || "text",
+      mediaType: msg.mediaType || null,
+    });
 
-const deleteMessage = async () => {
+    setTimeout(() => inputRef.current?.focus(), 50);
+  };
 
-  const target = selectedMessage;
+  const replyFromMenu = () => {
+    const target = selectedMessage;
+    closeMenu();
+    startReply(target);
+  };
 
-  // close instantly (feels fast), delete in background
-  closeMenu();
+  // ---------- copy ----------
+  const copyMessage = async () => {
+    const text = selectedMessage?.text;
+    closeMenu();
+    if (!text) return;
+    try {
+      await Clipboard.setStringAsync(String(text));
+      showToast("Copied");
+    } catch (e) {
+      console.log(e);
+    }
+  };
 
-  if (!target?.id) return;
+  // ---------- react ----------
+  const reactToMessage = (emoji: string) => {
+    const target = selectedMessage;
+    closeMenu();
+    if (!target?.id || !chatId) return;
 
-  try {
+    const mineNow = target.reactions?.[currentUid];
 
-    await deleteDoc(
-      doc(db, "chats", chatId, "messages", target.id)
-    );
+    updateDoc(doc(db, "chats", chatId, "messages", target.id), {
+      // tapping the same emoji again removes the reaction
+      [`reactions.${currentUid}`]: mineNow === emoji ? deleteField() : emoji,
+    }).catch((e) => console.log("REACT ERROR =", e));
+  };
 
-    // best-effort: also remove the uploaded photo/video file
-    if (target.type === "media") {
-      [target.mediaUrl, target.thumbnail].forEach((u) => {
-        if (!u) return;
-        deleteObject(storageRef(getStorage(), u)).catch(() => {});
+  // ---------- edit ----------
+  const openEdit = () => {
+    if (!selectedMessage) return;
+    setEditText(selectedMessage.text || "");
+    setMenuVisible(false); // keep selectedMessage for the edit modal
+    setEditModal(true);
+  };
+
+  const updateMessage = async () => {
+    const target = selectedMessage;
+    const newText = editText.trim();
+
+    closeEdit();
+
+    if (!target?.id || !newText) return;
+    if (newText === (target.text || "")) return; // nothing changed
+
+    try {
+      await updateDoc(doc(db, "chats", chatId, "messages", target.id), {
+        text: newText,
+        edited: true,
+      });
+
+      if (rawMessages[0]?.id === target.id) syncLastMessage(newText);
+    } catch (e) {
+      console.log(e);
+    }
+  };
+
+  // ---------- delete ----------
+  const deleteForMe = async (target: any) => {
+    try {
+      await updateDoc(doc(db, "chats", chatId, "messages", target.id), {
+        deletedFor: arrayUnion(currentUid),
+      });
+    } catch (e) {
+      console.log(e);
+      Alert.alert("Error", "Could not delete this message.");
+    }
+  };
+
+  const deleteForEveryone = async (target: any) => {
+    try {
+      await updateDoc(doc(db, "chats", chatId, "messages", target.id), {
+        deletedForEveryone: true,
+        text: "",
+        mediaUrl: "",
+        thumbnail: "",
+        replyTo: deleteField(),
+        reactions: deleteField(),
+        edited: deleteField(),
+      });
+
+      // best-effort: also remove the uploaded photo/video file
+      if (target.type === "media") {
+        [target.mediaUrl, target.thumbnail].forEach((u) => {
+          if (!u) return;
+          deleteObject(storageRef(getStorage(), u)).catch(() => {});
+        });
+      }
+
+      if (rawMessages[0]?.id === target.id) {
+        syncLastMessage("🚫 This message was deleted");
+      }
+    } catch (e) {
+      console.log(e);
+      Alert.alert("Error", "Could not delete this message.");
+    }
+  };
+
+  const askDelete = () => {
+    const target = selectedMessage;
+    closeMenu(); // popup closes first, then the choice dialog appears
+
+    if (!target?.id) return;
+
+    const mine = target.senderId === currentUid;
+
+    const buttons: any[] = [
+      { text: "Delete for me", onPress: () => deleteForMe(target) },
+    ];
+
+    if (mine && !target.deletedForEveryone) {
+      buttons.push({
+        text: "Delete for everyone",
+        style: "destructive",
+        onPress: () => deleteForEveryone(target),
       });
     }
 
-  } catch (e) {
-    console.log(e);
-  }
+    buttons.push({ text: "Cancel", style: "cancel" });
 
-};
+    Alert.alert("Delete message?", undefined, buttons);
+  };
 
-
-const updateMessage = async () => {
-
-  const target = selectedMessage;
-  const newText = editText.trim();
-
-  closeEdit();
-
-  if (!target?.id || !newText) return;
-  if (newText === (target.text || "")) return;   // nothing changed
-
-  try {
-
-    await updateDoc(
-      doc(db, "chats", chatId, "messages", target.id),
-      {
-        text: newText,
-        edited: true,
-      }
-    );
-
-  } catch (e) {
-    console.log(e);
-  }
-
-};
-
-
-// ================================
-// SEND PHOTO / VIDEO FROM GALLERY
-// ================================
-const uploadFile = (uri, path, contentType, onProgress) =>
-  new Promise(async (resolve, reject) => {
-    try {
-      const blob = await (await fetch(uri)).blob();
-      const task = uploadBytesResumable(
-        storageRef(getStorage(), path),
-        blob,
-        { contentType }
-      );
-      task.on(
-        "state_changed",
-        (snap) => {
-          if (onProgress && snap.totalBytes) {
-            onProgress(snap.bytesTransferred / snap.totalBytes);
-          }
-        },
-        reject,
-        async () => {
-          try {
-            resolve(await getDownloadURL(task.snapshot.ref));
-          } catch (e) {
-            reject(e);
-          }
-        }
-      );
-    } catch (e) {
-      reject(e);
-    }
-  });
-
-const sendOneMedia = async (asset) => {
-
-  const isVideo = asset.type === "video";
-  const localId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-
-  setUploads((prev) => [
-    { id: localId, asset, isVideo, progress: 0, failed: false },
-    ...prev,
-  ]);
-
-  const setProgress = (p) =>
-    setUploads((prev) =>
-      prev.map((u) => (u.id === localId ? { ...u, progress: p } : u))
-    );
-
-  try {
-
-    const extFromUri = (asset.uri.split(".").pop() || "").split("?")[0].toLowerCase();
-    const ext = extFromUri && extFromUri.length <= 5 ? extFromUri : isVideo ? "mp4" : "jpg";
-    const contentType =
-      asset.mimeType || (isVideo ? `video/${ext}` : `image/${ext === "jpg" ? "jpeg" : ext}`);
-    const base = `chatMedia/${chatId}/${currentUid}_${localId}`;
-
-    // small thumbnail for videos (uploaded in parallel-ish, tiny file)
-    let thumbUrl = "";
-    if (isVideo) {
+  // ================================
+  // SEND PHOTO / VIDEO (gallery or camera)
+  // ================================
+  const uploadFile = (
+    uri: string,
+    path: string,
+    contentType: string,
+    onProgress?: (p: number) => void
+  ) =>
+    new Promise<string>(async (resolve, reject) => {
       try {
-        const t = await VideoThumbnails.getThumbnailAsync(asset.uri, { time: 500 });
-        thumbUrl = await uploadFile(t.uri, `${base}_thumb.jpg`, "image/jpeg");
+        const blob = await (await fetch(uri)).blob();
+        const task = uploadBytesResumable(storageRef(getStorage(), path), blob, {
+          contentType,
+        });
+        task.on(
+          "state_changed",
+          (snap) => {
+            if (onProgress && snap.totalBytes) {
+              onProgress(snap.bytesTransferred / snap.totalBytes);
+            }
+          },
+          reject,
+          async () => {
+            try {
+              resolve(await getDownloadURL(task.snapshot.ref));
+            } catch (e) {
+              reject(e);
+            }
+          }
+        );
       } catch (e) {
-        console.log("THUMB ERROR =", e);
+        reject(e);
       }
-    }
+    });
 
-    const mediaUrl = await uploadFile(
-      asset.uri,
-      `${base}.${ext}`,
-      contentType,
-      setProgress
-    );
+  const sendOneMedia = async (asset: any) => {
+    const isVideo = asset.type === "video";
+    const localId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
-    await addDoc(
-      collection(db, "chats", chatId, "messages"),
-      {
+    setUploads((prev) => [
+      { id: localId, asset, isVideo, progress: 0, failed: false },
+      ...prev,
+    ]);
+
+    const setProgress = (p: number) =>
+      setUploads((prev) =>
+        prev.map((u) => (u.id === localId ? { ...u, progress: p } : u))
+      );
+
+    try {
+      const extFromUri = (asset.uri.split(".").pop() || "")
+        .split("?")[0]
+        .toLowerCase();
+      const ext =
+        extFromUri && extFromUri.length <= 5
+          ? extFromUri
+          : isVideo
+          ? "mp4"
+          : "jpg";
+      const contentType =
+        asset.mimeType ||
+        (isVideo ? `video/${ext}` : `image/${ext === "jpg" ? "jpeg" : ext}`);
+      const base = `chatMedia/${chatId}/${currentUid}_${localId}`;
+
+      // small thumbnail for videos
+      let thumbUrl = "";
+      if (isVideo) {
+        try {
+          const t = await VideoThumbnails.getThumbnailAsync(asset.uri, {
+            time: 500,
+          });
+          thumbUrl = await uploadFile(t.uri, `${base}_thumb.jpg`, "image/jpeg");
+        } catch (e) {
+          console.log("THUMB ERROR =", e);
+        }
+      }
+
+      const mediaUrl = await uploadFile(
+        asset.uri,
+        `${base}.${ext}`,
+        contentType,
+        setProgress
+      );
+
+      await addDoc(collection(db, "chats", chatId, "messages"), {
         type: "media",
         mediaType: isVideo ? "video" : "image",
         mediaUrl,
@@ -886,87 +1110,113 @@ const sendOneMedia = async (asset) => {
         receiverId: userId,
         read: false,
         createdAt: serverTimestamp(),
+      });
+
+      // chat list preview + push notification (same as text messages)
+      const label = isVideo ? "🎥 Video" : "📷 Photo";
+      const myData = await getMyData();
+
+      await Promise.all([
+        setDoc(
+          doc(db, "userChats", currentUid, "friends", userId),
+          {
+            userId,
+            username,
+            profileImg,
+            lastMessage: label,
+            updatedAt: serverTimestamp(),
+            unreadCount: 0,
+          },
+          { merge: true }
+        ),
+        setDoc(
+          doc(db, "userChats", userId, "friends", currentUid),
+          {
+            userId: currentUid,
+            username: myData?.username || currentUser?.displayName || "User",
+            profileImg: myData?.profileImg || currentUser?.photoURL || "",
+            lastMessage: label,
+            hasNewMessage: true,
+            unreadCount: increment(1),
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        ),
+      ]);
+
+      fetch("https://topking-backend.onrender.com/send-message-notification", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          receiverUid: userId,
+          senderUid: currentUid,
+          senderName: myData?.username || currentUser?.displayName || "User",
+          message: label,
+        }),
+      }).catch(() => {});
+
+      setUploads((prev) => prev.filter((u) => u.id !== localId));
+    } catch (err) {
+      console.log("MEDIA SEND ERROR =", err);
+      setUploads((prev) =>
+        prev.map((u) => (u.id === localId ? { ...u, failed: true } : u))
+      );
+    }
+  };
+
+  const pickAndSendMedia = async () => {
+    setAttachVisible(false);
+    if (guardBlocked()) return;
+
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images", "videos"],
+        allowsMultipleSelection: true,
+        selectionLimit: 5,
+        quality: 0.8,
+      });
+
+      if (result.canceled || !result.assets?.length) return;
+
+      result.assets.forEach((asset) => {
+        if (asset.fileSize && asset.fileSize > MAX_MEDIA_MB * 1024 * 1024) {
+          Alert.alert(
+            "File too large",
+            `Please choose a file smaller than ${MAX_MEDIA_MB} MB.`
+          );
+          return;
+        }
+        sendOneMedia(asset);
+      });
+    } catch (e) {
+      console.log("PICK MEDIA ERROR =", e);
+      Alert.alert("Error", "Could not open gallery.");
+    }
+  };
+
+  const takeAndSendMedia = async () => {
+    setAttachVisible(false);
+    if (guardBlocked()) return;
+
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert(
+          "Permission needed",
+          "Please allow camera access in your phone settings."
+        );
+        return;
       }
-    );
 
-    // chat list preview + push notification (same as text messages)
-    const label = isVideo ? "🎥 Video" : "📷 Photo";
-    const myData = (await getDoc(doc(db, "users", currentUid))).data();
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images", "videos"],
+        quality: 0.8,
+        videoMaxDuration: 60,
+      });
 
-    await Promise.all([
-      setDoc(
-        doc(db, "userChats", currentUid, "friends", userId),
-        {
-          userId,
-          username,
-          profileImg,
-          lastMessage: label,
-          updatedAt: serverTimestamp(),
-          unreadCount: 0,
-        },
-        { merge: true }
-      ),
-      setDoc(
-        doc(db, "userChats", userId, "friends", currentUid),
-        {
-          userId: currentUid,
-          username: myData?.username || currentUser?.displayName || "User",
-          profileImg: myData?.profileImg || currentUser?.photoURL || "",
-          lastMessage: label,
-          hasNewMessage: true,
-          unreadCount: increment(1),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      ),
-    ]);
+      if (result.canceled || !result.assets?.length) return;
 
-    fetch("https://topking-backend.onrender.com/send-message-notification", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        receiverUid: userId,
-        senderUid: currentUid,
-        senderName: myData?.username || currentUser?.displayName || "User",
-        message: label,
-      }),
-    }).catch(() => {});
-
-    setUploads((prev) => prev.filter((u) => u.id !== localId));
-
-  } catch (err) {
-    console.log("MEDIA SEND ERROR =", err);
-    setUploads((prev) =>
-      prev.map((u) => (u.id === localId ? { ...u, failed: true } : u))
-    );
-  }
-};
-
-const pickAndSendMedia = async () => {
-
-  if (isBlocked) {
-    Alert.alert("Blocked", "Please unblock this user first.");
-    return;
-  }
-
-  if (blockedByOther) {
-    Alert.alert("Blocked", "This user has blocked you.");
-    return;
-  }
-
-  try {
-
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["images", "videos"],
-      allowsMultipleSelection: true,
-      selectionLimit: 5,
-      quality: 0.8,
-    });
-
-    if (result.canceled || !result.assets?.length) return;
-
-    result.assets.forEach((asset) => {
-
+      const asset = result.assets[0];
       if (asset.fileSize && asset.fileSize > MAX_MEDIA_MB * 1024 * 1024) {
         Alert.alert(
           "File too large",
@@ -974,551 +1224,442 @@ const pickAndSendMedia = async () => {
         );
         return;
       }
-
       sendOneMedia(asset);
+    } catch (e) {
+      console.log("CAMERA ERROR =", e);
+      Alert.alert("Error", "Could not open camera.");
+    }
+  };
 
-    });
+  // pending uploads shown at the bottom of the (inverted) list
+  const renderUploads = () =>
+    uploads.length === 0 ? null : (
+      <View>
+        {uploads.map((u) => (
+          <View key={u.id} style={[styles.row, styles.myRow]}>
+            <TouchableOpacity
+              activeOpacity={u.failed ? 0.7 : 1}
+              onPress={() => {
+                if (!u.failed) return;
+                setUploads((prev) => prev.filter((x) => x.id !== u.id));
+                sendOneMedia(u.asset); // retry
+              }}
+              style={styles.mediaBubble}
+            >
+              <Image source={{ uri: u.asset.uri }} style={styles.mediaImg} />
+              <View style={styles.mediaUploadOverlay}>
+                {u.failed ? (
+                  <>
+                    <Ionicons name="refresh" size={30} color="#fff" />
+                    <Text style={styles.mediaUploadText}>Tap to retry</Text>
+                  </>
+                ) : (
+                  <>
+                    <ActivityIndicator color="#fff" />
+                    <Text style={styles.mediaUploadText}>
+                      {Math.round(u.progress * 100)}%
+                    </Text>
+                  </>
+                )}
+              </View>
+            </TouchableOpacity>
+          </View>
+        ))}
+      </View>
+    );
 
-  } catch (e) {
-    console.log("PICK MEDIA ERROR =", e);
-    Alert.alert("Error", "Could not open gallery.");
-  }
+  // ================================
+  // BLOCK / UNBLOCK / CLEAR CHAT / SEARCH
+  // ================================
+  const blockUser = () => {
+    setHeaderMenuVisible(false);
 
-};
-
-// pending uploads shown at the bottom of the (inverted) list
-const renderUploads = () =>
-  uploads.length === 0 ? null : (
-    <View>
-      {uploads.map((u) => (
-        <View key={u.id} style={[styles.row, styles.myRow]}>
-          <TouchableOpacity
-            activeOpacity={u.failed ? 0.7 : 1}
-            onPress={() => {
-              if (!u.failed) return;
-              setUploads((prev) => prev.filter((x) => x.id !== u.id));
-              sendOneMedia(u.asset);      // retry
-            }}
-            style={styles.mediaBubble}
-          >
-            <Image source={{ uri: u.asset.uri }} style={styles.mediaImg} />
-            <View style={styles.mediaUploadOverlay}>
-              {u.failed ? (
-                <>
-                  <Ionicons name="refresh" size={30} color="#fff" />
-                  <Text style={styles.mediaUploadText}>Tap to retry</Text>
-                </>
-              ) : (
-                <>
-                  <ActivityIndicator color="#fff" />
-                  <Text style={styles.mediaUploadText}>
-                    {Math.round(u.progress * 100)}%
-                  </Text>
-                </>
-              )}
-            </View>
-          </TouchableOpacity>
-        </View>
-      ))}
-    </View>
-  );
-
-
-
-
-const blockUser = async () => {
-  try {
-
-    Alert.alert(
-      "Block User",
-      `Do you want to block ${username}?`,
-      [
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-        {
-          text: "Block",
-          style: "destructive",
-          onPress: async () => {
-
+    Alert.alert("Block User", `Do you want to block ${username}?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Block",
+        style: "destructive",
+        onPress: async () => {
+          try {
             await setDoc(
-              doc(
-                db,
-                "blockedUsers",
-                currentUid,
-                "users",
-                userId
-              ),
+              doc(db, "blockedUsers", currentUid, "users", userId),
               {
-                userId: userId,
-                username: username,
-                profileImg: profileImg,
+                userId,
+                username,
+                profileImg,
                 blockedAt: serverTimestamp(),
               }
             );
+            setIsBlocked(true);
+            showToast("User blocked");
+          } catch (e) {
+            console.log(e);
+            Alert.alert("Error", "Could not block this user.");
+          }
+        },
+      },
+    ]);
+  };
 
-            setHeaderMenuVisible(false);
-setIsBlocked(true);
-            Alert.alert(
-              "Success",
-              "User Blocked Successfully"
-            );
+  const unblockUser = async () => {
+    setHeaderMenuVisible(false);
 
+    try {
+      await deleteDoc(doc(db, "blockedUsers", currentUid, "users", userId));
+      setIsBlocked(false);
+      showToast("User unblocked");
+    } catch (e) {
+      console.log(e);
+      Alert.alert("Error", "Could not unblock this user.");
+    }
+  };
+
+  const clearChat = () => {
+    setHeaderMenuVisible(false);
+
+    Alert.alert(
+      "Clear chat?",
+      "All messages will be removed from your side. The other person will still see them.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Clear",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await setDoc(
+                doc(db, "deletedChats", currentUid, "users", userId),
+                { deletedAt: serverTimestamp() },
+                { merge: true }
+              );
+              setDoc(
+                doc(db, "userChats", currentUid, "friends", userId),
+                { lastMessage: "" },
+                { merge: true }
+              ).catch(() => {});
+              showToast("Chat cleared");
+            } catch (e) {
+              console.log(e);
+              Alert.alert("Error", "Could not clear the chat.");
+            }
           },
         },
       ]
     );
+  };
 
-  } catch (e) {
-    console.log(e);
-  }
-};
-
-
-
-const unblockUser = async () => {
-
-  try {
-
-    await deleteDoc(
-      doc(
-        db,
-        "blockedUsers",
-        currentUid,
-        "users",
-        userId
-      )
-    );
-
-    setIsBlocked(false);
-
+  const openSearch = () => {
     setHeaderMenuVisible(false);
+    setSearchText("");
+    setSearchMode(true);
+  };
 
-    Alert.alert(
-      "Success",
-      "User Unblocked"
-    );
+  const closeSearch = () => {
+    Keyboard.dismiss();
+    setSearchMode(false);
+    setSearchText("");
+  };
 
-  } catch (e) {
+  // ================================
+  // SCROLL HELPERS
+  // ================================
+  const handleScroll = (e: any) => {
+    const y = e.nativeEvent.contentOffset.y;
+    const away = y > 250; // inverted list: offset 0 = newest message
 
-    console.log(e);
+    atBottomRef.current = !away;
+    setShowScrollBtn((prev) => (prev === away ? prev : away));
+    if (!away) setNewCount(0);
+  };
 
-  }
+  const scrollToMessage = (id: string) => {
+    const idx = messages.findIndex((m) => m.id === id);
 
-};
-
-
-
-
- const renderItem = ({ item, index }) => {
-
-  const mine =
-    item?.senderId === currentUser.uid;
-
-  // messages are ordered newest -> oldest; the "next" array entry is
-  // actually the older neighbour because the list is rendered inverted.
-  const olderNeighbour = messages[index + 1];
-
-  const showDateSeparator =
-    !!item.createdAt &&
-    (!olderNeighbour?.createdAt ||
-      formatDateLabel(olderNeighbour.createdAt) !==
-        formatDateLabel(item.createdAt));
-
-  const DateSeparator = showDateSeparator ? (
-    <View style={styles.dateSeparatorWrap}>
-      <Text style={styles.dateSeparatorText}>
-        {formatDateLabel(item.createdAt)}
-      </Text>
-    </View>
-  ) : null;
-
-
-if (item.type === "liveInvite") {
-
-  return (
-    <>
-    {DateSeparator}
-    <View
-      style={[
-        styles.row,
-        mine
-          ? styles.myRow
-          : styles.otherRow,
-      ]}
-    >
-
-      <TouchableOpacity
-
-delayLongPress={400}
-
-  onLongPress={() => {
-
-    if (item.senderId !== currentUser.uid)
+    if (idx < 0) {
+      Alert.alert(
+        "Message not found",
+        "This message is too old or was deleted."
+      );
       return;
+    }
 
-    setSelectedMessage(item);
+    flatListRef.current?.scrollToIndex({
+      index: idx,
+      animated: true,
+      viewPosition: 0.5,
+    });
 
-    setMenuVisible(true);
+    setHighlightId(id);
+    setTimeout(() => setHighlightId(null), 1500);
+  };
 
-  }}
+  // ================================
+  // RENDER ONE MESSAGE
+  // ================================
+  const renderItem = ({ item, index }: any) => {
+    const mine = item?.senderId === currentUid;
 
-        style={{
-          backgroundColor:"#1e1e1e",
-          padding:15,
-          borderRadius:15,
-          width:220,
-        }}
+    // messages are ordered newest -> oldest; the "next" array entry is
+    // actually the older neighbour because the list is rendered inverted.
+    const olderNeighbour = messages[index + 1];
 
-        onPress={() => {
+    const showDateSeparator =
+      !!item.createdAt &&
+      (!olderNeighbour?.createdAt ||
+        formatDateLabel(olderNeighbour.createdAt) !==
+          formatDateLabel(item.createdAt));
 
-          router.push({
-            pathname:"/LiveRoom",
-            params:{
-              id:item.roomId
-            }
-          });
+    const DateSeparator = showDateSeparator ? (
+      <View style={styles.dateSeparatorWrap}>
+        <Text style={styles.dateSeparatorText}>
+          {formatDateLabel(item.createdAt)}
+        </Text>
+      </View>
+    ) : null;
 
-        }}
-      >
+    const isDeleted = item.deletedForEveryone === true;
+    const highlighted = highlightId === item.id;
+    const hasReactions =
+      !!item.reactions && Object.values(item.reactions).some(Boolean);
 
-        <Text
-          style={{
-            color:"#fff",
-            fontWeight:"bold",
-            fontSize:16,
+    const onLongPress = () => openMessageMenu(item);
+
+    // ---------- the bubble itself ----------
+    let content: any = null;
+
+    if (isDeleted) {
+      content = (
+        <TouchableOpacity
+          activeOpacity={0.9}
+          delayLongPress={350}
+          onLongPress={onLongPress}
+          style={[
+            styles.messageBox,
+            mine ? styles.myMessage : styles.otherMessage,
+            styles.deletedBubble,
+          ]}
+        >
+          <Ionicons name="ban" size={14} color="#cfcfcf" />
+          <Text style={styles.deletedText}>
+            {mine ? "You deleted this message" : "This message was deleted"}
+          </Text>
+        </TouchableOpacity>
+      );
+    } else if (item.type === "liveInvite") {
+      content = (
+        <TouchableOpacity
+          delayLongPress={350}
+          onLongPress={onLongPress}
+          style={[styles.liveInviteBox, highlighted && styles.highlight]}
+          onPress={() => {
+            router.push({
+              pathname: "/LiveRoom",
+              params: { id: item.roomId },
+            });
           }}
         >
-          🎙 Live Invite
-        </Text>
+          <Text style={styles.liveInviteTitle}>🎙 Live Invite</Text>
+          <Text style={styles.liveInviteSub}>Join Live Room</Text>
+        </TouchableOpacity>
+      );
+    } else if (item.type === "media") {
+      const isVideoMsg = item.mediaType === "video";
 
-        <Text
-          style={{
-            color:"#ccc",
-            marginTop:5,
+      content = (
+        <TouchableOpacity
+          activeOpacity={0.9}
+          delayLongPress={350}
+          style={[styles.mediaBubble, highlighted && styles.highlight]}
+          onPress={() =>
+            setViewer({
+              type: isVideoMsg ? "video" : "image",
+              url: item.mediaUrl,
+            })
+          }
+          onLongPress={onLongPress}
+        >
+          <Image
+            source={{
+              uri: isVideoMsg ? item.thumbnail || undefined : item.mediaUrl,
+            }}
+            style={styles.mediaImg}
+          />
+
+          {isVideoMsg && (
+            <Ionicons
+              name="play-circle"
+              size={50}
+              color="#fff"
+              style={styles.mediaPlayIcon}
+            />
+          )}
+
+          <View style={styles.mediaMeta}>
+            <Text style={styles.mediaTime}>
+              {formatMessageTime(item.createdAt)}
+            </Text>
+            {mine && (
+              <Ionicons
+                name={
+                  item.pending
+                    ? "time-outline"
+                    : item.read
+                    ? "checkmark-done"
+                    : "checkmark"
+                }
+                size={14}
+                color={item.read ? "#4DA6FF" : "#fff"}
+                style={{ marginLeft: 4 }}
+              />
+            )}
+          </View>
+        </TouchableOpacity>
+      );
+    } else if (item.type === "video") {
+      content = (
+        <TouchableOpacity
+          delayLongPress={350}
+          onLongPress={onLongPress}
+          style={highlighted && styles.highlight}
+          onPress={() => {
+            const videoArray = [
+              {
+                id: item.videoId,
+                videoUrl: item.videoUrl || item.video,
+                video: item.video,
+                thumbnail: item.thumbnail,
+                profile: item.profile,
+                username: item.username,
+                caption: item.caption,
+                userId: item.userId,
+                likes: item.likes || 0,
+                commentsCount: item.commentsCount || 0,
+                shares: item.shares || 0,
+                views: item.views || 0,
+              },
+            ];
+
+            router.push({
+              pathname: "/allvideo",
+              params: {
+                videos: JSON.stringify(videoArray),
+                index: 0,
+                userId: userId,
+                from: "chat",
+              },
+            });
           }}
         >
-          Join Live Room
-        </Text>
-
-      </TouchableOpacity>
-
-    </View>
-    </>
-  );
-}
-
-
-
-
-if (item.type === "media") {
-
-  const isVideoMsg = item.mediaType === "video";
-
-  return (
-    <>
-    {DateSeparator}
-    <View
-      style={[
-        styles.row,
-        mine ? styles.myRow : styles.otherRow,
-      ]}
-    >
-
-      {!mine && (
-        <Image
-          source={{
-            uri:
-              profileImg ||
-              "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
-          }}
-          style={styles.chatAvatar}
-        />
-      )}
-
-      <TouchableOpacity
-        activeOpacity={0.9}
-        delayLongPress={400}
-        style={styles.mediaBubble}
-        onPress={() =>
-          setViewer({
-            type: isVideoMsg ? "video" : "image",
-            url: item.mediaUrl,
-          })
-        }
-        onLongPress={() => {
-          if (!mine) return;
-          setSelectedMessage(item);
-          setMenuVisible(true);
-        }}
-      >
-
-        <Image
-          source={{
-            uri: isVideoMsg ? item.thumbnail || undefined : item.mediaUrl,
-          }}
-          style={styles.mediaImg}
-        />
-
-        {isVideoMsg && (
+          <Image
+            source={{ uri: item.thumbnail }}
+            style={styles.videoThumbnail}
+          />
           <Ionicons
             name="play-circle"
             size={50}
             color="#fff"
-            style={styles.mediaPlayIcon}
+            style={styles.playIcon}
           />
-        )}
-
-        <View style={styles.mediaMeta}>
-          <Text style={styles.mediaTime}>
-            {formatMessageTime(item.createdAt)}
-          </Text>
-          {mine && (
-            <Ionicons
-              name={item.read ? "checkmark-done" : "checkmark"}
-              size={14}
-              color={item.read ? "#4DA6FF" : "#fff"}
-              style={{ marginLeft: 4 }}
+        </TouchableOpacity>
+      );
+    } else {
+      // plain text message
+      content = (
+        <TouchableOpacity
+          activeOpacity={0.9}
+          delayLongPress={350}
+          onLongPress={onLongPress}
+          style={[
+            styles.messageBox,
+            mine ? styles.myMessage : styles.otherMessage,
+            highlighted && styles.highlight,
+          ]}
+        >
+          {!!item.replyTo && (
+            <ReplyQuote
+              reply={item.replyTo}
+              mine={mine}
+              myUid={currentUid}
+              otherName={String(username)}
+              onPress={() => scrollToMessage(item.replyTo.id)}
             />
           )}
-        </View>
 
-      </TouchableOpacity>
-
-    </View>
-    </>
-  );
-}
-
-
-  return (
-    <>
-    {DateSeparator}
-    <View
-      style={[
-        styles.row,
-        mine
-          ? styles.myRow
-          : styles.otherRow,
-      ]}
-    >
-      {!mine && (
-
-
-        <Image
-          source={{
-            uri:
-              profileImg ||
-              "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
-          }}
-          style={styles.chatAvatar}
-        />
-
-
-
-      )}
-
-
-
-
-
-<TouchableOpacity
-
-  delayLongPress={400}
-
- onLongPress={() => {
-
-  if (item.senderId !== currentUser.uid)
-    return;
-
-  setSelectedMessage(item);
-
-  if (item.type === "video") {
-    setEditText("");
-  } else if (item.type === "liveInvite") {
-    setEditText("");
-  } else {
-    setEditText(item.text || "");
-  }
-
-  setMenuVisible(true);
-
-}}
-
-  style={[
-    styles.messageBox,
-
-
-
-    item.type !== "video" &&
-      (mine
-        ? styles.myMessage
-        : styles.otherMessage),
-
-    item.type === "video" && {
-      backgroundColor: "transparent",
-      padding: 0,
-    },
-  ]}
->
-    
-
-  {item.type === "video" ? (
-
-    <TouchableOpacity
-
-
-delayLongPress={400}
-
- onLongPress={() => {
-
-   if (item.senderId !== currentUser.uid)
-     return;
-
-   setSelectedMessage(item);
-
-   setMenuVisible(true);
-
- }}
-
-     onPress={() => {
-
-const videoArray = [{
-  id: item.videoId,
-
-  videoUrl:
-    item.videoUrl || item.video,
-
-  video:
-    item.video,
-
-  thumbnail:
-    item.thumbnail,
-
-  profile:
-    item.profile,
-
-  username:
-    item.username,
-
-  caption:
-    item.caption,
-
-  userId:
-    item.userId,
-
-  likes:
-    item.likes || 0,
-
-  commentsCount:
-    item.commentsCount || 0,
-
-  shares:
-    item.shares || 0,
-
-  views:
-    item.views || 0,
-}];
-
-router.push({
-  pathname: "/allvideo",
-  params: {
-    videos: JSON.stringify(videoArray),
-    index: 0,
-    userId: userId,
-    from: "chat",
-  },
-});
-
-}}
-
-    >
-
-      <Image
-        source={{
-          uri: item.thumbnail,
-        }}
-        style={styles.videoThumbnail}
-      />
-
-      <Ionicons
-        name="play-circle"
-        size={50}
-        color="#fff"
-        style={styles.playIcon}
-      />
-
-    </TouchableOpacity>
-
-  ) : (
-
-  <ChatMessageText
-    text={String(item?.text || "")}
-    style={styles.messageText}
-    onLinkPress={openChatLink}
-  />
-
-)}
-
-{item.type !== "video" && (
-
-<View
-  style={{
-    flexDirection: "row",
-    alignItems: "center",
-    alignSelf: "flex-end",
-    marginTop: 3,
-  }}
->
-
-  {item.edited && (
-    <Text
-      style={{
-        color: "#cfcfcf",
-        fontSize: 10,
-        marginRight: 5,
-      }}
-    >
-      edited
-    </Text>
-  )}
-
-  <Text
-    style={{
-      color: "#dcdcdc",
-      fontSize: 10,
-    }}
-  >
-    {formatMessageTime(item.createdAt)}
-  </Text>
-
-  {mine && (
-    <Ionicons
-      name={item.read ? "checkmark-done" : "checkmark"}
-      size={14}
-      color={item.read ? "#4DA6FF" : "#dcdcdc"}
-      style={{ marginLeft: 4 }}
-    />
-  )}
-
-</View>
-
-)}
-
-
-</TouchableOpacity>
-
-
-</View>
-    </>
-  );
-};
+          <ChatMessageText
+            text={String(item?.text || "")}
+            style={styles.messageText}
+            onLinkPress={openChatLink}
+          />
+
+          <View style={styles.metaRow}>
+            {item.edited && <Text style={styles.editedText}>edited</Text>}
+
+            <Text style={styles.timeText}>
+              {formatMessageTime(item.createdAt)}
+            </Text>
+
+            {mine && (
+              <Ionicons
+                name={
+                  item.pending
+                    ? "time-outline"
+                    : item.read
+                    ? "checkmark-done"
+                    : "checkmark"
+                }
+                size={14}
+                color={item.read ? "#4DA6FF" : "#dcdcdc"}
+                style={{ marginLeft: 4 }}
+              />
+            )}
+          </View>
+        </TouchableOpacity>
+      );
+    }
+
+    return (
+      <>
+        {DateSeparator}
+
+        <SwipeToReply enabled={!isDeleted} onReply={() => startReply(item)}>
+          <View
+            style={[
+              styles.row,
+              mine ? styles.myRow : styles.otherRow,
+              hasReactions && { marginBottom: 12 },
+            ]}
+          >
+            {!mine && (
+              <Image
+                source={{ uri: profileImg || DEFAULT_AVATAR }}
+                style={styles.chatAvatar}
+              />
+            )}
+
+            <View
+              style={[
+                styles.bubbleColumn,
+                { alignItems: mine ? "flex-end" : "flex-start" },
+              ]}
+            >
+              {content}
+
+              {!isDeleted && (
+                <ReactionsPill
+                  reactions={item.reactions}
+                  mine={mine}
+                  onPress={() => openMessageMenu(item)}
+                />
+              )}
+            </View>
+          </View>
+        </SwipeToReply>
+      </>
+    );
+  };
 
   // These checks run after every hook above has already been called on
-  // every render, so they no longer break the Rules of Hooks (previously
-  // they sat above the useEffects, which caused React to sometimes see a
-  // different number of hooks between renders and crash/misbehave).
+  // every render, so they don't break the Rules of Hooks.
   if (!currentUser) {
     return (
       <SafeAreaView style={styles.center}>
@@ -1535,470 +1676,532 @@ router.push({
     );
   }
 
+  // ---------- derived values for the popup ----------
+  const sel = selectedMessage;
+  const selMine = sel?.senderId === currentUid;
+  const selDeleted = sel?.deletedForEveryone === true;
+  const canReact = !!sel && !selDeleted;
+  const canReply = !!sel && !selDeleted;
+  const canCopy = !!sel && !selDeleted && isTextMessage(sel) && !!sel.text;
+  const canEdit = selMine && canCopy;
+  const myReaction = sel?.reactions?.[currentUid];
+
+  // header sub-line (typing / online / last seen) - hidden if they blocked me
+  const statusLine = blockedByOther
+    ? ""
+    : otherTyping
+    ? "typing..."
+    : otherOnline
+    ? "online"
+    : formatLastSeen(otherLastSeen);
+
+  const inputDisabled = isBlocked || blockedByOther;
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={
-        Platform.OS === "ios"
-          ? "padding"
-          : undefined
-      }
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
+      {/* ============ HEADER ============ */}
       <View style={styles.header}>
-        <TouchableOpacity
-          onPress={() => router.back()}
-        >
-          <Ionicons
-            name="arrow-back"
-            size={28}
-            color="#fff"
-          />
-        </TouchableOpacity>
+        {searchMode ? (
+          <View style={styles.searchHeader}>
+            <TouchableOpacity onPress={closeSearch}>
+              <Ionicons name="arrow-back" size={26} color="#fff" />
+            </TouchableOpacity>
 
-        
-<TouchableOpacity
-  onPress={() =>
-    router.push({
-      pathname: "./userProfile",
-      params: {
-        userId: userId,
-      },
-    })
-  }
->
-  <Image
-    source={{
-      uri:
-        profileImg ||
-        "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
-    }}
-    style={styles.avatar}
-  />
-</TouchableOpacity>
+            <TextInput
+              autoFocus
+              value={searchText}
+              onChangeText={setSearchText}
+              placeholder="Search messages..."
+              placeholderTextColor="#888"
+              style={styles.searchInput}
+            />
 
+            {searchText.length > 0 && (
+              <TouchableOpacity onPress={() => setSearchText("")}>
+                <Ionicons name="close-circle" size={22} color="#aaa" />
+              </TouchableOpacity>
+            )}
+          </View>
+        ) : (
+          <>
+            <TouchableOpacity onPress={() => router.back()}>
+              <Ionicons name="arrow-back" size={28} color="#fff" />
+            </TouchableOpacity>
 
-<View
-  style={{
-    marginLeft: 10,
-  }}
->
+            <TouchableOpacity
+              onPress={() =>
+                router.push({
+                  pathname: "./userProfile",
+                  params: { userId: userId },
+                })
+              }
+            >
+              <Image
+                source={{ uri: profileImg || DEFAULT_AVATAR }}
+                style={styles.avatar}
+              />
+            </TouchableOpacity>
 
-<View
-  style={{
-    flexDirection: "row",
-    alignItems: "center",
-  }}
->
+            <View style={{ marginLeft: 10, flexShrink: 1 }}>
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <Text style={styles.username} numberOfLines={1}>
+                  {String(username)}
+                </Text>
 
-  <Text style={styles.username}>
-    {String(username)}
-  </Text>
+                {verified && (
+                  <View style={styles.verifiedWrap}>
+                    <MaterialCommunityIcons
+                      name="check-decagram"
+                      size={18}
+                      color={verifiedColor === "yellow" ? "#FFD700" : "#ffffff"}
+                    />
+                  </View>
+                )}
 
- 
-{verified && (
+                <View
+                  style={[
+                    styles.levelBadge,
+                    {
+                      backgroundColor: getLevelTheme(userLevel).bg,
+                      borderColor: getLevelTheme(userLevel).border,
+                    },
+                  ]}
+                >
+                  <MaterialCommunityIcons
+                    name="diamond-stone"
+                    size={12}
+                    color={getLevelTheme(userLevel).icon}
+                  />
+                  <Text
+                    style={{
+                      color: getLevelTheme(userLevel).text,
+                      marginLeft: 3,
+                      fontSize: 11,
+                      fontWeight: "bold",
+                    }}
+                  >
+                    LV {userLevel}
+                  </Text>
+                </View>
+              </View>
 
-<View
-  style={{
-    marginLeft: 5,
-    width: 18,
-    height: 18,
-    justifyContent: "center",
-    alignItems: "center",
-    position: "relative",
-  }}
->
+              {!!statusLine && (
+                <Text
+                  style={
+                    otherTyping || otherOnline
+                      ? styles.typingText
+                      : styles.lastSeenText
+                  }
+                >
+                  {statusLine}
+                </Text>
+              )}
+            </View>
 
-  <MaterialCommunityIcons
-    name="check-decagram"
-    size={18}
-    color={
-      verifiedColor === "yellow"
-        ? "#FFD700"
-        : "#ffffff"
-    }
-  />
-
-</View>
-
-)}
-
-
-  <View
-    style={[
-      styles.levelBadge,
-      {
-        backgroundColor:
-          getLevelTheme(userLevel).bg,
-
-        borderColor:
-          getLevelTheme(userLevel).border,
-      },
-    ]}
-  >
-    <MaterialCommunityIcons
-      name="diamond-stone"
-      size={12}
-      color={
-        getLevelTheme(userLevel).icon
-      }
-    />
-
-    <Text
-      style={{
-        color:
-          getLevelTheme(userLevel).text,
-        marginLeft: 3,
-        fontSize: 11,
-        fontWeight: "bold",
-      }}
-    >
-      LV {userLevel}
-    </Text>
-
-
-  </View>
-
-
-</View>
-
-{otherTyping && (
-  <Text style={styles.typingText}>typing...</Text>
-)}
-
-</View>
-<View style={{ marginLeft: "auto" }}>
-
-  <TouchableOpacity
-    onPress={() => setHeaderMenuVisible(true)}
-  >
-    <Ionicons
-      name="ellipsis-vertical"
-      size={25}
-      color="#fff"
-    />
-  </TouchableOpacity>
-
-</View>
-        
+            <View style={{ marginLeft: "auto" }}>
+              <TouchableOpacity onPress={() => setHeaderMenuVisible(true)}>
+                <Ionicons name="ellipsis-vertical" size={25} color="#fff" />
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
       </View>
 
-    <FlatList
-  ref={flatListRef}
+      {/* ============ MESSAGES ============ */}
+      <FlatList
+        ref={flatListRef}
+        data={messages}
+        inverted
+        renderItem={renderItem}
+        extraData={highlightId}
+        keyExtractor={(item) => String(item.id)}
+        contentContainerStyle={[
+          { padding: 15, paddingBottom: 20 },
+          messages.length === 0 && { flex: 1 },
+        ]}
+        ListEmptyComponent={
+          loadingMessages ? null : (
+            <View style={styles.emptyChatWrap}>
+              <Text style={styles.emptyChatText}>
+                {searchMode && searchText.trim()
+                  ? "No messages found"
+                  : "No messages yet. Say hi 👋"}
+              </Text>
+            </View>
+          )
+        }
+        showsVerticalScrollIndicator={false}
+        // tap on the chat area closes the keyboard; scrolling does too
+        keyboardShouldPersistTaps="handled"
+        onScrollBeginDrag={Keyboard.dismiss}
+        onScroll={handleScroll}
+        scrollEventThrottle={100}
+        // load older messages when the user scrolls up
+        onEndReached={() => {
+          if (hasMore && !searchMode) setMsgLimit((l) => l + PAGE_SIZE);
+        }}
+        onEndReachedThreshold={0.4}
+        onScrollToIndexFailed={(info) => {
+          flatListRef.current?.scrollToOffset({
+            offset: info.averageItemLength * info.index,
+            animated: true,
+          });
+          setTimeout(() => {
+            flatListRef.current?.scrollToIndex({
+              index: info.index,
+              animated: true,
+              viewPosition: 0.5,
+            });
+          }, 300);
+        }}
+        // (inverted list) header = very bottom => pending uploads
+        ListHeaderComponent={renderUploads}
+        // (inverted list) footer = very top => older messages loader
+        ListFooterComponent={
+          hasMore && !searchMode ? (
+            <ActivityIndicator
+              color="#888"
+              style={{ marginVertical: 14 }}
+            />
+          ) : null
+        }
+      />
 
-  data={messages}
-inverted
-  renderItem={renderItem}
-
-  keyExtractor={(item) =>
-    String(item.id)
-  }
-
-  contentContainerStyle={[
-    { padding: 15, paddingBottom: 20 },
-    messages.length === 0 && { flex: 1 },
-  ]}
-
-  ListEmptyComponent={
-    loadingMessages ? null : (
-      <View style={styles.emptyChatWrap}>
-        <Text style={styles.emptyChatText}>
-          No messages yet. Say hi 👋
-        </Text>
-      </View>
-    )
-  }
-
-  showsVerticalScrollIndicator={false}
-
-  // tap on the chat area closes the keyboard; scrolling does too
-  keyboardShouldPersistTaps="handled"
-  onScrollBeginDrag={Keyboard.dismiss}
-
-  // (inverted list) header = very bottom => pending uploads
-  ListHeaderComponent={renderUploads}
-/>
-
-
-{showPreview && (
-
-<View
-style={[
-styles.previewBox,
-{
-bottom: keyboardHeight,
-},
-]}
->
-
-<Text
-style={styles.previewText}
->
-
-{message || "Type message..."}
-
-</Text>
-
-</View>
-
-)}
-
-
-
-      <View style={styles.bottomBar}>
-
+      {/* scroll-to-newest button with new message counter */}
+      {showScrollBtn && (
         <TouchableOpacity
-          disabled={isBlocked || blockedByOther}
-          style={[
-            styles.attachBtn,
-            { opacity: isBlocked || blockedByOther ? 0.5 : 1 },
-          ]}
-          onPress={pickAndSendMedia}
+          style={styles.scrollToBottomBtn}
+          onPress={scrollToBottom}
         >
-          <Ionicons name="images" size={26} color="#fff" />
+          <Ionicons name="chevron-down" size={22} color="#fff" />
+          {newCount > 0 && (
+            <View style={styles.newCountBadge}>
+              <Text style={styles.newCountText}>
+                {newCount > 99 ? "99+" : newCount}
+              </Text>
+            </View>
+          )}
         </TouchableOpacity>
-
-       <TextInput
-  value={message}
-  onChangeText={handleTyping}
-
-  placeholder={
-  isBlocked
-    ? "Unblock user to send message"
-    : blockedByOther
-    ? "You can't send messages to this user"
-    : `Message.. ${username}`
-}
-
-  placeholderTextColor="#ccc"
-  editable={!(isBlocked || blockedByOther)}
-  style={styles.input}
-
-  // Keyboard me Send button dikhayega
-  returnKeyType="send"
-
-  // Keyboard band nahi hoga
-  blurOnSubmit={false}
-
-  // Keyboard ke Send button par
-  onSubmitEditing={() => {
-    if (message.trim()) {
-      sendMessage();
-    }
-  }}
-/>
-
-      
-
-<TouchableOpacity
-  disabled={isBlocked || blockedByOther}
-
-  style={[
-    styles.sendBtn,
-    {
-      opacity:
-        isBlocked || blockedByOther
-          ? 0.5
-          : 1,
-    },
-  ]}
-
-  onPress={sendMessage}
->
-
-
-          <Ionicons
-            name="send"
-            size={28}
-            color="#fff"
-          />
-        </TouchableOpacity>
-      </View>
-
-
-
-{/* ============ MESSAGE MENU (tap anywhere outside = close) ============ */}
-<Modal
-  visible={menuVisible}
-  transparent
-  animationType="fade"
-  statusBarTranslucent
-  onRequestClose={closeMenu}
->
-
-  <Pressable style={styles.modalOverlay} onPress={closeMenu}>
-
-    {/* inner Pressable swallows taps so touching the box doesn't close it */}
-    <Pressable style={styles.menuBox} onPress={() => {}}>
-
-      {selectedMessage?.type !== "video" &&
-       selectedMessage?.type !== "liveInvite" &&
-       selectedMessage?.type !== "media" && (
-
-        <TouchableOpacity
-          onPress={() => {
-            setMenuVisible(false);
-            setEditModal(true);
-          }}
-        >
-          <Text style={styles.menuEditText}>Edit Message</Text>
-        </TouchableOpacity>
-
       )}
 
-      <TouchableOpacity onPress={deleteMessage}>
-        <Text style={styles.menuDeleteText}>Delete</Text>
-      </TouchableOpacity>
+      {showPreview && (
+        <View style={[styles.previewBox, { bottom: keyboardHeight }]}>
+          <Text style={styles.previewText}>{message || "Type message..."}</Text>
+        </View>
+      )}
 
-    </Pressable>
+      {/* ============ REPLY BAR ============ */}
+      {!!replyingTo && (
+        <View style={styles.replyBar}>
+          <View style={styles.replyBarLine} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.replyBarName} numberOfLines={1}>
+              {replyingTo.senderId === currentUid ? "You" : String(username)}
+            </Text>
+            <Text style={styles.replyBarText} numberOfLines={1}>
+              {getMessagePreview(replyingTo)}
+            </Text>
+          </View>
+          <TouchableOpacity onPress={() => setReplyingTo(null)}>
+            <Ionicons name="close" size={22} color="#aaa" />
+          </TouchableOpacity>
+        </View>
+      )}
 
-  </Pressable>
-
-</Modal>
-
-
-
-{/* ============ EDIT MESSAGE (tap anywhere outside = close) ============ */}
-<Modal
-  visible={editModal}
-  transparent
-  animationType="fade"
-  statusBarTranslucent
-  onRequestClose={closeEdit}
->
-
-  <Pressable style={styles.modalOverlay} onPress={closeEdit}>
-
-    <KeyboardAvoidingView
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      style={{ width: "100%", alignItems: "center" }}
-    >
-
-      <Pressable style={styles.editBox} onPress={() => {}}>
+      {/* ============ INPUT BAR ============ */}
+      <View style={styles.bottomBar}>
+        <TouchableOpacity
+          disabled={inputDisabled}
+          style={[styles.attachBtn, { opacity: inputDisabled ? 0.5 : 1 }]}
+          onPress={() => {
+            Keyboard.dismiss();
+            setAttachVisible(true);
+          }}
+        >
+          <Ionicons name="add" size={30} color="#fff" />
+        </TouchableOpacity>
 
         <TextInput
-          value={editText}
-          onChangeText={setEditText}
-          autoFocus
+          ref={inputRef}
+          value={message}
+          onChangeText={handleTyping}
+          placeholder={
+            isBlocked
+              ? "Unblock user to send message"
+              : blockedByOther
+              ? "You can't send messages to this user"
+              : `Message.. ${username}`
+          }
+          placeholderTextColor="#ccc"
+          editable={!inputDisabled}
+          style={styles.input}
+          // Enter = new line (like WhatsApp); sending is done by the button
           multiline
-          style={styles.editInput}
         />
 
         <TouchableOpacity
-          onPress={updateMessage}
-          style={styles.editSaveBtn}
+          disabled={inputDisabled || !message.trim()}
+          style={[
+            styles.sendBtn,
+            { opacity: inputDisabled || !message.trim() ? 0.5 : 1 },
+          ]}
+          onPress={sendMessage}
         >
-          <Text style={styles.editSaveText}>Save</Text>
+          <Ionicons name="send" size={26} color="#fff" />
         </TouchableOpacity>
+      </View>
 
-      </Pressable>
+      {/* small "Copied" / "Chat cleared" message */}
+      {!!toast && (
+        <View style={styles.toast} pointerEvents="none">
+          <Text style={styles.toastText}>{toast}</Text>
+        </View>
+      )}
 
-    </KeyboardAvoidingView>
-
-  </Pressable>
-
-</Modal>
-
-
-
-{/* ============ PHOTO / VIDEO VIEWER ============ */}
-<Modal
-  visible={!!viewer}
-  transparent
-  animationType="fade"
-  statusBarTranslucent
-  onRequestClose={() => setViewer(null)}
->
-
-  <Pressable
-    style={styles.viewerOverlay}
-    onPress={() => setViewer(null)}
-  >
-
-    {viewer?.type === "image" && (
-      <Image
-        source={{ uri: viewer.url }}
-        style={{ width: "100%", height: "85%" }}
-        resizeMode="contain"
-      />
-    )}
-
-    {viewer?.type === "video" && <ViewerVideo url={viewer.url} />}
-
-    <TouchableOpacity
-      style={styles.viewerClose}
-      onPress={() => setViewer(null)}
-    >
-      <Ionicons name="close" size={32} color="#fff" />
-    </TouchableOpacity>
-
-  </Pressable>
-
-</Modal>
-
-
-
-
-<Modal
-  visible={headerMenuVisible}
-  transparent
-  animationType="fade"
->
-
-  <Pressable
-    style={{
-      flex: 1,
-      backgroundColor: "rgba(0,0,0,0.4)",
-    }}
-    onPress={() => setHeaderMenuVisible(false)}
-  >
-
-    <View
-      style={{
-        position: "absolute",
-        top: 70,
-        right: 15,
-        width: 180,
-        backgroundColor: "#111",
-        borderRadius: 12,
-        overflow: "hidden",
-      }}
-    >
-
-      <TouchableOpacity
-       onPress={
- isBlocked
-   ? unblockUser
-   : blockUser
-}
-
-        style={{
-          padding: 16,
-        }}
+      {/* ============ MESSAGE POPUP (tap outside / back button = close) ============ */}
+      <Modal
+        visible={menuVisible}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={closeMenu}
       >
+        <View style={styles.modalOverlay}>
+          {/* full-screen backdrop: any tap outside the popup closes it */}
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeMenu} />
 
-        <Text
-  style={{
-    color:isBlocked ? "#00E676" : "red",
-    fontSize:16,
-    fontWeight:"bold",
-  }}
->
+          <View style={styles.menuWrap}>
+            {canReact && (
+              <View style={styles.reactionBar}>
+                {REACTION_EMOJIS.map((e) => (
+                  <TouchableOpacity
+                    key={e}
+                    onPress={() => reactToMessage(e)}
+                    style={[
+                      styles.reactionBtn,
+                      myReaction === e && styles.reactionBtnActive,
+                    ]}
+                  >
+                    <Text style={styles.reactionBtnText}>{e}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
 
-{isBlocked
- ? "✅ Unblock User"
- : "🚫 Block User"}
+            <View style={styles.menuBox}>
+              {canReply && (
+                <MenuRow
+                  icon="arrow-undo-outline"
+                  label="Reply"
+                  onPress={replyFromMenu}
+                />
+              )}
 
-</Text>
+              {canCopy && (
+                <MenuRow
+                  icon="copy-outline"
+                  label="Copy"
+                  onPress={copyMessage}
+                />
+              )}
 
-      </TouchableOpacity>
+              {canEdit && (
+                <MenuRow
+                  icon="create-outline"
+                  label="Edit"
+                  onPress={openEdit}
+                />
+              )}
 
-    </View>
+              <MenuRow
+                icon="trash-outline"
+                label="Delete"
+                onPress={askDelete}
+                danger
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
 
-  </Pressable>
+      {/* ============ EDIT MESSAGE (tap outside / back button = close) ============ */}
+      <Modal
+        visible={editModal}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={closeEdit}
+      >
+        <View style={styles.modalOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeEdit} />
 
-</Modal>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : undefined}
+            style={styles.editWrap}
+            pointerEvents="box-none"
+          >
+            <View style={styles.editBox}>
+              <Text style={styles.editTitle}>Edit message</Text>
 
+              <TextInput
+                value={editText}
+                onChangeText={setEditText}
+                autoFocus
+                multiline
+                style={styles.editInput}
+              />
 
+              <View style={styles.editBtnRow}>
+                <TouchableOpacity
+                  onPress={closeEdit}
+                  style={styles.editCancelBtn}
+                >
+                  <Text style={styles.editCancelText}>Cancel</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  disabled={
+                    !editText.trim() ||
+                    editText.trim() === (selectedMessage?.text || "")
+                  }
+                  onPress={updateMessage}
+                  style={[
+                    styles.editSaveBtn,
+                    (!editText.trim() ||
+                      editText.trim() === (selectedMessage?.text || "")) && {
+                      opacity: 0.5,
+                    },
+                  ]}
+                >
+                  <Text style={styles.editSaveText}>Save</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* ============ ATTACH SHEET (Gallery / Camera) ============ */}
+      <Modal
+        visible={attachVisible}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setAttachVisible(false)}
+      >
+        <View style={styles.sheetOverlay}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setAttachVisible(false)}
+          />
+
+          <View style={styles.sheet}>
+            <TouchableOpacity
+              style={styles.sheetItem}
+              onPress={pickAndSendMedia}
+            >
+              <View style={[styles.sheetIcon, { backgroundColor: "#7B1FFF" }]}>
+                <Ionicons name="images" size={26} color="#fff" />
+              </View>
+              <Text style={styles.sheetLabel}>Gallery</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.sheetItem}
+              onPress={takeAndSendMedia}
+            >
+              <View style={[styles.sheetIcon, { backgroundColor: "#FF0066" }]}>
+                <Ionicons name="camera" size={26} color="#fff" />
+              </View>
+              <Text style={styles.sheetLabel}>Camera</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ============ PHOTO / VIDEO VIEWER ============ */}
+      <Modal
+        visible={!!viewer}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setViewer(null)}
+      >
+        <Pressable
+          style={styles.viewerOverlay}
+          onPress={() => setViewer(null)}
+        >
+          {viewer?.type === "image" && (
+            <Image
+              source={{ uri: viewer.url }}
+              style={{ width: "100%", height: "85%" }}
+              resizeMode="contain"
+            />
+          )}
+
+          {viewer?.type === "video" && <ViewerVideo url={viewer.url} />}
+
+          <TouchableOpacity
+            style={styles.viewerClose}
+            onPress={() => setViewer(null)}
+          >
+            <Ionicons name="close" size={32} color="#fff" />
+          </TouchableOpacity>
+        </Pressable>
+      </Modal>
+
+      {/* ============ HEADER MENU (tap outside / back button = close) ============ */}
+      <Modal
+        visible={headerMenuVisible}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setHeaderMenuVisible(false)}
+      >
+        <View style={styles.headerMenuOverlay}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setHeaderMenuVisible(false)}
+          />
+
+          <View style={styles.headerMenuBox}>
+            <MenuRow
+              icon="search-outline"
+              label="Search"
+              onPress={openSearch}
+            />
+
+            <MenuRow
+              icon="trash-outline"
+              label="Clear chat"
+              onPress={clearChat}
+            />
+
+            {isBlocked ? (
+              <TouchableOpacity style={styles.menuRow} onPress={unblockUser}>
+                <Ionicons
+                  name="checkmark-circle-outline"
+                  size={20}
+                  color="#00E676"
+                />
+                <Text style={[styles.menuRowText, { color: "#00E676" }]}>
+                  Unblock User
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <MenuRow
+                icon="ban"
+                label="Block User"
+                onPress={blockUser}
+                danger
+              />
+            )}
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -2020,6 +2223,7 @@ const styles = StyleSheet.create({
     color: "#fff",
   },
 
+  // ---------- header ----------
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -2042,32 +2246,81 @@ const styles = StyleSheet.create({
     fontSize: 17,
     marginLeft: 0,
     fontWeight: "bold",
+    flexShrink: 1,
   },
 
+  verifiedWrap: {
+    marginLeft: 5,
+    width: 18,
+    height: 18,
+    justifyContent: "center",
+    alignItems: "center",
+  },
 
+  levelBadge: {
+    marginLeft: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 20,
+  },
+
+  typingText: {
+    color: "#9be29b",
+    fontSize: 12,
+    marginTop: 2,
+  },
+
+  lastSeenText: {
+    color: "#888",
+    fontSize: 12,
+    marginTop: 2,
+  },
+
+  searchHeader: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  searchInput: {
+    flex: 1,
+    color: "#fff",
+    fontSize: 16,
+    marginHorizontal: 12,
+    paddingVertical: 6,
+  },
+
+  // ---------- message rows / bubbles ----------
   row: {
-  flexDirection: "row",
-  alignItems: "flex-end",
-  marginVertical: 4,
-},
+    flexDirection: "row",
+    alignItems: "flex-end",
+    marginVertical: 4,
+  },
 
-myRow: {
-  justifyContent: "flex-end",
-},
+  myRow: {
+    justifyContent: "flex-end",
+  },
 
-otherRow: {
-  justifyContent: "flex-start",
-},
+  otherRow: {
+    justifyContent: "flex-start",
+  },
 
-chatAvatar: {
-  width: 35,
-  height: 35,
-  borderRadius: 18,
-  marginRight: 8,
-},
+  chatAvatar: {
+    width: 35,
+    height: 35,
+    borderRadius: 18,
+    marginRight: 8,
+  },
+
+  bubbleColumn: {
+    maxWidth: "75%",
+  },
 
   messageBox: {
-    maxWidth: "75%",
+    maxWidth: "100%",
     padding: 12,
     borderRadius: 15,
     marginVertical: 5,
@@ -2088,22 +2341,190 @@ chatAvatar: {
     fontSize: 16,
   },
 
-bottomBar: {
-  flexDirection: "row",
-  alignItems: "center",
-  padding: 15,
-  marginBottom: 35,
-  borderTopWidth: 1,
-  borderTopColor: "#222",
-},
+  metaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-end",
+    marginTop: 3,
+  },
+
+  editedText: {
+    color: "#cfcfcf",
+    fontSize: 10,
+    marginRight: 5,
+  },
+
+  timeText: {
+    color: "#dcdcdc",
+    fontSize: 10,
+  },
+
+  highlight: {
+    borderWidth: 2,
+    borderColor: "#FFD700",
+  },
+
+  deletedBubble: {
+    flexDirection: "row",
+    alignItems: "center",
+    opacity: 0.8,
+  },
+
+  deletedText: {
+    color: "#cfcfcf",
+    fontSize: 14,
+    fontStyle: "italic",
+    marginLeft: 6,
+  },
+
+  liveInviteBox: {
+    backgroundColor: "#1e1e1e",
+    padding: 15,
+    borderRadius: 15,
+    width: 220,
+  },
+
+  liveInviteTitle: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 16,
+  },
+
+  liveInviteSub: {
+    color: "#ccc",
+    marginTop: 5,
+  },
+
+  videoThumbnail: {
+    width: 130,
+    height: 190,
+    borderRadius: 15,
+  },
+
+  playIcon: {
+    position: "absolute",
+    top: "37%",
+    left: "33%",
+  },
+
+  swipeIcon: {
+    position: "absolute",
+    left: 6,
+    top: "50%",
+    marginTop: -16,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#2a2a2a",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  // ---------- reply ----------
+  replyQuote: {
+    borderLeftWidth: 4,
+    borderRadius: 8,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    marginBottom: 6,
+  },
+
+  replyQuoteMine: {
+    backgroundColor: "rgba(0,0,0,0.2)",
+    borderLeftColor: "#9EF8FF",
+  },
+
+  replyQuoteOther: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderLeftColor: "#00BFA5",
+  },
+
+  replyQuoteName: {
+    color: "#9EF8FF",
+    fontSize: 12,
+    fontWeight: "bold",
+  },
+
+  replyQuoteText: {
+    color: "#e6e6e6",
+    fontSize: 13,
+    marginTop: 1,
+  },
+
+  replyBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#1a1a1a",
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#222",
+  },
+
+  replyBarLine: {
+    width: 4,
+    alignSelf: "stretch",
+    backgroundColor: "#00BFA5",
+    borderRadius: 2,
+    marginRight: 10,
+  },
+
+  replyBarName: {
+    color: "#00E5CC",
+    fontSize: 13,
+    fontWeight: "bold",
+  },
+
+  replyBarText: {
+    color: "#bbb",
+    fontSize: 13,
+    marginTop: 1,
+  },
+
+  // ---------- reactions ----------
+  reactionPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#222",
+    borderWidth: 1,
+    borderColor: "#444",
+    borderRadius: 12,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    marginTop: -8,
+  },
+
+  reactionPillEmoji: {
+    fontSize: 13,
+  },
+
+  reactionPillCount: {
+    color: "#ccc",
+    fontSize: 11,
+    marginLeft: 3,
+  },
+
+  // ---------- input bar ----------
+  bottomBar: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    padding: 15,
+    marginBottom: 35,
+    borderTopWidth: 1,
+    borderTopColor: "#222",
+  },
 
   input: {
     flex: 1,
     backgroundColor: "#4f4c4c",
     color: "#fff",
-    borderRadius: 10,
+    borderRadius: 22,
     paddingHorizontal: 15,
-    height: 45,
+    paddingTop: Platform.OS === "ios" ? 12 : 10,
+    paddingBottom: Platform.OS === "ios" ? 12 : 10,
+    minHeight: 45,
+    maxHeight: 120,
+    fontSize: 16,
   },
 
   sendBtn: {
@@ -2116,234 +2537,340 @@ bottomBar: {
     marginLeft: 10,
   },
 
-videoThumbnail:{
-  width:130,
-  height:190,
-  borderRadius:15,
-},
+  attachBtn: {
+    width: 45,
+    height: 45,
+    borderRadius: 25,
+    backgroundColor: "#2a2a2a",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 10,
+  },
 
-playIcon:{
-  position:'absolute',
-  top:'37%',
-  left:'33%',
-},
+  previewBox: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    padding: 15,
+    backgroundColor: "#222",
+    borderTopWidth: 1,
+    borderTopColor: "#444",
+    marginBottom: 45,
+  },
 
-levelBadge: {
-  marginLeft: 6,
-  flexDirection: "row",
-  alignItems: "center",
-  borderWidth: 1,
-  paddingHorizontal: 8,
-  paddingVertical: 3,
-  borderRadius: 20,
-},
+  previewText: {
+    color: "#fff",
+    fontSize: 16,
+  },
 
-previewBox:{
+  // ---------- list extras ----------
+  dateSeparatorWrap: {
+    alignSelf: "center",
+    backgroundColor: "#1f1f1f",
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginVertical: 10,
+  },
 
-position:"absolute",
+  dateSeparatorText: {
+    color: "#ccc",
+    fontSize: 12,
+    fontWeight: "600",
+  },
 
-left:0,
+  scrollToBottomBtn: {
+    position: "absolute",
+    right: 15,
+    bottom: 110,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: "#2a2a2a",
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#444",
+  },
 
-right:0,
+  newCountBadge: {
+    position: "absolute",
+    top: -8,
+    right: -4,
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    paddingHorizontal: 5,
+    backgroundColor: "#00C853",
+    justifyContent: "center",
+    alignItems: "center",
+  },
 
-padding:15,
+  newCountText: {
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "bold",
+  },
 
-backgroundColor:"#222",
+  emptyChatWrap: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    transform: [{ scaleY: -1 }],
+  },
 
-borderTopWidth:1,
+  emptyChatText: {
+    color: "#777",
+    fontSize: 14,
+  },
 
-borderTopColor:"#444",
+  toast: {
+    position: "absolute",
+    bottom: 120,
+    alignSelf: "center",
+    backgroundColor: "rgba(40,40,40,0.95)",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 18,
+  },
 
-marginBottom: 45,
+  toastText: {
+    color: "#fff",
+    fontSize: 14,
+  },
 
-},
+  // ---------- media ----------
+  mediaBubble: {
+    width: 210,
+    height: 250,
+    borderRadius: 15,
+    overflow: "hidden",
+    backgroundColor: "#1a1a1a",
+    marginVertical: 5,
+  },
 
-previewText:{
+  mediaImg: {
+    width: "100%",
+    height: "100%",
+  },
 
-color:"#fff",
+  mediaPlayIcon: {
+    position: "absolute",
+    top: "40%",
+    alignSelf: "center",
+    left: "38%",
+  },
 
-fontSize:16,
+  mediaMeta: {
+    position: "absolute",
+    right: 8,
+    bottom: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.45)",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
 
-},
+  mediaTime: {
+    color: "#fff",
+    fontSize: 10,
+  },
 
-dateSeparatorWrap: {
-  alignSelf: "center",
-  backgroundColor: "#1f1f1f",
-  paddingHorizontal: 12,
-  paddingVertical: 4,
-  borderRadius: 12,
-  marginVertical: 10,
-},
+  mediaUploadOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
 
-dateSeparatorText: {
-  color: "#ccc",
-  fontSize: 12,
-  fontWeight: "600",
-},
+  mediaUploadText: {
+    color: "#fff",
+    marginTop: 6,
+    fontWeight: "600",
+  },
 
-typingText: {
-  color: "#9be29b",
-  fontSize: 12,
-  marginTop: 2,
-},
+  // ---------- popups ----------
+  modalOverlay: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.6)",
+  },
 
-scrollToBottomBtn: {
-  position: "absolute",
-  right: 15,
-  bottom: 90,
-  width: 40,
-  height: 40,
-  borderRadius: 20,
-  backgroundColor: "#2a2a2a",
-  justifyContent: "center",
-  alignItems: "center",
-  borderWidth: 1,
-  borderColor: "#444",
-},
+  menuWrap: {
+    width: 270,
+  },
 
-emptyChatWrap: {
-  flex: 1,
-  justifyContent: "center",
-  alignItems: "center",
-  transform: [{ scaleY: -1 }],
-},
+  reactionBar: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    backgroundColor: "#111",
+    borderRadius: 30,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    marginBottom: 10,
+  },
 
-emptyChatText: {
-  color: "#777",
-  fontSize: 14,
-},
+  reactionBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    justifyContent: "center",
+    alignItems: "center",
+  },
 
-attachBtn: {
-  width: 45,
-  height: 45,
-  borderRadius: 25,
-  backgroundColor: "#2a2a2a",
-  justifyContent: "center",
-  alignItems: "center",
-  marginRight: 10,
-},
+  reactionBtnActive: {
+    backgroundColor: "#333",
+  },
 
-mediaBubble: {
-  width: 210,
-  height: 250,
-  borderRadius: 15,
-  overflow: "hidden",
-  backgroundColor: "#1a1a1a",
-  marginVertical: 5,
-},
+  reactionBtnText: {
+    fontSize: 24,
+  },
 
-mediaImg: {
-  width: "100%",
-  height: "100%",
-},
+  menuBox: {
+    backgroundColor: "#111",
+    borderRadius: 15,
+    paddingVertical: 6,
+    overflow: "hidden",
+  },
 
-mediaPlayIcon: {
-  position: "absolute",
-  top: "40%",
-  alignSelf: "center",
-  left: "38%",
-},
+  menuRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+  },
 
-mediaMeta: {
-  position: "absolute",
-  right: 8,
-  bottom: 6,
-  flexDirection: "row",
-  alignItems: "center",
-  backgroundColor: "rgba(0,0,0,0.45)",
-  paddingHorizontal: 6,
-  paddingVertical: 2,
-  borderRadius: 10,
-},
+  menuRowText: {
+    color: "#fff",
+    fontSize: 17,
+    marginLeft: 14,
+  },
 
-mediaTime: {
-  color: "#fff",
-  fontSize: 10,
-},
+  editWrap: {
+    width: "100%",
+    alignItems: "center",
+  },
 
-mediaUploadOverlay: {
-  ...StyleSheet.absoluteFillObject,
-  backgroundColor: "rgba(0,0,0,0.55)",
-  justifyContent: "center",
-  alignItems: "center",
-},
+  editBox: {
+    width: "90%",
+    backgroundColor: "#111",
+    borderRadius: 15,
+    padding: 20,
+  },
 
-mediaUploadText: {
-  color: "#fff",
-  marginTop: 6,
-  fontWeight: "600",
-},
+  editTitle: {
+    color: "#fff",
+    fontSize: 17,
+    fontWeight: "bold",
+    marginBottom: 12,
+  },
 
-modalOverlay: {
-  flex: 1,
-  justifyContent: "center",
-  alignItems: "center",
-  backgroundColor: "rgba(0,0,0,0.6)",
-},
+  editInput: {
+    color: "#fff",
+    borderWidth: 1,
+    borderColor: "#333",
+    borderRadius: 10,
+    padding: 12,
+    maxHeight: 160,
+  },
 
-menuBox: {
-  width: 250,
-  backgroundColor: "#111",
-  borderRadius: 15,
-  padding: 15,
-},
+  editBtnRow: {
+    flexDirection: "row",
+    marginTop: 15,
+  },
 
-menuEditText: {
-  color: "#fff",
-  fontSize: 18,
-  padding: 15,
-},
+  editCancelBtn: {
+    flex: 1,
+    backgroundColor: "#2a2a2a",
+    padding: 15,
+    borderRadius: 10,
+    marginRight: 10,
+  },
 
-menuDeleteText: {
-  color: "red",
-  fontSize: 18,
-  padding: 15,
-},
+  editCancelText: {
+    color: "#fff",
+    textAlign: "center",
+    fontWeight: "bold",
+  },
 
-editBox: {
-  width: "90%",
-  backgroundColor: "#111",
-  borderRadius: 15,
-  padding: 20,
-},
+  editSaveBtn: {
+    flex: 1,
+    backgroundColor: "#00C853",
+    padding: 15,
+    borderRadius: 10,
+  },
 
-editInput: {
-  color: "#fff",
-  borderWidth: 1,
-  borderColor: "#333",
-  borderRadius: 10,
-  padding: 12,
-  maxHeight: 160,
-},
+  editSaveText: {
+    color: "#fff",
+    textAlign: "center",
+    fontWeight: "bold",
+  },
 
-editSaveBtn: {
-  backgroundColor: "#00C853",
-  padding: 15,
-  borderRadius: 10,
-  marginTop: 15,
-},
+  sheetOverlay: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: "rgba(0,0,0,0.5)",
+  },
 
-editSaveText: {
-  color: "#fff",
-  textAlign: "center",
-  fontWeight: "bold",
-},
+  sheet: {
+    flexDirection: "row",
+    backgroundColor: "#111",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingTop: 22,
+    paddingBottom: 40,
+    paddingHorizontal: 20,
+  },
 
-viewerOverlay: {
-  flex: 1,
-  backgroundColor: "rgba(0,0,0,0.95)",
-  justifyContent: "center",
-  alignItems: "center",
-},
+  sheetItem: {
+    alignItems: "center",
+    marginRight: 34,
+  },
 
-viewerClose: {
-  position: "absolute",
-  top: 50,
-  right: 20,
-  padding: 6,
-},
+  sheetIcon: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    justifyContent: "center",
+    alignItems: "center",
+  },
 
+  sheetLabel: {
+    color: "#fff",
+    marginTop: 8,
+    fontSize: 13,
+  },
 
+  headerMenuOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.4)",
+  },
 
+  headerMenuBox: {
+    position: "absolute",
+    top: 70,
+    right: 15,
+    width: 200,
+    backgroundColor: "#111",
+    borderRadius: 12,
+    paddingVertical: 4,
+    overflow: "hidden",
+  },
 
-});             
+  viewerOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.95)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  viewerClose: {
+    position: "absolute",
+    top: 50,
+    right: 20,
+    padding: 6,
+  },
+});

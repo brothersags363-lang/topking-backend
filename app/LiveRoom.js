@@ -67,6 +67,13 @@ import {
 } from "react-native-agora";
 
 import { gifts } from "../assets/giftsData";
+import LevelFrame from '../components/LevelFrame';
+import { LinearGradient } from 'expo-linear-gradient';
+import SeatItem from '../components/live/SeatItem';
+import JoinEntry from '../components/live/JoinEntry';
+import FloatingHearts from '../components/live/FloatingHearts';
+import { ViewersSheet, GiftersSheet, RoomMenuSheet, EmojiStrip } from '../components/live/RoomSheets';
+import { T } from '../components/live/liveTheme';
 
 import LottieView from "lottie-react-native";
 import { WebView } from "react-native-webview";
@@ -78,7 +85,86 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 // import { gifts } from "../assets/giftsData";
 
 const { width, height } = Dimensions.get('window');
+// Join animation: 'auto' (level se) | 'slide' | 'lv10' | 'lv20' | 'lv30' | 'lv40' | 'lv50'
+const JOIN_ANIM_VARIANT = 'auto';
+const log = __DEV__ ? console.log.bind(console) : () => {};
 const STABLE_AVATAR = 'https://avatar.iran.liara.run/public/65';
+const SEAT_KEYS = ['seat_1','seat_2','seat_3','seat_4','seat_5','seat_6','seat_7','seat_8'];
+const EMPTY_SEAT = {};
+const _uidHashCache = new Map();
+
+// Pure-JS SHA-256 (UTF-8 string -> 32 byte array). Server (/token) isi hash se
+// Agora UID banata hai, isliye app ko EXACTLY wahi formula chahiye.
+const sha256Bytes = (str) => {
+  const K = [
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2,
+  ];
+  const H = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+
+  // UTF-8 encode
+  const bytes = [];
+  const utf8 = unescape(encodeURIComponent(str));
+  for (let i = 0; i < utf8.length; i++) bytes.push(utf8.charCodeAt(i));
+  const bitLen = bytes.length * 8;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  const hi = Math.floor(bitLen / 0x100000000);
+  const lo = bitLen >>> 0;
+  bytes.push((hi >>> 24) & 255, (hi >>> 16) & 255, (hi >>> 8) & 255, hi & 255,
+             (lo >>> 24) & 255, (lo >>> 16) & 255, (lo >>> 8) & 255, lo & 255);
+
+  const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+  const w = new Array(64);
+  for (let off = 0; off < bytes.length; off += 64) {
+    for (let t = 0; t < 16; t++) {
+      w[t] = ((bytes[off + t*4] << 24) | (bytes[off + t*4 + 1] << 16) |
+              (bytes[off + t*4 + 2] << 8) | bytes[off + t*4 + 3]) | 0;
+    }
+    for (let t = 16; t < 64; t++) {
+      const s0 = rotr(w[t-15], 7) ^ rotr(w[t-15], 18) ^ (w[t-15] >>> 3);
+      const s1 = rotr(w[t-2], 17) ^ rotr(w[t-2], 19) ^ (w[t-2] >>> 10);
+      w[t] = (w[t-16] + s0 + w[t-7] + s1) | 0;
+    }
+    let [a,b,c,d,e,f,g,h] = H;
+    for (let t = 0; t < 64; t++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + K[t] + w[t]) | 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + maj) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0;
+      d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
+    H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+  }
+  const out = [];
+  H.forEach(x => out.push((x >>> 24) & 255, (x >>> 16) & 255, (x >>> 8) & 255, x & 255));
+  return out;
+};
+
+// Firebase UID -> Agora numeric UID. server.js /token ke saath 100% same:
+// sha256(uid) ke pehle 4 bytes (big-endian) & 0x7fffffff, minimum 1.
+const uidToNum = (id) => {
+  if (!id) return 0;
+  let v = _uidHashCache.get(id);
+  if (v === undefined) {
+    const b = sha256Bytes(String(id));
+    v = (((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) & 0x7fffffff);
+    v = Math.max(1, v);
+    _uidHashCache.set(id, v);
+  }
+  return v;
+};
+const fmtCount = (n = 0) => n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n);
 
 // Firebase safety check
 let db = null;
@@ -88,7 +174,7 @@ try {
   db = firebaseModule.db;
   auth = firebaseModule.auth;
 } catch (e) {
-  console.log("Firebase config not found.");
+  log("Firebase config not found.");
 }
 
 
@@ -316,12 +402,7 @@ const ChatItem = memo(({ chat }) => {
                         {
                             chat.level>=10 && (
 
-                                <Image
-                                    source={
-                                        getLevelFrame(
-                                            chat.level
-                                        )
-                                    }
+                                <LevelFrame level={chat.level} animated={false}
                                     style={{
                                         position:"absolute",
                                         width:30,
@@ -497,12 +578,7 @@ const ChatItem = memo(({ chat }) => {
                     {
                         chat.level>=10 && (
 
-                            <Image
-                                source={
-                                    getLevelFrame(
-                                        chat.level
-                                    )
-                                }
+                            <LevelFrame level={chat.level} animated={false}
                                 style={styles.chatFrame}
                             />
 
@@ -635,8 +711,7 @@ const AvatarWithFrame = ({ uri, level, size = 70 }) => {
       />
 
       {level >= 10 && (
-        <Image
-          source={getLevelFrame(level)}
+        <LevelFrame level={level}
           style={{
             position: "absolute",
             width: size + 20,
@@ -650,6 +725,302 @@ const AvatarWithFrame = ({ uri, level, size = 70 }) => {
   );
 };
 
+
+
+// ============================================================
+// ProfileFrame: animated level frame for profile popups.
+//  - level >= 10 : uses the existing <LevelFrame> (lv10/20/30/40/50 art)
+//  - level 1..9  : smooth pulsing + glowing ring, a different colour per
+//                  level, so EVERY user has a frame in their profile.
+// All animation runs on the native driver, so it stays smooth even in a
+// busy live room. pointerEvents="none" so taps still reach the avatar.
+// ============================================================
+const LOW_LEVEL_RING_COLORS = [
+  "#9AA0A6", // lv1
+  "#4CAF50", // lv2
+  "#26C6DA", // lv3
+  "#42A5F5", // lv4
+  "#7E57C2", // lv5
+  "#AB47BC", // lv6
+  "#EC407A", // lv7
+  "#FF7043", // lv8
+  "#FFB300", // lv9
+];
+
+const ProfileFrame = memo(({ level = 1, avatarSize = 100, frameSize }) => {
+  const lv = Math.max(1, Math.floor(Number(level) || 1));
+  const outer = frameSize || avatarSize + 20;
+  const offset = -(outer - avatarSize) / 2;
+
+  const pulse = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (lv >= 10) return;
+    pulse.setValue(0);
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 1100,
+          easing: RNEasing.inOut(RNEasing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 0,
+          duration: 1100,
+          easing: RNEasing.inOut(RNEasing.sin),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [lv, pulse]);
+
+  const wrapStyle = {
+    position: "absolute",
+    width: outer,
+    height: outer,
+    top: offset,
+    left: offset,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 10,
+  };
+
+  if (lv >= 10) {
+    return (
+      <View pointerEvents="none" style={wrapStyle}>
+        <LevelFrame
+          key={`lf-${lv}`}
+          level={lv}
+          animated={true}
+          style={{ width: outer, height: outer, resizeMode: "contain" }}
+        />
+      </View>
+    );
+  }
+
+  const color = LOW_LEVEL_RING_COLORS[Math.min(lv, 9) - 1];
+  const ring = avatarSize + 8;
+
+  const scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.1] });
+  const haloOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.55, 0] });
+  const haloScale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.35] });
+
+  return (
+    <View pointerEvents="none" style={wrapStyle}>
+      {/* soft expanding halo */}
+      <Animated.View
+        style={{
+          position: "absolute",
+          width: ring,
+          height: ring,
+          borderRadius: ring / 2,
+          borderWidth: 2,
+          borderColor: color,
+          opacity: haloOpacity,
+          transform: [{ scale: haloScale }],
+        }}
+      />
+      {/* main ring */}
+      <Animated.View
+        style={{
+          width: ring,
+          height: ring,
+          borderRadius: ring / 2,
+          borderWidth: 3,
+          borderColor: color,
+          shadowColor: color,
+          shadowOffset: { width: 0, height: 0 },
+          shadowOpacity: 0.9,
+          shadowRadius: 8,
+          elevation: 6,
+          transform: [{ scale }],
+        }}
+      />
+    </View>
+  );
+});
+
+
+// ============================================================
+// GIFT SHEET (PERF)
+// Pehle ye poora popup LiveRoom ke andar tha -> room me har snapshot /
+// chat / seat update pe re-render, aur horizontal ScrollView ek saath
+// SAARE gift images render karta tha -> left/right swipe pe lag.
+// Ab: memo component + FlatList (sirf paas ke pages render hote hain)
+// + memo GiftCard + native-driver animation.
+// ============================================================
+const GIFTS_PER_PAGE = 6;
+const GIFT_PAGE_W = width - 40;
+const GIFT_PAGES = (() => {
+  const pages = [];
+  for (let i = 0; i < gifts.length; i += GIFTS_PER_PAGE) {
+    pages.push({ key: 'p' + i, items: gifts.slice(i, i + GIFTS_PER_PAGE) });
+  }
+  return pages;
+})();
+
+const GiftCard = memo(({ item, onSend }) => (
+  <TouchableOpacity
+    style={styles.giftCard}
+    activeOpacity={0.7}
+    onPress={() => onSend(item)}
+  >
+    <Image
+      source={item.icon}
+      style={{ width: 45, height: 45 }}
+      resizeMode="contain"
+      fadeDuration={0}
+    />
+    <Text style={styles.giftName}>{item.name}</Text>
+    <Text style={styles.giftCoin}>{item.price}</Text>
+  </TouchableOpacity>
+));
+
+const GiftPage = memo(({ page, onSend }) => (
+  <View
+    style={{
+      width: GIFT_PAGE_W,
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      justifyContent: 'space-between',
+      paddingHorizontal: 5,
+    }}
+  >
+    {page.items.map((item) => (
+      <GiftCard key={item.id} item={item} onSend={onSend} />
+    ))}
+  </View>
+));
+
+const GiftUserChip = memo(({ user, selected, onSelect }) => (
+  <TouchableOpacity
+    onPress={() => onSelect(user.uid)}
+    style={{ alignItems: 'center', marginRight: 12 }}
+  >
+    <Image
+      source={{ uri: user.img || STABLE_AVATAR }}
+      style={{
+        width: 50,
+        height: 50,
+        borderRadius: 25,
+        borderWidth: selected ? 3 : 1,
+        borderColor: selected ? '#ff1493' : '#555',
+      }}
+    />
+    <Text
+      style={{ color: '#fff', fontSize: 10, width: 65, textAlign: 'center', marginTop: 4 }}
+      numberOfLines={1}
+    >
+      {user.name}
+    </Text>
+  </TouchableOpacity>
+));
+
+const GiftSheet = memo(
+  ({ visible, onClose, stars, giftUsers, selectedGiftUser, onSelectUser, onSendGift }) => {
+    const anim = useRef(new Animated.Value(400)).current;
+
+    useEffect(() => {
+      if (visible) {
+        anim.setValue(400);
+        Animated.timing(anim, {
+          toValue: 0,
+          duration: 220,
+          easing: RNEasing.out(RNEasing.cubic),
+          useNativeDriver: true,
+        }).start();
+      }
+    }, [visible, anim]);
+
+    const renderPage = useCallback(
+      ({ item }) => <GiftPage page={item} onSend={onSendGift} />,
+      [onSendGift]
+    );
+    const getItemLayout = useCallback(
+      (_, index) => ({ length: GIFT_PAGE_W, offset: GIFT_PAGE_W * index, index }),
+      []
+    );
+
+    return (
+      <Modal
+        visible={visible}
+        transparent
+        animationType="none"
+        statusBarTranslucent
+        hardwareAccelerated
+        onRequestClose={onClose}
+      >
+        <View style={styles.giftOverlay}>
+          <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onClose} />
+
+          <Animated.View style={[styles.giftSheet, { transform: [{ translateY: anim }] }]}>
+            <View
+              style={{
+                flexDirection: 'row',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: 15,
+              }}
+            >
+              <Text style={styles.giftTitle}>🎁 Send Gifts</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={{ fontSize: 24 }}>⭐</Text>
+                <Text style={{ color: '#fff', fontSize: 20, fontWeight: 'bold', marginLeft: 5 }}>
+                  {stars}
+                </Text>
+              </View>
+            </View>
+
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={{ marginBottom: 15, flexGrow: 0 }}
+              contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 10 }}
+            >
+              {giftUsers.map((user) => (
+                <GiftUserChip
+                  key={user.uid}
+                  user={user}
+                  selected={selectedGiftUser === user.uid}
+                  onSelect={onSelectUser}
+                />
+              ))}
+            </ScrollView>
+
+            <FlatList
+              data={GIFT_PAGES}
+              keyExtractor={(p) => p.key}
+              renderItem={renderPage}
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              getItemLayout={getItemLayout}
+              initialNumToRender={1}
+              maxToRenderPerBatch={1}
+              windowSize={3}
+              removeClippedSubviews
+              decelerationRate="fast"
+              bounces={false}
+              overScrollMode="never"
+              scrollEventThrottle={16}
+            />
+          </Animated.View>
+        </View>
+      </Modal>
+    );
+  },
+  (a, b) =>
+    a.visible === b.visible &&
+    a.stars === b.stars &&
+    a.selectedGiftUser === b.selectedGiftUser &&
+    a.onClose === b.onClose &&
+    a.onSendGift === b.onSendGift &&
+    a.giftUsers.map((u) => u.uid + '|' + u.img + '|' + u.name).join(',') ===
+      b.giftUsers.map((u) => u.uid + '|' + u.img + '|' + u.name).join(',')
+);
 
 export default function LiveRoom() {
 const insets = useSafeAreaInsets();
@@ -728,9 +1099,11 @@ const [requestModalVisible, setRequestModalVisible] = useState(false);
 
 const [giftModalVisible, setGiftModalVisible] = useState(false);
 
-const giftModalAnim = useRef(
-new Animated.Value(400)
-).current;
+const closeGiftSheet = useCallback(() => setGiftModalVisible(false), []);
+const handleSendGiftRef = useRef(null);
+const onSendGiftStable = useCallback((item) => {
+  if (handleSendGiftRef.current) handleSendGiftRef.current(item);
+}, []);
 
 
 const [speakerModalVisible, setSpeakerModalVisible] = useState(false);
@@ -778,6 +1151,7 @@ const [previewStatsLoading, setPreviewStatsLoading] = useState(false);
 const [previewFollowBusy, setPreviewFollowBusy] = useState(false);
 const [previewLikeBusy, setPreviewLikeBusy] = useState(false);
 const previewRequestIdRef = useRef(0);
+const [previewLevel, setPreviewLevel] = useState(null);
 
 const [activeGift, setActiveGift] = useState(null);
 
@@ -820,31 +1194,16 @@ const comboTimeoutRef = useRef(null);
 
 // ===== JOIN BANNER ("Nawed joined") =====
 const [joinBanner, setJoinBanner] = useState(null);
-const joinAnim = useRef(new Animated.Value(-width)).current;
 const joinHideTimeoutRef = useRef(null);
 const chatsReadyRef = useRef(false);
 // ids of "joined" messages that already existed BEFORE I entered -> never shown to me
 const oldJoinIdsRef = useRef(new Set());
 
 const showJoinBanner = (data) => {
-  if (joinHideTimeoutRef.current) clearTimeout(joinHideTimeoutRef.current);
-  setJoinBanner(data);
-  joinAnim.stopAnimation();
-  joinAnim.setValue(-width);
-  Animated.spring(joinAnim, {
-    toValue: 0,
-    speed: 14,
-    bounciness: 6,
-    useNativeDriver: true,
-  }).start();
-  joinHideTimeoutRef.current = setTimeout(() => {
-    Animated.timing(joinAnim, {
-      toValue: -width,
-      duration: 300,
-      useNativeDriver: true,
-    }).start(() => setJoinBanner(null));
-  }, 2800);
+  // _k: har naye join par animation restart ho (JoinEntry isi key se reset hota hai)
+  setJoinBanner({ ...data, _k: Date.now() + Math.random() });
 };
+const handleJoinDone = useCallback(() => setJoinBanner(null), []);
 
 
 const [selectedGiftUser, setSelectedGiftUser] = useState(null);
@@ -868,6 +1227,13 @@ const agoraJoinStartedRef = useRef(false);
 const agoraEngineRef = useRef(null);
 
 // ===== LIVE LIFECYCLE (host end / host app killed) =====
+// Host ka heartbeat sirf safety-net hai. Android background/doze me JS timers
+// ruk jaate hain, isliye viewers ko tab tak kick nahi karte jab tak heartbeat
+// 10 min se purana na ho. Host "End live" dabaye to room doc delete hota hai
+// aur sab turant bahar ho jaate hain (snapshot -> handleRoomEnded).
+const HOST_HEARTBEAT_TIMEOUT_MS = 10 * 60 * 1000;
+const cameFromAllLive = from === "all-live" || from === "alllive";
+
 const exitingRef = useRef(false);          // I am leaving on my own (cleanAndExit running)
 const roomEndedRef = useRef(false);        // host ended / disappeared
 const isFocusedRef = useRef(true);
@@ -884,7 +1250,7 @@ const releaseAgora = () => {
 };
 
 const navigateAfterEnd = () => {
-  if (from === "all-live") router.replace("/all-live");
+  if (cameFromAllLive) router.replace("/all-live");
   else router.replace("/");
 };
 
@@ -936,6 +1302,83 @@ const [audienceMap, setAudienceMap] = useState({});
 
 
 const pulseAnim = useRef(new Animated.Value(1)).current;
+
+// ===== PREMIUM: sheets / hearts / emoji (hooks yahin rehne chahiye, early return se pehle) =====
+const [viewersVisible, setViewersVisible] = useState(false);
+const [giftersVisible, setGiftersVisible] = useState(false);
+const [menuVisible, setMenuVisible] = useState(false);
+const [emojiOpen, setEmojiOpen] = useState(false);
+const heartsRef = useRef(null);
+const pendingHeartsRef = useRef(0);
+const heartFlushRef = useRef(null);
+const prevOthersHeartsRef = useRef(null);
+const heartsMountedAtRef = useRef(Date.now());
+const seatPressRef = useRef(null);
+const stableSeatPress = useCallback((k, s) => {
+  if (seatPressRef.current) seatPressRef.current(k, s);
+}, []);
+
+// Apna mic state seat se sync (bottom mic button ke liye)
+const iAmMuted = !!Object.values(roomData?.seatsData || {}).find(
+  (s) => s && s.userId === currentUid
+)?.isMuted;
+useEffect(() => { setSelfMuted(iAmMuted); }, [iAmMuted]);
+
+// Hearts: tap par turant local animation; server par har 4s me ek hi chhota write
+// (apne audience doc me). Doc exist na kare to updateDoc chup-chaap fail hota hai.
+const flushHearts = useCallback(() => {
+  heartFlushRef.current = null;
+  const n = pendingHeartsRef.current;
+  pendingHeartsRef.current = 0;
+  if (!n || !db || !roomId || !currentUid) return;
+  updateDoc(doc(db, 'rooms', roomId, 'audience', currentUid), { hearts: increment(n) }).catch(() => {});
+}, [roomId, currentUid]);
+
+const sendHeart = useCallback(() => {
+  if (heartsRef.current) heartsRef.current.burst(1);
+  pendingHeartsRef.current += 1;
+  if (!heartFlushRef.current) heartFlushRef.current = setTimeout(flushHearts, 4000);
+}, [flushHearts]);
+
+useEffect(() => () => {
+  if (heartFlushRef.current) { clearTimeout(heartFlushRef.current); flushHearts(); }
+}, [flushHearts]);
+
+// Dusron ke hearts: audience listener pehle se chal raha hai, koi naya listener nahi.
+useEffect(() => {
+  let total = 0;
+  for (const uid in audienceMap) {
+    if (uid !== currentUid) total += audienceMap[uid]?.hearts || 0;
+  }
+  const prev = prevOthersHeartsRef.current;
+  prevOthersHeartsRef.current = total;
+  if (prev === null || Date.now() - heartsMountedAtRef.current < 2500) return;
+  const delta = total - prev;
+  if (delta > 0 && heartsRef.current) heartsRef.current.burst(Math.min(delta, 6));
+}, [audienceMap, currentUid]);
+
+const kickUser = useCallback(async (user) => {
+  if (!db || !roomId || !user || !user.uid) return;
+  try {
+    const updates = { ['kicked.' + user.uid]: Date.now() };
+    // Agar kicked user kisi seat par tha to seat khaali karo (uska mic band)
+    Object.entries(roomData?.seatsData || {}).forEach(([key, seat]) => {
+      if (seat?.userId === user.uid && key !== 'seat_1') {
+        updates['seatsData.' + key] = {
+          userId: null, userName: 'Open', userImg: STABLE_AVATAR, isMuted: false,
+        };
+      }
+    });
+    await updateDoc(doc(db, 'rooms', roomId), updates);
+    await deleteDoc(doc(db, 'rooms', roomId, 'audience', user.uid));
+  } catch (e) { log(e); }
+}, [roomId, roomData?.seatsData]);
+
+const toggleRoomLock = useCallback(async () => {
+  if (!db || !roomId) return;
+  try { await updateDoc(doc(db, 'rooms', roomId), { roomLocked: !roomData?.roomLocked }); }
+  catch (e) { log(e); }
+}, [roomId, roomData?.roomLocked]);
 
 
 const giftGlow = useRef(new Animated.Value(0.6)).current;
@@ -1080,16 +1523,16 @@ if (walletSnap.exists()) {
 
 }
 
-console.log("Avatar =", data.profileImg);
-console.log("Username =", data.username);
-console.log("Real Name =", data.name);
+log("Avatar =", data.profileImg);
+log("Username =", data.username);
+log("Real Name =", data.name);
 
 
 
 }
 
 } catch (e) {
-console.log(e);
+log(e);
 }
 
 };
@@ -1130,25 +1573,7 @@ useEffect(() => {
 
 
 
-useEffect(()=>{
 
-if(giftModalVisible){
-
-giftModalAnim.setValue(400);
-
-Animated.spring(
-giftModalAnim,
-{
-toValue:0,
-speed:18,
-bounciness:4,
-useNativeDriver:true,
-}
-).start();
-
-}
-
-},[giftModalVisible]);
 
 
 
@@ -1204,7 +1629,7 @@ useEffect(() => {
 
     } catch (e) {
       friendsLoadedRef.current = false;
-      console.log("Load friends error:", e);
+      log("Load friends error:", e);
     }
 
   };
@@ -1298,7 +1723,7 @@ const fetchProfilePreview = async (targetUserId) => {
     setPreviewHasLiked(likeSnap ? likeSnap.exists() : false);
 
   } catch (error) {
-    if (__DEV__) console.log("PROFILE PREVIEW FETCH ERROR =", error);
+    if (__DEV__) log("PROFILE PREVIEW FETCH ERROR =", error);
   } finally {
     if (requestId === previewRequestIdRef.current) {
       setPreviewStatsLoading(false);
@@ -1366,7 +1791,7 @@ const handlePreviewFollow = async (targetSpeaker) => {
       Math.max(0, c + (wasFollowing ? 1 : -1))
     );
 
-    if (__DEV__) console.log("PREVIEW FOLLOW ERROR =", error);
+    if (__DEV__) log("PREVIEW FOLLOW ERROR =", error);
 
   } finally {
     setPreviewFollowBusy(false);
@@ -1404,7 +1829,7 @@ const handlePreviewLike = async (targetSpeaker) => {
 
     setPreviewHasLiked(wasLiked); // roll back on failure
 
-    if (__DEV__) console.log("PREVIEW LIKE ERROR =", error);
+    if (__DEV__) log("PREVIEW LIKE ERROR =", error);
 
   } finally {
     setPreviewLikeBusy(false);
@@ -1419,6 +1844,29 @@ useEffect(() => {
   }
 
 }, [profileVisible, speakerModalVisible, selectedSpeaker?.userId]);
+
+// Always show the profile frame for the user's REAL current level
+// (wallet doc), not just whatever level was cached on the seat.
+useEffect(() => {
+
+  if (!(profileVisible || speakerModalVisible) || !selectedSpeaker?.userId || !db) return;
+
+  let cancelled = false;
+  setPreviewLevel(null);
+
+  getDoc(doc(db, "wallets", selectedSpeaker.userId))
+    .then((snap) => {
+      if (!cancelled && snap.exists()) {
+        setPreviewLevel(snap.data()?.level || 1);
+      }
+    })
+    .catch(() => {});
+
+  return () => { cancelled = true; };
+
+}, [profileVisible, speakerModalVisible, selectedSpeaker?.userId]);
+
+const profileLevel = previewLevel ?? selectedSpeaker?.level ?? 1;
 
 
 
@@ -1529,6 +1977,29 @@ useEffect(() => {
   return () => { clearInterval(timer); sub.remove(); };
 }, [roomId, currentUserRole]);
 
+// ---------- LIVE VIEWER COUNT -> all-live ----------
+// Sirf HOST likhta hai (ek hi writer => race / drift nahi). Room ke andar
+// jitne log (host ko chhod kar) hain utna hi `viewerCount` all-live me dikhta
+// hai: join par badhta hai, leave par ghatta hai. 1.5s debounce taaki bahut
+// log ek saath aayein to ek hi write ho.
+const lastWrittenViewerCountRef = useRef(-1);
+useEffect(() => {
+  if (!db || !roomId || currentUserRole !== "host") return;
+
+  let n = 0;
+  for (const uid in audienceMap) {
+    const u = audienceMap[uid];
+    if (u && u.uid && u.uid !== roomData?.hostId && u.uid !== currentUid) n++;
+  }
+  if (n === lastWrittenViewerCountRef.current) return;
+
+  const t = setTimeout(() => {
+    lastWrittenViewerCountRef.current = n;
+    updateDoc(doc(db, "rooms", roomId), { viewerCount: n }).catch(() => {});
+  }, 1500);
+  return () => clearTimeout(t);
+}, [audienceMap, roomData?.hostId, roomId, currentUserRole, currentUid]);
+
 // ---------- VIEWER: detect host app killed ----------
 useEffect(() => {
   if (!db || !roomId || currentUserRole === "host") return;
@@ -1536,7 +2007,7 @@ useEffect(() => {
 
   const timer = setInterval(async () => {
     if (!lastHeartbeatSeenAtRef.current) return;                  // old room without heartbeat
-    if (Date.now() - lastHeartbeatSeenAtRef.current < 75000) return;
+    if (Date.now() - lastHeartbeatSeenAtRef.current < HOST_HEARTBEAT_TIMEOUT_MS) return;
     try {
       const snap = await getDoc(roomRef);
       if (snap.metadata?.fromCache) return;                       // offline: don't guess
@@ -1551,7 +2022,7 @@ useEffect(() => {
       // Host really gone: end for this viewer.
       handleRoomEnded();
     } catch (_) {}
-  }, 15000);
+    }, 30000);
 
   // our own timers pause in background -> give a fresh grace period on return
   const sub = AppState.addEventListener("change", (st) => {
@@ -1642,6 +2113,17 @@ if (
   return;
 }
 
+if (
+  data?.kicked?.[currentUid] &&
+  data?.hostId !== currentUid
+) {
+  releaseAgora();
+  try { stopLive(); } catch (_) {}
+  alert("Host ne aapko is room se hata diya hai");
+  router.back();
+  return;
+}
+
         const updates = {};
 
 // SCALE FIX: presence now goes to its own subcollection doc
@@ -1683,10 +2165,10 @@ userData.verifiedColor || "white",
 }
 
 
-console.log("Joining Room...");
-console.log("UID =", currentUid);
-console.log("Name =", currentName);
-console.log("Avatar =", currentAvatar);
+log("Joining Room...");
+log("UID =", currentUid);
+log("Name =", currentName);
+log("Avatar =", currentAvatar);
 
 // Only post a fresh "X joined" chat message the FIRST time this user
 // shows up in this room's audience list. Without this check, every
@@ -1704,7 +2186,8 @@ const writeJobs = [
   setDoc(doc(db, 'rooms', roomId, 'audience', currentUid), audiencePayload),
 ];
 
-if (isFirstJoinThisSession) {
+// host ke liye "joined" message nahi aayega
+if (isFirstJoinThisSession && data?.hostId !== currentUid) {
   writeJobs.push(
     addDoc(collection(db, 'rooms', roomId, 'chats'), {
       type: "join",
@@ -1725,12 +2208,12 @@ if (Object.keys(updates).length > 0) {
 
 await Promise.all(writeJobs);
 
-console.log("Audience Added =", audiencePayload);
+log("Audience Added =", audiencePayload);
 
 
 
 
-      } catch (e) { console.log(e); }
+      } catch (e) { log(e); }
     };
     
     joinRoom();
@@ -1752,7 +2235,7 @@ console.log("Audience Added =", audiencePayload);
         // re-render the whole room screen.
         let roomSig = null;
         try {
-          const { hostHeartbeat, ...restOfRoom } = data;
+          const { hostHeartbeat, viewerCount, ...restOfRoom } = data;
           roomSig = JSON.stringify(restOfRoom);
         } catch (_) {}
         if (roomSig && roomSig === lastRoomSigRef.current) return;
@@ -1767,6 +2250,14 @@ console.log("Audience Added =", audiencePayload);
           lastSeenGiftKeyRef.current = data?.liveGift
             ? `${data.liveGift.senderId}_${data.liveGift.timestamp}`
             : "";
+        }
+
+        if (currentUid && data?.hostId !== currentUid && data?.kicked?.[currentUid]) {
+          releaseAgora();
+          try { stopLive(); } catch (_) {}
+          alert("Host ne aapko is room se hata diya hai");
+          router.back();
+          return;
         }
 
         setRoomData(data);
@@ -1907,40 +2398,24 @@ initAgora(role);
 }
 
 
-// Agar speaker seat se remove ho gaya hai
-// Agar host ne speaker ko remove kar diya hai
+// Agar host ne speaker ko seat se remove kiya:
+// FIX: pehle yahan leaveChannel() + initAgora("listener") hota tha, par engine ref
+// null nahi tha isliye initAgora turant return ho jata tha -> user channel se bahar
+// reh jata tha aur kisi ki voice nahi aati thi. Ab channel me hi rehte hain, sirf
+// mic MUTE + role Audience -> doosre sab ki voice turant aati rehti hai.
 if (
   !onPod &&
   currentUserRoleRef.current === "speaker" &&
   agoraEngineRef.current
 ) {
-
   setCurrentUserRole("listener");
-
-  agoraEngineRef.current.setClientRole(
-    ClientRoleType.ClientRoleAudience
-  );
-
-  agoraEngineRef.current.enableLocalAudio(false);
-
-  agoraEngineRef.current.muteLocalAudioStream(true);
-
- agoraEngineRef.current.leaveChannel();
-
-setJoined(false);
-
-setRemoteUsers([]);
-
-setTimeout(() => {
-
-  initAgora("listener");
-
-},500);
-
-
+  currentUserRoleRef.current = "listener";
+  try { agoraEngineRef.current.muteLocalAudioStream(true); } catch (_) {}
+  try { agoraEngineRef.current.enableLocalAudio(false); } catch (_) {}
+  try { agoraEngineRef.current.setClientRole(ClientRoleType.ClientRoleAudience); } catch (_) {}
+  try { agoraEngineRef.current.muteAllRemoteAudioStreams(false); } catch (_) {}
+  try { agoraEngineRef.current.setEnableSpeakerphone(true); } catch (_) {}
 }
-
-
 
 // Agar current user speaker hai aur host ne mute kiya hai
 if (
@@ -2025,7 +2500,7 @@ useEffect(() => {
       });
     }
     chatsReadyRef.current = true;
-  }, (e) => console.log("Chat listener error:", e));
+  }, (e) => log("Chat listener error:", e));
 
   return () => {
     unsubChats();
@@ -2072,7 +2547,7 @@ useEffect(() => {
         setAudienceMap(latestMap);
       }, 600);
     }
-  }, (e) => console.log("Audience listener error:", e));
+  }, (e) => log("Audience listener error:", e));
 
   return () => {
     unsubAudience();
@@ -2212,7 +2687,7 @@ Animated.timing(giftOpacity,{
       if (snap.empty) return;
       await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
     } catch (e) {
-      console.log(`Clear ${subName} error:`, e);
+      log(`Clear ${subName} error:`, e);
     }
   };
 
@@ -2244,7 +2719,7 @@ Animated.timing(giftOpacity,{
     }
 
     // Pehle navigate karein taaki user ko wait na karna pade
-   if (from === "all-live") {
+   if (cameFromAllLive) {
 
   router.replace("/all-live");
 
@@ -2310,7 +2785,7 @@ if (currentUserRole === "host") {
 
       }
     } catch (e) { 
-      console.log("Exit Process Error:", e);
+      log("Exit Process Error:", e);
     }
   };
 
@@ -2355,7 +2830,7 @@ alert("Request Sent");
 
 }catch(e){
 
-console.log(e);
+log(e);
 
 }
 
@@ -2389,7 +2864,7 @@ setCurrentUserRole("speaker");
 
 
   } catch (error) {
-    console.log(error);
+    log(error);
   }
 };
 
@@ -2418,7 +2893,7 @@ const handleRaiseHand = async () => {
     alert('Request Sent To Host');
 
   } catch (e) {
-    console.log(e);
+    log(e);
   }
 
   setRaiseHandLoading(false);
@@ -2448,65 +2923,112 @@ const initAgora = async (userRole) => {
 
       const firebaseUser = auth?.currentUser;
       if (!firebaseUser) throw new Error("Firebase user not available");
-      // no forced refresh: getIdToken() already refreshes when expired and saves a network round-trip
+            // no forced refresh: getIdToken() already refreshes when expired and saves a network round-trip
       const firebaseIdToken = await firebaseUser.getIdToken();
       if (!firebaseIdToken) throw new Error("Firebase ID token missing");
 
-      const numericUid = currentUid.split("").reduce((a,c) => a + c.charCodeAt(0), 0) % 1000000;
+      // Token fetch: 20s timeout + 3 tries (Render free server cold-start me
+      // pehli request fail/slow ho sakti hai -> join atak jata tha).
+      // Same helper token renew ke liye bhi use hota hai (1 ghante baad audio
+      // na kate).
+      const fetchAgoraToken = async (uidForToken, firstIdToken) => {
+        let lastError = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 20000);
+          let retryable = true;
+          try {
+            const idToken = firstIdToken && attempt === 0
+              ? firstIdToken
+              : await auth.currentUser.getIdToken();
+            const res = await fetch(
+              `https://topking-backend.onrender.com/token?channel=${encodeURIComponent(roomId)}&uid=${uidForToken}`,
+              { headers: { Authorization: `Bearer ${idToken}`, Accept: "application/json" }, signal: controller.signal }
+            );
+            const data = await res.json();
+            log("TOKEN HTTP STATUS =", res.status);
+            if (res.ok && data?.success && data?.token) return data;
+            lastError = new Error(data?.error || `Token request failed (${res.status})`);
+            // 4xx (429 ko chhodkar) retry se theek nahi hoga
+            if (res.status >= 400 && res.status < 500 && res.status !== 429) retryable = false;
+          } catch (e) {
+            lastError = e;
+          } finally {
+            clearTimeout(timeoutId);
+          }
+          if (!retryable) break;
+          await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+        }
+        throw lastError || new Error("Token request failed");
+      };
+
+      const numericUid = uidToNum(currentUid);
       const role = userRole === "host" || userRole === "speaker"
         ? ClientRoleType.ClientRoleBroadcaster
         : ClientRoleType.ClientRoleAudience;
 
-      console.log("AGORA INIT ROLE =", userRole, "UID =", numericUid);
-      console.log("AGORA AUTH USER =", firebaseUser.uid);
+      log("AGORA INIT ROLE =", userRole, "UID =", numericUid);
+      log("AGORA AUTH USER =", firebaseUser.uid);
 
-      const response = await fetch(
-        `https://topking-backend.onrender.com/token?channel=${encodeURIComponent(roomId)}&uid=${numericUid}`,
-        { headers: { Authorization: `Bearer ${firebaseIdToken}`, Accept: "application/json" } }
-      );
-      const tokenData = await response.json();
-      console.log("TOKEN HTTP STATUS =", response.status);
-      if (!response.ok || !tokenData?.success || !tokenData?.token) {
-        throw new Error(tokenData?.error || `Token request failed (${response.status})`);
-      }
+            const tokenData = await fetchAgoraToken(numericUid, firebaseIdToken);
 
       const token = tokenData.token;
       const backendUid = Number(tokenData.uid) || numericUid;
-      console.log("AGORA TOKEN OK = true, UID =", backendUid);
+      log("AGORA TOKEN OK = true, UID =", backendUid);
       voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, agora: "Token OK / Joining..." };
       setMyAgoraUid(backendUid);
 
       engine = createAgoraRtcEngine();
       engine.initialize({ appId: "4e23c17b272f4a1c920c214be58486f4" });
-      await engine.setAudioProfile(
-        AudioProfileType.AudioProfileSpeechStandard,
-        AudioScenarioType.AudioScenarioChatroom
-      );
-      await engine.setParameters(JSON.stringify({
-        "che.audio.ans.enable": true,
-        "che.audio.agc.enable": true,
-        "che.audio.aec.enable": true
-      }));
+      // ===== MUSIC-FRIENDLY AUDIO =====
+      // true  -> doosre app (Saavn/VLC/YT Music...) ka song live me bhi chalta rahe aur
+      //          speaker se mic me jaakar sab ko sunayi de.
+      // false -> purani voice-chat setting (echo cancel ON, par song nahi jayega).
+      const MUSIC_FRIENDLY_AUDIO = true;
+
+      if (MUSIC_FRIENDLY_AUDIO) {
+        // GameStreaming scenario = media volume mode -> doosre app ka music interrupt nahi hota
+        await engine.setAudioProfile(
+          AudioProfileType.AudioProfileMusicHighQuality,
+          AudioScenarioType.AudioScenarioGameStreaming
+        );
+        // Echo-cancel / noise-suppress / auto-gain song ko "shor" samajh ke kaat dete hain
+        await engine.setParameters(JSON.stringify({
+          "che.audio.ans.enable": false,
+          "che.audio.agc.enable": false,
+          "che.audio.aec.enable": false
+        }));
+      } else {
+        await engine.setAudioProfile(
+          AudioProfileType.AudioProfileSpeechStandard,
+          AudioScenarioType.AudioScenarioChatroom
+        );
+        await engine.setParameters(JSON.stringify({
+          "che.audio.ans.enable": true,
+          "che.audio.agc.enable": true,
+          "che.audio.aec.enable": true
+        }));
+      }
 
       engine.registerEventHandler({
         onJoinChannelSuccess: (connection, uid) => {
-          console.log("JOIN SUCCESS", uid, "ROLE =", userRole);
+          log("JOIN SUCCESS", uid, "ROLE =", userRole);
           setJoined(true);
           voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, agora: "Connected", mic: role === ClientRoleType.ClientRoleBroadcaster };
           isJoinedRef.current = true;
         },
         onUserJoined: (connection, uid) => {
-          console.log("REMOTE USER JOINED =", uid);
+          log("REMOTE USER JOINED =", uid);
           setRemoteUsers(prev => { const next = prev.includes(uid) ? prev : [...prev, uid]; voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, remote: true, remoteCount: next.length }; return next; });
         },
         onUserOffline: (connection, uid) => {
-          console.log("REMOTE USER LEFT =", uid);
+          log("REMOTE USER LEFT =", uid);
           setRemoteUsers(prev => { const next = prev.filter(id => id !== uid); voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, remote: next.length > 0, remoteCount: next.length }; return next; });
         },
         onAudioVolumeIndication: (connection, speakers) => {
           const map = {};
           let remoteVoice = false;
-          (speakers || []).forEach(item => { if (item.volume > 10) { map[item.uid] = true; if (Number(item.uid) !== Number(backendUid)) remoteVoice = true; } });
+          (speakers || []).forEach(item => { if (item.volume > 10) { const isLocal = Number(item.uid) === 0 || Number(item.uid) === Number(backendUid); map[isLocal ? backendUid : item.uid] = true; if (!isLocal) remoteVoice = true; } });
           if (remoteVoice) voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, remote: true };
           // FIX: only push a new activeSpeakers object when the actual set of
           // speaking uids changed. Agora fires this callback ~2x/second the
@@ -2520,7 +3042,20 @@ const initAgora = async (userRole) => {
             return prevKeys === nextKeys ? prev : map;
           });
         },
-        onError: err => { console.log("Agora Error:", err); voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, agora: `Error ${err}` }; },
+                // Token 1 ghante me expire hota hai -> expire se pehle chupchap renew.
+        onTokenPrivilegeWillExpire: async () => {
+          try {
+            const fresh = await fetchAgoraToken(numericUid);
+            if (engine && fresh?.token) engine.renewToken(fresh.token);
+          } catch (e) { log("Token renew failed:", e?.message || e); }
+        },
+        onRequestToken: async () => {
+          try {
+            const fresh = await fetchAgoraToken(numericUid);
+            if (engine && fresh?.token) engine.renewToken(fresh.token);
+          } catch (e) { log("Token re-request failed:", e?.message || e); }
+        },
+        onError: err => { log("Agora Error:", err); voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, agora: `Error ${err}` }; },
       });
 
       await engine.enableAudio();
@@ -2544,9 +3079,9 @@ const initAgora = async (userRole) => {
       });
 
       agoraEngineRef.current = engine;
-      console.log("AGORA JOINED ONCE =", backendUid);
+      log("AGORA JOINED ONCE =", backendUid);
     } catch (error) {
-      console.log("AGORA INIT ERROR =", error?.message || error);
+      log("AGORA INIT ERROR =", error?.message || error);
       voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, agora: `Failed: ${error?.message || error}`, mic: false };
       try { if (engine) engine.release(); } catch (_) {}
       agoraEngineRef.current = null;
@@ -2584,9 +3119,25 @@ const initAgora = async (userRole) => {
         level: hostLevel,
         createdAt: Date.now(),
       });
-    } catch (e) { console.log(e); }
+    } catch (e) { log(e); }
   };
 
+
+const sendQuickChat = async (text) => {
+  if (!db || !roomId || !text) return;
+  try {
+    await addDoc(collection(db, 'rooms', roomId, 'chats'), {
+      senderName: currentRealName,
+      username: currentName,
+      message: text,
+      userImg: currentAvatar || STABLE_AVATAR,
+      verified: hostVerified,
+      verifiedColor: hostVerifiedColor || "white",
+      level: hostLevel,
+      createdAt: Date.now(),
+    });
+  } catch (e) { log(e); }
+};
 
 const handleShare = async () => {
   try {
@@ -2600,7 +3151,7 @@ const handleShare = async () => {
 setShareModalVisible(false);
 
   } catch (e) {
-    console.log(e);
+    log(e);
   }
 };
 
@@ -2714,7 +3265,7 @@ await setDoc(
 
 
 
-      console.log("LIVE INVITE SAVED =", uid);
+      log("LIVE INVITE SAVED =", uid);
 
       // Notification
       await setDoc(
@@ -2741,7 +3292,7 @@ await setDoc(
 
   } catch (e) {
 
-    console.log(
+    log(
       "INVITE ERROR =",
       e
     );
@@ -2814,7 +3365,7 @@ user.verifiedColor || "white",
 
 }catch(e){
 
-console.log(e);
+log(e);
 
 }
 
@@ -2846,7 +3397,7 @@ isMuted:false
 
 }catch(e){
 
-console.log(e);
+log(e);
 
 }
 
@@ -2871,7 +3422,7 @@ const muteSpeaker = async () => {
     setSpeakerModalVisible(false);
 
   } catch (e) {
-    console.log(e);
+    log(e);
   }
 
 };
@@ -2948,7 +3499,7 @@ if(mySeatData?.mutedByHost){
 
   } catch (e) {
 
-    console.log(e);
+    log(e);
 
   }
 
@@ -3003,7 +3554,7 @@ const leaveOwnSeat = async () => {
 
   } catch (e) {
 
-    console.log(e);
+    log(e);
 
   }
 
@@ -3199,7 +3750,7 @@ const sendGiftInBackground = async ({
   const results = await Promise.allSettled(jobs);
   results.forEach((r, idx) => {
     if (r.status === "rejected" && __DEV__) {
-      console.log("GIFT WRITE FAILED #" + idx, r.reason);
+      log("GIFT WRITE FAILED #" + idx, r.reason);
     }
   });
 
@@ -3211,8 +3762,8 @@ const sendGiftInBackground = async ({
     body: JSON.stringify({ receiverUid: receiverId, stars: price }),
   })
     .then(r => r.json())
-    .then(res => { if (__DEV__) console.log("AGENCY UPDATE RESPONSE =", res); })
-    .catch(e => { if (__DEV__) console.log("Agency Update Error =", e); });
+    .then(res => { if (__DEV__) log("AGENCY UPDATE RESPONSE =", res); })
+    .catch(e => { if (__DEV__) log("Agency Update Error =", e); });
 
 };
 
@@ -3233,6 +3784,10 @@ const topUsers = audienceArray.slice(0,3);
 
 const totalViewers = audienceArray.length;
 
+const heartTotal = Object.values(audienceMap).reduce(
+  (a, u) => a + ((u && u.hearts) || 0), 0
+);
+
 const topSeatUsers = Object.values(
   roomData?.seatsData || {}
 ).filter(
@@ -3240,9 +3795,13 @@ const topSeatUsers = Object.values(
 );
 
 
-const giftUsers = [];
+handleSendGiftRef.current = handleSendGift;
 
-// Seats wale users
+// GIFT POPUP: sirf wahi users jo seat (site) pe baithe hain.
+// Upar audience/listener list wale users popup me nahi aayenge.
+const giftUsers = [];
+const _giftSeen = new Set();
+
 Object.values(roomData?.seatsData || {}).forEach((seat) => {
 
   if (!seat || !seat.userId) return;
@@ -3250,31 +3809,15 @@ Object.values(roomData?.seatsData || {}).forEach((seat) => {
   // nobody can gift themselves (host included)
   if (seat.userId === currentUid) return;
 
+  // same user 2 seats pe ho to sirf ek baar (duplicate key fix)
+  if (_giftSeen.has(seat.userId)) return;
+  _giftSeen.add(seat.userId);
+
   giftUsers.push({
     uid: seat.userId,
     name: seat.userName,
     img: seat.userImg
   });
-
-});
-// Audience wale users
-audienceArray.forEach((user) => {
-
-  if (!user || !user.uid) return;
-
-  // nobody can gift themselves
-  if (user.uid === currentUid) return;
-
-  // listeners can only gift people who are sitting on a seat
-  if (currentUserRole === "listener") return;
-
-  const alreadyExist = giftUsers.find(
-    u => u && u.uid === user.uid
-  );
-
-  if (!alreadyExist) {
-    giftUsers.push(user);
-  }
 
 });
 
@@ -3288,10 +3831,38 @@ roomData?.speakerRequests
 
 
 
+const handleSeatPress = (key) => {
+  const seat = roomData?.seatsData?.[key] || {};
+
+  if (seat.userId && seat.userId === currentUid) {
+    setSelectedSeatKey(key);
+    setSelectedSpeaker(seat);
+    setSelfMuted(seat.isMuted || false);
+    setSelfSeatModalVisible(true);
+    return;
+  }
+
+  if (!seat.userId && currentUserRole === "listener") {
+    sendSeatRequest(key);
+    return;
+  }
+
+  if (currentUserRole === "host" && seat.userId && key !== "seat_1") {
+    setSelectedSeatKey(key);
+    setSelectedSpeaker(seat);
+    setSpeakerModalVisible(true);
+  } else if (seat.userId && currentUserRole !== "host") {
+    setSelectedSpeaker(seat);
+    setProfileVisible(true);
+  }
+};
+seatPressRef.current = handleSeatPress;
+
 return (
   <View style={styles.mainContainer}>
 
     <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
+    <LinearGradient pointerEvents="none" colors={T.bgGradient} style={StyleSheet.absoluteFill} />
 
     {/* ================= TOP HEADER ================= */}
     <SafeAreaView style={styles.topHeader}>
@@ -3314,19 +3885,7 @@ style={styles.topHostImg}
 {
 roomData?.seatsData?.seat_1?.level>=10 && (
 
-<ReAnimated.Image
-
-source={
-getLevelFrame(
-roomData?.seatsData?.seat_1?.level
-)
-}
-
-style={[
-styles.hostLevelFrame,
-frameAnimation
-]}
-/>
+<LevelFrame level={roomData?.seatsData?.seat_1?.level} style={styles.hostLevelFrame} />
 
 )
 }
@@ -3427,7 +3986,7 @@ roomData?.seatsData?.seat_1?.verifiedColor
       </View>
 
 
-<View style={styles.viewerContainer}>
+<TouchableOpacity activeOpacity={0.8} onPress={() => setViewersVisible(true)} style={styles.viewerContainer}>
 
 {topUsers.map((user,index)=>(
 
@@ -3448,8 +4007,7 @@ roomData?.seatsData?.seat_1?.verifiedColor
 {
 (user.level || 0) >= 10 && (
 
-<Image
-    source={getLevelFrame(user.level)}
+<LevelFrame level={user.level}
     style={{
         position:"absolute",
         width:50,
@@ -3475,249 +4033,62 @@ roomData?.seatsData?.seat_1?.verifiedColor
 
 </View>
 
-</View>
+</TouchableOpacity>
 
 
 
     </SafeAreaView>
+
+    {/* ================= QUICK TOOLBAR ================= */}
+    <View style={styles.toolbar}>
+      <View style={styles.chip}>
+        <Ionicons name="heart" size={13} color={T.pink} />
+        <Text style={styles.chipTxt}>{fmtCount(heartTotal)}</Text>
+      </View>
+      <TouchableOpacity style={styles.chip} onPress={() => setGiftersVisible(true)}>
+        <MaterialCommunityIcons name="trophy" size={13} color={T.gold} />
+        <Text style={styles.chipTxt}>Top</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.chip} onPress={() => setFriendShareVisible(true)}>
+        <Ionicons name="share-social" size={13} color="#fff" />
+        <Text style={styles.chipTxt}>Share</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={[styles.chip, { paddingHorizontal: 9 }]} onPress={() => setMenuVisible(true)}>
+        <Ionicons name="ellipsis-horizontal" size={16} color="#fff" />
+      </TouchableOpacity>
+    </View>
 
     {/* ================= MAIN CONTENT ================= */}
  <View style={{flex:1}}>
 
       {/* SEATS */}
       <View style={styles.micGrid}>
-        {['seat_1','seat_2','seat_3','seat_4','seat_5','seat_6','seat_7','seat_8']
-          .map((key) => {
-            const seat = roomData?.seatsData?.[key] || {};
-            const isActive = !!seat.userId;
-
-
-            const seatStars =
-roomData?.seatStars?.[seat.userId] || 0;
-
-let isSpeaking = false;
-
-if(seat.userId){
-
-const uid =
-seat.userId
-.split("")
-.reduce((a,c)=>a+c.charCodeAt(0),0)%1000000;
-
-isSpeaking = activeSpeakers[uid];
-
-}
-
-
-
-            return (
-              <TouchableOpacity
-                key={key}
-                style={styles.seatItem}
-
-
-      onPress={() => {
-
-if (
-    seat.userId === currentUid
-) {
-
-    setSelectedSeatKey(key);
-
-    setSelectedSpeaker(seat);
-
-    setSelfMuted(seat.isMuted || false);
-
-    setSelfSeatModalVisible(true);
-
-    return;
-
-}
-
-
-if (
- !seat.userId &&
- currentUserRole === "listener"
-){
- sendSeatRequest(key);
- return;
-}
-
-
-if(
- currentUserRole==="host" &&
- seat.userId &&
- key!=="seat_1"
-){
-
-setSelectedSeatKey(key);
-
-setSelectedSpeaker(seat);
-console.log("SELECTED SPEAKER =", seat);
-setSpeakerModalVisible(true);
-
-}
-
-
-
-
-else if (
- seat.userId &&
- currentUserRole !== "host"
-){
-
-setSelectedSpeaker(seat);
-
-setProfileVisible(true);
-
-}
-
-
-
-}}
-
-
-              >
-                <View
-                
-                style={[
-styles.avatarBox,
-
-isSpeaking
-? styles.speakingBorder
-
-: isActive
-? (
-key==="seat_1"
-? styles.hostBorder
-: styles.speakerBorder
-)
-
-: styles.emptyBorder
-
-]}
-                
-                >
-
-
-{
-isSpeaking && (
-
-<Animated.View
-style={[
-styles.voicePulse,
-{
-transform:[
-{
-scale:pulseAnim
-}
-]
-}
-]}
-/>
-
-)
-}
-
-
-                 {isActive ? (
-    <>
-        <Image
-            source={{
-                uri: seat.userImg || STABLE_AVATAR
-            }}
-            style={styles.avatarMain}
-        />
-
-        {seat.level >= 10 && (
-            <Image
-                source={getLevelFrame(seat.level)}
-                style={{
-                    position: "absolute",
-                    width: 90,
-                    height: 90,
-                    resizeMode: "contain",
-                    zIndex: 10,
-                }}
+        {SEAT_KEYS.map((key, i) => {
+          const seat = roomData?.seatsData?.[key] || EMPTY_SEAT;
+          let speaking = false;
+          if (seat.userId) {
+            speaking = !!activeSpeakers[uidToNum(seat.userId)];
+          }
+          return (
+            <SeatItem
+              key={key}
+              seatKey={key}
+              index={i + 1}
+              seat={seat}
+              stars={(seat.userId && roomData?.seatStars?.[seat.userId]) || 0}
+              isSpeaking={speaking}
+              onPress={stableSeatPress}
             />
-        )}
-    </>
-) : (
-    <Ionicons
-        name="add"
-        size={28}
-        color="rgba(255,255,255,0.2)"
-    />
-)}
-
-                  {key === 'seat_1' && (
-                    <View style={styles.hostTag}>
-                      <Text style={styles.tagLabel}>HOST</Text>
-                    </View>
-                  )}
-                </View>
-
-                
-<Text
-style={{
-color:"#888",
-fontSize:10,
-marginTop:4
-}}
->
-@{seat.userName}
-</Text>
-
-
-{
-seat.userId && (
-
-<View
-style={{
-flexDirection:"row",
-alignItems:"center",
-marginTop:2
-}}
->
-
-<Text
-style={{
-fontSize:12
-}}
->
-⭐
-</Text>
-
-<Text
-style={{
-color:"#ffd700",
-fontSize:11,
-fontWeight:"bold",
-marginLeft:3
-}}
->
-{seatStars}
-</Text>
-
-</View>
-
-)
-}
-
-
-
-              </TouchableOpacity>
-            );
-          })}
+          );
+        })}
       </View>
 
-
-
-
-
-
-
-
+      {!!roomData?.description && (
+        <View style={styles.pinned}>
+          <Ionicons name="megaphone" size={13} color={T.gold} />
+          <Text numberOfLines={4} ellipsizeMode="tail" style={styles.pinnedTxt}>{roomData.description}</Text>
+        </View>
+      )}
 
       {/* CHAT */}
 <FlatList
@@ -3729,9 +4100,9 @@ marginLeft:3
         paddingBottom:120
     }}
     showsVerticalScrollIndicator={false}
-    initialNumToRender={12}
-    maxToRenderPerBatch={8}
-    windowSize={7}
+    initialNumToRender={10}
+    maxToRenderPerBatch={6}
+    windowSize={5}
     removeClippedSubviews={false}
     updateCellsBatchingPeriod={40}
     keyExtractor={chatKeyExtractor}
@@ -3765,7 +4136,7 @@ giftCombo && (
     pointerEvents="none"
     style={{
       position:"absolute",
-      top: height*0.45,
+      top: height*0.25,
       left:10,
       zIndex:99998,
       elevation:99998,
@@ -3852,61 +4223,27 @@ giftCombo && (
 )
 }
 
-{/* ================= JOIN BANNER ("Nawed joined") ================= */}
-{
-joinBanner && (
-  <Animated.View
-    pointerEvents="none"
-    style={{
-      position:"absolute",
-      top: height*0.45,
-      left:10,
-      zIndex:99997,
-      elevation:99997,
-      flexDirection:"row",
-      alignItems:"center",
-      paddingLeft:5,
-      paddingRight:18,
-      paddingVertical:5,
-      borderRadius:30,
-      backgroundColor:"rgba(0,0,0,0.6)",
-      borderWidth:2,
-      borderColor:"rgba(255,255,255,0.85)",
-      maxWidth: width*0.8,
-      transform:[{ translateX: joinAnim }]
-    }}
-  >
-    <View style={{ width:44, height:44, justifyContent:"center", alignItems:"center" }}>
-      <Image
-        source={{ uri: joinBanner.userImg || STABLE_AVATAR }}
-        style={{ width:38, height:38, borderRadius:19, backgroundColor:"#2a2b38" }}
-      />
-      {joinBanner.level >= 10 && (
-        <Image
-          source={getLevelFrame(joinBanner.level)}
-          style={{ position:"absolute", width:50, height:50, resizeMode:"contain" }}
-        />
-      )}
-    </View>
-    <Text numberOfLines={1} style={{ color:"#fff", fontWeight:"bold", fontSize:16, marginLeft:8, flexShrink:1 }}>
-      {joinBanner.senderName}
-    </Text>
-    {joinBanner.verified && (
-      <MaterialCommunityIcons
-        name="check-decagram"
-        size={16}
-        color={joinBanner.verifiedColor === "yellow" ? "#FFD700" : "#4FC3F7"}
-        style={{ marginLeft:3 }}
-      />
+{/* ================= JOIN ENTRY ANIMATION ================= */}
+{joinBanner && (
+  <JoinEntry
+    data={joinBanner}
+    variant={JOIN_ANIM_VARIANT}
+    onDone={handleJoinDone}
+  />
+)}
+
+    <FloatingHearts ref={heartsRef} />
+
+    {emojiOpen && (
+      <View
+        style={[
+          styles.emojiBar,
+          { bottom: keyboardHeight + 76 + (Platform.OS === "android" ? insets.bottom + 8 : insets.bottom) },
+        ]}
+      >
+        <EmojiStrip onPick={sendQuickChat} />
+      </View>
     )}
-    <Text style={{ color:"#fff", fontWeight:"bold", fontSize:16, marginLeft:6 }}>
-      joined
-    </Text>
-  </Animated.View>
-)
-}
-
-
 
     {/* ================= BOTTOM BAR ================= */}
  <KeyboardAvoidingView
@@ -3933,18 +4270,24 @@ joinBanner && (
           onChangeText={setChatMessage}
           onSubmitEditing={handleSendChat}
         />
+        <TouchableOpacity onPress={() => setEmojiOpen(v => !v)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Ionicons name={emojiOpen ? "happy" : "happy-outline"} size={22} color={T.sub} />
+        </TouchableOpacity>
       </View>
 
 
+{currentUserRole !== 'listener' && (
+  <TouchableOpacity style={styles.actionCircle} onPress={muteSelf} activeOpacity={0.7}>
+    <Ionicons name={iAmMuted ? "mic-off" : "mic"} size={22} color={iAmMuted ? T.live : "#fff"} />
+  </TouchableOpacity>
+)}
+
 <TouchableOpacity
-    style={styles.shareCircle}
-   onPress={() => setFriendShareVisible(true)}
+  style={[styles.actionCircle, { backgroundColor: 'rgba(255,77,141,0.18)' }]}
+  onPress={sendHeart}
+  activeOpacity={0.7}
 >
-    <Ionicons
-        name="share-social"
-        size={22}
-        color="#fff"
-    />
+  <Ionicons name="heart" size={24} color={T.pink} />
 </TouchableOpacity>
 
 
@@ -4137,248 +4480,15 @@ user?.seatKey
 
 
 
-<Modal
-visible={giftModalVisible}
-transparent
-animationType="fade"
-onRequestClose={() => setGiftModalVisible(false)}
->
-<View style={styles.giftOverlay}>
-
-<TouchableOpacity
-style={{flex:1}}
-activeOpacity={1}
-onPress={() => setGiftModalVisible(false)}
+<GiftSheet
+  visible={giftModalVisible}
+  onClose={closeGiftSheet}
+  stars={stars}
+  giftUsers={giftUsers}
+  selectedGiftUser={selectedGiftUser}
+  onSelectUser={setSelectedGiftUser}
+  onSendGift={onSendGiftStable}
 />
-
-
-
-<Animated.View
-style={[
-styles.giftSheet,
-{
-transform:[
-{
-translateY:giftModalAnim
-}
-]
-}
-]}
->
-
-
-<View
-style={{
-flexDirection:"row",
-justifyContent:"space-between",
-alignItems:"center",
-marginBottom:15
-}}
->
-
-<Text style={styles.giftTitle}>
-🎁 Send Gifts
-</Text>
-
-<View
-style={{
-flexDirection:"row",
-alignItems:"center"
-}}
->
-
-<Text
-style={{
-fontSize:24
-}}
->
-⭐
-</Text>
-
-<Text
-style={{
-color:"#fff",
-fontSize:20,
-fontWeight:"bold",
-marginLeft:5
-}}
->
-{stars}
-</Text>
-
-</View>
-
-</View>
-
-
-
-
-<ScrollView
-horizontal
-showsHorizontalScrollIndicator={false}
-style={{ marginBottom: 15 }}
-contentContainerStyle={{
-paddingHorizontal:10,
-paddingTop:10,
-paddingBottom:10
-}}
->
-
-{giftUsers.map((user) => (
-
-<TouchableOpacity
-key={user.uid}
-
-onPress={() => {
-
-console.log(
-"SELECTED USER =",
-user.uid
-);
-
-setSelectedGiftUser(user.uid);
-
-}}
-
-
-style={{
-alignItems:'center',
-marginRight:12
-}}
->
-
-
-<Image
-source={{
-uri:user.img || STABLE_AVATAR
-}}
-style={{
-width:50,
-height:50,
-borderRadius:25,
-
-borderWidth:
-selectedGiftUser === user.uid
-? 3
-: 1,
-
-borderColor:
-selectedGiftUser === user.uid
-? '#ff1493'
-: '#555'
-}}
-/>
-
-<Text
-style={{
-color:'#fff',
-fontSize:10,
-width:65,
-textAlign:'center',
-marginTop:4
-}}
-numberOfLines={1}
->
-
-{user.name}
-</Text>
-
-</TouchableOpacity>
-
-))}
-
-</ScrollView>
-
-<View style={styles.giftGrid}>
-
-
-
-
-
-<View style={styles.giftGrid}>
-
-<ScrollView
-horizontal
-pagingEnabled
-showsHorizontalScrollIndicator={false}
->
-
-{
-Array.from(
-{
-length: Math.ceil(gifts.length / 6)
-}
-).map((_, pageIndex) => (
-
-<View
-key={pageIndex}
-style={{
-width: width - 40,
-flexDirection: "row",
-flexWrap: "wrap",
-justifyContent: "space-between",
-paddingHorizontal: 5
-}}
->
-
-{
-gifts
-.slice(pageIndex * 6, pageIndex * 6 + 6)
-.map(item => (
-
-
-
-
-
-<TouchableOpacity
-key={item.id}
-style={styles.giftCard}
-
-
-
-onPress={() => handleSendGift(item)}
-
-
->
-
-<Image
-source={item.icon}
-style={{
-width:45,
-height:45,
-resizeMode:"contain"
-}}
-/>
-
-<Text style={styles.giftName}>
-{item.name}
-</Text>
-
-<Text style={styles.giftCoin}>
-{item.price}
-</Text>
-
-</TouchableOpacity>
-))
-}
-</View>
-
-
-
-))
-}
-
-</ScrollView>
-
-</View>
-
-
-</View>
-
-</Animated.View>
-
-</View>
-</Modal>
 
 
 
@@ -4482,49 +4592,7 @@ height:100,
 borderRadius:50
 }}
 />
-{
-  selectedSpeaker?.level >= 10 && (
-
-    <Image
-      source={
-        getLevelFrame(
-          selectedSpeaker?.level
-        )
-      }
-      style={{
-        position:"absolute",
-        width:120,
-        height:120,
-        top:-10,
-        left:-10
-      }}
-    />
-
-  )
-}
-
-
-
-{
-selectedSpeaker?.level>=10 && (
-
-<Image
-source={
-getLevelFrame(
-selectedSpeaker?.level
-)
-}
-style={{
-position:"absolute",
-width:120,
-height:120,
-top:-10,
-left:-10
-}}
-/>
-
-)
-}
+<ProfileFrame level={profileLevel} avatarSize={100} frameSize={120} />
 
 </View>
 
@@ -4785,49 +4853,7 @@ borderRadius:50
 />
 
 
-{
-selectedSpeaker?.level>=10 && (
-
-<Image
-source={
-getLevelFrame(
-selectedSpeaker?.level
-)
-}
-style={{
-position:"absolute",
-width:120,
-height:120,
-top:-10,
-left:-10
-}}
-/>
-
-)
-}
-
-
-
-{
-selectedSpeaker?.level>=10 && (
-
-<Image
-source={
-getLevelFrame(
-selectedSpeaker?.level
-)
-}
-style={{
-position:"absolute",
-width:120,
-height:120,
-top:-10,
-left:-10
-}}
-/>
-
-)
-}
+<ProfileFrame level={profileLevel} avatarSize={100} frameSize={120} />
 
 </View>
 
@@ -5099,26 +5125,7 @@ marginBottom:12
 }}
 />
 
-{
-selectedSpeaker?.level>=10 && (
-
-<Image
-source={
-getLevelFrame(
-selectedSpeaker?.level
-)
-}
-style={{
-position:"absolute",
-width:120,
-height:120,
-top:-15,
-left:-15
-}}
-/>
-
-)
-}
+<ProfileFrame level={profileLevel} avatarSize={90} frameSize={120} />
 
 </View>
 
@@ -5298,12 +5305,7 @@ style={styles.friendImg}
 {
 item.level>=10 && (
 
-<Image
-source={
-getLevelFrame(
-item.level
-)
-}
+<LevelFrame level={item.level} animated={false}
 style={{
 position:"absolute",
 width:90,
@@ -5449,13 +5451,54 @@ Send Invite
 
 
 
+
+    <ViewersSheet
+      visible={viewersVisible}
+      onClose={() => setViewersVisible(false)}
+      users={audienceArray}
+      isHost={currentUserRole === 'host'}
+      onKick={kickUser}
+    />
+    <GiftersSheet
+      visible={giftersVisible}
+      onClose={() => setGiftersVisible(false)}
+      gifters={roomData?.topGifters}
+    />
+    <RoomMenuSheet
+      visible={menuVisible}
+      onClose={() => setMenuVisible(false)}
+      isHost={currentUserRole === 'host'}
+      locked={!!roomData?.roomLocked}
+      onToggleLock={toggleRoomLock}
+      onShare={() => setFriendShareVisible(true)}
+      onExit={() => setControlModalVisible(true)}
+    />
+
   </View>
 );
   
 }
 
 const styles = StyleSheet.create({
-  mainContainer: { flex: 1, backgroundColor: '#0A0B14' },
+  mainContainer: { flex: 1, backgroundColor: '#0B0A1A' },
+
+  toolbar: { flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 14, marginTop: 6 },
+  chip: {
+    flexDirection: 'row', alignItems: 'center', marginLeft: 8,
+    paddingHorizontal: 11, height: 30, borderRadius: 15,
+    backgroundColor: 'rgba(255,255,255,0.09)', borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.12)',
+  },
+  chipTxt: { color: '#fff', fontSize: 12, fontWeight: '700', marginLeft: 5 },
+  pinned: {
+    flexDirection: 'row', alignItems: 'flex-start', alignSelf: 'flex-start',
+    marginHorizontal: 14, marginTop: 2, paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: 14, backgroundColor: 'rgba(245,196,81,0.10)', maxWidth: '94%',
+  },
+  pinnedTxt: { color: '#F5C451', fontSize: 13, lineHeight: 18, marginLeft: 7, flexShrink: 1 },
+  emojiBar: {
+    position: 'absolute', left: 12, right: 12, borderRadius: 22, zIndex: 50,
+    backgroundColor: 'rgba(20,16,48,0.96)', borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.12)',
+  },
   loader: { flex: 1, backgroundColor: '#0A0B14', justifyContent: 'center', alignItems: 'center' },
 
   topHeader:{
@@ -5474,14 +5517,14 @@ const styles = StyleSheet.create({
   roomNameText: { color: '#fff', fontSize: 15, fontWeight: 'bold', marginLeft: 10 },
   viewRow: { flexDirection: 'row', alignItems: 'center', marginLeft: 10, marginTop: 2 },
   onlineText: { color: '#bdc3c7', fontSize: 11, marginLeft: 4 },
-  liveTag: { backgroundColor: '#e74c3c', paddingHorizontal: 6, borderRadius: 4, marginLeft: 8 },
+  liveTag: { backgroundColor: '#FF3B5C', paddingHorizontal: 7, paddingVertical: 1, borderRadius: 8, marginLeft: 8 },
   liveTagText: { color: '#fff', fontSize: 9, fontWeight: 'bold' },
   audienceAvatars: { flexDirection: 'row', alignItems: 'center' },
   miniRound: { width: 30, height: 30, borderRadius: 15, borderWidth: 1.5, borderColor: '#0A0B14' },
   moreCount: { width: 30, height: 30, borderRadius: 15, backgroundColor: '#1C1E2E', justifyContent: 'center', alignItems: 'center', marginLeft: -12, borderWidth: 1.5, borderColor: '#0A0B14' },
   moreText: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
 
-  micGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-around', padding: 15, marginTop: 20 },
+  micGrid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 8, paddingTop: 6, marginTop: 4 },
 
   seatItem: { width:width*0.20, alignItems: 'center', marginBottom: 15 },
   avatarBox: { width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', backgroundColor: '#151728' },
@@ -5518,14 +5561,14 @@ chatArea:{
   chatContent: { flex: 1, marginLeft: 10 },
   chatHeaderInline: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
   chatUser: { color: '#fff', fontWeight: 'bold', fontSize: 13 },
-  bubble: { backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 12, alignSelf: 'flex-start' },
+  bubble: { backgroundColor: 'rgba(255,255,255,0.10)', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, borderTopLeftRadius: 4, alignSelf: 'flex-start' },
   chatMsg: { color: '#eee', fontSize: 13 },
   bottomNav: {
   position: 'absolute',
-  bottom: 0, left: 0, right: 0, flexDirection: 'row', padding: 15, backgroundColor: '#0A0B14', alignItems: 'center', borderTopWidth: 0.5, borderColor: '#1C1E2E' },
-  inputBox: { flex: 1, height: 44, backgroundColor: '#1C1E2E', borderRadius: 22, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, marginRight: 10 },
+  bottom: 0, left: 0, right: 0, flexDirection: 'row', padding: 15, backgroundColor: 'rgba(11,10,26,0.94)', alignItems: 'center', borderTopWidth: 0.5, borderColor: 'rgba(255,255,255,0.10)' },
+  inputBox: { flex: 1, height: 44, backgroundColor: 'rgba(255,255,255,0.09)', borderRadius: 22, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, marginRight: 10 },
   inputStyle: { color: '#fff', fontSize: 14, flex: 1 },
-  actionCircle: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#1C1E2E', justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
+  actionCircle: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.09)', justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center' },
   exitBox: { width: '80%', backgroundColor: '#1C1E2E', padding: 25, borderRadius: 20, alignItems: 'center' },
   exitTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },

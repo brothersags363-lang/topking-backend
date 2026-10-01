@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as Notifications from 'expo-notifications';
 
 import {
@@ -14,7 +14,11 @@ import {
   StatusBar,
   Image,
   BackHandler,
-  Modal,        // ADD
+  Modal,
+  Animated,
+  Alert,
+  TextInput,
+  Keyboard,
 } from 'react-native';
 
 
@@ -46,7 +50,21 @@ import {
   startAfter,
   serverTimestamp,
   updateDoc,
+  Timestamp,
 } from 'firebase/firestore';
+
+// STORY: photo upload + delete
+import {
+  getStorage,
+  ref as storageRef,
+  uploadBytes,
+  getDownloadURL,
+  deleteObject,
+} from 'firebase/storage';
+import * as ImagePicker from 'expo-image-picker';
+import { VideoView, useVideoPlayer } from 'expo-video';
+// Expo SDK 54: uploadAsync 'legacy' path me hai (SDK 53 ya purana ho to 'expo-file-system' likho)
+import * as FileSystem from 'expo-file-system/legacy';
 
 
 const { width } = Dimensions.get('window');
@@ -54,12 +72,77 @@ const { width } = Dimensions.get('window');
 // Clean professional fallback avatar (Jab database me photo register na ho tabhi dikhega)
 const DEFAULT_AVATAR = 'https://cdn-icons-png.flaticon.com/512/149/149071.png';
 
+// !!! Apne backend (server.js) ka URL yahan daalo - wahi jo video upload ke liye use karte ho
+const STORY_SERVER_URL = 'https://topking-backend.onrender.com';
+
+// Story video player (pause/resume support)
+function StoryVideo({ uri, paused }) {
+  const player = useVideoPlayer(uri, (p) => {
+    p.loop = false;
+    p.play();
+  });
+  useEffect(() => {
+    if (paused) player.pause();
+    else player.play();
+  }, [paused, player]);
+  return (
+    <VideoView
+      player={player}
+      style={StyleSheet.absoluteFillObject}
+      contentFit="contain"
+      nativeControls={false}
+    />
+  );
+}
+
+// STORY settings
+const STORY_DURATION = 5000;                 // har story 5 second chalti hai
+const STORY_LIFETIME = 24 * 60 * 60 * 1000;  // 24 ghante baad expire
+
+const toMillis = (ts) =>
+  ts && typeof ts.toMillis === 'function' ? ts.toMillis() : Date.now();
+
+const timeAgo = (ms) => {
+  const m = Math.floor((Date.now() - ms) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  return `${Math.floor(m / 60)}h ago`;
+};
+
 export default function Messages() {
   const router = useRouter();
   const pathname = usePathname();
   const auth = getAuth();
   const db = getFirestore();
 
+
+
+ 
+
+  // States
+  const [activeTab, setActiveTab] = useState('Friends');
+  const [currentUser, setCurrentUser] = useState(null);
+  const [userProfilePhoto, setUserProfilePhoto] = useState(DEFAULT_AVATAR); 
+  const [authChecked, setAuthChecked] = useState(false);
+const [notifications, setNotifications] = useState([]);
+
+const [friends, setFriends] = useState([]);
+const [friendsLoadingMore, setFriendsLoadingMore] = useState(false);
+const [friendsInitialLoading, setFriendsInitialLoading] = useState(true);
+const [friendsHasMore, setFriendsHasMore] = useState(true);
+const friendsCursorRef = React.useRef(null);
+const friendsLoadingRef = React.useRef(false);
+const friendsLoadedPagesRef = React.useRef(0);
+
+const [menuVisible, setMenuVisible] = useState(false);
+
+const [selectedFriend, setSelectedFriend] = useState(null);
+
+const [hiddenFriends, setHiddenFriends] = useState([]);
+
+const [selectedType, setSelectedType] = useState('comment');
+
+const [modalVisible, setModalVisible] = useState(false);
 
 // ===============================
 // NOTIFICATION PERMISSION
@@ -96,32 +179,479 @@ useEffect(() => {
   requestNotificationPermission();
 }, [currentUser]);
 
- 
 
-  // States
-  const [activeTab, setActiveTab] = useState('Friends');
-  const [currentUser, setCurrentUser] = useState(null);
-  const [userProfilePhoto, setUserProfilePhoto] = useState(DEFAULT_AVATAR); 
-  const [authChecked, setAuthChecked] = useState(false);
-const [notifications, setNotifications] = useState([]);
+// ===============================
+// STORIES
+// ===============================
+const [myStories, setMyStories] = useState([]);
+const [friendStories, setFriendStories] = useState([]);
+const [seenStories, setSeenStories] = useState({});
+const [storyUploading, setStoryUploading] = useState(false);
+const [viewer, setViewer] = useState(null); // { groupIndex, storyIndex }
+const [viewerCount, setViewerCount] = useState(0);
+const [storyPaused, setStoryPaused] = useState(false);
+const [replyText, setReplyText] = useState('');
+const [replySentMsg, setReplySentMsg] = useState('');
+const [liked, setLiked] = useState(false);
+const [likeCount, setLikeCount] = useState(0);
+const [replies, setReplies] = useState([]);
+const [showReplies, setShowReplies] = useState(false);
+const [kbHeight, setKbHeight] = useState(0);
+const [storyTick, setStoryTick] = useState(0);
+const storyProgress = useRef(new Animated.Value(0)).current;
+const storyGroupsRef = useRef([]);
 
-const [friends, setFriends] = useState([]);
-const [friendsLoadingMore, setFriendsLoadingMore] = useState(false);
-const [friendsInitialLoading, setFriendsInitialLoading] = useState(true);
-const [friendsHasMore, setFriendsHasMore] = useState(true);
-const friendsCursorRef = React.useRef(null);
-const friendsLoadingRef = React.useRef(false);
-const friendsLoadedPagesRef = React.useRef(0);
+// Expired stories ko list se hatane ke liye har minute refresh
+useEffect(() => {
+  const t = setInterval(() => setStoryTick((x) => x + 1), 60000);
+  return () => clearInterval(t);
+}, []);
 
-const [menuVisible, setMenuVisible] = useState(false);
+// Meri apni stories
+useEffect(() => {
+  if (!currentUser) {
+    setMyStories([]);
+    return;
+  }
 
-const [selectedFriend, setSelectedFriend] = useState(null);
+  const q = query(
+    collection(db, 'stories'),
+    where('userId', '==', currentUser.uid)
+  );
 
-const [hiddenFriends, setHiddenFriends] = useState([]);
+  return onSnapshot(
+    q,
+    (snap) => setMyStories(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+    (e) => console.log('My stories error:', e)
+  );
+}, [currentUser]);
 
-const [selectedType, setSelectedType] = useState('comment');
+// Dosto (chat friends) ki stories - Firestore "in" query max 30 ids leti hai
+const friendIdsKey = friends
+  .map((f) => f.userId)
+  .filter(Boolean)
+  .sort()
+  .slice(0, 30)
+  .join(',');
 
-const [modalVisible, setModalVisible] = useState(false);
+useEffect(() => {
+  if (!currentUser || !friendIdsKey) {
+    setFriendStories([]);
+    return;
+  }
+
+  const q = query(
+    collection(db, 'stories'),
+    where('userId', 'in', friendIdsKey.split(','))
+  );
+
+  return onSnapshot(
+    q,
+    (snap) =>
+      setFriendStories(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+    (e) => console.log('Friend stories error:', e)
+  );
+}, [currentUser, friendIdsKey]);
+
+// Kaunsi stories dekh li gayi (ek hi doc, sasta)
+useEffect(() => {
+  if (!currentUser) {
+    setSeenStories({});
+    return;
+  }
+
+  return onSnapshot(
+    doc(db, 'storyViews', currentUser.uid),
+    (snap) => setSeenStories(snap.exists() ? snap.data().seen || {} : {}),
+    () => {}
+  );
+}, [currentUser]);
+
+const storyGroups = useMemo(() => {
+  const now = Date.now();
+  const alive = (st) =>
+    st.expiresAt &&
+    typeof st.expiresAt.toMillis === 'function' &&
+    st.expiresAt.toMillis() > now;
+  const sortAsc = (x, y) => toMillis(x.createdAt) - toMillis(y.createdAt);
+
+  const mine = myStories.filter(alive).sort(sortAsc);
+
+  const byUser = {};
+  friendStories.filter(alive).forEach((st) => {
+    (byUser[st.userId] = byUser[st.userId] || []).push(st);
+  });
+
+  const friendInfo = {};
+  friends.forEach((f) => {
+    friendInfo[f.userId] = f;
+  });
+
+  const friendGroups = Object.keys(byUser).map((uid) => {
+    const items = byUser[uid].sort(sortAsc);
+    const info = friendInfo[uid] || {};
+    return {
+      userId: uid,
+      isOwn: false,
+      username: info.username || items[0].username || 'User',
+      photo: info.profileImg || items[0].userPhoto || DEFAULT_AVATAR,
+      items,
+      allSeen: items.every((st) => seenStories[st.id]),
+      latest: toMillis(items[items.length - 1].createdAt),
+    };
+  });
+
+  // Na dekhi hui stories pehle, phir nayi wali upar
+  friendGroups.sort((x, y) =>
+    x.allSeen !== y.allSeen ? (x.allSeen ? 1 : -1) : y.latest - x.latest
+  );
+
+  const ownGroup = mine.length
+    ? {
+        userId: currentUser ? currentUser.uid : '',
+        isOwn: true,
+        username: 'Your story',
+        photo: userProfilePhoto,
+        items: mine,
+        allSeen: mine.every((st) => seenStories[st.id]),
+        latest: toMillis(mine[mine.length - 1].createdAt),
+      }
+    : null;
+
+  return {
+    ownGroup,
+    friendGroups,
+    all: ownGroup ? [ownGroup, ...friendGroups] : friendGroups,
+  };
+}, [myStories, friendStories, seenStories, friends, userProfilePhoto, currentUser, storyTick]);
+
+storyGroupsRef.current = storyGroups.all;
+
+const currentGroup = viewer ? storyGroups.all[viewer.groupIndex] : null;
+const currentStory = currentGroup ? currentGroup.items[viewer.storyIndex] : null;
+const currentStoryId = currentStory ? currentStory.id : null;
+const storyDur =
+  currentStory && currentStory.mediaType === 'video' && currentStory.duration
+    ? Math.min(Math.max(currentStory.duration, 1000), 30000)
+    : STORY_DURATION;
+
+const uploadStory = async (asset) => {
+  if (!currentUser) return;
+  const isVideo = asset.type === 'video';
+
+  try {
+    setStoryUploading(true);
+
+    const token = await currentUser.getIdToken();
+    const lower = (asset.uri || '').toLowerCase();
+    const ext = isVideo ? (lower.endsWith('.mov') ? 'mov' : 'mp4') : 'jpg';
+    const mime = isVideo ? (ext === 'mov' ? 'video/quicktime' : 'video/mp4') : 'image/jpeg';
+
+    // FormData ki jagah native uploader (Android par "Network request failed" se bachata hai)
+    const up = await FileSystem.uploadAsync(`${STORY_SERVER_URL}/upload-story`, asset.uri, {
+      httpMethod: 'POST',
+      uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+      fieldName: 'media',
+      mimeType: mime,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    let data = null;
+    try { data = JSON.parse(up.body); } catch (e) {}
+    if (!data) {
+      console.log('Story server status =', up.status, '| reply =', String(up.body).slice(0, 200));
+      throw new Error('Server ne JSON nahi diya (status ' + up.status + ')');
+    }
+    if (up.status < 200 || up.status >= 300 || !data.success) {
+      console.log('Story server status =', up.status, '| reply =', up.body);
+      throw new Error(data.error || 'Upload failed');
+    }
+
+    await addDoc(collection(db, 'stories'), {
+      userId: currentUser.uid,
+      username: currentUser.displayName || 'User',
+      userPhoto: userProfilePhoto,
+      mediaUrl: data.mediaUrl,
+      mediaType: isVideo ? 'video' : 'image',
+      duration: isVideo
+        ? Math.min(Math.max(Math.round(asset.duration || STORY_DURATION), 1000), 30000)
+        : STORY_DURATION,
+      storagePath: data.key,
+      createdAt: serverTimestamp(),
+      expiresAt: Timestamp.fromMillis(Date.now() + STORY_LIFETIME),
+    });
+  } catch (e) {
+    console.log('Story upload error:', e);
+    Alert.alert('Story upload failed', 'Please check your internet and try again.');
+  } finally {
+    setStoryUploading(false);
+  }
+};
+
+// mode: 'photo' (camera) | 'video' (camera) | 'gallery'
+const pickStoryMedia = async (mode) => {
+  try {
+    let result;
+
+    if (mode === 'gallery') {
+      result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images', 'videos'],
+        allowsEditing: false,
+        quality: 0.7,
+        videoMaxDuration: 30,
+      });
+    } else {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Camera permission needed', 'Allow camera access to add a story.');
+        return;
+      }
+      result = await ImagePicker.launchCameraAsync({
+        mediaTypes: mode === 'video' ? ['videos'] : ['images'],
+        allowsEditing: mode === 'photo',
+        aspect: [9, 16],
+        quality: 0.7,
+        videoMaxDuration: 30,
+      });
+    }
+
+    if (!result.canceled && result.assets && result.assets[0] && result.assets[0].uri) {
+      uploadStory(result.assets[0]);
+    }
+  } catch (e) {
+    console.log('Pick story media error:', e);
+  }
+};
+
+const addStory = () => {
+  if (storyUploading) return;
+
+  Alert.alert(
+    'Add to your story',
+    'Photo ya video (max 30 sec)',
+    [
+      { text: 'Camera photo', onPress: () => pickStoryMedia('photo') },
+      { text: 'Camera video', onPress: () => pickStoryMedia('video') },
+      { text: 'Gallery', onPress: () => pickStoryMedia('gallery') },
+    ],
+    { cancelable: true }
+  );
+};
+
+const openStoryGroup = (groupIndex) => {
+  setViewerCount(0);
+  setViewer({ groupIndex, storyIndex: 0 });
+};
+
+const closeViewer = () => {
+  storyProgress.stopAnimation();
+  Keyboard.dismiss();
+  setStoryPaused(false);
+  setReplyText('');
+  setShowReplies(false);
+  setViewer(null);
+};
+
+const goNextStory = () => {
+  const groups = storyGroupsRef.current;
+
+  setViewer((prev) => {
+    if (!prev) return prev;
+    const g = groups[prev.groupIndex];
+
+    if (g && prev.storyIndex < g.items.length - 1) {
+      return { ...prev, storyIndex: prev.storyIndex + 1 };
+    }
+    if (prev.groupIndex < groups.length - 1) {
+      return { groupIndex: prev.groupIndex + 1, storyIndex: 0 };
+    }
+    return null; // sab stories khatam
+  });
+};
+
+const goPrevStory = () => {
+  setViewer((prev) => {
+    if (!prev) return prev;
+
+    if (prev.storyIndex > 0) {
+      return { ...prev, storyIndex: prev.storyIndex - 1 };
+    }
+    if (prev.groupIndex > 0) {
+      return { groupIndex: prev.groupIndex - 1, storyIndex: 0 };
+    }
+    return prev;
+  });
+};
+
+const deleteMyStory = (story) => {
+  Alert.alert('Delete story?', 'This story will be removed for everyone.', [
+    { text: 'Cancel', style: 'cancel' },
+    {
+      text: 'Delete',
+      style: 'destructive',
+      onPress: async () => {
+        try {
+          closeViewer();
+          await deleteDoc(doc(db, 'stories', story.id));
+          if (story.storagePath && currentUser) {
+            try {
+              const token = await currentUser.getIdToken();
+              await fetch(`${STORY_SERVER_URL}/delete-story-media`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ key: story.storagePath }),
+              });
+            } catch (e) {}
+          }
+        } catch (e) {
+          console.log('Delete story error:', e);
+        }
+      },
+    },
+  ]);
+};
+
+// Story badalte hi progress 0 se
+useEffect(() => {
+  storyProgress.setValue(0);
+  setReplyText('');
+  setShowReplies(false);
+  setStoryPaused(false);
+}, [viewer ? viewer.groupIndex : -1, viewer ? viewer.storyIndex : -1, currentStoryId]);
+
+// Progress bar + auto next (typing / replies panel khula ho to pause)
+useEffect(() => {
+  if (!viewer || !currentStoryId || storyPaused) return;
+
+  const start = (storyProgress as any).__getValue ? (storyProgress as any).__getValue() : 0;
+  const anim = Animated.timing(storyProgress, {
+    toValue: 1,
+    duration: Math.max(200, storyDur * (1 - start)),
+    useNativeDriver: false,
+  });
+
+  anim.start(({ finished }) => {
+    if (finished) goNextStory();
+  });
+
+  return () => anim.stop();
+}, [viewer ? viewer.groupIndex : -1, viewer ? viewer.storyIndex : -1, currentStoryId, storyPaused]);
+
+// Keyboard height (Modal ke andar input ko upar uthane ke liye)
+useEffect(() => {
+  const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+  const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+  const a = Keyboard.addListener(showEvt, (e) => setKbHeight(e.endCoordinates.height));
+  const b = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+  return () => { a.remove(); b.remove(); };
+}, []);
+
+// Like status (meri) + owner ke liye likes count aur replies list
+useEffect(() => {
+  setLiked(false);
+  setLikeCount(0);
+  setReplies([]);
+  if (!viewer || !currentGroup || !currentStoryId || !currentUser) return;
+
+  const unsubs = [];
+  if (currentGroup.isOwn) {
+    unsubs.push(onSnapshot(
+      collection(db, 'stories', currentStoryId, 'likes'),
+      (snap) => setLikeCount(snap.size),
+      () => {}
+    ));
+    unsubs.push(onSnapshot(
+      query(collection(db, 'stories', currentStoryId, 'replies'), orderBy('createdAt', 'desc'), limit(50)),
+      (snap) => setReplies(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      () => {}
+    ));
+  } else {
+    unsubs.push(onSnapshot(
+      doc(db, 'stories', currentStoryId, 'likes', currentUser.uid),
+      (snap) => setLiked(snap.exists()),
+      () => {}
+    ));
+  }
+  return () => unsubs.forEach((u) => u());
+}, [currentStoryId, currentGroup ? currentGroup.isOwn : false]);
+
+const toggleStoryLike = async () => {
+  if (!currentUser || !currentStoryId) return;
+  const ref = doc(db, 'stories', currentStoryId, 'likes', currentUser.uid);
+  try {
+    if (liked) {
+      setLiked(false);
+      await deleteDoc(ref);
+    } else {
+      setLiked(true);
+      await setDoc(ref, {
+        username: currentUser.displayName || 'User',
+        photo: userProfilePhoto,
+        createdAt: serverTimestamp(),
+      });
+    }
+  } catch (e) {
+    console.log('Story like error:', e);
+    setLiked((v) => !v);
+  }
+};
+
+const sendStoryReply = async (text, type) => {
+  const clean = (text || '').trim();
+  if (!clean || !currentUser || !currentStoryId) return;
+  try {
+    await addDoc(collection(db, 'stories', currentStoryId, 'replies'), {
+      fromUid: currentUser.uid,
+      username: currentUser.displayName || 'User',
+      photo: userProfilePhoto,
+      text: clean.slice(0, 500),
+      type: type || 'text',
+      createdAt: serverTimestamp(),
+    });
+    setReplyText('');
+    Keyboard.dismiss();
+    setStoryPaused(false);
+    setReplySentMsg(type === 'emoji' ? clean + ' sent' : 'Reply sent');
+    setTimeout(() => setReplySentMsg(''), 1500);
+  } catch (e) {
+    console.log('Story reply error:', e);
+    Alert.alert('Could not send', 'Please try again.');
+  }
+};
+
+// Story dekhte hi "seen" mark karo (aur owner ko viewer ka record)
+useEffect(() => {
+  if (!viewer || !currentStory || !currentUser) return;
+  if (seenStories[currentStory.id]) return;
+
+  setDoc(
+    doc(db, 'storyViews', currentUser.uid),
+    { seen: { [currentStory.id]: true } },
+    { merge: true }
+  ).catch(() => {});
+
+  if (currentGroup && !currentGroup.isOwn) {
+    setDoc(doc(db, 'stories', currentStory.id, 'viewers', currentUser.uid), {
+      viewedAt: serverTimestamp(),
+      username: currentUser.displayName || '',
+      photo: userProfilePhoto,
+    }).catch(() => {});
+  }
+}, [currentStoryId]);
+
+// Apni story par kitne logo ne dekha
+useEffect(() => {
+  if (!viewer || !currentGroup || !currentGroup.isOwn || !currentStoryId) {
+    setViewerCount(0);
+    return;
+  }
+
+  return onSnapshot(
+    collection(db, 'stories', currentStoryId, 'viewers'),
+    (snap) => setViewerCount(snap.size),
+    () => {}
+  );
+}, [currentStoryId, currentGroup ? currentGroup.isOwn : false]);
 
 useEffect(() => {
 
@@ -612,6 +1142,40 @@ const topBadges = [
 ];
 
 
+const totalUnread = unreadFollowers + unreadLikes + unreadComments;
+
+const markTypeRead = async (type) => {
+  if (!currentUser) return;
+
+  const unreadDocs = notifications.filter(
+    (item) => item.type === type && !item.isRead
+  );
+
+  await Promise.all(
+    unreadDocs.map((item) =>
+      updateDoc(
+        doc(db, 'users', currentUser.uid, 'notifications', item.id),
+        { isRead: true }
+      )
+    )
+  );
+};
+
+// Upar wala bell icon - jisme Follower / Like / Comment hain
+const openNotifications = () => {
+  const firstUnread = topBadges.find((b) => b.count > 0);
+  const type = firstUnread ? firstUnread.id : selectedType;
+
+  setSelectedType(type);
+  setModalVisible(true);
+  markTypeRead(type).catch(() => {});
+};
+
+const switchNotifTab = (type) => {
+  setSelectedType(type);
+  markTypeRead(type).catch(() => {});
+};
+
 const deleteChat = async (friend) => {
 
   try {
@@ -738,7 +1302,21 @@ const getModalTitle = () => {
       {/* HEADER WITH ONLY TITLE & PROFILE LOGO (BACK BTN REMOVED) */}
       <View style={styles.header}>
         {/* Left Side Empty Space Balance maintain karne ke liye */}
-        <View style={styles.headerLeftPlaceholder} />
+        <TouchableOpacity
+          onPress={openNotifications}
+          style={styles.bellBtn}
+          activeOpacity={0.7}
+          disabled={!currentUser}
+        >
+          <Ionicons name="notifications-outline" size={27} color="#fff" />
+          {totalUnread > 0 && (
+            <View style={styles.bellBadge}>
+              <Text style={styles.bellBadgeText}>
+                {totalUnread > 99 ? '99+' : totalUnread}
+              </Text>
+            </View>
+          )}
+        </TouchableOpacity>
         
         <Text style={styles.headerTitle}>Activity</Text>
         
@@ -760,73 +1338,79 @@ const getModalTitle = () => {
       {/* CONDITIONAL RENDERING */}
       {currentUser ? (
         <>
-          {/* HORIZONTAL TOP BADGES */}
+          {/* STORIES */}
           <View style={styles.badgeWrapper}>
-            <ScrollView 
-              horizontal 
+            <ScrollView
+              horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.badgeScroll}
             >
-              
-{topBadges.map((badge) => (
-  <TouchableOpacity
-    key={badge.id}
-    activeOpacity={0.8}
-
-onPress={async () => {
-
-  setSelectedType(badge.id);
-
-  setModalVisible(true);
-
- const unreadDocs = notifications.filter(
-  item =>
-    item.type === badge.id &&
-    !item.isRead
-);
-
-await Promise.all(
-  unreadDocs.map(item =>
-    updateDoc(
-      doc(
-        db,
-        "users",
-        currentUser.uid,
-        "notifications",
-        item.id
-      ),
-      {
-        isRead: true,
-      }
-    )
-  )
-);
-
-}}
-
-    style={[
-      styles.badgeCard,
-      selectedType === badge.id && {
-        borderColor: '#f1c40f',
-        borderWidth: 2,
-      }
-    ]}
-  >
-
-
-{badge.count > 0 && (
-  <View style={styles.countBadge}>
-    <Text style={styles.countText}>
-      {badge.count > 99 ? "99+" : badge.count}
-    </Text>
-  </View>
-)}
-
-
-                  <View style={styles.badgeIconBox}>
-                    <Ionicons name={badge.icon} size={20} color={badge.color} />
+              {/* MY STORY */}
+              <View style={styles.storyItem}>
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={() =>
+                    storyGroups.ownGroup ? openStoryGroup(0) : addStory()
+                  }
+                >
+                  <View
+                    style={[
+                      styles.storyRing,
+                      storyGroups.ownGroup
+                        ? storyGroups.ownGroup.allSeen
+                          ? styles.storyRingSeen
+                          : styles.storyRingNew
+                        : styles.storyRingEmpty,
+                    ]}
+                  >
+                    <Image
+                      source={{ uri: userProfilePhoto }}
+                      style={styles.storyAvatar}
+                    />
                   </View>
-                  <Text style={styles.badgeText}>{badge.title}</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.storyPlus}
+                  onPress={addStory}
+                  activeOpacity={0.8}
+                >
+                  {storyUploading ? (
+                    <ActivityIndicator size="small" color="#000" />
+                  ) : (
+                    <Ionicons name="add" size={16} color="#000" />
+                  )}
+                </TouchableOpacity>
+
+                <Text numberOfLines={1} style={styles.storyName}>
+                  Your story
+                </Text>
+              </View>
+
+              {/* FRIENDS STORIES */}
+              {storyGroups.friendGroups.map((g, i) => (
+                <TouchableOpacity
+                  key={g.userId}
+                  style={styles.storyItem}
+                  activeOpacity={0.8}
+                  onPress={() =>
+                    openStoryGroup(storyGroups.ownGroup ? i + 1 : i)
+                  }
+                >
+                  <View
+                    style={[
+                      styles.storyRing,
+                      g.allSeen ? styles.storyRingSeen : styles.storyRingNew,
+                    ]}
+                  >
+                    <Image
+                      source={{ uri: g.photo }}
+                      style={styles.storyAvatar}
+                    />
+                  </View>
+                  <Text numberOfLines={1} style={styles.storyName}>
+                    {g.username}
+                  </Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -1367,6 +1951,52 @@ await Promise.all(
         </TouchableOpacity>
       </View>
 
+      {/* Follower / Like / Comment tabs */}
+      <View
+        style={{
+          flexDirection: 'row',
+          borderBottomWidth: 1,
+          borderBottomColor: '#222',
+        }}
+      >
+        {topBadges.map((b) => (
+          <TouchableOpacity
+            key={b.id}
+            onPress={() => switchNotifTab(b.id)}
+            activeOpacity={0.8}
+            style={{
+              flex: 1,
+              alignItems: 'center',
+              paddingVertical: 12,
+              borderBottomWidth: 2,
+              borderBottomColor:
+                selectedType === b.id ? '#f1c40f' : 'transparent',
+            }}
+          >
+            <View>
+              <Ionicons name={b.icon} size={22} color={b.color} />
+              {b.count > 0 && (
+                <View style={styles.tabCount}>
+                  <Text style={styles.tabCountText}>
+                    {b.count > 99 ? '99+' : b.count}
+                  </Text>
+                </View>
+              )}
+            </View>
+            <Text
+              style={{
+                color: selectedType === b.id ? '#fff' : '#777',
+                fontSize: 12,
+                fontWeight: 'bold',
+                marginTop: 3,
+              }}
+            >
+              {b.title}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
       {/* Notifications */}
       <ScrollView>
 
@@ -1742,6 +2372,182 @@ console.log(
 
 
 
+
+{/* STORY VIEWER */}
+<Modal
+  visible={!!viewer && !!currentStory}
+  animationType="fade"
+  onRequestClose={closeViewer}
+  statusBarTranslucent
+>
+  <View style={styles.viewerContainer}>
+    {currentStory && currentGroup && (
+      <>
+        {currentStory.mediaType === 'video' ? (
+          <StoryVideo
+            key={currentStory.id}
+            uri={currentStory.mediaUrl}
+            paused={storyPaused}
+          />
+        ) : (
+          <Image
+            source={{ uri: currentStory.mediaUrl }}
+            style={styles.viewerImage}
+            resizeMode="contain"
+          />
+        )}
+
+        {/* Left tap = pichhli story, right tap = agli story */}
+        <View style={styles.viewerTapRow}>
+          <TouchableOpacity
+            style={{ flex: 3 }}
+            activeOpacity={1}
+            onPress={goPrevStory}
+          />
+          <TouchableOpacity
+            style={{ flex: 7 }}
+            activeOpacity={1}
+            onPress={goNextStory}
+          />
+        </View>
+
+        <View style={styles.viewerTop} pointerEvents="box-none">
+          <View style={styles.viewerBars}>
+            {currentGroup.items.map((st, i) => (
+              <View key={st.id} style={styles.viewerBarTrack}>
+                {i < viewer.storyIndex ? (
+                  <View style={[styles.viewerBarFill, { width: '100%' }]} />
+                ) : i === viewer.storyIndex ? (
+                  <Animated.View
+                    style={[
+                      styles.viewerBarFill,
+                      {
+                        width: storyProgress.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: ['0%', '100%'],
+                        }),
+                      },
+                    ]}
+                  />
+                ) : null}
+              </View>
+            ))}
+          </View>
+
+          <View style={styles.viewerHeaderRow}>
+            <Image
+              source={{ uri: currentGroup.photo || DEFAULT_AVATAR }}
+              style={styles.viewerAvatar}
+            />
+
+            <View style={{ flex: 1, marginLeft: 10 }}>
+              <Text style={styles.viewerName} numberOfLines={1}>
+                {currentGroup.username}
+              </Text>
+              <Text style={styles.viewerTime}>
+                {timeAgo(toMillis(currentStory.createdAt))}
+              </Text>
+            </View>
+
+            {currentGroup.isOwn && (
+              <TouchableOpacity
+                onPress={() => deleteMyStory(currentStory)}
+                style={{ padding: 6 }}
+              >
+                <Ionicons name="trash-outline" size={24} color="#fff" />
+              </TouchableOpacity>
+            )}
+
+            <TouchableOpacity onPress={closeViewer} style={{ padding: 6 }}>
+              <Ionicons name="close" size={28} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {replySentMsg ? (
+          <View style={styles.viewerToast} pointerEvents="none">
+            <Text style={{ color: '#fff', fontWeight: 'bold' }}>{replySentMsg}</Text>
+          </View>
+        ) : null}
+
+        {currentGroup.isOwn ? (
+          <>
+            {showReplies && (
+              <View style={styles.viewerRepliesPanel}>
+                <ScrollView>
+                  {replies.length === 0 ? (
+                    <Text style={{ color: '#aaa', textAlign: 'center', padding: 14 }}>No replies yet</Text>
+                  ) : (
+                    replies.map((r) => (
+                      <View key={r.id} style={styles.viewerReplyRow}>
+                        <Image source={{ uri: r.photo || DEFAULT_AVATAR }} style={styles.viewerReplyAvatar} />
+                        <View style={{ flex: 1, marginLeft: 8 }}>
+                          <Text style={{ color: '#aaa', fontSize: 12 }}>{r.username}</Text>
+                          <Text style={{ color: '#fff', fontSize: r.type === 'emoji' ? 26 : 15 }}>{r.text}</Text>
+                        </View>
+                      </View>
+                    ))
+                  )}
+                </ScrollView>
+              </View>
+            )}
+            <View style={styles.viewerBottom}>
+              <Ionicons name="eye-outline" size={20} color="#fff" />
+              <Text style={styles.viewerCountText}>{viewerCount}</Text>
+              <Ionicons name="heart" size={20} color="#ff3b5c" style={{ marginLeft: 16 }} />
+              <Text style={styles.viewerCountText}>{likeCount}</Text>
+              <TouchableOpacity
+                style={{ flexDirection: 'row', alignItems: 'center', marginLeft: 16 }}
+                onPress={() => {
+                  const next = !showReplies;
+                  setShowReplies(next);
+                  setStoryPaused(next);
+                }}
+              >
+                <Ionicons name="chatbubble-outline" size={20} color="#fff" />
+                <Text style={styles.viewerCountText}>{replies.length}</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        ) : (
+          <View style={[styles.viewerReplyWrap, { bottom: kbHeight }]}>
+            <View style={styles.viewerEmojiRow}>
+              {['❤️', '😂', '😮', '😢', '🔥', '👏'].map((em) => (
+                <TouchableOpacity key={em} onPress={() => sendStoryReply(em, 'emoji')} style={{ padding: 6 }}>
+                  <Text style={{ fontSize: 28 }}>{em}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <View style={styles.viewerInputRow}>
+              <TextInput
+                style={styles.viewerInput}
+                value={replyText}
+                onChangeText={setReplyText}
+                placeholder="Send message..."
+                placeholderTextColor="#bbb"
+                maxLength={500}
+                onFocus={() => setStoryPaused(true)}
+                onBlur={() => setStoryPaused(false)}
+                onSubmitEditing={() => sendStoryReply(replyText, 'text')}
+                returnKeyType="send"
+              />
+              {replyText.trim().length > 0 ? (
+                <TouchableOpacity onPress={() => sendStoryReply(replyText, 'text')} style={{ padding: 8 }}>
+                  <Ionicons name="send" size={26} color="#3498db" />
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity onPress={toggleStoryLike} style={{ padding: 8 }}>
+                  <Ionicons name={liked ? 'heart' : 'heart-outline'} size={30} color={liked ? '#ff3b5c' : '#fff'} />
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        )}
+      </>
+    )}
+  </View>
+</Modal>
+
     </SafeAreaView>
   );
 }
@@ -1962,5 +2768,124 @@ levelBadge: {
 
 
 
+
+
+bellBtn: {
+  width: 60,
+  height: 40,
+  justifyContent: 'center',
+  alignItems: 'flex-start',
+},
+bellBadge: {
+  position: 'absolute',
+  top: 0,
+  left: 16,
+  backgroundColor: '#ff00aa',
+  minWidth: 18,
+  height: 18,
+  borderRadius: 9,
+  paddingHorizontal: 4,
+  justifyContent: 'center',
+  alignItems: 'center',
+},
+bellBadgeText: { color: '#fff', fontSize: 11, fontWeight: 'bold' },
+
+tabCount: {
+  position: 'absolute',
+  top: -6,
+  right: -14,
+  backgroundColor: '#ff00aa',
+  minWidth: 16,
+  height: 16,
+  borderRadius: 8,
+  paddingHorizontal: 3,
+  justifyContent: 'center',
+  alignItems: 'center',
+},
+tabCountText: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
+
+storyItem: { width: 76, alignItems: 'center', marginRight: 6 },
+storyRing: {
+  width: 68,
+  height: 68,
+  borderRadius: 34,
+  borderWidth: 3,
+  justifyContent: 'center',
+  alignItems: 'center',
+},
+storyRingNew: { borderColor: '#f1c40f' },
+storyRingSeen: { borderColor: '#444' },
+storyRingEmpty: { borderColor: '#222' },
+storyAvatar: { width: 58, height: 58, borderRadius: 29, backgroundColor: '#111' },
+storyPlus: {
+  position: 'absolute',
+  top: 46,
+  right: 4,
+  width: 22,
+  height: 22,
+  borderRadius: 11,
+  backgroundColor: '#f1c40f',
+  borderWidth: 2,
+  borderColor: '#000',
+  justifyContent: 'center',
+  alignItems: 'center',
+},
+storyName: { color: '#ddd', fontSize: 12, marginTop: 6, maxWidth: 70 },
+
+viewerContainer: { flex: 1, backgroundColor: '#000' },
+viewerImage: { ...StyleSheet.absoluteFillObject },
+viewerTapRow: { ...StyleSheet.absoluteFillObject, flexDirection: 'row' },
+viewerTop: {
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  right: 0,
+  paddingTop: Platform.OS === 'android' ? 40 : 55,
+  paddingHorizontal: 10,
+},
+viewerBars: { flexDirection: 'row', marginBottom: 10 },
+viewerBarTrack: {
+  flex: 1,
+  height: 3,
+  borderRadius: 2,
+  backgroundColor: 'rgba(255,255,255,0.3)',
+  marginHorizontal: 2,
+  overflow: 'hidden',
+},
+viewerBarFill: { height: 3, backgroundColor: '#fff' },
+viewerHeaderRow: { flexDirection: 'row', alignItems: 'center' },
+viewerAvatar: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#111' },
+viewerName: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
+viewerTime: { color: '#ccc', fontSize: 12 },
+viewerBottom: {
+  position: 'absolute',
+  bottom: 40,
+  left: 20,
+  flexDirection: 'row',
+  alignItems: 'center',
+  backgroundColor: 'rgba(0,0,0,0.5)',
+  paddingHorizontal: 12,
+  paddingVertical: 6,
+  borderRadius: 16,
+},
+viewerCountText: { color: '#fff', fontWeight: 'bold', marginLeft: 6 },
+viewerToast: {
+  position: 'absolute', top: '45%', alignSelf: 'center',
+  backgroundColor: 'rgba(0,0,0,0.7)', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 20,
+},
+viewerReplyWrap: { position: 'absolute', left: 0, right: 0, paddingBottom: 24, paddingHorizontal: 12 },
+viewerEmojiRow: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: 8 },
+viewerInputRow: {
+  flexDirection: 'row', alignItems: 'center',
+  borderWidth: 1, borderColor: 'rgba(255,255,255,0.6)', borderRadius: 26,
+  paddingLeft: 16, paddingRight: 4, backgroundColor: 'rgba(0,0,0,0.35)',
+},
+viewerInput: { flex: 1, color: '#fff', fontSize: 15, height: 46 },
+viewerRepliesPanel: {
+  position: 'absolute', left: 12, right: 12, bottom: 90, maxHeight: 260,
+  backgroundColor: 'rgba(0,0,0,0.8)', borderRadius: 14, padding: 8,
+},
+viewerReplyRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6 },
+viewerReplyAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#111' },
 
 });

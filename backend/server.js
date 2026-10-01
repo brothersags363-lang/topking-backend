@@ -21,6 +21,7 @@ const { spawn } = require("child_process");
 const {
   S3Client,
   PutObjectCommand,
+  DeleteObjectCommand,
 } = require("@aws-sdk/client-s3");
 
 const {
@@ -2495,6 +2496,107 @@ cron.schedule(
 
 );
 
+
+
+// =====================================================
+// STORY MEDIA (photo / video) -> R2
+// =====================================================
+
+const STORY_TYPES = {
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".webp": "image/webp",
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+};
+
+const STORY_MIME_EXT = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+  "video/mp4": ".mp4",
+  "video/quicktime": ".mov",
+};
+
+const storyUpload = multer({
+  dest: path.join(__dirname, "uploads"),
+  limits: { fileSize: 60 * 1024 * 1024, files: 1, fields: 5 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    if (STORY_TYPES[ext] || STORY_MIME_EXT[file.mimetype]) return cb(null, true);
+    return cb(new Error("Only JPG, PNG, WEBP, MP4 and MOV are allowed"));
+  },
+});
+
+app.post(
+  "/upload-story",
+  uploadLimiter,
+  verifyUser,
+  storyUpload.single("media"),
+  async (req, res) => {
+    const file = req.file;
+    try {
+      if (!file) {
+        return res.status(400).json({ success: false, error: "No file" });
+      }
+
+      const uid = req.user.uid;
+      let ext = path.extname(file.originalname || "").toLowerCase();
+      if (!STORY_TYPES[ext]) ext = STORY_MIME_EXT[file.mimetype] || ".jpg";
+      const key = `stories/${uid}/${crypto.randomUUID()}${ext}`;
+
+      await r2.send(
+        new PutObjectCommand({
+          Bucket: process.env.R2_BUCKET,
+          Key: key,
+          Body: fs.createReadStream(file.path),
+          ContentType: STORY_TYPES[ext],
+        })
+      );
+
+      return res.json({
+        success: true,
+        key,
+        mediaUrl: `${process.env.R2_PUBLIC_URL}/${key}`,
+        mediaType: STORY_TYPES[ext].startsWith("video") ? "video" : "image",
+      });
+    } catch (e) {
+      console.error("STORY UPLOAD ERROR:", e);
+      return res.status(500).json({ success: false, error: "Story upload failed" });
+    } finally {
+      if (file && file.path) fsp.unlink(file.path).catch(() => {});
+    }
+  }
+);
+
+app.post(
+  "/delete-story-media",
+  uploadLimiter,
+  verifyUser,
+  async (req, res) => {
+    try {
+      const key = req.body && req.body.key;
+      const uid = req.user.uid;
+
+      if (
+        typeof key !== "string" ||
+        !key.startsWith(`stories/${uid}/`) ||
+        key.includes("..")
+      ) {
+        return res.status(400).json({ success: false, error: "Invalid key" });
+      }
+
+      await r2.send(
+        new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET, Key: key })
+      );
+      return res.json({ success: true });
+    } catch (e) {
+      console.error("STORY DELETE ERROR:", e);
+      return res.status(500).json({ success: false, error: "Delete failed" });
+    }
+  }
+);
 
 // =====================================================
 // SERVER
