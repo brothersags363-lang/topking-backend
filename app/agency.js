@@ -669,6 +669,7 @@ const addHost = async () => {
 const requestQuery = query(
   collection(db, "agencyHostRequests"),
   where("agencyId", "==", agency.id),
+  where("ownerUserId", "==", auth.currentUser.uid),
   where("userId", "==", userDoc.id),
   where("status", "==", "pending")
 );

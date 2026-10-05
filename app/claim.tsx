@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { doc, increment, onSnapshot, setDoc } from 'firebase/firestore';
+import { doc, onSnapshot } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 
 import { auth, db } from './firebaseConfig';
+import { callApi } from './api';
 
 // ==========================================
 // REWARD SETTINGS  (yahin se change kar sakte ho)
@@ -79,6 +80,7 @@ export default function ClaimScreen() {
     return () => unsub();
   }, []);
 
+  // Stars server dega (daily limit + gap server par lagi hai)
   const giveStars = async (amount: number) => {
     const uid = auth.currentUser?.uid;
     if (!uid) {
@@ -87,14 +89,10 @@ export default function ClaimScreen() {
     }
 
     try {
-      await setDoc(
-        doc(db, 'wallets', uid),
-        { [STAR_FIELD]: increment(amount) },
-        { merge: true }
-      );
+      await callApi('/reward/ad', { ads: amount === REWARD_2_ADS ? 2 : 1 });
       return true;
-    } catch (e) {
-      Alert.alert('Error', 'Star add nahi ho paye. Dobara try karo.');
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Star add nahi ho paye. Dobara try karo.');
       return false;
     }
   };

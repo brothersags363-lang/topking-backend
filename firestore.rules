@@ -1,0 +1,556 @@
+rules_version = '2';
+
+// =====================================================================
+//  KingOfTop (kingofftop-2af35) - Firestore Security Rules  (SAKHT VERSION)
+//
+//  Sutra (rules ka saaf matlab):
+//   1. Login zaroori. Bina login kuch nahi.
+//   2. Apna data sirf apna. Dusre ke data me sirf chhote, tay kiye hue
+//      badlav (jaise follower count +1 / -1) aur wo bhi seedhi limit ke saath.
+//   3. PAISE WALE COLLECTIONS (wallets, withdrawals, liveRewards,
+//      razorpayOrders) me app se KOI WRITE NAHI. Sab kuch server (money.js,
+//      Admin SDK) karta hai - Admin SDK in rules ko bypass karta hai.
+//   4. Jo rule yahan likha nahi hai wo band hai (default DENY).
+// =====================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ------------------------------------------------------------------
+    // Helper functions
+    // ------------------------------------------------------------------
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function me() {
+      return request.auth.uid;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && me() == uid;
+    }
+
+    // admins/{uid} me role == "admin" hona chahiye (sirf console se banao)
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/admins/$(me()))
+        && get(/databases/$(database)/documents/admins/$(me())).data.role == 'admin';
+    }
+
+    // Update me sirf diye gaye fields badle ho
+    function onlyChanged(keys) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys);
+    }
+
+    // Update me ye fields bilkul na badle ho
+    function noneChanged(keys) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(keys);
+    }
+
+    // Counter field ek update me sirf [lo, hi] ke beech badal sakta hai
+    function step(k, lo, hi) {
+      return request.resource.data.get(k, 0) - resource.data.get(k, 0) >= lo
+        && request.resource.data.get(k, 0) - resource.data.get(k, 0) <= hi;
+    }
+
+    // Document ka malik (userId / uid / senderId me se jo bhi ho)
+    function docOwner(data) {
+      return data.get('userId', data.get('uid', data.get('senderId', ''))) == me();
+    }
+
+    // Naya document banate waqt owner field agar ho to apna hi hona chahiye
+    function createdAsMe() {
+      return signedIn()
+        && request.resource.data.get('userId',
+             request.resource.data.get('uid',
+               request.resource.data.get('senderId', me()))) == me();
+    }
+
+    function isAgencyOwner(agencyId) {
+      return signedIn()
+        && agencyId is string
+        && agencyId != ''
+        && exists(/databases/$(database)/documents/agencies/$(agencyId))
+        && get(/databases/$(database)/documents/agencies/$(agencyId)).data.ownerUserId == me();
+    }
+
+    // chatId = "uidA_uidB"
+    function inChat(chatId) {
+      return signedIn() && (me() in chatId.split('_'));
+    }
+
+    // Room ka host (rooms/{roomId}: doc id host ka uid ya hostId field)
+    function isRoomHost(roomId) {
+      return signedIn()
+        && (roomId == me()
+            || (exists(/databases/$(database)/documents/rooms/$(roomId))
+                && get(/databases/$(database)/documents/rooms/$(roomId)).data.get('hostId', '') == me()));
+    }
+
+    // User doc ke wo fields jo user khud kabhi nahi badal sakta
+    function userProtectedFields() {
+      return ['topGifters', 'banned', 'reportCount', 'reviewRequired', 'verified', 'isVerified'];
+    }
+
+    // ------------------------------------------------------------------
+    // ADMINS  (sirf console se banao, app se koi write nahi)
+    // ------------------------------------------------------------------
+    match /admins/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow write: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // USERS
+    // ------------------------------------------------------------------
+    match /users/{uid} {
+      allow read: if signedIn();
+
+      allow create: if isOwner(uid)
+        && !request.resource.data.keys().hasAny(userProtectedFields());
+
+      allow update: if
+        // apna profile (par protected fields nahi: topGifters, banned, verified ...)
+        (isOwner(uid) && noneChanged(userProtectedFields()))
+        || isAdmin()
+        // follow / unfollow: dusre ke counters sirf +1 / -1
+        || (signedIn()
+            && onlyChanged(['followersCount', 'followingCount', 'likes'])
+            && step('followersCount', -1, 1)
+            && step('followingCount', -1, 1)
+            && step('likes', -1, 1))
+        // agency owner apne host ko agency se jod / hata sake
+        || (signedIn()
+            && onlyChanged(['agencyHost', 'agencyId', 'agencyName'])
+            && (isAgencyOwner(resource.data.get('agencyId', ''))
+                || isAgencyOwner(request.resource.data.get('agencyId', ''))));
+
+      allow delete: if isOwner(uid) || isAdmin();
+
+      // users/{uid}/notifications
+      match /notifications/{nid} {
+        allow read, update, delete: if isOwner(uid) || isAdmin();
+        allow create: if signedIn();
+      }
+
+      // users/{uid}/followers/{followerUid}
+      match /followers/{fid} {
+        allow read: if signedIn();
+        allow create, update, delete: if isOwner(uid) || isOwner(fid) || isAdmin();
+      }
+
+      // users/{uid}/following/{targetUid}
+      match /following/{fid} {
+        allow read: if signedIn();
+        allow create, update, delete: if isOwner(uid) || isOwner(fid) || isAdmin();
+      }
+
+      // users/{uid}/blockedUsers/{blockedUid}
+      match /blockedUsers/{bid} {
+        allow read, write: if isOwner(uid) || isAdmin();
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // AGENCIES + HOST REQUESTS
+    // ------------------------------------------------------------------
+    match /agencies/{agencyId} {
+      allow read: if signedIn();
+
+      // star totals shuru me 0 hi honge; admin kisi aur ke naam par bhi bana sakta hai
+      allow create: if isAdmin()
+        || (signedIn()
+            && request.resource.data.ownerUserId == me()
+            && request.resource.data.get('totalStars', 0) == 0
+            && request.resource.data.get('monthlyStars', 0) == 0);
+
+      // totalStars / monthlyStars sirf server badalta hai
+      allow update: if isAdmin()
+        || (isOwner(resource.data.ownerUserId)
+            && noneChanged(['ownerUserId', 'totalStars', 'monthlyStars']))
+        // host judne / hatne par members +1 / -1
+        || (signedIn() && onlyChanged(['totalMembers']) && step('totalMembers', -1, 1));
+
+      allow delete: if isOwner(resource.data.ownerUserId) || isAdmin();
+    }
+
+    match /agencyHostRequests/{reqId} {
+      allow read: if signedIn()
+        && (resource.data.get('userId', '') == me()
+            || resource.data.get('ownerUserId', '') == me()
+            || isAdmin());
+      allow create: if signedIn() && request.resource.data.userId == me();
+      allow update, delete: if signedIn()
+        && (resource.data.get('userId', '') == me()
+            || resource.data.get('ownerUserId', '') == me()
+            || isAdmin());
+    }
+
+    // agencyNotifications/{agencyId_month}  (agency.js: monthly target notice)
+    match /agencyNotifications/{nid} {
+      allow read: if signedIn()
+        && (resource.data.get('ownerUserId', '') == me() || isAdmin());
+      allow create: if signedIn() && request.resource.data.ownerUserId == me();
+      allow update, delete: if signedIn()
+        && (resource.data.get('ownerUserId', '') == me() || isAdmin());
+    }
+
+    // ------------------------------------------------------------------
+    // VIDEOS  (all_videos + comments + likes)
+    // ------------------------------------------------------------------
+    match /all_videos/{videoId} {
+      allow read: if signedIn();
+
+      // naya video: stars 0 se hi shuru (stars sirf server badhata hai)
+      allow create: if signedIn()
+        && request.resource.data.userId == me()
+        && request.resource.data.get('stars', 0) == 0;
+
+      allow update: if
+        // owner: apna video edit kare, par stars / report fields na chhue
+        (isOwner(resource.data.userId)
+            && noneChanged(['userId', 'stars', 'reportCount', 'reviewRequired']))
+        || isAdmin()
+        // baaki sab: like / view / share / comment count / report - seedhi limit ke saath
+        || (signedIn()
+            && onlyChanged(['likes', 'likesCount', 'views', 'shares', 'commentsCount',
+                            'engagementScore', 'reportCount', 'reviewRequired'])
+            && step('likes', -1, 1)
+            && step('likesCount', -1, 1)
+            && step('views', 0, 1)
+            && step('shares', 0, 1)
+            && step('commentsCount', -1, 1)
+            && step('engagementScore', -5, 5)
+            && step('reportCount', 0, 1)
+            // reviewRequired tabhi true ho jab 10 report ho chuki hon
+            && (request.resource.data.get('reviewRequired', false) == resource.data.get('reviewRequired', false)
+                || request.resource.data.get('reportCount', 0) >= 10));
+
+      allow delete: if isOwner(resource.data.userId) || isAdmin();
+
+      match /comments/{commentId} {
+        allow read: if signedIn();
+        allow create: if createdAsMe();
+        allow update: if signedIn()
+          && (docOwner(resource.data)
+              || isOwner(get(/databases/$(database)/documents/all_videos/$(videoId)).data.userId)
+              || isAdmin()
+              || (onlyChanged(['likes', 'likesCount', 'repliesCount'])
+                  && step('likes', -1, 1)
+                  && step('likesCount', -1, 1)
+                  && step('repliesCount', -1, 1)));
+        allow delete: if signedIn()
+          && (docOwner(resource.data)
+              || isOwner(get(/databases/$(database)/documents/all_videos/$(videoId)).data.userId)
+              || isAdmin());
+
+        // comment ke andar replies / likes: doc id = uid ho to wahi likhe,
+        // varna sirf bhejne wala (owner field) ya video owner / admin
+        match /{sub}/{subId} {
+          allow read: if signedIn();
+          allow create: if createdAsMe() || subId == me();
+          allow update, delete: if signedIn()
+            && (subId == me()
+                || docOwner(resource.data)
+                || isOwner(get(/databases/$(database)/documents/all_videos/$(videoId)).data.userId)
+                || isAdmin());
+        }
+      }
+
+      match /likes/{likeId} {
+        allow read: if signedIn();
+        allow create: if signedIn();
+        allow update: if signedIn() && likeId == me();
+        allow delete: if signedIn()
+          && (likeId == me()
+              || docOwner(resource.data)
+              || isAdmin());
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // SONGS
+    // ------------------------------------------------------------------
+    match /songs/{songId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.userId == me();
+      allow update: if isOwner(resource.data.userId)
+        || isAdmin()
+        || (signedIn() && onlyChanged(['uses']) && step('uses', 0, 1));
+      allow delete: if isOwner(resource.data.userId) || isAdmin();
+    }
+
+    // ------------------------------------------------------------------
+    // STORIES + storyViews
+    // ------------------------------------------------------------------
+    match /stories/{storyId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.userId == me();
+      allow update: if isOwner(resource.data.userId)
+        || isAdmin()
+        || (signedIn() && onlyChanged(
+              ['likes', 'likesCount', 'views', 'viewsCount', 'repliesCount']));
+      allow delete: if isOwner(resource.data.userId) || isAdmin();
+
+      match /likes/{likeId} {
+        allow read: if signedIn();
+        allow create: if signedIn();
+        allow update: if signedIn() && likeId == me();
+        allow delete: if signedIn()
+          && (likeId == me()
+              || docOwner(resource.data)
+              || isAdmin());
+      }
+
+      // stories/{storyId}/viewers/{viewerUid}
+      match /viewers/{viewerId} {
+        allow read: if signedIn();
+        allow create, update: if isOwner(viewerId);
+        allow delete: if isOwner(viewerId)
+          || isOwner(get(/databases/$(database)/documents/stories/$(storyId)).data.userId)
+          || isAdmin();
+      }
+
+      match /replies/{replyId} {
+        allow read: if signedIn();
+        allow create: if createdAsMe();
+        allow update, delete: if signedIn()
+          && (docOwner(resource.data)
+              || isOwner(get(/databases/$(database)/documents/stories/$(storyId)).data.userId)
+              || isAdmin());
+      }
+    }
+
+    // storyViews/{viewerUid} -> { seen: { storyId: true } }
+    match /storyViews/{uid} {
+      allow read: if signedIn();
+      allow write: if isOwner(uid);
+    }
+
+    // ------------------------------------------------------------------
+    // FOLLOWS  (doc id = followerId_followingId)
+    // ------------------------------------------------------------------
+    match /follows/{followId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.followerId == me()
+        && followId == (request.resource.data.followerId + '_' + request.resource.data.followingId);
+      allow update: if false;
+      allow delete: if signedIn() && (resource.data.followerId == me() || isAdmin());
+    }
+
+    // ------------------------------------------------------------------
+    // PROFILE LIKES (doc id = likerId_likedUserId) + USER LIKES
+    // ------------------------------------------------------------------
+    match /profileLikes/{likeId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.likerId == me();
+      allow update: if false;
+      allow delete: if signedIn() && (resource.data.likerId == me() || isAdmin());
+    }
+
+    // userLikes/{uid}/likedVideos/{videoId}
+    match /userLikes/{uid} {
+      allow read, write: if isOwner(uid);
+
+      match /{sub=**} {
+        allow read, write: if isOwner(uid);
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // CHAT  (chats, userChats, deletedChats, blockedUsers)
+    // ------------------------------------------------------------------
+    match /chats/{chatId} {
+      allow read, write: if inChat(chatId) || isAdmin();
+    }
+    match /chats/{chatId}/{document=**} {
+      allow read, write: if inChat(chatId) || isAdmin();
+    }
+
+    // userChats/{uid}/friends/{friendId}
+    match /userChats/{uid} {
+      allow read, write: if isOwner(uid);
+
+      match /friends/{friendId} {
+        allow read: if isOwner(uid) || isAdmin();
+        allow create, update, delete: if isOwner(uid) || isOwner(friendId);
+      }
+
+      // pehla message bhejne par samne wale ke "requests" me entry banti hai
+      match /requests/{friendId} {
+        allow read: if isOwner(uid) || isAdmin();
+        allow create, update, delete: if isOwner(uid) || isOwner(friendId);
+      }
+
+      match /hiddenFriends/{friendId} {
+        allow read, write: if isOwner(uid);
+      }
+    }
+
+    match /deletedChats/{uid} {
+      allow read, write: if isOwner(uid);
+
+      match /{sub=**} {
+        allow read, write: if isOwner(uid);
+      }
+    }
+
+    // blockedUsers/{uid}/users/{blockedUid}
+    match /blockedUsers/{uid} {
+      allow read, write: if isOwner(uid);
+
+      match /users/{blockedUid} {
+        allow read: if isOwner(uid) || isOwner(blockedUid) || isAdmin(); // block check ke liye
+        allow write: if isOwner(uid);
+      }
+    }
+
+    // blockedUsers/{blockerId_blockedUserId}  (flat docs: userProfile.js / block.tsx)
+    // NOTE: query me where('blockerId','==',uid) lagana zaroori hai
+    match /blockedUsers/{blockId} {
+      allow read: if signedIn()
+        && (resource == null
+            || resource.data.get('blockerId', '') == me()
+            || resource.data.get('blockedUserId', '') == me()
+            || isAdmin());
+      allow create: if signedIn()
+        && request.resource.data.blockerId == me()
+        && blockId == (me() + '_' + request.resource.data.blockedUserId);
+      allow update: if false;
+      allow delete: if signedIn()
+        && (resource.data.get('blockerId', '') == me() || isAdmin());
+    }
+
+    // ------------------------------------------------------------------
+    // NOTIFICATIONS (top-level, live invite waghera)
+    // ------------------------------------------------------------------
+    match /notifications/{nid} {
+      allow read: if signedIn()
+        && (resource.data.get('to', '') == me()
+            || resource.data.get('senderId', '') == me()
+            || isAdmin());
+      allow create: if signedIn() && request.resource.data.senderId == me();
+      allow update, delete: if signedIn()
+        && (resource.data.get('to', '') == me()
+            || resource.data.get('senderId', '') == me()
+            || isAdmin());
+    }
+
+    // ------------------------------------------------------------------
+    // LIVE ROOMS  (audio chatroom + video live dono "rooms" me hain)
+    // doc id = host ka uid ya video_{uid}_{time}
+    // NOTE: live_rooms / videoLives app me use nahi hote, isliye hata diye
+    //       gaye (default DENY).
+    // ------------------------------------------------------------------
+    match /rooms/{roomId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && (request.resource.data.get('hostId', '') == me() || roomId == me());
+      allow update: if isOwner(resource.data.get('hostId', ''))
+        || isOwner(roomId)
+        || isAdmin()
+        // viewers gift animation / seat / speaker request / PK ke liye room doc
+        // likhte hain, isliye sirf host-only fields par rok lagayi hai
+        || (signedIn() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
+              ['hostId', 'userId', 'ownerId', 'allowedUsers', 'isPrivate',
+               'roomLocked', 'mods', 'kicked', 'chatLocked']));
+      allow delete: if isOwner(resource.data.get('hostId', '')) || isOwner(roomId) || isAdmin();
+
+      // rooms/{roomId}/audience/{uid}  - har viewer sirf apna doc likhe
+      match /audience/{uid} {
+        allow read: if signedIn();
+        allow create, update, delete: if isOwner(uid) || isRoomHost(roomId) || isAdmin();
+      }
+
+      // rooms/{roomId}/chats/{id}  - koi bhi bhej sakta hai, hata sirf
+      // bhejne wala / host / admin sakta hai
+      match /chats/{cid} {
+        allow read: if signedIn();
+        allow create: if signedIn();
+        allow update, delete: if docOwner(resource.data) || isRoomHost(roomId) || isAdmin();
+      }
+
+      // koi aur subcollection ho to sirf host / admin likhe
+      match /{sub}/{docId} {
+        allow read: if signedIn();
+        allow write: if isRoomHost(roomId) || isAdmin();
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // WALLET / WITHDRAWALS / REWARDS  (SABSE SAKHT - APP SE KOI WRITE NAHI)
+    // Stars kharidna, gift, withdraw, reward - sab server (money.js) karta hai.
+    // ------------------------------------------------------------------
+    match /wallets/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow write: if false;
+
+      match /purchaseHistory/{pid} {
+        allow read: if isOwner(uid) || isAdmin();
+        allow write: if false;
+      }
+
+      match /withdrawHistory/{wid} {
+        allow read: if isOwner(uid) || isAdmin();
+        allow write: if false;
+      }
+    }
+
+    match /withdrawals/{wid} {
+      allow read: if signedIn()
+        && (resource.data.get('userId', '') == me()
+            || isAdmin()
+            || isAgencyOwner(resource.data.get('agencyId', '')));
+      // request banana aur approve / reject - dono server se
+      allow write: if false;
+    }
+
+    // liveRewards/{uid}: dailyGifts waghera server badhata hai, claim bhi server
+    match /liveRewards/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow write: if false;
+    }
+
+    // razorpayOrders/*  -> koi rule nahi = sirf server (default DENY)
+
+    // ------------------------------------------------------------------
+    // VERIFIED USERS / HASHTAGS / AGENCY MONTHLY TARGET
+    // ------------------------------------------------------------------
+    match /verifiedUsers/{uid} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /hashtags/{tag} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /agencyMonthlyTarget/{agencyId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ------------------------------------------------------------------
+    // FEEDBACK + REPORTS
+    // ------------------------------------------------------------------
+    match /feedbacks/{fid} {
+      allow read: if signedIn() && (resource.data.get('uid', '') == me() || isAdmin());
+      allow create: if signedIn() && request.resource.data.uid == me();
+      allow update, delete: if isAdmin();   // reply admin panel se
+    }
+
+    // app "reportedBy" bhejta hai (report.jsx), purane docs "userId" use karte the
+    match /reports/{rid} {
+      allow create: if signedIn()
+        && request.resource.data.get('reportedBy', request.resource.data.get('userId', '')) == me();
+      allow read, update, delete: if isAdmin();
+    }
+
+    // ------------------------------------------------------------------
+    // Baaki sab kuch: default DENY (koi catch-all rule nahi)
+    // ------------------------------------------------------------------
+  }
+}

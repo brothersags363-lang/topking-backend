@@ -90,6 +90,14 @@ export default function AdminPanel() {
         <Ionicons name="flag" size={22} color="#fff" />
         <Text style={styles.btnLabel}>Reports</Text>
       </TouchableOpacity>
+      {/* NEW: All Videos (admin kisi ka bhi video delete kar sakta hai) */}
+      <TouchableOpacity
+        style={styles.videoBtn}
+        onPress={() => router.push("/adminVideos")}
+      >
+        <Ionicons name="videocam" size={22} color="#fff" />
+        <Text style={styles.btnLabel}>All Videos</Text>
+      </TouchableOpacity>
     </ScrollView>
   );
 }
@@ -124,5 +132,6 @@ const styles = StyleSheet.create({
   yellowText: { color: "#000", fontSize: 18, fontWeight: "bold", marginLeft: 10 },
   profileBtn: { ...row, backgroundColor: "#8e44ad" },
   reportBtn: { ...row, backgroundColor: "#e74c3c" },
+  videoBtn: { ...row, backgroundColor: "#16a085" },
   btnLabel: { color: "#fff", fontSize: 18, fontWeight: "bold", marginLeft: 10 },
 });

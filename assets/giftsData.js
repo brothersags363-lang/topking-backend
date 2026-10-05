@@ -215,4 +215,32 @@ icon: require("./gifts/cake3d.png"),
 animation: "web:cake",
 },
 
+
+{
+id:"missyou",
+name:"I Miss You",
+price:1599,
+duration:6000,
+icon: require("./gifts/missyou.png"),
+animation: "web:missyou",
+},
+
+{
+id:"rainylove",
+name:"Rainy Love",
+price:4799,
+duration:6500,
+icon: require("./gifts/rainylove.png"),
+animation: "web:rainy",
+},
+
+{
+id:"proposalring",
+name:"Golden Proposal",
+price:2399,
+duration:6000,
+icon: require("./gifts/proposal.png"),
+animation: "web:proposal-ring",
+},
+
 ];

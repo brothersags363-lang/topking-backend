@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
+  StyleSheet,  
   SafeAreaView,
   ScrollView,
   TextInput,
@@ -14,6 +14,9 @@ import {
   ActivityIndicator,
   BackHandler,
   RefreshControl,
+  Animated,
+  Easing,
+  Keyboard,
 } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import {
@@ -138,6 +141,15 @@ export default function ExplorePage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [loading, setLoading] = useState(false);
+
+  // SEARCH TABS: Accounts | Videos
+  const [activeTab, setActiveTab] = useState<'accounts' | 'videos'>('accounts');
+  const [videoResults, setVideoResults] = useState<any[]>([]);
+  const tabAnim = useRef(new Animated.Value(0)).current; // 0 = accounts, 1 = videos
+  const resultsFade = useRef(new Animated.Value(0)).current;
+  const recentVideosCache = useRef<any[] | null>(null);
+  const searchReqId = useRef(0);
+  const [tabBarWidth, setTabBarWidth] = useState(width - 32);
   const [profileImg, setProfileImg] = useState('');
   const [giftKings, setGiftKings] = useState([]);
 const [topVideos, setTopVideos] = useState([]);
@@ -191,6 +203,12 @@ loadGiftKing();
 
   useEffect(() => {
     const handleBackButton = () => {
+      // Search me kuch likha hai to pehle back par sirf search box clear ho
+      if (searchQuery.length > 0) {
+        clearSearch();
+        return true;
+      }
+
       try {
         if (router.canGoBack()) {
           router.back();
@@ -212,7 +230,7 @@ loadGiftKing();
     return () => {
       backHandlerSubscription.remove();
     };
-  }, [router]);
+  }, [router, searchQuery]);
 
   // AUTOMATED AUTO-SCROLL SLIDER LOGIC
   useEffect(() => {
@@ -330,6 +348,7 @@ const loadGiftKing = async () => {
 const onRefresh = async () => {
   try {
     setRefreshing(true);
+    recentVideosCache.current = null;
 
     await Promise.all([
       loadTopVideos(),
@@ -351,39 +370,130 @@ const onRefresh = async () => {
   // laggy while typing).
   const searchDebounceRef = useRef(null);
 
-  const runSearch = async (text: string) => {
-    try {
-      const q = query(
-        collection(db, "users"),
-        where("username", ">=", text.toLowerCase()),
-        where("username", "<=", text.toLowerCase() + '\uf8ff'),
-        limit(10)
-      );
-      const querySnapshot = await getDocs(q);
-      const users = await Promise.all(
-        querySnapshot.docs.map(async (d) => {
+  // "@love" / "#love" / " Love " -> "love"
+  const cleanTerm = (t: string) => t.trim().replace(/^[@#]+/, '').toLowerCase();
 
-          const data = d.data();
+  // ACCOUNTS: username (lowercase) + display name prefix match
+  const searchAccounts = async (text: string) => {
+    const term = cleanTerm(text);
+    if (!term) return [];
+    const cap = term.charAt(0).toUpperCase() + term.slice(1);
 
-          const walletSnap = await getDoc(
-            doc(db, "wallets", d.id)
-          );
+    const mk = (field: string, value: string) =>
+      getDocs(
+        query(
+          collection(db, "users"),
+          where(field, ">=", value),
+          where(field, "<=", value + '\uf8ff'),
+          limit(15)
+        )
+      ).catch(() => null);
 
-          return {
-            id: d.id,
-            ...data,
-            level: walletSnap.exists()
-              ? walletSnap.data().level || 1
-              : 1,
-          };
+    const snaps = await Promise.all([
+      mk("username", term),
+      mk("name", term),
+      mk("name", cap),
+    ]);
+
+    const map = new Map<string, any>();
+    snaps.forEach((snap) => {
+      snap?.docs.forEach((d) => {
+        if (!map.has(d.id)) map.set(d.id, { id: d.id, ...d.data() });
+      });
+    });
+
+    const users = await Promise.all(
+      Array.from(map.values())
+        .slice(0, 20)
+        .map(async (u) => {
+          let level = 1;
+          try {
+            const walletSnap = await getDoc(doc(db, "wallets", u.id));
+            if (walletSnap.exists()) level = walletSnap.data().level || 1;
+          } catch (e) {}
+          return { ...u, level };
         })
-      );
+    );
 
+    // exact / starts-with username pehle
+    users.sort((a: any, b: any) => {
+      const au = String(a.username || '').toLowerCase();
+      const bu = String(b.username || '').toLowerCase();
+      const ae = au === term ? 0 : au.startsWith(term) ? 1 : 2;
+      const be = bu === term ? 0 : bu.startsWith(term) ? 1 : 2;
+      return ae - be;
+    });
+
+    return users;
+  };
+
+  // VIDEOS: hashtag match (#love) + caption / username / song contains "love"
+  // Firestore me "contains" search nahi hota, isliye latest 200 videos ek baar
+  // cache karke wahi filter karte hain (typing par dobara read nahi hota).
+  const searchVideos = async (text: string) => {
+    const term = cleanTerm(text);
+    if (!term) return [];
+
+    const tagQuery = getDocs(
+      query(
+        collection(db, "all_videos"),
+        where("hashtags", "array-contains", "#" + term),
+        limit(40)
+      )
+    ).catch(() => null);
+
+    if (!recentVideosCache.current) {
+      try {
+        const snap = await getDocs(
+          query(collection(db, "all_videos"), orderBy("createdAt", "desc"), limit(200))
+        );
+        recentVideosCache.current = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      } catch (e) {
+        console.log("Video cache error:", e);
+        recentVideosCache.current = [];
+      }
+    }
+
+    const tagSnap = await tagQuery;
+    const myUid = auth.currentUser?.uid;
+    const map = new Map<string, any>();
+
+    tagSnap?.docs.forEach((d) => map.set(d.id, { id: d.id, ...d.data() }));
+
+    recentVideosCache.current.forEach((v: any) => {
+      const hay = [
+        v.caption,
+        Array.isArray(v.hashtags) ? v.hashtags.join(' ') : '',
+        v.username,
+        v.userName,
+        v.songName,
+        v.musicName,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (hay.includes(term)) map.set(v.id, v);
+    });
+
+    return Array.from(map.values())
+      .filter((v: any) => v.privacy !== 'private' || v.userId === myUid)
+      .sort((a: any, b: any) => (b.views || 0) - (a.views || 0));
+  };
+
+  const runSearch = async (text: string) => {
+    const reqId = ++searchReqId.current;
+    try {
+      const [users, vids] = await Promise.all([
+        searchAccounts(text),
+        searchVideos(text),
+      ]);
+      if (reqId !== searchReqId.current) return; // purana result ignore
       setSearchResults(users);
+      setVideoResults(vids);
     } catch (error) {
       console.error("Search Error:", error);
     } finally {
-      setLoading(false);
+      if (reqId === searchReqId.current) setLoading(false);
     }
   };
 
@@ -395,8 +505,10 @@ const onRefresh = async () => {
     }
 
     if (text.trim().length === 0) {
+      searchReqId.current++;
       setLoading(false);
       setSearchResults([]);
+      setVideoResults([]);
       return;
     }
 
@@ -406,6 +518,39 @@ const onRefresh = async () => {
       runSearch(text);
     }, 350);
   };
+
+  // Search box + results saaf karo (mobile back button se bhi yahi chalta hai)
+  const clearSearch = () => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchReqId.current++;
+    Keyboard.dismiss();
+    setSearchQuery('');
+    setLoading(false);
+    setSearchResults([]);
+    setVideoResults([]);
+    setActiveTab('accounts');
+    tabAnim.setValue(0);
+  };
+
+  // Tab change: indicator + pages smooth slide
+  const switchTab = (tab: 'accounts' | 'videos') => {
+    setActiveTab(tab);
+    Animated.timing(tabAnim, {
+      toValue: tab === 'accounts' ? 0 : 1,
+      duration: 280,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  };
+
+  // Search result area pehli baar aaye to halka fade-in
+  useEffect(() => {
+    Animated.timing(resultsFade, {
+      toValue: searchQuery.length > 0 ? 1 : 0,
+      duration: 200,
+      useNativeDriver: true,
+    }).start();
+  }, [searchQuery.length > 0]);
 
   useEffect(() => {
     return () => {
@@ -453,7 +598,7 @@ const onRefresh = async () => {
 
     <TextInput
       style={styles.searchInput}
-      placeholder="Search username..."
+      placeholder="Search accounts or videos..."
       placeholderTextColor="rgba(255,255,255,0.3)"
       value={searchQuery}
       onChangeText={handleSearch}
@@ -474,16 +619,82 @@ const onRefresh = async () => {
 
 
 
-      {/* SEARCH RESULTS LIST */}
+      {/* SEARCH RESULTS: Accounts | Videos tabs */}
       {searchQuery.length > 0 ? (
-  <FlatList
-    data={searchResults}
+        <Animated.View style={{ flex: 1, backgroundColor: '#08080a', opacity: resultsFade }}>
 
+          {/* TAB BAR */}
+          <View
+            style={styles.tabBar}
+            onLayout={(e) => setTabBarWidth(e.nativeEvent.layout.width)}
+          >
+            <TouchableOpacity style={styles.tabBtn} activeOpacity={0.7} onPress={() => switchTab('accounts')}>
+              <Ionicons
+                name="person-outline"
+                size={15}
+                color={activeTab === 'accounts' ? '#FFD700' : 'rgba(255,255,255,0.45)'}
+              />
+              <Text style={[styles.tabText, activeTab === 'accounts' && styles.tabTextActive]}>
+                Accounts{searchResults.length > 0 ? ` (${searchResults.length})` : ''}
+              </Text>
+            </TouchableOpacity>
 
-    keyExtractor={(item: any) => item.id}
-    style={{ backgroundColor: '#08080a' }}
-    contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10 }}
-    renderItem={({ item }: any) => (
+            <TouchableOpacity style={styles.tabBtn} activeOpacity={0.7} onPress={() => switchTab('videos')}>
+              <Ionicons
+                name="play-circle-outline"
+                size={16}
+                color={activeTab === 'videos' ? '#FFD700' : 'rgba(255,255,255,0.45)'}
+              />
+              <Text style={[styles.tabText, activeTab === 'videos' && styles.tabTextActive]}>
+                Videos{videoResults.length > 0 ? ` (${videoResults.length})` : ''}
+              </Text>
+            </TouchableOpacity>
+
+            {/* sliding underline */}
+            <Animated.View
+              style={[
+                styles.tabIndicator,
+                {
+                  width: tabBarWidth / 2,
+                  transform: [
+                    {
+                      translateX: tabAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0, tabBarWidth / 2],
+                      }),
+                    },
+                  ],
+                },
+              ]}
+            />
+          </View>
+
+          {/* PAGES (slide left/right) */}
+          <View style={{ flex: 1, overflow: 'hidden' }}>
+            <Animated.View
+              style={{
+                flex: 1,
+                flexDirection: 'row',
+                width: tabBarWidth * 2,
+                transform: [
+                  {
+                    translateX: tabAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0, -tabBarWidth],
+                    }),
+                  },
+                ],
+              }}
+            >
+              {/* ACCOUNTS PAGE */}
+              <View style={{ width: tabBarWidth }}>
+                <FlatList
+                  data={searchResults}
+                  keyExtractor={(item: any) => item.id}
+                  keyboardShouldPersistTaps="handled"
+                  contentContainerStyle={{ paddingTop: 10, paddingBottom: 120 }}
+                  renderItem={({ item }: any) => (
+
 
 <TouchableOpacity
   style={styles.userCard}
@@ -580,15 +791,66 @@ const onRefresh = async () => {
           color="rgba(255,255,255,0.2)"
         />
       </TouchableOpacity>
-    )}
-    ListEmptyComponent={() =>
-      !loading ? (
-        <Text style={styles.emptyText}>
-          No users found
-        </Text>
-      ) : null
-    }
-  />
+                  )}
+                  ListEmptyComponent={() =>
+                    !loading ? (
+                      <Text style={styles.emptyText}>No accounts found</Text>
+                    ) : null
+                  }
+                />
+              </View>
+
+              {/* VIDEOS PAGE */}
+              <View style={{ width: tabBarWidth }}>
+                <FlatList
+                  data={videoResults}
+                  keyExtractor={(item: any) => item.id}
+                  numColumns={3}
+                  keyboardShouldPersistTaps="handled"
+                  columnWrapperStyle={{ gap: 6 }}
+                  contentContainerStyle={{ paddingTop: 10, paddingBottom: 120, gap: 6 }}
+                  renderItem={({ item, index }: any) => (
+                    <TouchableOpacity
+                      style={styles.searchVideoCard}
+                      activeOpacity={0.85}
+                      onPress={() =>
+                        router.push({
+                          pathname: "/allvideo",
+                          params: {
+                            videoId: item.id,
+                            videos: JSON.stringify(videoResults),
+                            index: index,
+                            from: "explore",
+                          },
+                        })
+                      }
+                    >
+                      <Image
+                        source={{ uri: item.thumbnail }}
+                        style={styles.searchVideoImage}
+                      />
+                      <View style={styles.searchVideoShade} />
+                      <View style={styles.searchVideoMeta}>
+                        <Ionicons name="eye" size={11} color="#fff" />
+                        <Text style={styles.searchVideoViews}>{item.views || 0}</Text>
+                      </View>
+                      {!!item.caption && (
+                        <Text style={styles.searchVideoCaption} numberOfLines={1}>
+                          {item.caption}
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  )}
+                  ListEmptyComponent={() =>
+                    !loading ? (
+                      <Text style={styles.emptyText}>No videos found</Text>
+                    ) : null
+                  }
+                />
+              </View>
+            </Animated.View>
+          </View>
+        </Animated.View>
 ) : (
 
 
@@ -995,6 +1257,64 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600'
   },
+  tabBar: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: '#08080a',
+  },
+  tabBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    gap: 6,
+  },
+  tabText: { color: 'rgba(255,255,255,0.45)', fontSize: 13, fontWeight: '700' },
+  tabTextActive: { color: '#FFD700' },
+  tabIndicator: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    height: 2.5,
+    borderRadius: 2,
+    backgroundColor: '#FFD700',
+  },
+  searchVideoCard: {
+    flex: 1 / 3,
+    aspectRatio: 0.62,
+    maxWidth: '33%',
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: '#111',
+  },
+  searchVideoImage: { width: '100%', height: '100%' },
+  searchVideoShade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 46,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  searchVideoMeta: {
+    position: 'absolute',
+    left: 6,
+    bottom: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  searchVideoViews: { color: '#fff', fontSize: 11, fontWeight: 'bold' },
+  searchVideoCaption: {
+    position: 'absolute',
+    left: 6,
+    right: 6,
+    bottom: 5,
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 10,
+  },
   userCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1002,6 +1322,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#11121a',
     borderRadius: 16,
     marginBottom: 10,
+    marginHorizontal: 16,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.02)'
   },
@@ -1213,4 +1534,4 @@ giftKingGift: {
   fontWeight: "bold",
 },
 
-});     
+});     

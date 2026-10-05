@@ -63,6 +63,7 @@ import { useRouter, usePathname, useFocusEffect } from 'expo-router';
 // FIREBASE
 // ==========================
 import { db } from '../firebaseConfig';
+import { callApi } from '../api';
 
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
 
@@ -2605,76 +2606,17 @@ setSelectedStar(null);
 playStarAnimation();
 
 
-const senderWallet=doc(
-db,
-"wallets",
-user.uid
-);
-
-await updateDoc(senderWallet,{
-stars:increment(-selectedStar)
+const res = await callApi("/gift/video-star",{
+videoId:selectedVideoId,
+stars:selectedStar
 });
-
-const videoRef=doc(
-db,
-"all_videos",
-selectedVideoId
-);
-
-const videoSnap=await getDoc(videoRef);
-
-if(videoSnap.exists()){
-
-const videoData=videoSnap.data();
-
-const receiverWallet=doc(
-db,
-"wallets",
-videoData.userId
-);
-
-await setDoc(
-  receiverWallet,
-  {
-    receivedStars: increment(selectedStar)
-  },
-  { merge: true }
-);
-
-
-
-try {
-
-  await fetch(
-    "https://YOUR_RENDER_URL/update-agency-stars",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        receiverUid: selectedGiftUser,
-        stars: item.price,
-      }),
-    }
-  );
-
-} catch (e) {
-  console.log("Agency Update Error", e);
-}
-
-
-await updateDoc(videoRef,{
-stars:increment(selectedStar)
-});
-
-}
 
 setMyStars(prev => prev - selectedStar);
 
 }catch(e){
 
 console.log(e);
+Alert.alert("Star", (e as any)?.message || "Could not send star");
 
 }
 

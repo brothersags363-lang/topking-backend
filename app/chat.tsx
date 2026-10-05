@@ -8,7 +8,16 @@
 // and the sender to update: text, edited, deletedForEveryone, mediaUrl,
 //   thumbnail, replyTo
 // ============================================================================
-import React, { useEffect, useState, useRef, useMemo } from "react";
+import React, {
+  useEffect,
+  useState,
+  useRef,
+  useMemo,
+  useCallback,
+  memo,
+  forwardRef,
+  useImperativeHandle,
+} from "react";
 
 import {
   View,
@@ -64,6 +73,9 @@ import {
   updateDoc,
   deleteField,
   arrayUnion,
+  getDocs,
+  runTransaction,
+  writeBatch,
 } from "firebase/firestore";
 
 // ==========================================
@@ -253,7 +265,7 @@ const SwipeToReply = ({ children, onReply, enabled = true }: any) => {
   const reset = () =>
     Animated.spring(translateX, {
       toValue: 0,
-      useNativeDriver: false,
+      useNativeDriver: true,
       bounciness: 6,
     }).start();
 
@@ -352,6 +364,408 @@ const MenuRow = ({ icon, label, onPress, danger }: any) => (
 );
 
 // ==========================================
+// SMALL SPEED HELPERS
+// ==========================================
+// cheap "which day is it" key (much faster than toLocaleDateString)
+const dayKey = (ts: any) => {
+  if (!ts?.toDate) return 0;
+  const d = ts.toDate();
+  return d.getFullYear() * 10000 + d.getMonth() * 100 + d.getDate();
+};
+
+// true when nothing that is DRAWN has changed => the row is not re-rendered
+const sameMessage = (a: any, b: any) =>
+  a === b ||
+  (!!a &&
+    !!b &&
+    a.id === b.id &&
+    a.text === b.text &&
+    a.read === b.read &&
+    a.edited === b.edited &&
+    a.pending === b.pending &&
+    a.deletedForEveryone === b.deletedForEveryone &&
+    a.mediaUrl === b.mediaUrl &&
+    a.thumbnail === b.thumbnail &&
+    (a.createdAt?.toMillis?.() ?? 0) === (b.createdAt?.toMillis?.() ?? 0) &&
+    (a.replyTo?.id ?? null) === (b.replyTo?.id ?? null) &&
+    JSON.stringify(a.reactions || null) === JSON.stringify(b.reactions || null));
+
+// popup that appears with a soft scale + fade (premium feel)
+const PopIn = ({ children, style }: any) => {
+  const v = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.spring(v, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 22,
+      bounciness: 5,
+    }).start();
+  }, [v]);
+
+  return (
+    <Animated.View
+      style={[
+        style,
+        {
+          opacity: v,
+          transform: [
+            { scale: v.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1] }) },
+          ],
+        },
+      ]}
+    >
+      {children}
+    </Animated.View>
+  );
+};
+
+// ==========================================
+// INPUT BAR - owns the text state, so typing never re-renders the chat list
+// ==========================================
+const ChatInput = memo(
+  forwardRef(function ChatInput(
+    { disabled, placeholder, onSend, onTextChange, onAttach }: any,
+    ref: any
+  ) {
+    const [text, setText] = useState("");
+    const inputRef = useRef<any>(null);
+    const canSend = !disabled && text.trim().length > 0;
+
+    // Bottom gap (for the nav bar) only when the keyboard is CLOSED.
+    // When the keyboard opens the gap shrinks smoothly so the box sits
+    // right on top of the keyboard.
+    const CLOSED_GAP = 35;
+    const OPEN_GAP = 0; // want a tiny space above the keyboard? use 6-8
+    const bottomGap = useRef(new Animated.Value(CLOSED_GAP)).current;
+
+    useEffect(() => {
+      const isIOS = Platform.OS === "ios";
+      const animateTo = (toValue: number, e?: any) => {
+        bottomGap.stopAnimation();
+        Animated.timing(bottomGap, {
+          toValue,
+          duration: isIOS ? e?.duration || 220 : 120,
+          useNativeDriver: false, // margin cannot use the native driver
+        }).start();
+      };
+      const show = Keyboard.addListener(
+        isIOS ? "keyboardWillShow" : "keyboardDidShow",
+        (e) => animateTo(OPEN_GAP, e)
+      );
+      const hide = Keyboard.addListener(
+        isIOS ? "keyboardWillHide" : "keyboardDidHide",
+        (e) => animateTo(CLOSED_GAP, e)
+      );
+      return () => {
+        show.remove();
+        hide.remove();
+      };
+    }, [bottomGap]);
+
+    useImperativeHandle(
+      ref,
+      () => ({
+        focus: () => inputRef.current?.focus(),
+        // message failed to send => give the text back (never lose it)
+        restore: (t: string) => setText((prev) => prev || t),
+      }),
+      []
+    );
+
+    const handleChange = useCallback(
+      (t: string) => {
+        setText(t);
+        onTextChange(t);
+      },
+      [onTextChange]
+    );
+
+    const send = useCallback(() => {
+      const t = text.trim();
+      if (!t || disabled) return;
+      // instant clear (real apps never wait for the network)
+      if (onSend(t) !== false) setText("");
+    }, [text, disabled, onSend]);
+
+    return (
+      <Animated.View style={[styles.bottomBar, { marginBottom: bottomGap }]}>
+        <TouchableOpacity
+          disabled={disabled}
+          style={[styles.attachBtn, { opacity: disabled ? 0.5 : 1 }]}
+          onPress={onAttach}
+        >
+          <Ionicons name="add" size={30} color="#fff" />
+        </TouchableOpacity>
+
+        <TextInput
+          ref={inputRef}
+          value={text}
+          onChangeText={handleChange}
+          placeholder={placeholder}
+          placeholderTextColor="#ccc"
+          editable={!disabled}
+          style={styles.input}
+          // Enter = new line (like WhatsApp); sending is done by the button
+          multiline
+        />
+
+        <TouchableOpacity
+          disabled={!canSend}
+          style={[styles.sendBtn, { opacity: canSend ? 1 : 0.5 }]}
+          onPress={send}
+        >
+          <Ionicons name="send" size={26} color="#fff" />
+        </TouchableOpacity>
+      </Animated.View>
+    );
+  })
+);
+
+// ==========================================
+// ONE MESSAGE ROW (memo: only re-renders when ITS message changes)
+// ==========================================
+const MessageRow = memo(
+  function MessageRow({
+    item,
+    showDateSeparator,
+    highlighted,
+    currentUid,
+    username,
+    profileImg,
+    handlers,
+  }: any) {
+    const mine = item?.senderId === currentUid;
+    const isDeleted = item.deletedForEveryone === true;
+    const hasReactions =
+      !!item.reactions && Object.values(item.reactions).some(Boolean);
+
+    const onLongPress = () => handlers.openMenu(item);
+
+    // ---------- the bubble itself ----------
+    let content: any = null;
+
+    if (isDeleted) {
+      content = (
+        <TouchableOpacity
+          activeOpacity={0.9}
+          delayLongPress={350}
+          onLongPress={onLongPress}
+          style={[
+            styles.messageBox,
+            mine ? styles.myMessage : styles.otherMessage,
+            styles.deletedBubble,
+          ]}
+        >
+          <Ionicons name="ban" size={14} color="#cfcfcf" />
+          <Text style={styles.deletedText}>
+            {mine ? "You deleted this message" : "This message was deleted"}
+          </Text>
+        </TouchableOpacity>
+      );
+    } else if (item.type === "liveInvite") {
+      content = (
+        <TouchableOpacity
+          delayLongPress={350}
+          onLongPress={onLongPress}
+          style={[styles.liveInviteBox, highlighted && styles.highlight]}
+          onPress={() => handlers.openLive(item.roomId)}
+        >
+          <Text style={styles.liveInviteTitle}>🎙 Live Invite</Text>
+          <Text style={styles.liveInviteSub}>Join Live Room</Text>
+        </TouchableOpacity>
+      );
+    } else if (item.type === "media") {
+      const isVideoMsg = item.mediaType === "video";
+
+      content = (
+        <TouchableOpacity
+          activeOpacity={0.9}
+          delayLongPress={350}
+          style={[styles.mediaBubble, highlighted && styles.highlight]}
+          onPress={() =>
+            handlers.openViewer({
+              type: isVideoMsg ? "video" : "image",
+              url: item.mediaUrl,
+            })
+          }
+          onLongPress={onLongPress}
+        >
+          <Image
+            source={{
+              uri: isVideoMsg ? item.thumbnail || undefined : item.mediaUrl,
+            }}
+            style={styles.mediaImg}
+            // decode at bubble size, not full photo size => smooth scrolling
+            resizeMethod="resize"
+          />
+
+          {isVideoMsg && (
+            <Ionicons
+              name="play-circle"
+              size={50}
+              color="#fff"
+              style={styles.mediaPlayIcon}
+            />
+          )}
+
+          <View style={styles.mediaMeta}>
+            <Text style={styles.mediaTime}>
+              {formatMessageTime(item.createdAt)}
+            </Text>
+            {mine && (
+              <Ionicons
+                name={
+                  item.pending
+                    ? "time-outline"
+                    : item.read
+                    ? "checkmark-done"
+                    : "checkmark"
+                }
+                size={14}
+                color={item.read ? "#4DA6FF" : "#fff"}
+                style={{ marginLeft: 4 }}
+              />
+            )}
+          </View>
+        </TouchableOpacity>
+      );
+    } else if (item.type === "video") {
+      content = (
+        <TouchableOpacity
+          delayLongPress={350}
+          onLongPress={onLongPress}
+          style={highlighted && styles.highlight}
+          onPress={() => handlers.openSharedVideo(item)}
+        >
+          <Image
+            source={{ uri: item.thumbnail }}
+            style={styles.videoThumbnail}
+            resizeMethod="resize"
+          />
+          <Ionicons
+            name="play-circle"
+            size={50}
+            color="#fff"
+            style={styles.playIcon}
+          />
+        </TouchableOpacity>
+      );
+    } else {
+      // plain text message
+      content = (
+        <TouchableOpacity
+          activeOpacity={0.9}
+          delayLongPress={350}
+          onLongPress={onLongPress}
+          style={[
+            styles.messageBox,
+            mine ? styles.myMessage : styles.otherMessage,
+            highlighted && styles.highlight,
+          ]}
+        >
+          {!!item.replyTo && (
+            <ReplyQuote
+              reply={item.replyTo}
+              mine={mine}
+              myUid={currentUid}
+              otherName={username}
+              onPress={() => handlers.scrollTo(item.replyTo.id)}
+            />
+          )}
+
+          <ChatMessageText
+            text={String(item?.text || "")}
+            style={styles.messageText}
+            onLinkPress={openChatLink}
+          />
+
+          <View style={styles.metaRow}>
+            {item.edited && <Text style={styles.editedText}>edited</Text>}
+
+            <Text style={styles.timeText}>
+              {formatMessageTime(item.createdAt)}
+            </Text>
+
+            {mine && (
+              <Ionicons
+                name={
+                  item.pending
+                    ? "time-outline"
+                    : item.read
+                    ? "checkmark-done"
+                    : "checkmark"
+                }
+                size={14}
+                color={item.read ? "#4DA6FF" : "#dcdcdc"}
+                style={{ marginLeft: 4 }}
+              />
+            )}
+          </View>
+        </TouchableOpacity>
+      );
+    }
+
+    return (
+      <>
+        {showDateSeparator && (
+          <View style={styles.dateSeparatorWrap}>
+            <Text style={styles.dateSeparatorText}>
+              {formatDateLabel(item.createdAt)}
+            </Text>
+          </View>
+        )}
+
+        <SwipeToReply enabled={!isDeleted} onReply={() => handlers.reply(item)}>
+          <View
+            style={[
+              styles.row,
+              mine ? styles.myRow : styles.otherRow,
+              hasReactions && { marginBottom: 12 },
+            ]}
+          >
+            {!mine && (
+              <Image
+                source={{ uri: profileImg || DEFAULT_AVATAR }}
+                style={styles.chatAvatar}
+                resizeMethod="resize"
+              />
+            )}
+
+            <View
+              style={[
+                styles.bubbleColumn,
+                { alignItems: mine ? "flex-end" : "flex-start" },
+              ]}
+            >
+              {content}
+
+              {!isDeleted && (
+                <ReactionsPill
+                  reactions={item.reactions}
+                  mine={mine}
+                  onPress={() => handlers.openMenu(item)}
+                />
+              )}
+            </View>
+          </View>
+        </SwipeToReply>
+      </>
+    );
+  },
+  (prev: any, next: any) =>
+    sameMessage(prev.item, next.item) &&
+    prev.showDateSeparator === next.showDateSeparator &&
+    prev.highlighted === next.highlighted &&
+    prev.currentUid === next.currentUid &&
+    prev.username === next.username &&
+    prev.profileImg === next.profileImg &&
+    prev.handlers === next.handlers
+);
+
+const messageKey = (item: any) => String(item.id);
+
+// ==========================================
 // SCREEN
 // ==========================================
 export default function ChatScreen() {
@@ -372,7 +786,6 @@ export default function ChatScreen() {
     : params.profileImg || "";
 
   // ---------- state ----------
-  const [message, setMessage] = useState("");
   const [rawMessages, setRawMessages] = useState<any[]>([]);
   const [msgLimit, setMsgLimit] = useState(PAGE_SIZE);
   const [deletedAt, setDeletedAt] = useState<any>(null);
@@ -395,8 +808,6 @@ export default function ChatScreen() {
   const [otherLastSeen, setOtherLastSeen] = useState<any>(null);
   const [otherTyping, setOtherTyping] = useState(false);
 
-  const [showPreview, setShowPreview] = useState(false);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [headerMenuVisible, setHeaderMenuVisible] = useState(false);
   const [isBlocked, setIsBlocked] = useState(false);
   const [blockedByOther, setBlockedByOther] = useState(false);
@@ -421,6 +832,12 @@ export default function ChatScreen() {
   const atBottomRef = useRef(true);
   const topIdRef = useRef<any>(null);
   const toastTimerRef = useRef<any>(null);
+  const messagesRef = useRef<any[]>([]);
+  const prevMsgMapRef = useRef<Map<string, any>>(new Map());
+  const loadingMoreRef = useRef(false);
+  const readRequestedRef = useRef<Set<string>>(new Set());
+  // always points at the newest functions => child components get STABLE callbacks
+  const H = useRef<any>({});
 
   // NOTE: every hook below must run on every render, so the "not logged in"
   // early returns are placed AFTER all hooks.
@@ -433,6 +850,28 @@ export default function ChatScreen() {
         ? `${currentUid}_${userId}`
         : `${userId}_${currentUid}`
       : "";
+
+  // ================================
+  // MESSAGE REQUEST STATE  (document: chats/{chatId})
+  //   status "pending"  = request sent, receiver has not accepted yet
+  //   status "accepted" = normal chat (Friends tab)
+  //   status "declined" = receiver declined
+  //   no document       = old chat / never chatted => handled on first send
+  // ================================
+  const [chatMeta, setChatMeta] = useState<any>(undefined); // undefined = loading
+  const [accepting, setAccepting] = useState(false);
+  const deniedAtRef = useRef(0);
+  const metaStatus = chatMeta?.status;
+  const iAmRequester = chatMeta?.requesterId === currentUid;
+  const iAmReceiverPending = metaStatus === "pending" && !iAmRequester;
+  const iAmRequesterPending = metaStatus === "pending" && iAmRequester;
+  const isDeclined = metaStatus === "declined";
+  const requesterLocked = iAmRequesterPending && chatMeta?.firstMessageSent === true;
+  // which chat-list folder holds this chat for ME / for THE OTHER PERSON
+  const myColRef = useRef("friends");
+  const theirColRef = useRef("friends");
+  myColRef.current = iAmReceiverPending ? "requests" : "friends";
+  theirColRef.current = iAmRequesterPending ? "requests" : "friends";
 
   // ================================
   // LOAD OTHER USER INFO (wallet level + my own profile, once)
@@ -478,6 +917,17 @@ export default function ChatScreen() {
       () => {}
     );
   }, [userId]);
+
+  // request status (live)
+  useEffect(() => {
+    if (!chatId) return;
+    setChatMeta(undefined);
+    return onSnapshot(
+      doc(db, "chats", chatId),
+      (snap) => setChatMeta(snap.exists() ? snap.data() : null),
+      () => setChatMeta(null)
+    );
+  }, [chatId]);
 
   // block status (live, both directions)
   useEffect(() => {
@@ -529,25 +979,55 @@ export default function ChatScreen() {
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs.map((d) => ({
-        id: d.id,
-        // "estimate" => a message that is still sending already has a time
-        ...d.data({ serverTimestamps: "estimate" }),
-        pending: d.metadata.hasPendingWrites,
-      }));
+      // Re-use the old object for every message that did not change, so the
+      // memoized rows skip re-rendering (a new message = 1 row, not 40).
+      const prevById = prevMsgMapRef.current;
+      const nextById = new Map<string, any>();
 
+      const list = snapshot.docs.map((d) => {
+        const fresh: any = {
+          id: d.id,
+          // "estimate" => a message that is still sending already has a time
+          ...d.data({ serverTimestamps: "estimate" }),
+          pending: d.metadata.hasPendingWrites,
+        };
+        const old = prevById.get(d.id);
+        const item = old && sameMessage(old, fresh) ? old : fresh;
+        nextById.set(d.id, item);
+        return item;
+      });
+
+      prevMsgMapRef.current = nextById;
       setRawMessages(list);
       setLoadingMessages(false);
+      loadingMoreRef.current = false;
 
       // Mark incoming messages as read (blue ticks on the sender's side)
+      let markedAny = false;
       snapshot.docs.forEach((d) => {
+        if (d.metadata.hasPendingWrites) return;
         const data: any = d.data();
-        if (data.senderId === userId && data.read !== true) {
+        if (
+          data.senderId === userId &&
+          data.read !== true &&
+          !readRequestedRef.current.has(d.id)
+        ) {
+          readRequestedRef.current.add(d.id);
+          markedAny = true;
           updateDoc(doc(db, "chats", chatId, "messages", d.id), {
             read: true,
-          }).catch(() => {});
+          }).catch(() => readRequestedRef.current.delete(d.id));
         }
       });
+
+      // I am looking at the chat right now => it must not show as "unread"
+      // in the chat list (the sender increments unreadCount on every message)
+      if (markedAny) {
+        updateDoc(
+          doc(db, "userChats", currentUid, myColRef.current, userId),
+          { hasNewMessage: false, unreadCount: 0 }
+        ).catch(() => {});
+      }
     });
 
     return unsubscribe;
@@ -580,6 +1060,9 @@ export default function ChatScreen() {
 
     return list;
   }, [rawMessages, deletedAt, currentUid, searchMode, searchText]);
+
+  // latest list for renderItem (read through a ref => renderItem stays stable)
+  messagesRef.current = messages;
 
   // are there older messages left to load?
   const hasMore = useMemo(() => {
@@ -618,12 +1101,12 @@ export default function ChatScreen() {
   useEffect(() => {
     if (!currentUid || !userId) return;
 
-    setDoc(
-      doc(db, "userChats", currentUid, "friends", userId),
-      { hasNewMessage: false, unreadCount: 0 },
-      { merge: true }
+    if (chatMeta === undefined) return; // wait until we know the folder
+    updateDoc(
+      doc(db, "userChats", currentUid, myColRef.current, userId),
+      { hasNewMessage: false, unreadCount: 0 }
     ).catch(() => {});
-  }, [currentUid, userId]);
+  }, [currentUid, userId, chatMeta === undefined, metaStatus, chatMeta?.requesterId]);
 
   // ================================
   // TYPING INDICATOR
@@ -654,8 +1137,6 @@ export default function ChatScreen() {
   };
 
   const handleTyping = (text: string) => {
-    setMessage(text);
-
     if (!chatId || !currentUid) return;
 
     if (text.length === 0) {
@@ -692,25 +1173,6 @@ export default function ChatScreen() {
     };
   }, [chatId, currentUid]);
 
-  // ================================
-  // KEYBOARD
-  // ================================
-  useEffect(() => {
-    const showListener = Keyboard.addListener("keyboardDidShow", (e) => {
-      setKeyboardHeight(e.endCoordinates.height);
-      setShowPreview(true);
-    });
-
-    const hideListener = Keyboard.addListener("keyboardDidHide", () => {
-      setShowPreview(false);
-      setKeyboardHeight(0);
-    });
-
-    return () => {
-      showListener.remove();
-      hideListener.remove();
-    };
-  }, []);
 
   // ================================
   // SMALL HELPERS
@@ -732,6 +1194,144 @@ export default function ChatScreen() {
     return myDataRef.current;
   };
 
+  // ---------- MESSAGE REQUEST HELPERS ----------
+  const explainDenied = (reason?: string) => {
+    // several media files can be denied at once => show the alert only once
+    const now = Date.now();
+    if (now - deniedAtRef.current < 1500) return;
+    deniedAtRef.current = now;
+    if (reason === "mustAccept") {
+      Alert.alert("Accept request first", `Accept ${username}'s message request to reply.`);
+    } else if (reason === "declined") {
+      Alert.alert("Request declined", "This message request was declined.");
+    } else {
+      Alert.alert(
+        "Request sent",
+        `You can send more messages after ${username} accepts your request.`
+      );
+    }
+  };
+
+  // quick check from live state (no network) - true = sending NOT allowed
+  const requestGuard = () => {
+    if (iAmReceiverPending) { explainDenied("mustAccept"); return true; }
+    if (isDeclined) { explainDenied("declined"); return true; }
+    if (requesterLocked) { explainDenied("waiting"); return true; }
+    return false;
+  };
+
+  // Server-side-safe check + claim. Runs in ONE transaction, so double taps /
+  // two devices can never get a second message through while pending.
+  //  - mutual follow, or an old chat that already has messages => accepted
+  //  - otherwise => pending request, and the single allowed message is claimed
+  const claimSendAccess = async (): Promise<{ ok: boolean; reason?: string; first?: boolean }> => {
+    const metaRef = doc(db, "chats", chatId);
+
+    let autoAccept = false;
+    const pre = await getDoc(metaRef);
+    if (!pre.exists()) {
+      const [a, b, old] = await Promise.all([
+        getDoc(doc(db, "follows", `${currentUid}_${userId}`)),
+        getDoc(doc(db, "follows", `${userId}_${currentUid}`)),
+        getDocs(query(collection(db, "chats", chatId, "messages"), limit(1))),
+      ]);
+      autoAccept = (a.exists() && b.exists()) || !old.empty;
+    }
+
+    return runTransaction(db, async (tx) => {
+      const snap = await tx.get(metaRef);
+      const m: any = snap.exists() ? snap.data() : null;
+      const base = { participants: [currentUid, userId] };
+
+      if (m?.status === "accepted") return { ok: true };
+      if (m?.status === "declined") return { ok: false, reason: "declined" };
+      if (m?.status === "pending") {
+        if (m.requesterId !== currentUid) return { ok: false, reason: "mustAccept" };
+        if (m.firstMessageSent) return { ok: false, reason: "waiting" };
+        tx.update(metaRef, { firstMessageSent: true });
+        return { ok: true, first: true };
+      }
+      if (autoAccept) {
+        tx.set(metaRef, { ...base, status: "accepted", createdAt: serverTimestamp() });
+        return { ok: true };
+      }
+      tx.set(metaRef, {
+        ...base,
+        status: "pending",
+        requesterId: currentUid,
+        receiverId: userId,
+        firstMessageSent: true,
+        createdAt: serverTimestamp(),
+      });
+      return { ok: true, first: true };
+    }) as any;
+  };
+
+  // sending failed after the single request message was claimed => give it back
+  const releaseFirstClaim = () =>
+    updateDoc(doc(db, "chats", chatId), { firstMessageSent: false }).catch(() => {});
+
+  const acceptRequest = async () => {
+    if (accepting || !currentUid || !userId) return;
+    setAccepting(true);
+    try {
+      const reqRef = doc(db, "userChats", currentUid, "requests", userId);
+      const reqSnap = await getDoc(reqRef);
+      const r: any = reqSnap.exists() ? reqSnap.data() : {};
+
+      const batch = writeBatch(db);
+      batch.update(doc(db, "chats", chatId), {
+        status: "accepted",
+        acceptedAt: serverTimestamp(),
+      });
+      batch.set(
+        doc(db, "userChats", currentUid, "friends", userId),
+        {
+          userId,
+          username: r.username || username,
+          profileImg: r.profileImg || profileImg,
+          lastMessage: r.lastMessage || "",
+          updatedAt: serverTimestamp(),
+          unreadCount: 0,
+          hasNewMessage: false,
+        },
+        { merge: true }
+      );
+      batch.delete(reqRef);
+      await batch.commit(); // all 3 changes together => chat moves Requests -> Friends
+    } catch (e) {
+      console.log("ACCEPT ERROR =", e);
+      Alert.alert("Error", "Could not accept the request. Please try again.");
+    } finally {
+      setAccepting(false);
+    }
+  };
+
+  const declineRequest = () => {
+    Alert.alert("Decline request?", `${username} will not be able to message you.`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Decline",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            const batch = writeBatch(db);
+            batch.update(doc(db, "chats", chatId), {
+              status: "declined",
+              declinedAt: serverTimestamp(),
+            });
+            batch.delete(doc(db, "userChats", currentUid, "requests", userId));
+            await batch.commit();
+            router.back();
+          } catch (e) {
+            console.log("DECLINE ERROR =", e);
+            Alert.alert("Error", "Could not decline. Please try again.");
+          }
+        },
+      },
+    ]);
+  };
+
   // returns true (and tells the user) if sending is not allowed
   const guardBlocked = () => {
     if (isBlocked) {
@@ -749,12 +1349,12 @@ export default function ChatScreen() {
   const syncLastMessage = (text: string) => {
     if (!currentUid || !userId) return;
     setDoc(
-      doc(db, "userChats", currentUid, "friends", userId),
+      doc(db, "userChats", currentUid, myColRef.current, userId),
       { lastMessage: text },
       { merge: true }
     ).catch(() => {});
     setDoc(
-      doc(db, "userChats", userId, "friends", currentUid),
+      doc(db, "userChats", userId, theirColRef.current, currentUid),
       { lastMessage: text },
       { merge: true }
     ).catch(() => {});
@@ -768,38 +1368,51 @@ export default function ChatScreen() {
   // ================================
   // SEND TEXT MESSAGE
   // ================================
-  const sendMessage = async () => {
-    if (guardBlocked()) return;
+  const sendMessage = (text: string) => {
+    if (guardBlocked() || requestGuard()) return false;
 
-    const outgoingText = message.trim();
-    if (!outgoingText) return;
+    const outgoingText = String(text || "").trim();
+    if (!outgoingText) return false;
 
     const reply = replyingTo;
 
-    // clear the input instantly (real apps never wait for the network)
-    setMessage("");
+    // UI first - the input is already cleared by <ChatInput/>
     setReplyingTo(null);
     stopTyping();
     requestAnimationFrame(() =>
       flatListRef.current?.scrollToOffset({ offset: 0, animated: true })
     );
 
-    try {
-      const myData = await getMyData();
+    let firstClaimed = false;
+    (async () => {
+      try {
+        // accepted chat = fast path (no network check). Otherwise claim access.
+        const claim =
+          chatMeta?.status === "accepted"
+            ? { ok: true, first: false, reason: "" }
+            : await claimSendAccess();
+        if (!claim.ok) {
+          explainDenied(claim.reason);
+          inputRef.current?.restore(outgoingText);
+          setReplyingTo((prev: any) => prev || reply);
+          return;
+        }
+        firstClaimed = !!claim.first;
+        const theirColNow = claim.first ? "requests" : "friends";
 
-      const payload: any = {
-        text: outgoingText,
-        senderId: currentUid,
-        receiverId: userId,
-        read: false,
-        createdAt: serverTimestamp(),
-      };
-      if (reply) payload.replyTo = reply;
+        const payload: any = {
+          text: outgoingText,
+          senderId: currentUid,
+          receiverId: userId,
+          read: false,
+          createdAt: serverTimestamp(),
+        };
+        if (reply) payload.replyTo = reply;
 
-      await addDoc(collection(db, "chats", chatId, "messages"), payload);
+        // All writes start at the SAME time (they used to wait for each other)
+        const msgWrite = addDoc(collection(db, "chats", chatId, "messages"), payload);
 
-      await Promise.all([
-        setDoc(
+        const myListWrite = setDoc(
           doc(db, "userChats", currentUid, "friends", userId),
           {
             userId,
@@ -810,44 +1423,57 @@ export default function ChatScreen() {
             unreadCount: 0,
           },
           { merge: true }
-        ),
-        setDoc(
-          doc(db, "userChats", userId, "friends", currentUid),
-          {
-            userId: currentUid,
-            username:
-              myData?.username || currentUser?.displayName || "User",
-            profileImg: myData?.profileImg || currentUser?.photoURL || "",
-            lastMessage: outgoingText,
-            hasNewMessage: true,
-            unreadCount: increment(1),
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        ),
-      ]);
+        );
 
-      // Best-effort push notification - failure here shouldn't matter
-      fetch("https://topking-backend.onrender.com/send-message-notification", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          receiverUid: userId,
-          senderUid: currentUid,
-          senderName: myData?.username || currentUser?.displayName || "User",
-          message: outgoingText,
-        }),
-      }).catch((e) => console.log(e));
-    } catch (err) {
-      console.log("SEND ERROR =", err);
-      // Message failed - restore the text so the user doesn't lose it
-      setMessage((prev) => prev || outgoingText);
-      setReplyingTo((prev: any) => prev || reply);
-      Alert.alert(
-        "Message not sent",
-        "Please check your connection and try again."
-      );
-    }
+        const theirListWrite = (async () => {
+          const myData = await getMyData();
+          await setDoc(
+            doc(db, "userChats", userId, theirColNow, currentUid),
+            {
+              userId: currentUid,
+              username: myData?.username || currentUser?.displayName || "User",
+              profileImg: myData?.profileImg || currentUser?.photoURL || "",
+              lastMessage: outgoingText,
+              hasNewMessage: true,
+              unreadCount: increment(1),
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+          return myData;
+        })();
+
+        const [, , myData] = await Promise.all([
+          msgWrite,
+          myListWrite,
+          theirListWrite,
+        ]);
+
+        // Best-effort push notification - failure here shouldn't matter
+        fetch("https://topking-backend.onrender.com/send-message-notification", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            receiverUid: userId,
+            senderUid: currentUid,
+            senderName: myData?.username || currentUser?.displayName || "User",
+            message: outgoingText,
+          }),
+        }).catch((e) => console.log(e));
+      } catch (err) {
+        console.log("SEND ERROR =", err);
+        if (firstClaimed) releaseFirstClaim();
+        // Message failed - give the text back so the user doesn't lose it
+        inputRef.current?.restore(outgoingText);
+        setReplyingTo((prev: any) => prev || reply);
+        Alert.alert(
+          "Message not sent",
+          "Please check your connection and try again."
+        );
+      }
+    })();
+
+    return true;
   };
 
   // ================================
@@ -1059,12 +1685,30 @@ export default function ChatScreen() {
       ...prev,
     ]);
 
-    const setProgress = (p: number) =>
+    let lastShown = 0;
+    const setProgress = (p: number) => {
+      // progress ticks arrive very fast - only redraw when the % moved by 2
+      if (p < 1 && p - lastShown < 0.02) return;
+      lastShown = p;
       setUploads((prev) =>
         prev.map((u) => (u.id === localId ? { ...u, progress: p } : u))
       );
+    };
 
+    let firstClaimed = false;
     try {
+      const claim =
+        chatMeta?.status === "accepted"
+          ? { ok: true, first: false, reason: "" }
+          : await claimSendAccess();
+      if (!claim.ok) {
+        setUploads((prev) => prev.filter((u) => u.id !== localId));
+        explainDenied(claim.reason);
+        return;
+      }
+      firstClaimed = !!claim.first;
+      const theirColNow = claim.first ? "requests" : "friends";
+
       const extFromUri = (asset.uri.split(".").pop() || "")
         .split("?")[0]
         .toLowerCase();
@@ -1079,25 +1723,25 @@ export default function ChatScreen() {
         (isVideo ? `video/${ext}` : `image/${ext === "jpg" ? "jpeg" : ext}`);
       const base = `chatMedia/${chatId}/${currentUid}_${localId}`;
 
-      // small thumbnail for videos
-      let thumbUrl = "";
-      if (isVideo) {
-        try {
-          const t = await VideoThumbnails.getThumbnailAsync(asset.uri, {
-            time: 500,
-          });
-          thumbUrl = await uploadFile(t.uri, `${base}_thumb.jpg`, "image/jpeg");
-        } catch (e) {
-          console.log("THUMB ERROR =", e);
-        }
-      }
+      // video thumbnail and the file itself upload at the SAME time
+      const thumbPromise: Promise<string> = isVideo
+        ? (async () => {
+            try {
+              const t = await VideoThumbnails.getThumbnailAsync(asset.uri, {
+                time: 500,
+              });
+              return await uploadFile(t.uri, `${base}_thumb.jpg`, "image/jpeg");
+            } catch (e) {
+              console.log("THUMB ERROR =", e);
+              return "";
+            }
+          })()
+        : Promise.resolve("");
 
-      const mediaUrl = await uploadFile(
-        asset.uri,
-        `${base}.${ext}`,
-        contentType,
-        setProgress
-      );
+      const [thumbUrl, mediaUrl] = await Promise.all([
+        thumbPromise,
+        uploadFile(asset.uri, `${base}.${ext}`, contentType, setProgress),
+      ]);
 
       await addDoc(collection(db, "chats", chatId, "messages"), {
         type: "media",
@@ -1130,7 +1774,7 @@ export default function ChatScreen() {
           { merge: true }
         ),
         setDoc(
-          doc(db, "userChats", userId, "friends", currentUid),
+          doc(db, "userChats", userId, theirColNow, currentUid),
           {
             userId: currentUid,
             username: myData?.username || currentUser?.displayName || "User",
@@ -1158,6 +1802,7 @@ export default function ChatScreen() {
       setUploads((prev) => prev.filter((u) => u.id !== localId));
     } catch (err) {
       console.log("MEDIA SEND ERROR =", err);
+      if (firstClaimed) releaseFirstClaim();
       setUploads((prev) =>
         prev.map((u) => (u.id === localId ? { ...u, failed: true } : u))
       );
@@ -1166,7 +1811,7 @@ export default function ChatScreen() {
 
   const pickAndSendMedia = async () => {
     setAttachVisible(false);
-    if (guardBlocked()) return;
+    if (guardBlocked() || requestGuard()) return;
 
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -1196,7 +1841,7 @@ export default function ChatScreen() {
 
   const takeAndSendMedia = async () => {
     setAttachVisible(false);
-    if (guardBlocked()) return;
+    if (guardBlocked() || requestGuard()) return;
 
     try {
       const perm = await ImagePicker.requestCameraPermissionsAsync();
@@ -1333,7 +1978,7 @@ export default function ChatScreen() {
                 { merge: true }
               );
               setDoc(
-                doc(db, "userChats", currentUid, "friends", userId),
+                doc(db, "userChats", currentUid, myColRef.current, userId),
                 { lastMessage: "" },
                 { merge: true }
               ).catch(() => {});
@@ -1395,268 +2040,173 @@ export default function ChatScreen() {
 
   // ================================
   // RENDER ONE MESSAGE
+  // Rows are memoized + handlers are stable, so typing, keyboard, toasts and
+  // popups never re-render the whole list (this was the main lag source).
   // ================================
-  const renderItem = ({ item, index }: any) => {
-    const mine = item?.senderId === currentUid;
-
-    // messages are ordered newest -> oldest; the "next" array entry is
-    // actually the older neighbour because the list is rendered inverted.
-    const olderNeighbour = messages[index + 1];
-
-    const showDateSeparator =
-      !!item.createdAt &&
-      (!olderNeighbour?.createdAt ||
-        formatDateLabel(olderNeighbour.createdAt) !==
-          formatDateLabel(item.createdAt));
-
-    const DateSeparator = showDateSeparator ? (
-      <View style={styles.dateSeparatorWrap}>
-        <Text style={styles.dateSeparatorText}>
-          {formatDateLabel(item.createdAt)}
-        </Text>
-      </View>
-    ) : null;
-
-    const isDeleted = item.deletedForEveryone === true;
-    const highlighted = highlightId === item.id;
-    const hasReactions =
-      !!item.reactions && Object.values(item.reactions).some(Boolean);
-
-    const onLongPress = () => openMessageMenu(item);
-
-    // ---------- the bubble itself ----------
-    let content: any = null;
-
-    if (isDeleted) {
-      content = (
-        <TouchableOpacity
-          activeOpacity={0.9}
-          delayLongPress={350}
-          onLongPress={onLongPress}
-          style={[
-            styles.messageBox,
-            mine ? styles.myMessage : styles.otherMessage,
-            styles.deletedBubble,
-          ]}
-        >
-          <Ionicons name="ban" size={14} color="#cfcfcf" />
-          <Text style={styles.deletedText}>
-            {mine ? "You deleted this message" : "This message was deleted"}
-          </Text>
-        </TouchableOpacity>
-      );
-    } else if (item.type === "liveInvite") {
-      content = (
-        <TouchableOpacity
-          delayLongPress={350}
-          onLongPress={onLongPress}
-          style={[styles.liveInviteBox, highlighted && styles.highlight]}
-          onPress={() => {
-            router.push({
-              pathname: "/LiveRoom",
-              params: { id: item.roomId },
-            });
-          }}
-        >
-          <Text style={styles.liveInviteTitle}>🎙 Live Invite</Text>
-          <Text style={styles.liveInviteSub}>Join Live Room</Text>
-        </TouchableOpacity>
-      );
-    } else if (item.type === "media") {
-      const isVideoMsg = item.mediaType === "video";
-
-      content = (
-        <TouchableOpacity
-          activeOpacity={0.9}
-          delayLongPress={350}
-          style={[styles.mediaBubble, highlighted && styles.highlight]}
-          onPress={() =>
-            setViewer({
-              type: isVideoMsg ? "video" : "image",
-              url: item.mediaUrl,
-            })
-          }
-          onLongPress={onLongPress}
-        >
-          <Image
-            source={{
-              uri: isVideoMsg ? item.thumbnail || undefined : item.mediaUrl,
-            }}
-            style={styles.mediaImg}
-          />
-
-          {isVideoMsg && (
-            <Ionicons
-              name="play-circle"
-              size={50}
-              color="#fff"
-              style={styles.mediaPlayIcon}
-            />
-          )}
-
-          <View style={styles.mediaMeta}>
-            <Text style={styles.mediaTime}>
-              {formatMessageTime(item.createdAt)}
-            </Text>
-            {mine && (
-              <Ionicons
-                name={
-                  item.pending
-                    ? "time-outline"
-                    : item.read
-                    ? "checkmark-done"
-                    : "checkmark"
-                }
-                size={14}
-                color={item.read ? "#4DA6FF" : "#fff"}
-                style={{ marginLeft: 4 }}
-              />
-            )}
-          </View>
-        </TouchableOpacity>
-      );
-    } else if (item.type === "video") {
-      content = (
-        <TouchableOpacity
-          delayLongPress={350}
-          onLongPress={onLongPress}
-          style={highlighted && styles.highlight}
-          onPress={() => {
-            const videoArray = [
-              {
-                id: item.videoId,
-                videoUrl: item.videoUrl || item.video,
-                video: item.video,
-                thumbnail: item.thumbnail,
-                profile: item.profile,
-                username: item.username,
-                caption: item.caption,
-                userId: item.userId,
-                likes: item.likes || 0,
-                commentsCount: item.commentsCount || 0,
-                shares: item.shares || 0,
-                views: item.views || 0,
-              },
-            ];
-
-            router.push({
-              pathname: "/allvideo",
-              params: {
-                videos: JSON.stringify(videoArray),
-                index: 0,
-                userId: userId,
-                from: "chat",
-              },
-            });
-          }}
-        >
-          <Image
-            source={{ uri: item.thumbnail }}
-            style={styles.videoThumbnail}
-          />
-          <Ionicons
-            name="play-circle"
-            size={50}
-            color="#fff"
-            style={styles.playIcon}
-          />
-        </TouchableOpacity>
-      );
-    } else {
-      // plain text message
-      content = (
-        <TouchableOpacity
-          activeOpacity={0.9}
-          delayLongPress={350}
-          onLongPress={onLongPress}
-          style={[
-            styles.messageBox,
-            mine ? styles.myMessage : styles.otherMessage,
-            highlighted && styles.highlight,
-          ]}
-        >
-          {!!item.replyTo && (
-            <ReplyQuote
-              reply={item.replyTo}
-              mine={mine}
-              myUid={currentUid}
-              otherName={String(username)}
-              onPress={() => scrollToMessage(item.replyTo.id)}
-            />
-          )}
-
-          <ChatMessageText
-            text={String(item?.text || "")}
-            style={styles.messageText}
-            onLinkPress={openChatLink}
-          />
-
-          <View style={styles.metaRow}>
-            {item.edited && <Text style={styles.editedText}>edited</Text>}
-
-            <Text style={styles.timeText}>
-              {formatMessageTime(item.createdAt)}
-            </Text>
-
-            {mine && (
-              <Ionicons
-                name={
-                  item.pending
-                    ? "time-outline"
-                    : item.read
-                    ? "checkmark-done"
-                    : "checkmark"
-                }
-                size={14}
-                color={item.read ? "#4DA6FF" : "#dcdcdc"}
-                style={{ marginLeft: 4 }}
-              />
-            )}
-          </View>
-        </TouchableOpacity>
-      );
-    }
-
-    return (
-      <>
-        {DateSeparator}
-
-        <SwipeToReply enabled={!isDeleted} onReply={() => startReply(item)}>
-          <View
-            style={[
-              styles.row,
-              mine ? styles.myRow : styles.otherRow,
-              hasReactions && { marginBottom: 12 },
-            ]}
-          >
-            {!mine && (
-              <Image
-                source={{ uri: profileImg || DEFAULT_AVATAR }}
-                style={styles.chatAvatar}
-              />
-            )}
-
-            <View
-              style={[
-                styles.bubbleColumn,
-                { alignItems: mine ? "flex-end" : "flex-start" },
-              ]}
-            >
-              {content}
-
-              {!isDeleted && (
-                <ReactionsPill
-                  reactions={item.reactions}
-                  mine={mine}
-                  onPress={() => openMessageMenu(item)}
-                />
-              )}
-            </View>
-          </View>
-        </SwipeToReply>
-      </>
-    );
+  H.current = {
+    openMessageMenu,
+    startReply,
+    scrollToMessage,
+    setViewer,
+    sendMessage,
+    handleTyping,
+    router,
+    userId,
+    openAttach: () => {
+      Keyboard.dismiss();
+      setAttachVisible(true);
+    },
   };
+
+  const stableSend = useCallback((t: string) => H.current.sendMessage(t), []);
+  const stableTyping = useCallback((t: string) => H.current.handleTyping(t), []);
+  const stableAttach = useCallback(() => H.current.openAttach(), []);
+
+  const rowHandlers = useMemo(
+    () => ({
+      openMenu: (it: any) => H.current.openMessageMenu(it),
+      reply: (it: any) => H.current.startReply(it),
+      scrollTo: (id: string) => H.current.scrollToMessage(id),
+      openViewer: (v: any) => H.current.setViewer(v),
+      openLive: (roomId: any) =>
+        H.current.router.push({ pathname: "/LiveRoom", params: { id: roomId } }),
+      openSharedVideo: (item: any) => {
+        const videoArray = [
+          {
+            id: item.videoId,
+            videoUrl: item.videoUrl || item.video,
+            video: item.video,
+            thumbnail: item.thumbnail,
+            profile: item.profile,
+            username: item.username,
+            caption: item.caption,
+            userId: item.userId,
+            likes: item.likes || 0,
+            commentsCount: item.commentsCount || 0,
+            shares: item.shares || 0,
+            views: item.views || 0,
+          },
+        ];
+
+        H.current.router.push({
+          pathname: "/allvideo",
+          params: {
+            videos: JSON.stringify(videoArray),
+            index: 0,
+            userId: H.current.userId,
+            from: "chat",
+          },
+        });
+      },
+    }),
+    []
+  );
+
+  const renderItem = useCallback(
+    ({ item, index }: any) => {
+      // messages are ordered newest -> oldest; the "next" array entry is
+      // actually the older neighbour because the list is rendered inverted.
+      const older = messagesRef.current[index + 1];
+
+      const showDateSeparator =
+        !!item.createdAt &&
+        (!older?.createdAt || dayKey(older.createdAt) !== dayKey(item.createdAt));
+
+      return (
+        <MessageRow
+          item={item}
+          showDateSeparator={showDateSeparator}
+          highlighted={highlightId === item.id}
+          currentUid={currentUid}
+          username={String(username)}
+          profileImg={profileImg}
+          handlers={rowHandlers}
+        />
+      );
+    },
+    [highlightId, currentUid, username, profileImg, rowHandlers]
+  );
+
+  // load older messages when the user scrolls up (only ONE page per trigger)
+  const handleEndReached = useCallback(() => {
+    if (!hasMore || searchMode || loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
+    setMsgLimit((l) => l + PAGE_SIZE);
+  }, [hasMore, searchMode]);
+
+  const isEmptyList = messages.length === 0;
+  const listContentStyle = useMemo(
+    () => [{ padding: 15, paddingBottom: 20 }, isEmptyList && { flex: 1 }],
+    [isEmptyList]
+  );
+
+  // ---- keyboard handling (replaces KeyboardAvoidingView) ----
+  // KeyboardAvoidingView leaves extra empty space after the keyboard closes
+  // on Android. Here we measure how much the keyboard REALLY covers the
+  // screen bottom and add exactly that much padding (works with or without
+  // Android window-resize), and drop it to 0 when the keyboard closes.
+  const screenRef = useRef<View>(null);
+  const kbPad = useRef(new Animated.Value(0)).current;
+
+  // Screen height tracking: if Android shrinks the window for the keyboard
+  // (adjustResize) we know how much it already shrank, so we never
+  // double-pad and never under-pad.
+  const baseH = useRef(0); // tallest height seen = height with keyboard closed
+  const curH = useRef(0); // current height
+  const onScreenLayout = useCallback((e: any) => {
+    const h = e.nativeEvent.layout.height;
+    curH.current = h;
+    if (h > baseH.current) baseH.current = h;
+  }, []);
+
+  // extra px above the keyboard (increase if the box is still hidden a bit)
+  const KB_EXTRA = 45;
+
+  useEffect(() => {
+    const isIOS = Platform.OS === "ios";
+    let timer: any;
+    const animateTo = (toValue: number, duration: number) => {
+      kbPad.stopAnimation();
+      Animated.timing(kbPad, {
+        toValue,
+        duration,
+        useNativeDriver: false,
+      }).start();
+    };
+    const show = Keyboard.addListener(
+      isIOS ? "keyboardWillShow" : "keyboardDidShow",
+      (e) => {
+        const run = () => {
+          screenRef.current?.measureInWindow((_x, y, _w, h) => {
+            // method 1: position based
+            const byPosition = Math.max(0, y + h - e.endCoordinates.screenY);
+            // method 2: keyboard height minus what the window already shrank
+            const shrunk = Math.max(0, baseH.current - curH.current);
+            const byHeight = Math.max(0, e.endCoordinates.height - shrunk);
+            // take the larger one so the input box is never hidden
+            const overlap = Math.max(byPosition, byHeight) + KB_EXTRA;
+            animateTo(overlap, isIOS ? e.duration || 220 : 120);
+          });
+        };
+        clearTimeout(timer);
+        // Android: let the window finish resizing before measuring
+        if (isIOS) run();
+        else timer = setTimeout(run, 120);
+      }
+    );
+    const hide = Keyboard.addListener(
+      isIOS ? "keyboardWillHide" : "keyboardDidHide",
+      (e) => {
+        clearTimeout(timer);
+        animateTo(0, isIOS ? e.duration || 220 : 120);
+      }
+    );
+    return () => {
+      clearTimeout(timer);
+      show.remove();
+      hide.remove();
+    };
+  }, [kbPad]);
 
   // These checks run after every hook above has already been called on
   // every render, so they don't break the Rules of Hooks.
@@ -1695,12 +2245,15 @@ export default function ChatScreen() {
     ? "online"
     : formatLastSeen(otherLastSeen);
 
-  const inputDisabled = isBlocked || blockedByOther;
+  const inputDisabled =
+    isBlocked || blockedByOther || iAmReceiverPending || isDeclined || requesterLocked;
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    <Animated.View
+      ref={screenRef as any}
+      collapsable={false}
+      onLayout={onScreenLayout}
+      style={[styles.container, { paddingBottom: kbPad }]}
     >
       {/* ============ HEADER ============ */}
       <View style={styles.header}>
@@ -1817,11 +2370,11 @@ export default function ChatScreen() {
         inverted
         renderItem={renderItem}
         extraData={highlightId}
-        keyExtractor={(item) => String(item.id)}
-        contentContainerStyle={[
-          { padding: 15, paddingBottom: 20 },
-          messages.length === 0 && { flex: 1 },
-        ]}
+        keyExtractor={messageKey}
+        initialNumToRender={15}
+        maxToRenderPerBatch={10}
+        windowSize={9}
+        contentContainerStyle={listContentStyle}
         ListEmptyComponent={
           loadingMessages ? null : (
             <View style={styles.emptyChatWrap}>
@@ -1838,11 +2391,9 @@ export default function ChatScreen() {
         keyboardShouldPersistTaps="handled"
         onScrollBeginDrag={Keyboard.dismiss}
         onScroll={handleScroll}
-        scrollEventThrottle={100}
+        scrollEventThrottle={32}
         // load older messages when the user scrolls up
-        onEndReached={() => {
-          if (hasMore && !searchMode) setMsgLimit((l) => l + PAGE_SIZE);
-        }}
+        onEndReached={handleEndReached}
         onEndReachedThreshold={0.4}
         onScrollToIndexFailed={(info) => {
           flatListRef.current?.scrollToOffset({
@@ -1858,7 +2409,7 @@ export default function ChatScreen() {
           }, 300);
         }}
         // (inverted list) header = very bottom => pending uploads
-        ListHeaderComponent={renderUploads}
+        ListHeaderComponent={renderUploads()}
         // (inverted list) footer = very top => older messages loader
         ListFooterComponent={
           hasMore && !searchMode ? (
@@ -1887,12 +2438,6 @@ export default function ChatScreen() {
         </TouchableOpacity>
       )}
 
-      {showPreview && (
-        <View style={[styles.previewBox, { bottom: keyboardHeight }]}>
-          <Text style={styles.previewText}>{message || "Type message..."}</Text>
-        </View>
-      )}
-
       {/* ============ REPLY BAR ============ */}
       {!!replyingTo && (
         <View style={styles.replyBar}>
@@ -1911,48 +2456,62 @@ export default function ChatScreen() {
         </View>
       )}
 
+      {/* ============ MESSAGE REQUEST BAR ============ */}
+      {(iAmReceiverPending || (isDeclined && !iAmRequester)) && (
+        <View style={styles.requestBar}>
+          <Text style={styles.requestBarText}>
+            {isDeclined
+              ? `You declined ${username}'s request.`
+              : `${username} wants to message you. Accept to reply.`}
+          </Text>
+          <View style={styles.requestBtnRow}>
+            {!isDeclined && (
+              <TouchableOpacity
+                style={[styles.requestBtn, styles.requestDecline]}
+                onPress={declineRequest}
+              >
+                <Text style={styles.requestBtnText}>Decline</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={[styles.requestBtn, styles.requestAccept]}
+              onPress={acceptRequest}
+              disabled={accepting}
+            >
+              <Text style={styles.requestBtnText}>{accepting ? "..." : "Accept"}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+      {requesterLocked && (
+        <View style={styles.requestBar}>
+          <Text style={styles.requestBarText}>
+            Request sent. You can send more messages after {String(username)} accepts.
+          </Text>
+        </View>
+      )}
+
       {/* ============ INPUT BAR ============ */}
-      <View style={styles.bottomBar}>
-        <TouchableOpacity
-          disabled={inputDisabled}
-          style={[styles.attachBtn, { opacity: inputDisabled ? 0.5 : 1 }]}
-          onPress={() => {
-            Keyboard.dismiss();
-            setAttachVisible(true);
-          }}
-        >
-          <Ionicons name="add" size={30} color="#fff" />
-        </TouchableOpacity>
-
-        <TextInput
-          ref={inputRef}
-          value={message}
-          onChangeText={handleTyping}
-          placeholder={
-            isBlocked
-              ? "Unblock user to send message"
-              : blockedByOther
-              ? "You can't send messages to this user"
-              : `Message.. ${username}`
-          }
-          placeholderTextColor="#ccc"
-          editable={!inputDisabled}
-          style={styles.input}
-          // Enter = new line (like WhatsApp); sending is done by the button
-          multiline
-        />
-
-        <TouchableOpacity
-          disabled={inputDisabled || !message.trim()}
-          style={[
-            styles.sendBtn,
-            { opacity: inputDisabled || !message.trim() ? 0.5 : 1 },
-          ]}
-          onPress={sendMessage}
-        >
-          <Ionicons name="send" size={26} color="#fff" />
-        </TouchableOpacity>
-      </View>
+      <ChatInput
+        ref={inputRef}
+        disabled={inputDisabled}
+        placeholder={
+          iAmReceiverPending
+            ? "Accept the request to reply"
+            : isDeclined
+            ? "Request declined"
+            : requesterLocked
+            ? "Waiting for them to accept"
+            : isBlocked
+            ? "Unblock user to send message"
+            : blockedByOther
+            ? "You can't send messages to this user"
+            : `Message.. ${username}`
+        }
+        onSend={stableSend}
+        onTextChange={stableTyping}
+        onAttach={stableAttach}
+      />
 
       {/* small "Copied" / "Chat cleared" message */}
       {!!toast && (
@@ -1973,7 +2532,7 @@ export default function ChatScreen() {
           {/* full-screen backdrop: any tap outside the popup closes it */}
           <Pressable style={StyleSheet.absoluteFill} onPress={closeMenu} />
 
-          <View style={styles.menuWrap}>
+          <PopIn style={styles.menuWrap}>
             {canReact && (
               <View style={styles.reactionBar}>
                 {REACTION_EMOJIS.map((e) => (
@@ -2023,7 +2582,7 @@ export default function ChatScreen() {
                 danger
               />
             </View>
-          </View>
+          </PopIn>
         </View>
       </Modal>
 
@@ -2039,11 +2598,11 @@ export default function ChatScreen() {
           <Pressable style={StyleSheet.absoluteFill} onPress={closeEdit} />
 
           <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
+            behavior="padding"
             style={styles.editWrap}
             pointerEvents="box-none"
           >
-            <View style={styles.editBox}>
+            <PopIn style={styles.editBox}>
               <Text style={styles.editTitle}>Edit message</Text>
 
               <TextInput
@@ -2079,7 +2638,7 @@ export default function ChatScreen() {
                   <Text style={styles.editSaveText}>Save</Text>
                 </TouchableOpacity>
               </View>
-            </View>
+            </PopIn>
           </KeyboardAvoidingView>
         </View>
       </Modal>
@@ -2167,7 +2726,7 @@ export default function ChatScreen() {
             onPress={() => setHeaderMenuVisible(false)}
           />
 
-          <View style={styles.headerMenuBox}>
+          <PopIn style={styles.headerMenuBox}>
             <MenuRow
               icon="search-outline"
               label="Search"
@@ -2199,10 +2758,10 @@ export default function ChatScreen() {
                 danger
               />
             )}
-          </View>
+          </PopIn>
         </View>
       </Modal>
-    </KeyboardAvoidingView>
+    </Animated.View>
   );
 }
 
@@ -2321,7 +2880,7 @@ const styles = StyleSheet.create({
 
   messageBox: {
     maxWidth: "100%",
-    padding: 12,
+    padding: 10,
     borderRadius: 15,
     marginVertical: 5,
   },
@@ -2451,6 +3010,24 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
 
+  requestBar: {
+    backgroundColor: "#111",
+    borderTopWidth: 0.5,
+    borderTopColor: "#222",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  requestBarText: { color: "#ccc", fontSize: 14, textAlign: "center" },
+  requestBtnRow: { flexDirection: "row", justifyContent: "center", marginTop: 10 },
+  requestBtn: {
+    paddingHorizontal: 28,
+    paddingVertical: 9,
+    borderRadius: 20,
+    marginHorizontal: 6,
+  },
+  requestAccept: { backgroundColor: "#00C853" },
+  requestDecline: { backgroundColor: "#333" },
+  requestBtnText: { color: "#fff", fontWeight: "bold", fontSize: 15 },
   replyBar: {
     flexDirection: "row",
     alignItems: "center",
@@ -2509,7 +3086,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-end",
     padding: 15,
-    marginBottom: 35,
     borderTopWidth: 1,
     borderTopColor: "#222",
   },

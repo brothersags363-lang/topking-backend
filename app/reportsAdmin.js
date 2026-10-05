@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Image,
   ScrollView,
+  Alert,
 } from "react-native";
 import { useRouter } from "expo-router";
 import {
@@ -16,10 +17,10 @@ import {
   onSnapshot,
   doc,
   updateDoc,
-  deleteDoc,
 } from "firebase/firestore";
 import { db } from "./firebaseConfig";
 import useIsAdmin from "./useIsAdmin";
+import { callApi } from "./api";
 
 const PLACEHOLDER = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 
@@ -59,10 +60,28 @@ export default function ReportsAdmin() {
     updateDoc(videoRef(id), { hidden: true, reviewRequired: false, reportCount: 0 });
   const resetReports = (id) =>
     updateDoc(videoRef(id), { reviewRequired: false, reportCount: 0, hidden: false });
-  const deleteVideo = (id) => deleteDoc(videoRef(id));
-  const banUser = (id) => updateDoc(userRef(id), { banned: true });
-  const unbanUser = (id) =>
-    updateDoc(userRef(id), { banned: false, reviewRequired: false, reportCount: 0 });
+  // Delete / Ban / Unban ab server se hote hain (R2 file delete + login band)
+  const serverAction = async (path, body) => {
+    try {
+      await callApi(path, body);
+    } catch (e) {
+      Alert.alert("Error", e.message || "Request failed");
+    }
+  };
+  const confirm = (title, msg, fn) =>
+    Alert.alert(title, msg, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Yes", style: "destructive", onPress: fn },
+    ]);
+  const deleteVideo = (id) =>
+    confirm("Delete video?", "Ye wapas nahi aayega.", () =>
+      serverAction("/admin/delete-video", { videoId: id })
+    );
+  const banUser = (id) =>
+    confirm("Ban user?", "User login band ho jayega.", () =>
+      serverAction("/admin/ban-user", { uid: id })
+    );
+  const unbanUser = (id) => serverAction("/admin/unban-user", { uid: id });
 
   if (!isAdmin) {
     return (

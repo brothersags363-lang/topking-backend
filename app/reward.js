@@ -30,6 +30,7 @@ import {
 } from "firebase/firestore";
 import { useRouter } from "expo-router";
 import { db, auth } from "./firebaseConfig";
+import { callApi } from "./api";
 
 export default function Reward() {
 const router = useRouter();
@@ -94,97 +95,8 @@ timeZone:"Asia/Kolkata"
 
 
 
-const checkDailyReset = async()=>{
-
-const uid = auth.currentUser?.uid;
-
-if(!uid) return;
-
-
-const rewardRef = doc(
-db,
-"liveRewards",
-uid
-);
-
-
-const snap = await getDoc(rewardRef);
-
-
-const today = todayDate();
-
-
-if(snap.exists()){
-
-
-const data = snap.data();
-
-
-if(data.resetDate !== today){
-
-
-await updateDoc(
-rewardRef,
-{
-
-liveMinutes:0,
-
-viewers:0,
-
-dailyGifts:0,
-
-
-liveRewardClaimed:false,
-
-giftRewardClaimed:false,
-
-
-lastLiveClaimDate:"",
-
-lastGiftClaimDate:"",
-
-
-resetDate:today
-
-}
-
-);
-
-
-}
-
-
-}
-else{
-
-
-await setDoc(
-rewardRef,
-{
-
-liveMinutes:0,
-
-viewers:0,
-
-dailyGifts:0,
-
-
-liveRewardClaimed:false,
-
-giftRewardClaimed:false,
-
-
-resetDate:today
-
-}
-
-);
-
-
-}
-
-
-};
+// Daily reset ab server karta hai (gift bhejte waqt). Client kuch nahi likhta.
+const checkDailyReset = async()=>{};
 
 
 // 2 hour + 50 viewers reward
@@ -274,10 +186,7 @@ const claimLiveReward = async()=>{
 
 try{
 
-const uid = auth.currentUser.uid;
-
 const today = todayDate();
-
 
 if(lastLiveClaimDate === today){
 
@@ -290,37 +199,18 @@ return;
 
 }
 
-await updateDoc(
-doc(db,"wallets",uid),
-{
-receivedStars:increment(400)
-}
-);
-
-
-await updateDoc(
-doc(db,"liveRewards",uid),
-{
-
-liveRewardClaimed:true,
-
-lastLiveClaimDate:today,
-
-resetDate:today
-
-}
-);
-
+const res = await callApi("/reward/claim",{ type:"live" });
 
 Alert.alert(
 "Congratulations 🎉",
-"400 Stars Added Successfully"
+`${res.stars} Stars Added Successfully`
 );
-
 
 }catch(error){
 
 console.log(error);
+
+Alert.alert("Reward", error.message || "Could not claim reward");
 
 }
 
@@ -333,10 +223,7 @@ const claimGiftReward = async()=>{
 
 try{
 
-const uid = auth.currentUser.uid;
-
 const today = todayDate();
-
 
 if(lastGiftClaimDate === today){
 
@@ -349,39 +236,18 @@ return;
 
 }
 
-
-
-await updateDoc(
-doc(db,"wallets",uid),
-{
-receivedStars:increment(250)
-}
-);
-
-
-await updateDoc(
-doc(db,"liveRewards",uid),
-{
-
-giftRewardClaimed:true,
-
-lastGiftClaimDate:today,
-
-resetDate:today
-
-}
-);
-
+const res = await callApi("/reward/claim",{ type:"gift" });
 
 Alert.alert(
 "Congratulations 🎉",
-"250 Stars Added"
+`${res.stars} Stars Added`
 );
-
 
 }catch(error){
 
 console.log(error);
+
+Alert.alert("Reward", error.message || "Could not claim reward");
 
 }
 

@@ -1938,14 +1938,7 @@ Unfollow
 
     setMenuVisible(false);
 
-    router.push({
-      pathname: "/chat",
-      params: {
-        userId: userId,
-        username: userData?.username,
-        profileImg: userData?.profileImg,
-      },
-    });
+    openChat(); // block check, then chat.tsx decides: friend chat or message request
 
   }}
 >

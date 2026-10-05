@@ -41,10 +41,12 @@ import {
   query,
   serverTimestamp,
   setDoc,
-  updateDoc
+  updateDoc,
+  where
 } from 'firebase/firestore';
 
 import { db } from '../firebaseConfig';
+import { callApi } from '../api';
 
 import {
   getAuth,
@@ -69,7 +71,7 @@ const auth = getAuth();
 
   
 
-const VideoPlayerItem = React.memo(({ uri, active }) => {
+const VideoPlayerItem = React.memo(({ uri, active, paused }) => {
 
   const [isLoading, setIsLoading] = useState(false);
   const [hasError, setHasError] = useState(false);
@@ -85,7 +87,22 @@ const VideoPlayerItem = React.memo(({ uri, active }) => {
 
     if (!player) return;
 
-    if (active) {
+    if (active && paused) {
+
+  // Single tap se pause: video wahin ruka rahega
+  setIsLoading(false);
+
+  try {
+
+    player.pause();
+
+  } catch (error) {
+
+    console.log("VIDEO PAUSE ERROR =", error);
+
+  }
+
+} else if (active) {
 
   setHasError(false);
 
@@ -125,7 +142,7 @@ const VideoPlayerItem = React.memo(({ uri, active }) => {
 
 }
 
-  }, [active, player]);
+  }, [active, paused, player]);
 
 
 
@@ -280,7 +297,8 @@ useEffect(() => {
 
   return (
     prev.uri === next.uri &&
-    prev.active === next.active
+    prev.active === next.active &&
+    prev.paused === next.paused
   );
 
 });
@@ -330,6 +348,9 @@ const onViewRef = useRef(({ viewableItems }) => {
   if (viewableItems.length > 0) {
 
     setActiveVideo(viewableItems[0].index);
+
+    // Naye video par aate hi pause hata do
+    setPausedVideoId(null);
 
   }
 
@@ -1017,7 +1038,8 @@ useEffect(() => {
   if (!user) return;
 
   const q = query(
-    collection(db, "blockedUsers")
+    collection(db, "blockedUsers"),
+    where("blockerId", "==", user.uid)
   );
 
   const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -1401,9 +1423,96 @@ const playStarAnimation = () => {
 };
 
 
+// ======================================================
+// TAP LOGIC
+// 1 baar tap  = video pause / dobara tap = play
+// 2 baar tap  = like (heart animation ke saath)
+// ======================================================
+const [pausedVideoId, setPausedVideoId] = useState(null);
+const [heartVideoId, setHeartVideoId] = useState(null);
+
+const lastTap = useRef(null);
+const tapTimeout = useRef(null);
+const heartTimeout = useRef(null);
+
+useEffect(() => {
+  return () => {
+    if (tapTimeout.current) clearTimeout(tapTimeout.current);
+    if (heartTimeout.current) clearTimeout(heartTimeout.current);
+  };
+}, []);
+
+const handleDoubleTapLike = (videoId) => {
+
+  setHeartVideoId(videoId);
+
+  if (heartTimeout.current) {
+    clearTimeout(heartTimeout.current);
+  }
+
+  heartTimeout.current = setTimeout(() => {
+    setHeartVideoId(null);
+  }, 1000);
+
+  // Pehle se like nahi hai tabhi like karo
+  if (!localLikes[videoId]) {
+    handleLike(videoId);
+  }
+
+};
+
+const handleItemPress = (videoId) => {
+
+  const now = Date.now();
+
+  // Double tap
+  if (lastTap.current && (now - lastTap.current) < 300) {
+
+    if (tapTimeout.current) {
+      clearTimeout(tapTimeout.current);
+      tapTimeout.current = null;
+    }
+
+    lastTap.current = null;
+
+    handleDoubleTapLike(videoId);
+
+    return;
+  }
+
+  // Single tap (300ms wait, taaki double tap pehchana ja sake)
+  lastTap.current = now;
+
+  tapTimeout.current = setTimeout(() => {
+
+    tapTimeout.current = null;
+    lastTap.current = null;
+
+    setPausedVideoId(prev => (prev === videoId ? null : videoId));
+
+  }, 300);
+
+};
+
+// renderVideo useCallback me hai, isliye hamesha latest function
+// ref ke through call karte hain (stale closure se bachne ke liye)
+const handleItemPressRef = useRef(handleItemPress);
+handleItemPressRef.current = handleItemPress;
+
+const onItemPress = React.useCallback(
+  (videoId) => handleItemPressRef.current(videoId),
+  []
+);
+
+
   const renderVideo = React.useCallback(({ item, index }) => (
 
     <View style={styles.videoContainer}>
+<TouchableOpacity
+  activeOpacity={1}
+  style={StyleSheet.absoluteFill}
+  onPress={() => onItemPress(item.id)}
+>
 <VideoPlayerItem
 
   key={item.id}
@@ -1412,7 +1521,15 @@ const playStarAnimation = () => {
     screenFocused &&
     index === activeVideo
   }
+  paused={pausedVideoId === item.id}
 />
+</TouchableOpacity>
+
+{heartVideoId === item.id && (
+  <View style={styles.heartPopup} pointerEvents="none">
+    <Ionicons name="heart" size={140} color="#ff004f" />
+  </View>
+)}
  
 
 
@@ -1799,7 +1916,10 @@ activeVideo,
 screenFocused,
 localLikes,
 comments,
-starAnimationVideoId
+starAnimationVideoId,
+pausedVideoId,
+heartVideoId,
+onItemPress
 ]);
 
 
@@ -1821,6 +1941,8 @@ starAnimationVideoId
         extraData={{
   activeVideo,
   starAnimationVideoId,
+  pausedVideoId,
+  heartVideoId,
 }}
  keyExtractor={(item) =>
   item.id
@@ -2772,76 +2894,17 @@ setStarAnimationVideoId(selectedVideoId);
   
 
 
-  const senderWallet = doc(
-    db,
-    "wallets",
-    user.uid
-  );
-
-  await updateDoc(senderWallet,{
-    stars: increment(-selectedStar)
+  const res = await callApi("/gift/video-star",{
+    videoId:selectedVideoId,
+    stars:selectedStar
   });
-
-  const videoRef = doc(
-    db,
-    "all_videos",
-    selectedVideoId
-  );
-
-  const videoSnap = await getDoc(videoRef);
-
-  if(videoSnap.exists()){
-
-    const videoData = videoSnap.data();
-
-    const receiverWallet = doc(
-      db,
-      "wallets",
-      videoData.userId
-    );
-
-    await setDoc(
-      receiverWallet,
-      {
-        receivedStars: increment(selectedStar)
-      },
-      { merge:true }
-    );
-
-
-try {
-
-  await fetch(
-    "https://YOUR_RENDER_URL/update-agency-stars",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        receiverUid: selectedGiftUser,
-        stars: item.price,
-      }),
-    }
-  );
-
-} catch (e) {
-  console.log("Agency Update Error", e);
-}
-
-
-
-    await updateDoc(videoRef,{
-      stars: increment(selectedStar)
-    });
-
-  }
 
   setMyStars(prev=>prev-selectedStar);
 
 }catch(e){
 
   console.log(e);
+  Alert.alert("Star", (e && e.message) || "Could not send star");
 
 }
 

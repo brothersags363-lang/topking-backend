@@ -208,6 +208,11 @@ router.replace('/profile');
     Alert.alert(
       'Google Play Services Not Available'
     );
+  } else if (error?.code === 'auth/user-disabled') {
+    Alert.alert(
+      'Account Banned',
+      'Your account has been banned by admin.'
+    );
   } else {
     Alert.alert(
       'Error',

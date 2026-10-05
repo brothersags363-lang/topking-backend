@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback, memo } from 'react';
 import * as Notifications from 'expo-notifications';
 
 import {
@@ -19,6 +19,7 @@ import {
   Alert,
   TextInput,
   Keyboard,
+  FlatList,
 } from 'react-native';
 
 
@@ -51,6 +52,7 @@ import {
   serverTimestamp,
   updateDoc,
   Timestamp,
+  writeBatch,
 } from 'firebase/firestore';
 
 // STORY: photo upload + delete
@@ -63,8 +65,6 @@ import {
 } from 'firebase/storage';
 import * as ImagePicker from 'expo-image-picker';
 import { VideoView, useVideoPlayer } from 'expo-video';
-// Expo SDK 54: uploadAsync 'legacy' path me hai (SDK 53 ya purana ho to 'expo-file-system' likho)
-import * as FileSystem from 'expo-file-system/legacy';
 
 
 const { width } = Dimensions.get('window');
@@ -75,8 +75,21 @@ const DEFAULT_AVATAR = 'https://cdn-icons-png.flaticon.com/512/149/149071.png';
 // !!! Apne backend (server.js) ka URL yahan daalo - wahi jo video upload ke liye use karte ho
 const STORY_SERVER_URL = 'https://topking-backend.onrender.com';
 
+// Story filter tints (editor ke saath same)
+const STORY_FILTER_TINTS = {
+  none: 'transparent',
+  warm: 'rgba(255,140,0,0.20)',
+  cool: 'rgba(0,120,255,0.20)',
+  rose: 'rgba(255,0,110,0.18)',
+  mint: 'rgba(0,220,170,0.18)',
+  dusk: 'rgba(90,40,160,0.28)',
+  fade: 'rgba(255,255,255,0.22)',
+  noir: 'rgba(0,0,0,0.38)',
+};
+const STORY_LIGHT_COLORS = ['#ffffff', '#ffcc00', '#34c759'];
+
 // Story video player (pause/resume support)
-function StoryVideo({ uri, paused }) {
+function StoryVideo({ uri, paused, fit }) {
   const player = useVideoPlayer(uri, (p) => {
     p.loop = false;
     p.play();
@@ -89,9 +102,71 @@ function StoryVideo({ uri, paused }) {
     <VideoView
       player={player}
       style={StyleSheet.absoluteFillObject}
-      contentFit="contain"
+      contentFit={fit || 'cover'}
       nativeControls={false}
     />
+  );
+}
+
+// Story par lage text / emoji (viewer me sirf dikhte hain)
+function StoryOverlayStatic({ item, boxW, boxH }) {
+  const k = boxW / 360;
+  const w = boxW * 0.92;
+  const h = boxW * 0.8;
+  const light = STORY_LIGHT_COLORS.includes(item.color);
+
+  let content;
+  if (item.type === 'emoji') {
+    content = <Text style={{ fontSize: 64 * k }}>{item.text}</Text>;
+  } else if (item.bg) {
+    content = (
+      <View
+        style={{
+          backgroundColor: item.color,
+          paddingHorizontal: 12 * k,
+          paddingVertical: 6 * k,
+          borderRadius: 10 * k,
+        }}
+      >
+        <Text style={{ fontSize: 28 * k, fontWeight: '800', textAlign: 'center', color: light ? '#000' : '#fff' }}>
+          {item.text}
+        </Text>
+      </View>
+    );
+  } else {
+    content = (
+      <Text
+        style={{
+          fontSize: 30 * k,
+          fontWeight: '800',
+          textAlign: 'center',
+          color: item.color,
+          textShadowColor: 'rgba(0,0,0,0.55)',
+          textShadowRadius: 6,
+          textShadowOffset: { width: 0, height: 1 },
+        }}
+      >
+        {item.text}
+      </Text>
+    );
+  }
+
+  return (
+    <View
+      pointerEvents="none"
+      style={{
+        position: 'absolute',
+        left: item.x * boxW - w / 2,
+        top: item.y * boxH - h / 2,
+        width: w,
+        height: h,
+        alignItems: 'center',
+        justifyContent: 'center',
+        transform: [{ rotate: `${item.rotation || 0}rad` }, { scale: item.scale || 1 }],
+      }}
+    >
+      <View style={{ maxWidth: w, padding: 10 }}>{content}</View>
+    </View>
   );
 }
 
@@ -108,6 +183,165 @@ const timeAgo = (ms) => {
   if (m < 60) return `${m}m ago`;
   return `${Math.floor(m / 60)}h ago`;
 };
+
+// ---------------------------------------------------------------
+// SPEED HELPERS (module level = created once, not on every render)
+// ---------------------------------------------------------------
+const getLevelTheme = (level = 1) => {
+  if (level >= 50) return { bg: '#7B1FFF', border: '#FFD700', text: '#fff', icon: '#FFD700' };
+  if (level >= 40) return { bg: '#00BFFF', border: '#9EF8FF', text: '#fff', icon: '#fff' };
+  if (level >= 30) return { bg: '#FF0066', border: '#FFB6C1', text: '#fff', icon: '#fff' };
+  if (level >= 20) return { bg: '#FFC107', border: '#FFE082', text: '#000', icon: '#fff' };
+  if (level >= 10) return { bg: '#BDBDBD', border: '#fff', text: '#fff', icon: '#fff' };
+  return { bg: '#222', border: '#555', text: '#FFD700', icon: '#00E5FF' };
+};
+
+// level / verified info of other users. Cached so that every new message
+// (which re-delivers the first page) does NOT trigger 2 reads per friend again.
+const ENRICH_TTL = 5 * 60 * 1000;
+const enrichCache = new Map();
+const enrichInflight = new Set();
+const EMPTY_LIST = [];
+
+const keyExtractorById = (item) => String(item.id);
+
+// one row of the chat list (memo = only re-renders when ITS data changes)
+const FriendRow = memo(function FriendRow({ item, onOpen, onMenu, showPreview }) {
+  const theme = getLevelTheme(item.level);
+  const last =
+    item.lastMessage === '🎙 Live Invite'
+      ? '🎙 Sent you a live invite'
+      : item.lastMessage === '🎥 Video'
+      ? '🎥 Sent a video'
+      : item.lastMessage;
+
+  return (
+    <TouchableOpacity
+      style={styles.chatRow}
+      activeOpacity={onOpen ? 0.7 : 1}
+      onPress={onOpen ? () => onOpen(item) : undefined}
+    >
+      <Image
+        source={{ uri: item.profileImg || DEFAULT_AVATAR }}
+        style={styles.chatAvatar}
+        resizeMethod="resize"
+      />
+
+      <View style={styles.chatInfo}>
+        <View style={styles.chatNameRow}>
+          <Text style={styles.chatName} numberOfLines={1}>
+            {item.username}
+          </Text>
+
+          {item.verified && (
+            <View style={styles.verifiedBadge}>
+              <MaterialCommunityIcons
+                name="check-decagram"
+                size={16}
+                color={item.verifiedColor === 'yellow' ? '#FFD700' : '#ffffff'}
+              />
+            </View>
+          )}
+
+          <View
+            style={[
+              styles.levelBadge,
+              { backgroundColor: theme.bg, borderColor: theme.border },
+            ]}
+          >
+            <MaterialCommunityIcons name="diamond-stone" size={12} color={theme.icon} />
+            <Text style={[styles.levelText, { color: theme.text }]}>
+              LV {item.level || 1}
+            </Text>
+          </View>
+        </View>
+
+        {showPreview && (
+          <View style={styles.chatBottomRow}>
+            <Text numberOfLines={1} style={styles.chatLast}>
+              {last}
+            </Text>
+
+            {item.hasNewMessage && (
+              <View style={styles.newPill}>
+                <Text style={styles.newPillText}>NEW</Text>
+              </View>
+            )}
+
+            {item.unreadCount > 0 && (
+              <View style={styles.unreadBadge}>
+                <Text style={styles.unreadText}>{item.unreadCount}</Text>
+              </View>
+            )}
+          </View>
+        )}
+      </View>
+
+      <TouchableOpacity
+        onPress={() => onMenu(item)}
+        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+      >
+        <Ionicons name="ellipsis-vertical" size={22} color="#fff" />
+      </TouchableOpacity>
+    </TouchableOpacity>
+  );
+});
+
+// one row of the notification popup
+const NotificationRow = memo(function NotificationRow({
+  item,
+  onOpenHome,
+  onOpenProfile,
+  onOpenVideo,
+}) {
+  return (
+    <TouchableOpacity
+      activeOpacity={0.8}
+      onPress={() => {
+        if (item.videoId) onOpenHome(item.videoId);
+      }}
+      style={styles.notifRow}
+    >
+      <TouchableOpacity onPress={() => onOpenProfile(item.senderId)}>
+        <Image
+          source={{ uri: item.senderPhoto || DEFAULT_AVATAR }}
+          style={styles.notifAvatar}
+          resizeMethod="resize"
+        />
+      </TouchableOpacity>
+
+      <View style={styles.notifBody}>
+        <Text style={styles.notifName}>{item.senderName}</Text>
+
+        {item.videoThumbnail ? (
+          <TouchableOpacity onPress={() => onOpenVideo(item.videoId)}>
+            <Image
+              source={{ uri: item.videoThumbnail }}
+              style={styles.notifThumb}
+              resizeMethod="resize"
+            />
+          </TouchableOpacity>
+        ) : null}
+
+        <Text style={styles.notifAction}>
+          {item.type === 'comment'
+            ? 'commented on your video'
+            : item.type === 'like'
+            ? 'liked your video'
+            : item.type === 'follow'
+            ? 'started following you'
+            : ''}
+        </Text>
+
+        {item.text ? <Text style={styles.notifText}>Comment: {item.text}</Text> : null}
+
+        {item.videoCaption ? (
+          <Text style={styles.notifCaption}>Video: {item.videoCaption}</Text>
+        ) : null}
+      </View>
+    </TouchableOpacity>
+  );
+});
 
 export default function Messages() {
   const router = useRouter();
@@ -139,6 +373,8 @@ const [menuVisible, setMenuVisible] = useState(false);
 const [selectedFriend, setSelectedFriend] = useState(null);
 
 const [hiddenFriends, setHiddenFriends] = useState([]);
+const [requests, setRequests] = useState([]);
+const [friendsUnread, setFriendsUnread] = useState(0);
 
 const [selectedType, setSelectedType] = useState('comment');
 
@@ -335,107 +571,57 @@ const storyDur =
     ? Math.min(Math.max(currentStory.duration, 1000), 30000)
     : STORY_DURATION;
 
-const uploadStory = async (asset) => {
-  if (!currentUser) return;
-  const isVideo = asset.type === 'video';
+// Next story ki image pehle se download kar lo (tap karte hi turant khule)
+useEffect(() => {
+  if (!viewer || !currentGroup) return;
 
-  try {
-    setStoryUploading(true);
-
-    const token = await currentUser.getIdToken();
-    const lower = (asset.uri || '').toLowerCase();
-    const ext = isVideo ? (lower.endsWith('.mov') ? 'mov' : 'mp4') : 'jpg';
-    const mime = isVideo ? (ext === 'mov' ? 'video/quicktime' : 'video/mp4') : 'image/jpeg';
-
-    // FormData ki jagah native uploader (Android par "Network request failed" se bachata hai)
-    const up = await FileSystem.uploadAsync(`${STORY_SERVER_URL}/upload-story`, asset.uri, {
-      httpMethod: 'POST',
-      uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-      fieldName: 'media',
-      mimeType: mime,
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    let data = null;
-    try { data = JSON.parse(up.body); } catch (e) {}
-    if (!data) {
-      console.log('Story server status =', up.status, '| reply =', String(up.body).slice(0, 200));
-      throw new Error('Server ne JSON nahi diya (status ' + up.status + ')');
-    }
-    if (up.status < 200 || up.status >= 300 || !data.success) {
-      console.log('Story server status =', up.status, '| reply =', up.body);
-      throw new Error(data.error || 'Upload failed');
-    }
-
-    await addDoc(collection(db, 'stories'), {
-      userId: currentUser.uid,
-      username: currentUser.displayName || 'User',
-      userPhoto: userProfilePhoto,
-      mediaUrl: data.mediaUrl,
-      mediaType: isVideo ? 'video' : 'image',
-      duration: isVideo
-        ? Math.min(Math.max(Math.round(asset.duration || STORY_DURATION), 1000), 30000)
-        : STORY_DURATION,
-      storagePath: data.key,
-      createdAt: serverTimestamp(),
-      expiresAt: Timestamp.fromMillis(Date.now() + STORY_LIFETIME),
-    });
-  } catch (e) {
-    console.log('Story upload error:', e);
-    Alert.alert('Story upload failed', 'Please check your internet and try again.');
-  } finally {
-    setStoryUploading(false);
+  let next = currentGroup.items[viewer.storyIndex + 1];
+  if (!next) {
+    const g = storyGroupsRef.current[viewer.groupIndex + 1];
+    next = g && g.items[0];
   }
-};
+  if (next && next.mediaType !== 'video' && next.mediaUrl) {
+    Image.prefetch(next.mediaUrl).catch(() => {});
+  }
+}, [viewer ? viewer.groupIndex : -1, viewer ? viewer.storyIndex : -1, currentStoryId]);
 
-// mode: 'photo' (camera) | 'video' (camera) | 'gallery'
-const pickStoryMedia = async (mode) => {
+// + dabate hi gallery khulti hai, phir story editor page
+const addStory = async () => {
   try {
-    let result;
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images', 'videos'],
+      allowsEditing: false,
+      quality: 0.8,
+      videoMaxDuration: 30,
+    });
 
-    if (mode === 'gallery') {
-      result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images', 'videos'],
-        allowsEditing: false,
-        quality: 0.7,
-        videoMaxDuration: 30,
-      });
-    } else {
-      const perm = await ImagePicker.requestCameraPermissionsAsync();
-      if (!perm.granted) {
-        Alert.alert('Camera permission needed', 'Allow camera access to add a story.');
-        return;
-      }
-      result = await ImagePicker.launchCameraAsync({
-        mediaTypes: mode === 'video' ? ['videos'] : ['images'],
-        allowsEditing: mode === 'photo',
-        aspect: [9, 16],
-        quality: 0.7,
-        videoMaxDuration: 30,
-      });
+    if (result.canceled || !result.assets || !result.assets[0] || !result.assets[0].uri) return;
+
+    const a = result.assets[0];
+    const isVideo = a.type === 'video';
+
+    if (isVideo && a.duration && a.duration > 30500) {
+      Alert.alert('Video too long', 'Story video maximum 30 seconds ki ho sakti hai.');
+      return;
+    }
+    if (a.fileSize && a.fileSize > 58 * 1024 * 1024) {
+      Alert.alert('File too large', 'Story file 58 MB se chhoti honi chahiye.');
+      return;
     }
 
-    if (!result.canceled && result.assets && result.assets[0] && result.assets[0].uri) {
-      uploadStory(result.assets[0]);
-    }
+    router.push({
+      pathname: '/story-editor',
+      params: {
+        uri: a.uri,
+        type: isVideo ? 'video' : 'image',
+        duration: String(a.duration || 0),
+        userPhoto: userProfilePhoto || '',
+        username: (currentUser && currentUser.displayName) || 'User',
+      },
+    });
   } catch (e) {
     console.log('Pick story media error:', e);
   }
-};
-
-const addStory = () => {
-  if (storyUploading) return;
-
-  Alert.alert(
-    'Add to your story',
-    'Photo ya video (max 30 sec)',
-    [
-      { text: 'Camera photo', onPress: () => pickStoryMedia('photo') },
-      { text: 'Camera video', onPress: () => pickStoryMedia('video') },
-      { text: 'Gallery', onPress: () => pickStoryMedia('gallery') },
-    ],
-    { cancelable: true }
-  );
 };
 
 const openStoryGroup = (groupIndex) => {
@@ -667,7 +853,6 @@ useEffect(() => {
       { merge: true }
     );
 
-    console.log("ACTIVE = MESSAGES");
 
   };
 
@@ -688,61 +873,6 @@ useEffect(() => {
 }, [currentUser]);
 
 
-const getLevelTheme = (level = 1) => {
-
-  if(level>=50){
-    return{
-      bg:"#7B1FFF",
-      border:"#FFD700",
-      text:"#fff",
-      icon:"#FFD700"
-    };
-  }
-
-  if(level>=40){
-    return{
-      bg:"#00BFFF",
-      border:"#9EF8FF",
-      text:"#fff",
-      icon:"#fff"
-    };
-  }
-
-  if(level>=30){
-    return{
-      bg:"#FF0066",
-      border:"#FFB6C1",
-      text:"#fff",
-      icon:"#fff"
-    };
-  }
-
-  if(level>=20){
-    return{
-      bg:"#FFC107",
-      border:"#FFE082",
-      text:"#000",
-      icon:"#fff"
-    };
-  }
-
-  if(level>=10){
-    return{
-      bg:"#BDBDBD",
-      border:"#fff",
-      text:"#fff",
-      icon:"#fff"
-    };
-  }
-
-  return{
-    bg:"#222",
-    border:"#555",
-    text:"#FFD700",
-    icon:"#00E5FF"
-  };
-
-};
 
 
 
@@ -817,7 +947,8 @@ useEffect(() => {
       currentUser.uid,
       'notifications'
     ),
-    orderBy('createdAt', 'desc')
+    orderBy('createdAt', 'desc'),
+    limit(100)
   );
 
   const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -836,96 +967,96 @@ useEffect(() => {
 
 
 
-// Merge a page of friend docs into state IMMEDIATELY using just the
-// data already in the doc (username, photo, last message, etc.) -
-// this is everything needed to paint the chat list right away.
-// The extra "level" / "verified" badge info needs two more Firestore
-// reads PER friend (wallets + users), so instead of making the whole
-// screen wait on that (which was the main reason the list felt slow
-// to appear), we render first and patch each row in once its enrich
-// data comes back, in the background.
+// Badge data (level / verified) comes from a small cache first, so rows paint
+// with their badges instantly. Only users that are NOT cached (or are older
+// than 5 minutes) cost 2 Firestore reads - and they are patched in quietly.
+const withCachedBadges = (item) => {
+  const c = enrichCache.get(item.userId);
+  return c
+    ? { ...item, level: c.level, verified: c.verified, verifiedColor: c.verifiedColor }
+    : item;
+};
+
 const mergeFriendsIntoState = (list, append) => {
+  const keepBadges = (item, existing) =>
+    existing
+      ? { ...item, level: existing.level, verified: existing.verified, verifiedColor: existing.verifiedColor }
+      : item;
+
   if (append) {
     setFriends((prev) => {
       const byId = new Map(prev.map((item) => [item.id, item]));
-      list.forEach((item) => {
-        // Don't clobber richer badge data that may have already arrived.
-        const existing = byId.get(item.id);
-        const merged = existing
-          ? { ...item, level: existing.level, verified: existing.verified, verifiedColor: existing.verifiedColor }
-          : item;
-        byId.set(item.id, merged);
-      });
+      list.forEach((item) => byId.set(item.id, keepBadges(item, byId.get(item.id))));
       return Array.from(byId.values());
     });
-  } else {
-    // Realtime first page updates must NOT delete already-loaded pages.
-    // This keeps 10 + 10 + 10 pagination stable while the first 10 stay live.
-    setFriends((prev) => {
-      const prevById = new Map(prev.map((item) => [item.id, item]));
-
-      const merged = list.map((item) => {
-        const existing = prevById.get(item.id);
-        // Keep any already-enriched level/verified info for items we
-        // already had, so a realtime refresh doesn't flash them back
-        // to the default badge while we re-fetch.
-        return existing
-          ? { ...item, level: existing.level, verified: existing.verified, verifiedColor: existing.verifiedColor }
-          : item;
-      });
-
-      if (friendsLoadedPagesRef.current <= 1) {
-        return merged;
-      }
-
-      const firstPageIds = new Set(list.map((item) => item.id));
-      const olderLoaded = prev.filter((item) => !firstPageIds.has(item.id));
-
-      const byId = new Map();
-      [...merged, ...olderLoaded].forEach((item) => byId.set(item.id, item));
-      return Array.from(byId.values());
-    });
+    return;
   }
+
+  // Realtime first-page updates must NOT delete already-loaded pages.
+  setFriends((prev) => {
+    const prevById = new Map(prev.map((item) => [item.id, item]));
+    const merged = list.map((item) => keepBadges(item, prevById.get(item.id)));
+
+    if (friendsLoadedPagesRef.current <= 1) return merged;
+
+    const firstPageIds = new Set(list.map((item) => item.id));
+    const olderLoaded = prev.filter((item) => !firstPageIds.has(item.id));
+    return [...merged, ...olderLoaded];
+  });
 };
 
-// Fetches the level/verified enrichment for a page of friends in the
-// background and patches each row into state as soon as ITS data is
-// ready, without blocking anything else.
-const enrichFriendsInBackground = (docs) => {
-  docs.forEach(async (d) => {
-    const data = d.data();
+// Fetches level/verified for users that are not cached yet and patches
+// each row into `setter` as soon as ITS data arrives.
+const enrichInBackground = (docs, setter) => {
+  const now = Date.now();
 
+  docs.forEach(async (d) => {
+    const uid = d.data().userId;
+    if (!uid || enrichInflight.has(uid)) return;
+
+    const cached = enrichCache.get(uid);
+    if (cached && now - cached.at < ENRICH_TTL) return;
+
+    enrichInflight.add(uid);
     try {
       const [walletSnap, userSnap] = await Promise.all([
-        getDoc(doc(db, "wallets", data.userId)),
-        getDoc(doc(db, "users", data.userId)),
+        getDoc(doc(db, 'wallets', uid)),
+        getDoc(doc(db, 'users', uid)),
       ]);
 
-      const level = walletSnap.exists() ? (walletSnap.data().level || 1) : 1;
-      const verified = userSnap.exists() ? userSnap.data().verified === true : false;
-      const verifiedColor = userSnap.exists() ? (userSnap.data().verifiedColor || "white") : "white";
+      const info = {
+        level: walletSnap.exists() ? walletSnap.data().level || 1 : 1,
+        verified: userSnap.exists() ? userSnap.data().verified === true : false,
+        verifiedColor: userSnap.exists() ? userSnap.data().verifiedColor || 'white' : 'white',
+        at: Date.now(),
+      };
+      enrichCache.set(uid, info);
 
-      setFriends((prev) =>
+      setter((prev) =>
         prev.map((item) =>
-          item.id === d.id
-            ? { ...item, level, verified, verifiedColor }
+          item.userId === uid
+            ? { ...item, level: info.level, verified: info.verified, verifiedColor: info.verifiedColor }
             : item
         )
       );
     } catch (e) {
-      console.log("Friend profile enrich error:", e);
+      console.log('Friend profile enrich error:', e);
+    } finally {
+      enrichInflight.delete(uid);
     }
   });
 };
 
 const loadFriendDocs = async (docs, append = false) => {
-  const list = docs.map((d) => ({
-    id: d.id,
-    ...d.data(),
-    level: 1,
-    verified: false,
-    verifiedColor: "white",
-  }));
+  const list = docs.map((d) =>
+    withCachedBadges({
+      id: d.id,
+      ...d.data(),
+      level: 1,
+      verified: false,
+      verifiedColor: 'white',
+    })
+  );
 
   // Paint instantly with the base data...
   mergeFriendsIntoState(list, append);
@@ -940,8 +1071,8 @@ const loadFriendDocs = async (docs, append = false) => {
     setFriendsInitialLoading(false);
   }
 
-  // ...then quietly fill in level/verified badges as they arrive.
-  enrichFriendsInBackground(docs);
+  // ...then quietly fill in badges that are not cached yet.
+  enrichInBackground(docs, setFriends);
 };
 
 useEffect(() => {
@@ -1027,66 +1158,89 @@ const loadMoreFriends = async () => {
 
 
 useEffect(() => {
-
   if (!currentUser) return;
 
   const q = query(
-    collection(
-      db,
-      "userChats",
-      currentUser.uid,
-      "hiddenFriends"
-    ),
-    orderBy("updatedAt", "desc")
+    collection(db, 'userChats', currentUser.uid, 'hiddenFriends'),
+    orderBy('updatedAt', 'desc')
   );
 
-  const unsubscribe = onSnapshot(
+  return onSnapshot(
     q,
     (snapshot) => {
+      // Paint instantly (badges from cache when available)...
+      setHiddenFriends(
+        snapshot.docs.map((d) =>
+          withCachedBadges({
+            id: d.id,
+            ...d.data(),
+            level: 1,
+            verified: false,
+            verifiedColor: 'white',
+          })
+        )
+      );
 
-      // Paint instantly with the base doc data...
-      const list = snapshot.docs.map((d) => ({
-        id: d.id,
-        ...d.data(),
-        level: 1,
-        verified: false,
-      }));
-
-      setHiddenFriends(list);
-
-      // ...then quietly fill in level/verified as each one arrives,
-      // instead of making the whole hidden list wait on it.
-      snapshot.docs.forEach(async (d) => {
-        const data = d.data();
-
-        try {
-          const [walletSnap, userSnap] = await Promise.all([
-            getDoc(doc(db, "wallets", data.userId)),
-            getDoc(doc(db, "users", data.userId)),
-          ]);
-
-          const level = walletSnap.exists() ? (walletSnap.data().level || 1) : 1;
-          const verified = userSnap.exists() ? userSnap.data().verified === true : false;
-
-          setHiddenFriends((prev) =>
-            prev.map((item) =>
-              item.id === d.id ? { ...item, level, verified } : item
-            )
-          );
-        } catch (e) {
-          console.log("Hidden friend profile enrich error:", e);
-        }
-      });
-
-    }
+      // ...then fetch only the badges that are missing.
+      enrichInBackground(snapshot.docs, setHiddenFriends);
+    },
+    (e) => console.log('Hidden friends error:', e)
   );
-
-  return unsubscribe;
-
 }, [currentUser]);
 
 
 
+
+// Message requests (people who are not friends yet). Chat moves to Friends
+// when accepted (chat.tsx). Newest request first.
+useEffect(() => {
+  if (!currentUser) {
+    setRequests([]);
+    return;
+  }
+
+  const q = query(
+    collection(db, 'userChats', currentUser.uid, 'requests'),
+    orderBy('updatedAt', 'desc'),
+    limit(50)
+  );
+
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      setRequests(
+        snapshot.docs.map((d) =>
+          withCachedBadges({
+            id: d.id,
+            ...d.data(),
+            level: 1,
+            verified: false,
+            verifiedColor: 'white',
+          })
+        )
+      );
+      enrichInBackground(snapshot.docs, setRequests);
+    },
+    (e) => console.log('Requests error:', e)
+  );
+}, [currentUser]);
+
+// Friends tab count = number of chats with unread messages (cheap query,
+// does not depend on how many chat pages are loaded)
+useEffect(() => {
+  if (!currentUser) {
+    setFriendsUnread(0);
+    return;
+  }
+
+  const q = query(
+    collection(db, 'userChats', currentUser.uid, 'friends'),
+    where('unreadCount', '>', 0),
+    limit(99)
+  );
+
+  return onSnapshot(q, (snap) => setFriendsUnread(snap.size), () => {});
+}, [currentUser]);
 
 const getIconColor = (path) => (pathname === path ? '#3498db' : '#fff');
 
@@ -1094,7 +1248,15 @@ const getIconColor = (path) => (pathname === path ? '#3498db' : '#fff');
 
 
   // Tabs layout
-  const tabs = ['Friends', 'Except', 'Hid.Sms'];
+  const tabs = ['Friends', 'Requests', 'Hid.Sms'];
+
+const hiddenUnread = hiddenFriends.filter((f) => f.unreadCount > 0).length;
+const requestsUnread = requests.filter((r) => r.unreadCount > 0).length;
+const tabCounts = {
+  Friends: friendsUnread,
+  Requests: requestsUnread,
+  'Hid.Sms': hiddenUnread,
+};
 
 const filteredNotifications = notifications.filter(
   item => item.type === selectedType
@@ -1176,111 +1338,213 @@ const switchNotifTab = (type) => {
   markTypeRead(type).catch(() => {});
 };
 
-const deleteChat = async (friend) => {
+// stable callbacks => memoized rows do not re-render needlessly
+const openChat = useCallback(
+  (item) =>
+    router.push({
+      pathname: '/chat',
+      params: {
+        userId: item.userId,
+        username: item.username,
+        profileImg: item.profileImg,
+      },
+    }),
+  [router]
+);
+
+const openFriendMenu = useCallback((item) => {
+  setSelectedFriend(item);
+  setMenuVisible(true);
+}, []);
+
+const closeFriendMenu = useCallback(() => setMenuVisible(false), []);
+
+// decline a message request (row menu in the Requests tab)
+const declineRequest = async (req) => {
+  if (!req || !currentUser) return;
+
+  setMenuVisible(false);
+  setRequests((prev) => prev.filter((item) => item.id !== req.id));
 
   try {
+    const uid = currentUser.uid;
+    const chatId = uid < req.userId ? `${uid}_${req.userId}` : `${req.userId}_${uid}`;
 
-    // Save delete timestamp
-    await setDoc(
-      doc(
-        db,
-        "deletedChats",
-        currentUser.uid,
-        "users",
-        friend.userId
-      ),
-      {
-        deletedAt: serverTimestamp(),
-      }
-    );
-
-    // Remove from friend list
-    await deleteDoc(
-      doc(
-        db,
-        "userChats",
-        currentUser.uid,
-        "friends",
-        friend.id
-      )
-    );
-
-    setMenuVisible(false);
-
+    const batch = writeBatch(db);
+    batch.update(doc(db, 'chats', chatId), {
+      status: 'declined',
+      declinedAt: serverTimestamp(),
+    });
+    batch.delete(doc(db, 'userChats', uid, 'requests', req.id));
+    await batch.commit();
   } catch (error) {
-
-    console.log(error);
-
+    console.log('Decline request error:', error);
   }
-
 };
 
+const deleteChat = async (friend) => {
+  if (!friend || !currentUser) return;
 
-
-
-
-const deleteHiddenChat = async (friend) => {
-
-  try {
-
-    if (!friend) return;
-
-    await deleteDoc(
-      doc(
-        db,
-        "userChats",
-        currentUser.uid,
-        "hiddenFriends",
-        friend.id
-      )
-    );
-
-    setMenuVisible(false);
-
-    console.log("Hidden Chat Deleted");
-
-  } catch (error) {
-
-    console.log(error);
-
+  if (activeTab === 'Requests') {
+    declineRequest(friend);
+    return;
   }
 
+  // instant UI: close the menu and drop the row right away
+  setMenuVisible(false);
+  setFriends((prev) => prev.filter((item) => item.id !== friend.id));
+
+  try {
+    await setDoc(doc(db, 'deletedChats', currentUser.uid, 'users', friend.userId), {
+      deletedAt: serverTimestamp(),
+    });
+    await deleteDoc(doc(db, 'userChats', currentUser.uid, 'friends', friend.id));
+  } catch (error) {
+    console.log(error);
+    // failed => put the row back
+    setFriends((prev) => (prev.some((i) => i.id === friend.id) ? prev : [friend, ...prev]));
+  }
+};
+
+const deleteHiddenChat = async (friend) => {
+  if (!friend || !currentUser) return;
+
+  setMenuVisible(false);
+  setHiddenFriends((prev) => prev.filter((item) => item.id !== friend.id));
+
+  try {
+    await deleteDoc(doc(db, 'userChats', currentUser.uid, 'hiddenFriends', friend.id));
+  } catch (error) {
+    console.log(error);
+  }
 };
 
 const hideChat = async (friend) => {
+  if (!friend || !currentUser) return;
+
+  setMenuVisible(false);
+  setFriends((prev) => prev.filter((item) => item.id !== friend.id));
 
   try {
+    // do not save the temporary UI-only fields into Firestore
+    const { id, level, verified, verifiedColor, ...saved } = friend;
 
-    await setDoc(
-      doc(
-        db,
-        "userChats",
-        currentUser.uid,
-        "hiddenFriends",
-        friend.id
-      ),
-      friend
-    );
-
-    await deleteDoc(
-      doc(
-        db,
-        "userChats",
-        currentUser.uid,
-        "friends",
-        friend.id
-      )
-    );
-
-    setMenuVisible(false);
-
+    await setDoc(doc(db, 'userChats', currentUser.uid, 'hiddenFriends', friend.id), saved);
+    await deleteDoc(doc(db, 'userChats', currentUser.uid, 'friends', friend.id));
   } catch (error) {
-
     console.log(error);
-
+    setFriends((prev) => (prev.some((i) => i.id === friend.id) ? prev : [friend, ...prev]));
   }
-
 };
+
+// ---- chat list (virtualized) ----
+const renderFriendRow = useCallback(
+  ({ item }) => <FriendRow item={item} onOpen={openChat} onMenu={openFriendMenu} showPreview />,
+  [openChat, openFriendMenu]
+);
+const renderHiddenRow = useCallback(
+  ({ item }) => <FriendRow item={item} onMenu={openFriendMenu} />,
+  [openFriendMenu]
+);
+
+const listData =
+  activeTab === 'Friends'
+    ? friendsInitialLoading
+      ? EMPTY_LIST
+      : friends
+    : activeTab === 'Hid.Sms'
+    ? hiddenFriends
+    : activeTab === 'Requests'
+    ? requests
+    : EMPTY_LIST;
+
+const listEmpty = useMemo(
+  () =>
+    activeTab === 'Friends' && friendsInitialLoading ? (
+      <View style={{ paddingVertical: 28, alignItems: 'center' }}>
+        <ActivityIndicator size="small" color="#aaa" />
+        <Text style={{ color: '#aaa', fontSize: 14, marginTop: 8 }}>Loading chats...</Text>
+      </View>
+    ) : activeTab === 'Requests' ? (
+      <View style={{ paddingVertical: 28, alignItems: 'center' }}>
+        <Text style={{ color: '#aaa', fontSize: 14 }}>No message requests</Text>
+      </View>
+    ) : null,
+  [activeTab, friendsInitialLoading]
+);
+
+const listFooter = useMemo(
+  () =>
+    activeTab === 'Friends' && friendsLoadingMore ? (
+      <View style={{ paddingVertical: 18, alignItems: 'center' }}>
+        <Text style={{ color: '#aaa', fontSize: 14 }}>Loading more chats...</Text>
+      </View>
+    ) : null,
+  [activeTab, friendsLoadingMore]
+);
+
+// ---- notification popup actions ----
+const notifOpenHome = useCallback(
+  (videoId) => {
+    setModalVisible(false);
+    router.push({ pathname: '/', params: { videoId } });
+  },
+  [router]
+);
+
+const notifOpenProfile = useCallback(
+  (senderId) => {
+    setModalVisible(false);
+    router.push({ pathname: '/userProfile', params: { userId: senderId } });
+  },
+  [router]
+);
+
+const notifOpenVideo = useCallback(
+  async (videoId) => {
+    if (!videoId) return;
+    try {
+      const videoSnap = await getDoc(doc(db, 'all_videos', videoId));
+      if (!videoSnap.exists()) return;
+
+      const videoData = { id: videoSnap.id, ...videoSnap.data() };
+      setModalVisible(false);
+
+      setTimeout(() => {
+        router.push({
+          pathname: '/videoedite',
+          params: {
+            videos: JSON.stringify([videoData]),
+            index: '0',
+            userId: auth.currentUser?.uid || '',
+          },
+        });
+      }, 300);
+    } catch (error) {
+      console.log('OPEN VIDEO ERROR =', error);
+    }
+  },
+  [router]
+);
+
+const renderNotifRow = useCallback(
+  ({ item }) => (
+    <NotificationRow
+      item={item}
+      onOpenHome={notifOpenHome}
+      onOpenProfile={notifOpenProfile}
+      onOpenVideo={notifOpenVideo}
+    />
+  ),
+  [notifOpenHome, notifOpenProfile, notifOpenVideo]
+);
+
+const notifEmpty = (
+  <View style={{ marginTop: 100, alignItems: 'center' }}>
+    <Ionicons name="notifications-outline" size={60} color="#555" />
+    <Text style={{ color: '#aaa', marginTop: 10 }}>No Notifications</Text>
+  </View>
+);
 
 
 
@@ -1427,9 +1691,18 @@ const getModalTitle = () => {
                   onPress={() => setActiveTab(tab)}
                   activeOpacity={0.7}
                 >
-                  <Text style={[styles.tabLabelText, isActive && styles.activeTabLabel]}>
-                    {tab}
-                  </Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Text style={[styles.tabLabelText, isActive && styles.activeTabLabel]}>
+                      {tab}
+                    </Text>
+                    {tabCounts[tab] > 0 && (
+                      <View style={styles.tabBadge}>
+                        <Text style={styles.tabBadgeText}>
+                          {tabCounts[tab] > 99 ? '99+' : tabCounts[tab]}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
                   {isActive && <View style={styles.activeLineIndicator} />}
                 </TouchableOpacity>
               );
@@ -1438,387 +1711,22 @@ const getModalTitle = () => {
 
           {/* MAIN CONTENT AREA */}
 
-<ScrollView
+<FlatList
+  data={listData}
+  extraData={activeTab}
+  keyExtractor={keyExtractorById}
+  renderItem={activeTab === 'Hid.Sms' ? renderHiddenRow : renderFriendRow}
   showsVerticalScrollIndicator={false}
   contentContainerStyle={styles.listContent}
-  onScroll={({ nativeEvent }) => {
-    const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
-    const distanceFromBottom = contentSize.height - (layoutMeasurement.height + contentOffset.y);
-    if (activeTab === "Friends" && distanceFromBottom < 250) {
-      loadMoreFriends();
-    }
-  }}
-  scrollEventThrottle={200}
->
-
-{activeTab === "Friends" && friendsInitialLoading && (
-  <View style={{ paddingVertical: 28, alignItems: "center" }}>
-    <ActivityIndicator size="small" color="#aaa" />
-    <Text style={{ color: "#aaa", fontSize: 14, marginTop: 8 }}>
-      Loading chats...
-    </Text>
-  </View>
-)}
-
-{activeTab === "Friends" && !friendsInitialLoading && friends.map((item) => (
-
-    <TouchableOpacity
-      key={item.id}
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        paddingVertical: 12,
-        borderBottomWidth: 1,
-        borderBottomColor: "#222",
-      }}
-
-      onPress={() =>
-        router.push({
-          pathname: "/chat",
-          params: {
-            userId: item.userId,
-            username: item.username,
-            profileImg: item.profileImg,
-          },
-        })
-      }
-    >
-
-      <Image
-        source={{
-          uri:
-            item.profileImg ||
-            DEFAULT_AVATAR,
-        }}
-        style={{
-          width: 55,
-          height: 55,
-          borderRadius: 28,
-        }}
-      />
-
-      <View
-        style={{
-          flex: 1,
-          marginLeft: 12,
-        }}
-      >
-
-
-        <View
-  style={{
-    flexDirection: "row",
-    alignItems: "center",
-  }}
->
-
-  <Text
-    style={{
-      color: "#fff",
-      fontSize: 16,
-      fontWeight: "bold",
-    }}
-  >
-    {item.username}
-  </Text>
-
-  {/* Verified */}
- {item.verified && (
-  <View
-    style={{
-      marginLeft: 5,
-      justifyContent: "center",
-      alignItems: "center",
-      position: "relative",
-    }}
-  >
-
-    <MaterialCommunityIcons
-      name="check-decagram"
-      size={16}
-      color={
-        item.verifiedColor === "yellow"
-          ? "#FFD700"
-          : "#ffffff"
-      }
-    />
-
-  </View>
-)}
-
-  {/* Premium */}
-  <View
-    style={[
-      styles.levelBadge,
-      {
-        backgroundColor: getLevelTheme(item.level).bg,
-        borderColor: getLevelTheme(item.level).border,
-      },
-    ]}
-  >
-    <MaterialCommunityIcons
-      name="diamond-stone"
-      size={12}
-      color={getLevelTheme(item.level).icon}
-    />
-
-    <Text
-      style={{
-        color: getLevelTheme(item.level).text,
-        fontSize: 11,
-        fontWeight: "bold",
-        marginLeft: 3,
-      }}
-    >
-      LV {item.level || 1}
-    </Text>
-  </View>
-
-</View>
-
-        <Text
-  numberOfLines={1}
-  style={{
-    color:"#aaa",
-    marginTop:3,
-  }}
->
-  {item.lastMessage === "🎙 Live Invite"
-    ? "🎙 Sent you a live invite"
-    : item.lastMessage === "🎥 Video"
-    ? "🎥 Sent a video"
-    : item.lastMessage}
-</Text>
-
-{item.hasNewMessage && (
-
-<View
-  style={{
-    backgroundColor:"#00C853",
-    paddingHorizontal:10,
-    paddingVertical:3,
-    borderRadius:20,
-    marginTop:5,
-    alignSelf:"flex-start",
-  }}
->
-  <Text
-    style={{
-      color:"#fff",
-      fontWeight:"bold",
-      fontSize:12,
-    }}
-  >
-    NEW
-  </Text>
-</View>
-
-)}
-
-
-{item.unreadCount > 0 && (
-  <View
-    style={{
-      backgroundColor: "#00c853",
-      minWidth: 22,
-      height: 22,
-      borderRadius: 11,
-      justifyContent: "center",
-      alignItems: "center",
-      marginTop: 5,
-      alignSelf: "flex-start",
-      paddingHorizontal: 6,
-    }}
-  >
-    <Text
-      style={{
-        color: "#fff",
-        fontWeight: "bold",
-      }}
-    >
-      {item.unreadCount}
-    </Text>
-  </View>
-)}
-
-
-      </View>
-
-
-<TouchableOpacity
-  onPress={() => {
-
-    setSelectedFriend(item);
-
-    setMenuVisible(true);
-
-  }}
->
-
-  <Ionicons
-    name="ellipsis-vertical"
-    size={22}
-    color="#fff"
-  />
-
-</TouchableOpacity>
-
-
-    </TouchableOpacity>
-
-  ))}
-
-  {activeTab === "Friends" && friendsLoadingMore && (
-    <View style={{ paddingVertical: 18, alignItems: "center" }}>
-      <Text style={{ color: "#aaa", fontSize: 14 }}>Loading 10 more chats...</Text>
-    </View>
-  )}
-
-
-
-
-
-{activeTab === "Hid.Sms" && (
-
-  hiddenFriends.map((item) => (
-
-    <TouchableOpacity
-      key={item.id}
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        paddingVertical: 12,
-        borderBottomWidth: 1,
-        borderBottomColor: "#222",
-      }}
-    >
-      <Image
-        source={{
-          uri: item.profileImg || DEFAULT_AVATAR,
-        }}
-        style={{
-          width: 55,
-          height: 55,
-          borderRadius: 28,
-        }}
-      />
-
-      <View
-  style={{
-    flex: 1,
-    marginLeft: 12,
-  }}
->
-
-<View
-  style={{
-    flexDirection: "row",
-    alignItems: "center",
-  }}
->
-
-  <Text
-    style={{
-      color: "#fff",
-      fontSize: 16,
-      fontWeight: "bold",
-    }}
-  >
-    {item.username}
-  </Text>
-
-  {/* Verified */}
-{item.verified && (
-  <View
-    style={{
-      marginLeft: 5,
-      justifyContent: "center",
-      alignItems: "center",
-      position: "relative",
-    }}
-  >
-
-    <MaterialCommunityIcons
-      name="check-decagram"
-      size={16}
-      color={
-        item.verifiedColor === "yellow"
-          ? "#FFD700"
-          : "#ffffff"
-      }
-    />
-
-    <Ionicons
-      name="checkmark"
-      size={9}
-      color="#131212"
-      style={{
-        position: "absolute",
-      }}
-    />
-
-  </View>
-)}
-
-  {/* Premium */}
-  <View
-    style={[
-      styles.levelBadge,
-      {
-        backgroundColor: getLevelTheme(item.level).bg,
-        borderColor: getLevelTheme(item.level).border,
-      },
-    ]}
-  >
-    <MaterialCommunityIcons
-      name="diamond-stone"
-      size={12}
-      color={getLevelTheme(item.level).icon}
-    />
-
-    <Text
-      style={{
-        color: getLevelTheme(item.level).text,
-        fontSize: 11,
-        fontWeight: "bold",
-        marginLeft: 3,
-      }}
-    >
-      LV {item.level || 1}
-    </Text>
-  </View>
-
-</View>
-
-</View>
-
-<TouchableOpacity
-  onPress={() => {
-
-    setSelectedFriend(item);
-
-    setMenuVisible(true);
-
-  }}
->
-  <Ionicons
-    name="ellipsis-vertical"
-    size={22}
-    color="#fff"
-  />
-</TouchableOpacity>
-
-
-    </TouchableOpacity>
-
-  ))
-
-)}
-
-
-
-
-</ScrollView>
+  onEndReached={activeTab === 'Friends' ? loadMoreFriends : undefined}
+  onEndReachedThreshold={0.6}
+  initialNumToRender={12}
+  maxToRenderPerBatch={8}
+  windowSize={7}
+  removeClippedSubviews={Platform.OS === 'android'}
+  ListEmptyComponent={listEmpty}
+  ListFooterComponent={listFooter}
+/>
 
 
         </>
@@ -1998,269 +1906,17 @@ const getModalTitle = () => {
       </View>
 
       {/* Notifications */}
-      <ScrollView>
-
-        {filteredNotifications.length === 0 ? (
-
-          <View
-            style={{
-              marginTop: 100,
-              alignItems: 'center',
-            }}
-          >
-            <Ionicons
-              name="notifications-outline"
-              size={60}
-              color="#555"
-            />
-
-            <Text
-              style={{
-                color: '#aaa',
-                marginTop: 10,
-              }}
-            >
-              No Notifications
-            </Text>
-          </View>
-
-        ) : (
-
-filteredNotifications.map(item => (
-
-<TouchableOpacity
-  key={item.id}
-
-  onPress={() => {
-
-    if (item.videoId) {
-
-      setModalVisible(false);
-
-      router.push({
-        pathname: '/',
-        params: {
-          videoId: item.videoId
-        }
-      });
-
-    }
-
-  }}
-
-  style={{
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 15,
-    borderBottomWidth: 0.5,
-    borderBottomColor: '#222',
-  }}
->
-
-             <TouchableOpacity
-  onPress={() => {
-
-    setModalVisible(false);
-
-    router.push({
-      pathname: "/userProfile",
-      params: {
-        userId: item.senderId,
-      },
-    });
-
-  }}
->
-  <Image
-    source={{
-      uri:
-        item.senderPhoto ||
-        DEFAULT_AVATAR,
-    }}
-    style={{
-      width: 50,
-      height: 50,
-      borderRadius: 25,
-    }}
-  />
-</TouchableOpacity>
-
-              <View
-                style={{
-                  marginLeft: 10,
-                  flex: 1,
-                }}
-              >
-
-                <Text
-                  style={{
-                    color: '#fff',
-                    fontWeight: 'bold',
-                  }}
-                >
-                  {item.senderName}
-                </Text>
-
-
-<View>
-
-
-
-
-{item.videoThumbnail ? (
-
-<TouchableOpacity
-  onPress={async () => {
-
-console.log(
-  "FULL ITEM =",
-  JSON.stringify(item, null, 2)
-);
-
-    console.log("VIDEO ID =", item.videoId);
-
-    if (!item.videoId) {
-      console.log("No videoId found");
-      return;
-    }
-
-    try {
-
-      const videoSnap = await getDoc(
-        doc(db, "all_videos", item.videoId)
-      );
-
-      console.log(
-        "Video Exists =",
-        videoSnap.exists()
-      );
-
-console.log(
-  "Firestore Video ID =",
-  videoSnap.id
-);
-
-      if (!videoSnap.exists()) {
-        return;
-      }
-
-      const videoData = {
-        id: videoSnap.id,
-        ...videoSnap.data(),
-      };
-
-      console.log(
-        "Video Data =",
-        videoData
-      );
-
-      setModalVisible(false);
-
-      setTimeout(() => {
-
-console.log(
-  "OPENING ALLVIDEO",
-  JSON.stringify([videoData], null, 2)
-);
-
-        router.push({
-          pathname: "/videoedite",
-          params: {
-            videos: JSON.stringify([videoData]),
-            index: "0",
-            userId: auth.currentUser?.uid || "",
-          },
-        });
-
-      }, 300);
-
-    } catch (error) {
-
-      console.log(
-        "OPEN VIDEO ERROR =",
-        error
-      );
-
-    }
-
-  }}
->
-  <Image
-    source={{
-      uri: item.videoThumbnail,
-    }}
-    style={{
-      width: 55,
-      height: 75,
-      borderRadius: 8,
-    }}
-  />
-</TouchableOpacity>
-
-) : null}
-
-
-
-
-
-
-
-
-  <Text
-    style={{
-      color: '#aaa',
-    }}
-  >
-    {item.type === 'comment'
-      ? 'commented on your video'
-      : item.type === 'like'
-      ? 'liked your video'
-      : item.type === 'follow'
-      ? 'started following you'
-      : ''}
-  </Text>
-
-  {item.text ? (
-    <Text
-      style={{
-        color: '#fff',
-        marginTop: 4,
-      }}
-    >
-      Comment:
-      {' '}
-      {item.text}
-    </Text>
-  ) : null}
-
-  {item.videoCaption ? (
-    <Text
-      style={{
-        color: '#FFD700',
-        marginTop: 3,
-      }}
-    >
-      Video:
-      {' '}
-      {item.videoCaption}
-    </Text>
-  ) : null}
-
-</View>
-
-                
-
-         </View>
-
-</TouchableOpacity>
-
-
-
-          ))
-
-        )}
-
-      </ScrollView>
+      <FlatList
+        style={{ flex: 1 }}
+        data={filteredNotifications}
+        keyExtractor={keyExtractorById}
+        renderItem={renderNotifRow}
+        ListEmptyComponent={notifEmpty}
+        initialNumToRender={10}
+        maxToRenderPerBatch={8}
+        windowSize={7}
+        showsVerticalScrollIndicator={false}
+      />
 
     </View>
   </View>
@@ -2272,6 +1928,8 @@ console.log(
   visible={menuVisible}
   transparent
   animationType="fade"
+  statusBarTranslucent
+  onRequestClose={closeFriendMenu}
 >
 
   <TouchableOpacity
@@ -2323,14 +1981,14 @@ console.log(
             paddingVertical:15,
           }}
         >
-          Delete Chat
+          {activeTab === "Requests" ? "Decline Request" : "Delete Chat"}
         </Text>
 
       </TouchableOpacity>
 
 
 
-{activeTab !== "Hid.Sms" && (
+{activeTab === "Friends" && (
   <>
     <View
       style={{
@@ -2383,19 +2041,52 @@ console.log(
   <View style={styles.viewerContainer}>
     {currentStory && currentGroup && (
       <>
-        {currentStory.mediaType === 'video' ? (
-          <StoryVideo
-            key={currentStory.id}
-            uri={currentStory.mediaUrl}
-            paused={storyPaused}
-          />
-        ) : (
-          <Image
-            source={{ uri: currentStory.mediaUrl }}
-            style={styles.viewerImage}
-            resizeMode="contain"
-          />
-        )}
+        {(() => {
+          const win = Dimensions.get('window');
+          const bw = Math.min(win.width, (win.height * 9) / 16);
+          const bh = (bw * 16) / 9;
+          const fit = currentStory.fit === 'contain' ? 'contain' : 'cover';
+          return (
+            <View
+              style={{
+                position: 'absolute',
+                left: (win.width - bw) / 2,
+                top: (win.height - bh) / 2,
+                width: bw,
+                height: bh,
+                overflow: 'hidden',
+                backgroundColor: '#000',
+              }}
+            >
+              {currentStory.mediaType === 'video' ? (
+                <StoryVideo
+                  key={currentStory.id}
+                  uri={currentStory.mediaUrl}
+                  paused={storyPaused}
+                  fit={fit}
+                />
+              ) : (
+                <Image
+                  source={{ uri: currentStory.mediaUrl }}
+                  style={StyleSheet.absoluteFillObject}
+                  resizeMode={fit}
+                />
+              )}
+
+              <View
+                pointerEvents="none"
+                style={[
+                  StyleSheet.absoluteFillObject,
+                  { backgroundColor: STORY_FILTER_TINTS[currentStory.filter || 'none'] || 'transparent' },
+                ]}
+              />
+
+              {(currentStory.overlays || []).map((o, i) => (
+                <StoryOverlayStatic key={i} item={o} boxW={bw} boxH={bh} />
+              ))}
+            </View>
+          );
+        })()}
 
         {/* Left tap = pichhli story, right tap = agli story */}
         <View style={styles.viewerTapRow}>
@@ -2887,5 +2578,70 @@ viewerRepliesPanel: {
 },
 viewerReplyRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6 },
 viewerReplyAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#111' },
+
+
+// ---- tab count badges ----
+tabBadge: {
+  backgroundColor: '#ff00aa',
+  minWidth: 18,
+  height: 18,
+  borderRadius: 9,
+  paddingHorizontal: 5,
+  marginLeft: 5,
+  justifyContent: 'center',
+  alignItems: 'center',
+},
+tabBadgeText: { color: '#fff', fontSize: 11, fontWeight: 'bold' },
+
+// ---- chat list rows ----
+chatRow: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  paddingVertical: 12,
+  borderBottomWidth: 1,
+  borderBottomColor: '#222',
+},
+chatAvatar: { width: 55, height: 55, borderRadius: 28, backgroundColor: '#111' },
+chatInfo: { flex: 1, marginLeft: 12 },
+chatNameRow: { flexDirection: 'row', alignItems: 'center' },
+chatName: { color: '#fff', fontSize: 16, fontWeight: 'bold', flexShrink: 1 },
+chatBottomRow: { flexDirection: 'row', alignItems: 'center', marginTop: 3 },
+chatLast: { color: '#aaa', flex: 1, flexShrink: 1 },
+levelText: { fontSize: 11, fontWeight: 'bold', marginLeft: 3 },
+newPill: {
+  backgroundColor: '#00C853',
+  paddingHorizontal: 8,
+  paddingVertical: 2,
+  borderRadius: 20,
+  marginLeft: 8,
+},
+newPillText: { color: '#fff', fontWeight: 'bold', fontSize: 11 },
+unreadBadge: {
+  backgroundColor: '#00c853',
+  minWidth: 22,
+  height: 22,
+  borderRadius: 11,
+  justifyContent: 'center',
+  alignItems: 'center',
+  marginLeft: 6,
+  paddingHorizontal: 6,
+},
+unreadText: { color: '#fff', fontWeight: 'bold' },
+
+// ---- notification rows ----
+notifRow: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  padding: 15,
+  borderBottomWidth: 0.5,
+  borderBottomColor: '#222',
+},
+notifAvatar: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#111' },
+notifBody: { marginLeft: 10, flex: 1 },
+notifName: { color: '#fff', fontWeight: 'bold' },
+notifThumb: { width: 55, height: 75, borderRadius: 8 },
+notifAction: { color: '#aaa' },
+notifText: { color: '#fff', marginTop: 4 },
+notifCaption: { color: '#FFD700', marginTop: 3 },
 
 });
