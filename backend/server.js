@@ -87,7 +87,7 @@ app.get("/version", (req, res) => {
   res.json({
     success: true,
     version: "reel-merge-v9-fast",
-    features: ["subtitle", "music", "voice", "effect", "recharge-v1"],
+    features: ["subtitle", "music", "voice", "effect", "add-stars-v1"],
   });
 });
 
@@ -2599,7 +2599,7 @@ app.post(
 );
 
 // =====================================================
-// MANUAL RECHARGE (PhonePe QR) - user request + admin approve
+// ADMIN: USER KO STARS DENA (username search se)
 // =====================================================
 
 async function isAdminUser(decoded) {
@@ -2618,7 +2618,6 @@ async function requireAdminDoc(req, res, next) {
 }
 
 function starsToLevel(stars) {
-  // wallet.tsx ke getLevel jaisa hi (same thresholds)
   const t = [
     [499000, 50], [440000, 49], [385000, 48], [310000, 47], [299000, 46],
     [260000, 45], [210000, 44], [189000, 43], [155000, 42], [125000, 41],
@@ -2635,76 +2634,31 @@ function starsToLevel(stars) {
   return 0;
 }
 
-// USER: "Maine pay kar diya" -> pending request banta hai
-app.post("/recharge-request", generalLimiter, verifyUser, async (req, res) => {
+// ADMIN: kisi user ke wallet me Stars add karo
+// body: { uid, stars, amount (rupees mile, optional), note (optional) }
+app.post("/admin/add-stars", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
   try {
-    const uid = req.user.uid;
-    const amount = Number(req.body && req.body.amount);
-    const utr = String((req.body && req.body.utr) || "").trim();
-
-    if (!Number.isFinite(amount) || amount < 1 || amount > 100000) {
-      return res.status(400).json({ success: false, error: "Invalid amount" });
-    }
-    if (!/^[A-Za-z0-9]{8,30}$/.test(utr)) {
-      return res.status(400).json({ success: false, error: "Invalid transaction ID" });
-    }
-
-    // same UTR dobara use na ho
-    const dup = await db.collection("rechargeRequests").where("utr", "==", utr).limit(1).get();
-    if (!dup.empty) {
-      return res.status(409).json({ success: false, error: "This transaction ID is already submitted" });
-    }
-
-    // ek user ke itne pending zyada na ho
-    const pend = await db.collection("rechargeRequests")
-      .where("userId", "==", uid).where("status", "==", "Pending").limit(6).get();
-    if (pend.size >= 5) {
-      return res.status(429).json({ success: false, error: "Too many pending requests. Wait for approval." });
-    }
-
-    const userSnap = await db.collection("users").doc(uid).get();
-    const u = userSnap.exists ? userSnap.data() : {};
-
-    const ref = await db.collection("rechargeRequests").add({
-      userId: uid,
-      name: u.name || "",
-      username: u.username || "",
-      profileImg: u.profileImg || "",
-      amount,
-      utr,
-      status: "Pending",
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    return res.json({ success: true, id: ref.id });
-  } catch (e) {
-    console.error("RECHARGE REQUEST ERROR:", e);
-    return res.status(500).json({ success: false, error: "Server error" });
-  }
-});
-
-// ADMIN: stars daal ke approve
-app.post("/admin/approve-recharge", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
-  try {
-    const id = String((req.body && req.body.id) || "");
+    const uid = String((req.body && req.body.uid) || "");
     const stars = Math.floor(Number(req.body && req.body.stars));
+    const rawAmount = Number(req.body && req.body.amount);
+    const amount = Number.isFinite(rawAmount) && rawAmount > 0 ? Math.min(rawAmount, 10000000) : 0;
+    const note = String((req.body && req.body.note) || "").slice(0, 200);
 
-    if (!id || id.length > 100 || id.includes("/")) {
-      return res.status(400).json({ success: false, error: "Invalid id" });
+    if (!isValidUid(uid)) {
+      return res.status(400).json({ success: false, error: "Invalid user" });
     }
     if (!Number.isFinite(stars) || stars < 1 || stars > 10000000) {
       return res.status(400).json({ success: false, error: "Invalid stars" });
     }
 
-    const reqRef = db.collection("rechargeRequests").doc(id);
+    const userSnap = await db.collection("users").doc(uid).get();
+    if (!userSnap.exists) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+
+    const walletRef = db.collection("wallets").doc(uid);
 
     const result = await db.runTransaction(async (tx) => {
-      const rSnap = await tx.get(reqRef);
-      if (!rSnap.exists) throw new Error("NOT_FOUND");
-      const r = rSnap.data();
-      if (r.status !== "Pending") throw new Error("ALREADY_DONE");
-
-      const walletRef = db.collection("wallets").doc(r.userId);
       const wSnap = await tx.get(walletRef);
       const oldStars = wSnap.exists ? Number(wSnap.data().stars || 0) : 0;
       const total = oldStars + stars;
@@ -2716,58 +2670,42 @@ app.post("/admin/approve-recharge", generalLimiter, verifyUser, requireAdminDoc,
         tx.set(walletRef, { stars: total, level, earnings: 0, receivedStars: 0 });
       }
 
+      // user ki wallet History me dikhega
       tx.set(walletRef.collection("purchaseHistory").doc(), {
         stars,
-        amount: r.amount,
-        paymentId: r.utr,
+        amount,
+        paymentId: "ADMIN",
         status: "Completed",
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      tx.update(reqRef, {
-        status: "Approved",
-        starsGiven: stars,
-        approvedBy: req.user.uid,
-        approvedAt: admin.firestore.FieldValue.serverTimestamp(),
+      // admin ka record (kisne, kisko, kitna diya)
+      tx.set(db.collection("starGrants").doc(), {
+        userId: uid,
+        username: userSnap.data().username || "",
+        stars,
+        amount,
+        note,
+        adminId: req.user.uid,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      return { userId: r.userId, total };
+      return { oldStars, total, level };
     });
 
     return res.json({ success: true, ...result });
   } catch (e) {
-    if (e.message === "NOT_FOUND") return res.status(404).json({ success: false, error: "Request not found" });
-    if (e.message === "ALREADY_DONE") return res.status(409).json({ success: false, error: "Already processed" });
-    console.error("APPROVE RECHARGE ERROR:", e);
+    console.error("ADD STARS ERROR:", e);
     return res.status(500).json({ success: false, error: "Server error" });
   }
 });
 
-// ADMIN: reject (payment nahi aaya / galat UTR)
-app.post("/admin/reject-recharge", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
-  try {
-    const id = String((req.body && req.body.id) || "");
-    if (!id || id.length > 100 || id.includes("/")) {
-      return res.status(400).json({ success: false, error: "Invalid id" });
-    }
-    const reqRef = db.collection("rechargeRequests").doc(id);
-    await db.runTransaction(async (tx) => {
-      const s = await tx.get(reqRef);
-      if (!s.exists) throw new Error("NOT_FOUND");
-      if (s.data().status !== "Pending") throw new Error("ALREADY_DONE");
-      tx.update(reqRef, {
-        status: "Rejected",
-        rejectedBy: req.user.uid,
-        rejectedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-    });
-    return res.json({ success: true });
-  } catch (e) {
-    if (e.message === "NOT_FOUND") return res.status(404).json({ success: false, error: "Request not found" });
-    if (e.message === "ALREADY_DONE") return res.status(409).json({ success: false, error: "Already processed" });
-    console.error("REJECT RECHARGE ERROR:", e);
-    return res.status(500).json({ success: false, error: "Server error" });
-  }
+require("./payments")({
+  app,
+  db,
+  admin,
+  verifyUser,
+  rateLimit,
 });
 
 // =====================================================
