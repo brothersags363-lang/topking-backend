@@ -87,7 +87,7 @@ app.get("/version", (req, res) => {
   res.json({
     success: true,
     version: "reel-merge-v9-fast",
-    features: ["subtitle", "music", "voice", "effect"],
+    features: ["subtitle", "music", "voice", "effect", "recharge-v1"],
   });
 });
 
@@ -584,16 +584,7 @@ async function verifyUser(
 // ADMIN CHECK
 // =====================================================
 
-async function isAdminUid(uid) {
-  try {
-    const snap = await db.collection("admins").doc(uid).get();
-    return snap.exists && snap.data().role === "admin";
-  } catch (_) {
-    return false;
-  }
-}
-
-async function requireAdmin(
+function requireAdmin(
   req,
   res,
   next
@@ -601,7 +592,7 @@ async function requireAdmin(
 
   if (
     req.user &&
-    (await isAdminUid(req.user.uid))
+    req.user.admin === true
   ) {
 
     return next();
@@ -2608,262 +2599,176 @@ app.post(
 );
 
 // =====================================================
-// MONEY ROUTES (wallet / gift / withdraw / reward)
+// MANUAL RECHARGE (PhonePe QR) - user request + admin approve
 // =====================================================
-// money.js ko mount karna zaroori hai, warna app ke /wallet, /gift,
-// /withdraw, /reward, /admin/withdrawal calls 404 dete hain.
-// (Agar aapke deployed server me ye pehle se mounted hai to ye line hata dein.)
 
-require("./money")({
-  app,
-  db,
-  admin,
-  verifyUser,
-  rateLimit,
-  axios,
-  crypto,
+async function isAdminUser(decoded) {
+  if (decoded && decoded.admin === true) return true;
+  try {
+    const snap = await db.collection("admins").doc(decoded.uid).get();
+    return snap.exists && snap.data().role === "admin";
+  } catch (_) {
+    return false;
+  }
+}
+
+async function requireAdminDoc(req, res, next) {
+  if (await isAdminUser(req.user)) return next();
+  return res.status(403).json({ success: false, error: "Admin access required" });
+}
+
+function starsToLevel(stars) {
+  // wallet.tsx ke getLevel jaisa hi (same thresholds)
+  const t = [
+    [499000, 50], [440000, 49], [385000, 48], [310000, 47], [299000, 46],
+    [260000, 45], [210000, 44], [189000, 43], [155000, 42], [125000, 41],
+    [110000, 40], [101000, 39], [99000, 38], [89000, 37], [78000, 36],
+    [67000, 35], [51000, 34], [43000, 33], [31000, 32], [26000, 31],
+    [23000, 30], [19000, 29], [17000, 28], [14000, 27], [12300, 26],
+    [9000, 24], [8200, 23], [7200, 22], [6100, 21], [5050, 20],
+    [4000, 19], [3500, 18], [2800, 17], [2400, 16], [1900, 15],
+    [1600, 14], [1300, 13], [1150, 12], [1000, 11], [870, 10],
+    [670, 9], [540, 8], [360, 7], [280, 6], [200, 5], [160, 4],
+    [100, 3], [60, 2], [10, 1],
+  ];
+  for (const [min, lvl] of t) if (stars >= min) return lvl;
+  return 0;
+}
+
+// USER: "Maine pay kar diya" -> pending request banta hai
+app.post("/recharge-request", generalLimiter, verifyUser, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const amount = Number(req.body && req.body.amount);
+    const utr = String((req.body && req.body.utr) || "").trim();
+
+    if (!Number.isFinite(amount) || amount < 1 || amount > 100000) {
+      return res.status(400).json({ success: false, error: "Invalid amount" });
+    }
+    if (!/^[A-Za-z0-9]{8,30}$/.test(utr)) {
+      return res.status(400).json({ success: false, error: "Invalid transaction ID" });
+    }
+
+    // same UTR dobara use na ho
+    const dup = await db.collection("rechargeRequests").where("utr", "==", utr).limit(1).get();
+    if (!dup.empty) {
+      return res.status(409).json({ success: false, error: "This transaction ID is already submitted" });
+    }
+
+    // ek user ke itne pending zyada na ho
+    const pend = await db.collection("rechargeRequests")
+      .where("userId", "==", uid).where("status", "==", "Pending").limit(6).get();
+    if (pend.size >= 5) {
+      return res.status(429).json({ success: false, error: "Too many pending requests. Wait for approval." });
+    }
+
+    const userSnap = await db.collection("users").doc(uid).get();
+    const u = userSnap.exists ? userSnap.data() : {};
+
+    const ref = await db.collection("rechargeRequests").add({
+      userId: uid,
+      name: u.name || "",
+      username: u.username || "",
+      profileImg: u.profileImg || "",
+      amount,
+      utr,
+      status: "Pending",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return res.json({ success: true, id: ref.id });
+  } catch (e) {
+    console.error("RECHARGE REQUEST ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
 });
 
-
-// =====================================================
-// ADMIN ACTIONS: delete video / ban / unban / delete user
-// =====================================================
-// Sab routes verifyUser + requireAdmin ke peeche hain.
-// Admin = Firestore admins/{uid} me role === "admin".
-
-const VIDEOS_COLLECTION = "all_videos";
-
-// R2 public URL se object key nikalna (https://cdn.x.com/abc.mp4 -> abc.mp4)
-function r2KeyFromUrl(url) {
-  if (typeof url !== "string") return null;
-  const base =
-    String(process.env.R2_PUBLIC_URL || "").replace(/\/+$/, "") + "/";
-  if (!url.startsWith(base)) return null;
-  const key = decodeURIComponent(url.slice(base.length).split("?")[0]);
-  if (!key || key.includes("..")) return null;
-  return key;
-}
-
-async function deleteR2Key(key) {
-  if (!key) return;
+// ADMIN: stars daal ke approve
+app.post("/admin/approve-recharge", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
   try {
-    await r2.send(
-      new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET, Key: key })
-    );
+    const id = String((req.body && req.body.id) || "");
+    const stars = Math.floor(Number(req.body && req.body.stars));
+
+    if (!id || id.length > 100 || id.includes("/")) {
+      return res.status(400).json({ success: false, error: "Invalid id" });
+    }
+    if (!Number.isFinite(stars) || stars < 1 || stars > 10000000) {
+      return res.status(400).json({ success: false, error: "Invalid stars" });
+    }
+
+    const reqRef = db.collection("rechargeRequests").doc(id);
+
+    const result = await db.runTransaction(async (tx) => {
+      const rSnap = await tx.get(reqRef);
+      if (!rSnap.exists) throw new Error("NOT_FOUND");
+      const r = rSnap.data();
+      if (r.status !== "Pending") throw new Error("ALREADY_DONE");
+
+      const walletRef = db.collection("wallets").doc(r.userId);
+      const wSnap = await tx.get(walletRef);
+      const oldStars = wSnap.exists ? Number(wSnap.data().stars || 0) : 0;
+      const total = oldStars + stars;
+      const level = starsToLevel(total);
+
+      if (wSnap.exists) {
+        tx.update(walletRef, { stars: total, level });
+      } else {
+        tx.set(walletRef, { stars: total, level, earnings: 0, receivedStars: 0 });
+      }
+
+      tx.set(walletRef.collection("purchaseHistory").doc(), {
+        stars,
+        amount: r.amount,
+        paymentId: r.utr,
+        status: "Completed",
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      tx.update(reqRef, {
+        status: "Approved",
+        starsGiven: stars,
+        approvedBy: req.user.uid,
+        approvedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      return { userId: r.userId, total };
+    });
+
+    return res.json({ success: true, ...result });
   } catch (e) {
-    console.error("R2 DELETE ERROR:", e.message);
+    if (e.message === "NOT_FOUND") return res.status(404).json({ success: false, error: "Request not found" });
+    if (e.message === "ALREADY_DONE") return res.status(409).json({ success: false, error: "Already processed" });
+    console.error("APPROVE RECHARGE ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
   }
-}
+});
 
-// Doc + uske subcollections (comments) delete
-async function deleteDocDeep(ref) {
-  if (typeof db.recursiveDelete === "function") {
-    await db.recursiveDelete(ref);
-  } else {
-    await ref.delete();
-  }
-}
-
-// Ek video: R2 video + thumbnail, songs entry, Firestore doc (+comments)
-async function deleteVideoSnap(snap) {
-  const d = snap.data() || {};
-
-  await deleteR2Key(r2KeyFromUrl(d.videoUrl));
-  await deleteR2Key(r2KeyFromUrl(d.thumbnail));
-
-  // "Original Audio" entry jo upload ke time songs me bani thi
-  if (d.videoUrl && d.userId) {
-    try {
-      const songs = await db
-        .collection("songs")
-        .where("videoUrl", "==", d.videoUrl)
-        .where("userId", "==", d.userId)
-        .get();
-      await Promise.all(songs.docs.map((x) => x.ref.delete()));
-    } catch (e) {
-      console.error("SONG CLEANUP ERROR:", e.message);
-    }
-  }
-
-  await deleteDocDeep(snap.ref);
-}
-
-app.post(
-  "/admin/delete-video",
-  tokenLimiter,
-  verifyUser,
-  requireAdmin,
-  async (req, res) => {
-    try {
-      const { videoId } = req.body || {};
-
-      if (
-        typeof videoId !== "string" ||
-        !videoId ||
-        videoId.length > 200 ||
-        videoId.includes("/")
-      ) {
-        return res
-          .status(400)
-          .json({ success: false, error: "Invalid videoId" });
-      }
-
-      const snap = await db.collection(VIDEOS_COLLECTION).doc(videoId).get();
-
-      if (!snap.exists) {
-        return res
-          .status(404)
-          .json({ success: false, error: "Video not found" });
-      }
-
-      await deleteVideoSnap(snap);
-
-      console.log(`ADMIN ${req.user.uid} deleted video ${videoId}`);
-      return res.json({ success: true });
-    } catch (e) {
-      console.error("ADMIN DELETE VIDEO ERROR:", e.message);
-      return res
-        .status(500)
-        .json({ success: false, error: "Delete failed" });
-    }
-  }
-);
-
-async function adminSetBan(req, res, banned) {
+// ADMIN: reject (payment nahi aaya / galat UTR)
+app.post("/admin/reject-recharge", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
   try {
-    const { uid } = req.body || {};
-
-    if (!isValidUid(uid)) {
-      return res.status(400).json({ success: false, error: "Invalid uid" });
+    const id = String((req.body && req.body.id) || "");
+    if (!id || id.length > 100 || id.includes("/")) {
+      return res.status(400).json({ success: false, error: "Invalid id" });
     }
-    if (uid === req.user.uid) {
-      return res
-        .status(400)
-        .json({ success: false, error: "You cannot ban yourself" });
-    }
-    if (banned && (await isAdminUid(uid))) {
-      return res
-        .status(400)
-        .json({ success: false, error: "You cannot ban another admin" });
-    }
-
-    // Auth disable => login band; revoke => purane tokens bhi band
-    try {
-      await admin.auth().updateUser(uid, { disabled: banned });
-      if (banned) await admin.auth().revokeRefreshTokens(uid);
-    } catch (e) {
-      if (e.code !== "auth/user-not-found") throw e;
-    }
-
-    const update = banned
-      ? { banned: true }
-      : { banned: false, reviewRequired: false, reportCount: 0 };
-
-    await db.collection("users").doc(uid).set(update, { merge: true });
-
-    console.log(
-      `ADMIN ${req.user.uid} ${banned ? "banned" : "unbanned"} ${uid}`
-    );
+    const reqRef = db.collection("rechargeRequests").doc(id);
+    await db.runTransaction(async (tx) => {
+      const s = await tx.get(reqRef);
+      if (!s.exists) throw new Error("NOT_FOUND");
+      if (s.data().status !== "Pending") throw new Error("ALREADY_DONE");
+      tx.update(reqRef, {
+        status: "Rejected",
+        rejectedBy: req.user.uid,
+        rejectedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    });
     return res.json({ success: true });
   } catch (e) {
-    console.error("ADMIN BAN ERROR:", e.message);
-    return res.status(500).json({ success: false, error: "Action failed" });
+    if (e.message === "NOT_FOUND") return res.status(404).json({ success: false, error: "Request not found" });
+    if (e.message === "ALREADY_DONE") return res.status(409).json({ success: false, error: "Already processed" });
+    console.error("REJECT RECHARGE ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
   }
-}
-
-app.post("/admin/ban-user", tokenLimiter, verifyUser, requireAdmin, (req, res) =>
-  adminSetBan(req, res, true)
-);
-
-app.post(
-  "/admin/unban-user",
-  tokenLimiter,
-  verifyUser,
-  requireAdmin,
-  (req, res) => adminSetBan(req, res, false)
-);
-
-app.post(
-  "/admin/delete-user",
-  tokenLimiter,
-  verifyUser,
-  requireAdmin,
-  async (req, res) => {
-    try {
-      const { uid } = req.body || {};
-
-      if (!isValidUid(uid)) {
-        return res.status(400).json({ success: false, error: "Invalid uid" });
-      }
-      if (uid === req.user.uid) {
-        return res
-          .status(400)
-          .json({ success: false, error: "You cannot delete yourself" });
-      }
-      if (await isAdminUid(uid)) {
-        return res
-          .status(400)
-          .json({ success: false, error: "You cannot delete another admin" });
-      }
-
-      // 1) saare videos (R2 + comments + Firestore)
-      const vids = await db
-        .collection(VIDEOS_COLLECTION)
-        .where("userId", "==", uid)
-        .get();
-      for (const v of vids.docs) {
-        await deleteVideoSnap(v);
-      }
-
-      // 2) stories (R2 file + doc)
-      const stories = await db
-        .collection("stories")
-        .where("userId", "==", uid)
-        .get();
-      for (const st of stories.docs) {
-        const key = (st.data() || {}).storagePath;
-        if (
-          typeof key === "string" &&
-          key.startsWith(`stories/${uid}/`) &&
-          !key.includes("..")
-        ) {
-          await deleteR2Key(key);
-        }
-        await st.ref.delete();
-      }
-
-      // 3) user ke bache hue songs entries
-      try {
-        const songs = await db
-          .collection("songs")
-          .where("userId", "==", uid)
-          .get();
-        await Promise.all(songs.docs.map((x) => x.ref.delete()));
-      } catch (e) {
-        console.error("SONG CLEANUP ERROR:", e.message);
-      }
-
-      // 4) Firebase Auth account (ID hamesha ke liye)
-      try {
-        await admin.auth().deleteUser(uid);
-      } catch (e) {
-        if (e.code !== "auth/user-not-found") throw e;
-      }
-
-      // 5) profile doc (wallets / withdrawals records jaan-bujhkar rakhe hain)
-      await deleteDocDeep(db.collection("users").doc(uid));
-
-      console.log(`ADMIN ${req.user.uid} deleted user ${uid}`);
-      return res.json({ success: true, deletedVideos: vids.size });
-    } catch (e) {
-      console.error("ADMIN DELETE USER ERROR:", e.message);
-      return res
-        .status(500)
-        .json({ success: false, error: "Delete failed" });
-    }
-  }
-);
-
+});
 
 // =====================================================
 // SERVER
