@@ -87,7 +87,7 @@ app.get("/version", (req, res) => {
   res.json({
     success: true,
     version: "reel-merge-v9-fast",
-    features: ["subtitle", "music", "voice", "effect", "add-stars-v1"],
+    features: ["subtitle", "music", "voice", "effect", "add-stars-v1", "admin-delete-v2"],
   });
 });
 
@@ -191,7 +191,7 @@ app.use(
 app.use((req, res, next) => {
 
   res.setTimeout(
-    5 * 60 * 1000,
+    10 * 60 * 1000,
     () => {
 
       if (!res.headersSent) {
@@ -316,7 +316,7 @@ const upload = multer({
   limits: {
 
     fileSize:
-      100 * 1024 * 1024,
+      250 * 1024 * 1024,
 
     files: 1,
 
@@ -383,7 +383,7 @@ const processUpload = multer({
   limits: {
 
     fileSize:
-      100 * 1024 * 1024,
+      250 * 1024 * 1024,
 
     files: 2,
 
@@ -652,121 +652,101 @@ async function sendPushNotification(
   targetUid,
   senderUid,
   title,
-  body
+  body,
+  extra = {}
 ) {
 
-  if (
-    !isValidUid(targetUid) ||
-    !isValidUid(senderUid)
-  ) {
+  if (!isValidUid(targetUid) || !isValidUid(senderUid)) {
     return;
   }
 
-
-  if (
-    typeof title !== "string" ||
-    title.length > 200
-  ) {
+  if (typeof title !== "string" || title.length > 200) {
     return;
   }
-
 
   if (!isValidMessage(body)) {
     return;
   }
 
-
-  const userSnap =
-    await db
-      .collection("users")
-      .doc(targetUid)
-      .get();
-
+  const userSnap = await db.collection("users").doc(targetUid).get();
 
   if (!userSnap.exists) {
     return;
   }
 
+  const token = userSnap.data().fcmToken;
 
-  const userData =
-    userSnap.data();
-
-
-  const token =
-    userData.fcmToken;
-
-
-  if (
-    !token ||
-    typeof token !== "string" ||
-    token.length > 5000
-  ) {
+  if (!token || typeof token !== "string" || token.length > 5000) {
     return;
   }
 
+  // Instagram jaisa short preview
+  const preview =
+    body.length > 120 ? body.slice(0, 117) + "..." : body;
+
+  // FCM data values sirf string ho sakti hain
+  const str = (v) => (typeof v === "string" ? v.slice(0, 500) : "");
 
   try {
 
-    await admin
-      .messaging()
-      .send({
+    await admin.messaging().send({
 
-        token,
+      token,
+
+      notification: {
+        title,
+        body: preview,
+      },
+
+      data: {
+        type: "chat",
+        senderUid: senderUid,
+        senderName: str(extra.senderName),
+        senderImg: str(extra.senderImg),
+      },
+
+      android: {
+
+        // Phone so raha ho ya app band ho tab bhi turant pahunche
+        priority: "high",
+        ttl: 24 * 60 * 60 * 1000,
 
         notification: {
-          title,
-          body,
+          channelId: "messages",
+          sound: "default",
+          // Ek insaan ke kai message = ek hi notification (replace hota hai)
+          tag: "chat_" + senderUid,
+          defaultVibrateTimings: true,
+          notificationPriority: "PRIORITY_MAX",
+          visibility: "PRIVATE",
         },
 
-        data: {
+      },
 
-          type: "chat",
+      apns: {
 
-          senderUid:
-            senderUid || "",
-
+        headers: {
+          "apns-priority": "10",
         },
 
-        android: {
-
-          priority: "high",
-
-          notification: {
-
-            channelId: "default",
-
+        payload: {
+          aps: {
             sound: "default",
-
+            "thread-id": "chat_" + senderUid,
           },
-
         },
 
-        apns: {
+      },
 
-          payload: {
-
-            aps: {
-              sound: "default",
-            },
-
-          },
-
-        },
-
-      });
-
+    });
 
   } catch (e) {
 
-    console.error(
-      "FCM ERROR:",
-      e.code || "unknown"
-    );
-
+    console.error("FCM ERROR:", e.code || "unknown");
 
     if (
-      e.code ===
-      "messaging/registration-token-not-registered"
+      e.code === "messaging/registration-token-not-registered" ||
+      e.code === "messaging/invalid-registration-token"
     ) {
 
       try {
@@ -775,12 +755,7 @@ async function sendPushNotification(
           .collection("users")
           .doc(targetUid)
           .update({
-
-            fcmToken:
-              admin.firestore
-                .FieldValue
-                .delete(),
-
+            fcmToken: admin.firestore.FieldValue.delete(),
           });
 
       } catch (_) {}
@@ -1204,6 +1179,92 @@ function getVideoDimensions(videoPath) {
   });
 }
 
+
+// -------------------------------------------------
+// AUTO COMPRESS (bada video -> ~75MB)
+// -------------------------------------------------
+// Agar video 100MB se bada ho to quality thodi kam karke use
+// lagbhag 75MB ke aas-paas la dete hain, taaki post ho sake.
+const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
+const TARGET_VIDEO_MB = 75;
+
+function getVideoDuration(videoPath) {
+  return new Promise((resolve) => {
+    const probe = spawn(ffmpegPath, ["-i", videoPath]);
+    let stderr = "";
+    probe.stderr.on("data", (c) => { stderr += c.toString(); });
+    probe.on("close", () => {
+      const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      if (m) {
+        resolve(
+          parseInt(m[1], 10) * 3600 +
+          parseInt(m[2], 10) * 60 +
+          parseFloat(m[3])
+        );
+      } else {
+        resolve(0);
+      }
+    });
+    probe.on("error", () => resolve(0));
+  });
+}
+
+async function compressVideoIfTooLarge(inputPath, targetMB = TARGET_VIDEO_MB) {
+  const stat = await fsp.stat(inputPath);
+  if (stat.size <= MAX_VIDEO_BYTES) {
+    return inputPath; // chhota hai, as-is
+  }
+
+  // Reel max 60 sec; duration na mile to 60 maan lo.
+  let duration = await getVideoDuration(inputPath);
+  if (!duration || duration > 60) duration = 60;
+
+  const audioBps = 128 * 1000;
+  const totalBps = (targetMB * 8 * 1024 * 1024) / duration;
+  const videoBps = Math.max(1500 * 1000, Math.floor(totalBps - audioBps));
+
+  const tempDir = path.join(__dirname, "temp");
+  await fsp.mkdir(tempDir, { recursive: true });
+  const outPath = path.join(tempDir, `${crypto.randomUUID()}-small.mp4`);
+
+  const args = [
+    "-y", "-i", inputPath,
+    "-t", String(duration),
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-b:v", String(videoBps),
+    "-maxrate", String(videoBps),
+    "-bufsize", String(videoBps * 2),
+    "-pix_fmt", "yuv420p",
+    "-c:a", "aac",
+    "-b:a", "128k",
+    "-movflags", "+faststart",
+    outPath,
+  ];
+
+  await new Promise((resolve, reject) => {
+    const child = spawn(ffmpegPath, args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (c) => {
+      stderr += c.toString();
+      if (stderr.length > 8000) stderr = stderr.slice(-8000);
+    });
+    child.on("error", reject);
+    child.on("close", (code) =>
+      code === 0 ? resolve() : reject(new Error(`compress failed (${code}): ${stderr}`))
+    );
+  });
+
+  console.log("COMPRESSED:", {
+    from: (stat.size / 1048576).toFixed(1) + "MB",
+    to: ((await fsp.stat(outPath)).size / 1048576).toFixed(1) + "MB",
+  });
+
+  // original bada file hata do
+  try { await fsp.unlink(inputPath); } catch (_) {}
+  return outPath;
+}
+
 function hexToAssColor(hex) {
   const clean = String(hex || "#FFFFFF")
     .replace(/^#/, "")
@@ -1274,11 +1335,14 @@ app.post(
 
       // Client sends the exact recorded video duration so the final mix
       // can never keep music running beyond the video.
-      const requestedVideoDuration = Number(req.body.videoDuration);
+      const rawRequestedDuration = Number(req.body.videoDuration);
+      // Reel max 60 sec. Thoda tolerance (61s) taaki 60.04s jaise
+      // clips skip na ho; output hamesha 60s par clamp hota hai.
       const hasRequestedVideoDuration =
-        Number.isFinite(requestedVideoDuration) &&
-        requestedVideoDuration > 0 &&
-        requestedVideoDuration <= 60;
+        Number.isFinite(rawRequestedDuration) &&
+        rawRequestedDuration > 0 &&
+        rawRequestedDuration <= 61;
+      const requestedVideoDuration = Math.min(rawRequestedDuration, 60);
 
       const hasVoice =
         Boolean(voicePath);
@@ -1666,6 +1730,9 @@ app.post(
         );
       }
 
+      // Final output 100MB se bada ho to ~75MB tak compress karo
+      outputPath = await compressVideoIfTooLarge(outputPath);
+
       // -------------------------------------------------
       // THUMBNAIL
       // -------------------------------------------------
@@ -1721,35 +1788,27 @@ app.post(
       const videoFileName =
         `${crypto.randomUUID()}.mp4`;
 
-      await r2.send(
-        new PutObjectCommand({
-          Bucket:
-            process.env.R2_BUCKET,
-          Key:
-            videoFileName,
-          Body:
-            fs.createReadStream(
-              outputPath
-            ),
-          ContentType:
-            "video/mp4",
-        })
-      );
-
-      await r2.send(
-        new PutObjectCommand({
-          Bucket:
-            process.env.R2_BUCKET,
-          Key:
-            thumbnailFileName,
-          Body:
-            fs.createReadStream(
-              thumbnailPath
-            ),
-          ContentType:
-            "image/jpeg",
-        })
-      );
+      // Video aur thumbnail EK SAATH upload (pehle ek-ek karke hota tha).
+      await Promise.all([
+        r2.send(
+          new PutObjectCommand({
+            Bucket: process.env.R2_BUCKET,
+            Key: videoFileName,
+            Body: fs.createReadStream(outputPath),
+            ContentType: "video/mp4",
+            CacheControl: "public, max-age=31536000, immutable",
+          })
+        ),
+        r2.send(
+          new PutObjectCommand({
+            Bucket: process.env.R2_BUCKET,
+            Key: thumbnailFileName,
+            Body: fs.createReadStream(thumbnailPath),
+            ContentType: "image/jpeg",
+            CacheControl: "public, max-age=31536000, immutable",
+          })
+        ),
+      ]);
 
       const videoUrl =
         `${process.env.R2_PUBLIC_URL}/${videoFileName}`;
@@ -1910,6 +1969,9 @@ app.post(
 
       videoPath =
         req.file.path;
+
+      // 100MB se bada ho to ~75MB tak compress karo
+      videoPath = await compressVideoIfTooLarge(videoPath);
 
 
       const fileId =
@@ -2209,48 +2271,47 @@ app.post(
           .get();
 
 
-      let senderName =
-        "New message";
-
+      let senderName = "Someone";
+      let senderImg = "";
 
       if (senderSnap.exists) {
 
-        const senderData =
-          senderSnap.data();
+        const senderData = senderSnap.data();
 
+        const nm =
+          (typeof senderData.name === "string" && senderData.name.trim()) ||
+          (typeof senderData.username === "string" && senderData.username.trim()) ||
+          "";
+
+        if (nm && nm.length <= 100) {
+          senderName = nm;
+        }
 
         if (
-          typeof senderData.name === "string" &&
-          senderData.name.length <= 100
+          typeof senderData.profileImg === "string" &&
+          senderData.profileImg.length < 400
         ) {
-
-          senderName =
-            senderData.name;
-
+          senderImg = senderData.profileImg;
         }
 
       }
 
-
-      await sendPushNotification(
-
-        receiverUid,
-
-        senderUid,
-
-        senderName,
-
-        message
-
-      );
-
-
-      return res.json({
-
+      // Response turant do, push peeche se jaye (chat ko slow na kare)
+      res.json({
         success: true,
-
       });
 
+      sendPushNotification(
+        receiverUid,
+        senderUid,
+        senderName + " ne message kiya",
+        message,
+        { senderName, senderImg }
+      ).catch((e) =>
+        console.error("PUSH SEND ERROR:", e.message)
+      );
+
+      return;
 
     } catch (e) {
 
@@ -2259,14 +2320,9 @@ app.post(
         e.message
       );
 
-
       return res.status(500).json({
-
         success: false,
-
-        error:
-          "Notification failed",
-
+        error: "Notification failed",
       });
 
     }
@@ -2375,7 +2431,7 @@ app.use(
         success: false,
 
         error:
-          "Video size must be less than 100MB",
+          "Video size must be less than 250MB",
 
       });
 
@@ -2614,6 +2670,9 @@ async function isAdminUser(decoded) {
 
 async function requireAdminDoc(req, res, next) {
   if (await isAdminUser(req.user)) return next();
+  console.warn(
+    `ADMIN DENIED: uid=${req.user && req.user.uid} ${req.method} ${req.path} (admins/${req.user && req.user.uid} doc me role:"admin" nahi hai)`
+  );
   return res.status(403).json({ success: false, error: "Admin access required" });
 }
 
@@ -2700,12 +2759,503 @@ app.post("/admin/add-stars", generalLimiter, verifyUser, requireAdminDoc, async 
   }
 });
 
-require("./payments")({
-  app,
-  db,
-  admin,
+// =====================================================
+// ADMIN: VIDEO / USER DELETE + BAN / UNBAN
+// =====================================================
+
+// R2 public URL se object key nikalo (videoUrl / thumbnailUrl -> key)
+function r2KeyFromUrl(url) {
+  if (typeof url !== "string" || !url) return null;
+  const base = String(process.env.R2_PUBLIC_URL || "").replace(/\/+$/, "");
+  if (!base || !url.startsWith(base + "/")) return null;
+  let key = url.slice(base.length + 1).split("?")[0];
+  try { key = decodeURIComponent(key); } catch (_) {}
+  if (!key || key.includes("..")) return null;
+  return key;
+}
+
+async function deleteR2Key(key) {
+  if (!key) return;
+  try {
+    await r2.send(
+      new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET, Key: key })
+    );
+  } catch (e) {
+    console.error("R2 DELETE ERROR:", key, e.message);
+  }
+}
+
+// Ek video ka poora data hatao: R2 files + comments + doc
+async function deleteVideoCompletely(videoId) {
+  const ref = db.collection("all_videos").doc(videoId);
+  const snap = await ref.get();
+  if (!snap.exists) return false;
+  const data = snap.data() || {};
+
+  const urls = [data.videoUrl, data.video, data.thumbnailUrl, data.thumbnail];
+  for (const u of urls) await deleteR2Key(r2KeyFromUrl(u));
+
+  try {
+    await db.recursiveDelete(ref); // comments / likes subcollections ke saath
+  } catch (e) {
+    console.error("RECURSIVE DELETE ERROR:", e.message);
+    await ref.delete();
+  }
+  return true;
+}
+
+app.post(
+  "/admin/delete-video",
+  generalLimiter,
   verifyUser,
-  rateLimit,
+  requireAdminDoc,
+  async (req, res) => {
+    try {
+      const videoId = String((req.body && req.body.videoId) || "");
+      console.log(`ADMIN DELETE VIDEO start: admin=${req.user.uid} videoId=${videoId} body=${JSON.stringify(req.body)}`);
+      if (!isValidUid(videoId)) {
+        console.warn("ADMIN DELETE VIDEO: invalid videoId");
+        return res.status(400).json({ success: false, error: "Invalid video" });
+      }
+      const ok = await deleteVideoCompletely(videoId);
+      if (!ok) {
+        console.warn("ADMIN DELETE VIDEO: video doc not found", videoId);
+        return res.status(404).json({ success: false, error: "Video not found" });
+      }
+      console.log("ADMIN DELETE VIDEO done:", videoId);
+      return res.json({ success: true });
+    } catch (e) {
+      console.error("ADMIN DELETE VIDEO ERROR:", e);
+      return res.status(500).json({ success: false, error: "Server error" });
+    }
+  }
+);
+
+app.post(
+  "/admin/delete-user",
+  generalLimiter,
+  verifyUser,
+  requireAdminDoc,
+  async (req, res) => {
+    try {
+      const uid = String((req.body && req.body.uid) || "");
+      console.log(`ADMIN DELETE USER start: admin=${req.user.uid} uid=${uid}`);
+      if (!isValidUid(uid)) {
+        console.warn("ADMIN DELETE USER: invalid uid");
+        return res.status(400).json({ success: false, error: "Invalid user" });
+      }
+      if (uid === req.user.uid) {
+        console.warn("ADMIN DELETE USER: self delete blocked");
+        return res
+          .status(400)
+          .json({ success: false, error: "Apna khud ka ID delete nahi kar sakte" });
+      }
+      const targetAdmin = await db.collection("admins").doc(uid).get();
+      if (targetAdmin.exists) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Admin ID delete nahi ho sakta" });
+      }
+
+      // 1) User ke saare videos
+      const vids = await db.collection("all_videos").where("userId", "==", uid).get();
+      for (const d of vids.docs) {
+        try { await deleteVideoCompletely(d.id); } catch (e) {
+          console.error("USER VIDEO DELETE ERROR:", d.id, e.message);
+        }
+      }
+
+      // 2) User ki stories (R2 media + doc)
+      const stories = await db.collection("stories").where("userId", "==", uid).get();
+      for (const d of stories.docs) {
+        const s = d.data() || {};
+        const key =
+          typeof s.storagePath === "string" && s.storagePath.startsWith(`stories/${uid}/`)
+            ? s.storagePath
+            : r2KeyFromUrl(s.mediaUrl);
+        await deleteR2Key(key);
+        await d.ref.delete().catch(() => {});
+      }
+
+      // 3) Profile + wallet + baaki user docs
+      await db.recursiveDelete(db.collection("users").doc(uid)).catch(async () => {
+        await db.collection("users").doc(uid).delete();
+      });
+      await db.recursiveDelete(db.collection("wallets").doc(uid)).catch(() => {});
+      await db.collection("userChats").doc(uid).delete().catch(() => {});
+
+      // 4) Login (Firebase Auth) delete
+      try {
+        await admin.auth().deleteUser(uid);
+      } catch (e) {
+        if (e.code !== "auth/user-not-found") throw e;
+      }
+
+      console.log("ADMIN DELETE USER done:", uid);
+      return res.json({ success: true });
+    } catch (e) {
+      console.error("ADMIN DELETE USER ERROR:", e);
+      return res.status(500).json({ success: false, error: "Server error" });
+    }
+  }
+);
+
+async function setUserBan(req, res, ban) {
+  try {
+    const uid = String((req.body && req.body.uid) || "");
+    if (!isValidUid(uid)) {
+      return res.status(400).json({ success: false, error: "Invalid user" });
+    }
+    if (ban && uid === req.user.uid) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Apne aap ko ban nahi kar sakte" });
+    }
+    await admin.auth().updateUser(uid, { disabled: ban });
+    if (ban) await admin.auth().revokeRefreshTokens(uid);
+    await db.collection("users").doc(uid).set({ banned: ban }, { merge: true });
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("ADMIN BAN ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+}
+
+app.post("/admin/ban-user", generalLimiter, verifyUser, requireAdminDoc, (req, res) =>
+  setUserBan(req, res, true)
+);
+app.post("/admin/unban-user", generalLimiter, verifyUser, requireAdminDoc, (req, res) =>
+  setUserBan(req, res, false)
+);
+
+// =====================================================
+// BD (Business Development) SYSTEM
+// - Admin kisi user ko BD bana sakta hai (bds/{uid} doc + users/{uid}.isBD)
+// - BD sirf apni banayi hui agencies (bdUserId == BD ka uid) manage kar sakta hai
+// - Saari checks server par hoti hain, client ke isBD flag par bharosa nahi
+// =====================================================
+
+async function requireBD(req, res, next) {
+  try {
+    const snap = await db.collection("bds").doc(req.user.uid).get();
+    if (snap.exists && snap.data().active !== false) return next();
+  } catch (_) {}
+  return res.status(403).json({ success: false, error: "BD access required" });
+}
+
+function cleanText(v, max) {
+  return String(v == null ? "" : v).trim().slice(0, max);
+}
+
+function cleanLogo(v) {
+  const s = String(v == null ? "" : v).trim();
+  if (!s) return "";
+  if (s.length > 600 || !/^https:\/\//i.test(s)) return null; // invalid
+  return s;
+}
+
+function agencyPublic(id, d) {
+  return {
+    id,
+    agencyName: d.agencyName || "",
+    ownerName: d.ownerName || "",
+    ownerUsername: d.ownerUsername || "",
+    ownerUserId: d.ownerUserId || "",
+    logo: d.logo || d.agencyLogo || "",
+    totalMembers: d.totalMembers || 0,
+    totalStars: d.totalStars || 0,
+    status: d.status || "active",
+  };
+}
+
+// agency BD ki apni hai ya nahi
+async function loadOwnAgency(req, res) {
+  const agencyId = String((req.body && req.body.agencyId) || "");
+  if (!isValidUid(agencyId)) {
+    res.status(400).json({ success: false, error: "Invalid agency" });
+    return null;
+  }
+  const ref = db.collection("agencies").doc(agencyId);
+  const snap = await ref.get();
+  if (!snap.exists || snap.data().bdUserId !== req.user.uid) {
+    res.status(404).json({ success: false, error: "Agency not found" });
+    return null;
+  }
+  return { ref, data: snap.data(), id: agencyId };
+}
+
+// ---------- ADMIN: BD manage ----------
+
+// body: { username }
+app.post("/admin/add-bd", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const username = cleanText(req.body && req.body.username, 80);
+    if (!username) {
+      return res.status(400).json({ success: false, error: "Username daalo" });
+    }
+    const q = await db.collection("users").where("username", "==", username).limit(1).get();
+    if (q.empty) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+    const userDoc = q.docs[0];
+    const u = userDoc.data();
+    const uid = userDoc.id;
+
+    const existing = await db.collection("bds").doc(uid).get();
+    if (existing.exists && existing.data().active !== false) {
+      return res.status(400).json({ success: false, error: "Ye user pehle se BD hai" });
+    }
+
+    await db.collection("bds").doc(uid).set(
+      {
+        uid,
+        username: u.username || username,
+        profileImg: u.profileImg || "",
+        active: true,
+        addedBy: req.user.uid,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    await db.collection("users").doc(uid).set({ isBD: true }, { merge: true });
+
+    return res.json({ success: true, uid });
+  } catch (e) {
+    console.error("ADMIN ADD BD ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// body: { uid }
+app.post("/admin/remove-bd", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const uid = String((req.body && req.body.uid) || "");
+    if (!isValidUid(uid)) {
+      return res.status(400).json({ success: false, error: "Invalid user" });
+    }
+    await db.collection("bds").doc(uid).delete();
+    await db.collection("users").doc(uid).set({ isBD: false }, { merge: true });
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("ADMIN REMOVE BD ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+app.post("/admin/list-bds", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const snap = await db.collection("bds").get();
+    const bds = await Promise.all(
+      snap.docs.map(async (d) => {
+        const ag = await db.collection("agencies").where("bdUserId", "==", d.id).get();
+        const x = d.data();
+        return {
+          uid: d.id,
+          username: x.username || "",
+          profileImg: x.profileImg || "",
+          agencyCount: ag.size,
+        };
+      })
+    );
+    bds.sort((a, b) => a.username.localeCompare(b.username));
+    return res.json({ success: true, bds });
+  } catch (e) {
+    console.error("ADMIN LIST BDS ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// ---------- BD: apni agencies ----------
+
+app.post("/bd/my-agencies", generalLimiter, verifyUser, requireBD, async (req, res) => {
+  try {
+    const snap = await db.collection("agencies").where("bdUserId", "==", req.user.uid).get();
+    const agencies = snap.docs
+      .map((d) => agencyPublic(d.id, d.data()))
+      .sort((a, b) => a.agencyName.localeCompare(b.agencyName));
+    return res.json({ success: true, agencies });
+  } catch (e) {
+    console.error("BD MY AGENCIES ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// body: { agencyName, ownerName, ownerUsername, logo(https url, optional) }
+app.post("/bd/create-agency", generalLimiter, verifyUser, requireBD, async (req, res) => {
+  try {
+    const agencyName = cleanText(req.body && req.body.agencyName, 80);
+    const ownerName = cleanText(req.body && req.body.ownerName, 80);
+    const ownerUsername = cleanText(req.body && req.body.ownerUsername, 80);
+    const logo = cleanLogo(req.body && req.body.logo);
+
+    if (!agencyName || !ownerName || !ownerUsername) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Agency name, owner name aur owner username zaroori hain" });
+    }
+    if (logo === null) {
+      return res.status(400).json({ success: false, error: "Invalid logo" });
+    }
+
+    const q = await db.collection("users").where("username", "==", ownerUsername).limit(1).get();
+    if (q.empty) {
+      return res.status(404).json({ success: false, error: "Owner Username Not Found" });
+    }
+    const ownerDoc = q.docs[0];
+    const ownerUserId = ownerDoc.id;
+
+    if (ownerDoc.data().agencyId) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Ye user pehle se kisi agency me hai" });
+    }
+
+    const bdSnap = await db.collection("bds").doc(req.user.uid).get();
+    const agencyRef = db.collection("agencies").doc();
+    const batch = db.batch();
+    batch.set(agencyRef, {
+      agencyName,
+      ownerName,
+      ownerUsername,
+      ownerUserId,
+      logo,
+      totalMembers: 0,
+      totalStars: 0,
+      status: "active",
+      bdUserId: req.user.uid,
+      bdUsername: (bdSnap.exists && bdSnap.data().username) || "",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    batch.set(
+      db.collection("users").doc(ownerUserId),
+      {
+        agencyId: agencyRef.id,
+        agencyName,
+        isAgencyOwner: true,
+        agencyApproved: true,
+      },
+      { merge: true }
+    );
+    await batch.commit();
+
+    return res.json({ success: true, agencyId: agencyRef.id });
+  } catch (e) {
+    console.error("BD CREATE AGENCY ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// body: { agencyId, agencyName, ownerName, logo }
+app.post("/bd/update-agency", generalLimiter, verifyUser, requireBD, async (req, res) => {
+  try {
+    const own = await loadOwnAgency(req, res);
+    if (!own) return;
+
+    const agencyName = cleanText(req.body && req.body.agencyName, 80);
+    const ownerName = cleanText(req.body && req.body.ownerName, 80);
+    const logo = cleanLogo(req.body && req.body.logo);
+    if (!agencyName || !ownerName) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Agency name aur owner name zaroori hain" });
+    }
+    if (logo === null) {
+      return res.status(400).json({ success: false, error: "Invalid logo" });
+    }
+
+    await own.ref.update({ agencyName, ownerName, logo, agencyLogo: logo });
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("BD UPDATE AGENCY ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// body: { agencyId, block: true/false }
+app.post("/bd/block-agency", generalLimiter, verifyUser, requireBD, async (req, res) => {
+  try {
+    const own = await loadOwnAgency(req, res);
+    if (!own) return;
+    const block = !!(req.body && req.body.block);
+    await own.ref.update({ status: block ? "blocked" : "active" });
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("BD BLOCK AGENCY ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// body: { agencyId }  -> agency + owner + saare hosts ke agency fields saaf
+app.post("/bd/delete-agency", generalLimiter, verifyUser, requireBD, async (req, res) => {
+  try {
+    const own = await loadOwnAgency(req, res);
+    if (!own) return;
+
+    const members = await db.collection("users").where("agencyId", "==", own.id).get();
+    const clear = {
+      agencyId: "",
+      agencyName: "",
+      agencyHost: false,
+      isAgencyOwner: false,
+      agencyApproved: false,
+    };
+    for (let i = 0; i < members.docs.length; i += 400) {
+      const batch = db.batch();
+      members.docs.slice(i, i + 400).forEach((m) => batch.set(m.ref, clear, { merge: true }));
+      await batch.commit();
+    }
+    await own.ref.delete();
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("BD DELETE AGENCY ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// body: { agencyId } -> agency ke hosts (View ke liye)
+app.post("/bd/agency-hosts", generalLimiter, verifyUser, requireBD, async (req, res) => {
+  try {
+    const own = await loadOwnAgency(req, res);
+    if (!own) return;
+    const snap = await db
+      .collection("users")
+      .where("agencyId", "==", own.id)
+      .where("agencyHost", "==", true)
+      .limit(200)
+      .get();
+    const hosts = snap.docs.map((d) => ({
+      id: d.id,
+      username: d.data().username || "",
+      profileImg: d.data().profileImg || "",
+    }));
+    return res.json({ success: true, hosts });
+  } catch (e) {
+    console.error("BD AGENCY HOSTS ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// payments module is optional: server still starts if ./payments.js is absent
+try {
+  require("./payments")({
+    app,
+    db,
+    admin,
+    verifyUser,
+    rateLimit,
+  });
+} catch (e) {
+  if (e && e.code === "MODULE_NOT_FOUND" && String(e.message).includes("payments")) {
+    console.warn("payments.js not found - payment routes disabled");
+  } else {
+    throw e;
+  }
+}
+
+// Unknown route -> JSON 404 (log ke saath)
+app.use((req, res) => {
+  console.warn(`404 NOT FOUND: ${req.method} ${req.path}`);
+  res.status(404).json({ success: false, error: "Route not found: " + req.path });
 });
 
 // =====================================================
