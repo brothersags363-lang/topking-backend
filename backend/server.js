@@ -267,7 +267,7 @@ const tokenLimiter = rateLimit({
 
   windowMs: 60 * 1000,
 
-  max: 30,
+  max: 120,
 
   standardHeaders: true,
 
@@ -2703,6 +2703,15 @@ app.post("/admin/add-stars", generalLimiter, verifyUser, requireAdminDoc, async 
     const amount = Number.isFinite(rawAmount) && rawAmount > 0 ? Math.min(rawAmount, 10000000) : 0;
     const note = String((req.body && req.body.note) || "").slice(0, 200);
 
+    // optional manual level (0-50). Na bheje to stars se auto lagega
+    let manualLevel = null;
+    if (req.body && req.body.level !== undefined && req.body.level !== null && req.body.level !== "") {
+      manualLevel = Math.floor(Number(req.body.level));
+      if (!Number.isFinite(manualLevel) || manualLevel < 0 || manualLevel > 50) {
+        return res.status(400).json({ success: false, error: "Invalid level" });
+      }
+    }
+
     if (!isValidUid(uid)) {
       return res.status(400).json({ success: false, error: "Invalid user" });
     }
@@ -2721,7 +2730,7 @@ app.post("/admin/add-stars", generalLimiter, verifyUser, requireAdminDoc, async 
       const wSnap = await tx.get(walletRef);
       const oldStars = wSnap.exists ? Number(wSnap.data().stars || 0) : 0;
       const total = oldStars + stars;
-      const level = starsToLevel(total);
+      const level = manualLevel === null ? starsToLevel(total) : manualLevel;
 
       if (wSnap.exists) {
         tx.update(walletRef, { stars: total, level });
@@ -2744,6 +2753,7 @@ app.post("/admin/add-stars", generalLimiter, verifyUser, requireAdminDoc, async 
         username: userSnap.data().username || "",
         stars,
         amount,
+        level,
         note,
         adminId: req.user.uid,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -2755,6 +2765,50 @@ app.post("/admin/add-stars", generalLimiter, verifyUser, requireAdminDoc, async 
     return res.json({ success: true, ...result });
   } catch (e) {
     console.error("ADD STARS ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// ADMIN: kisi user ko Verified tick do / hatao
+// body: { uid, verified: true|false, color: "white" | "yellow" }
+const VERIFIED_COLORS = ["white", "yellow"];
+app.post("/admin/set-verified", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const uid = String((req.body && req.body.uid) || "");
+    const verified = !!(req.body && req.body.verified);
+    const color = String((req.body && req.body.color) || "white");
+
+    if (!isValidUid(uid)) {
+      return res.status(400).json({ success: false, error: "Invalid user" });
+    }
+    if (verified && !VERIFIED_COLORS.includes(color)) {
+      return res.status(400).json({ success: false, error: "Invalid verified type" });
+    }
+
+    const userRef = db.collection("users").doc(uid);
+    const userSnap = await userRef.get();
+    if (!userSnap.exists) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+
+    await userRef.update(
+      verified
+        ? { verified: true, verifiedColor: color }
+        : { verified: false, verifiedColor: admin.firestore.FieldValue.delete() }
+    );
+
+    await db.collection("verifiedGrants").add({
+      userId: uid,
+      username: userSnap.data().username || "",
+      verified,
+      color: verified ? color : null,
+      adminId: req.user.uid,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return res.json({ success: true, verified, color: verified ? color : null });
+  } catch (e) {
+    console.error("SET VERIFIED ERROR:", e);
     return res.status(500).json({ success: false, error: "Server error" });
   }
 });
@@ -3212,6 +3266,85 @@ app.post("/bd/delete-agency", generalLimiter, verifyUser, requireBD, async (req,
   }
 });
 
+// ADMIN: kisi bhi agency ko delete karo (BD ne banayi ho ya admin ne).
+// body: { agencyId }  -> agency + owner + saare hosts ke agency fields saaf
+app.post("/admin/delete-agency", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const agencyId = String((req.body && req.body.agencyId) || "");
+    if (!isValidUid(agencyId)) {
+      return res.status(400).json({ success: false, error: "Invalid agency" });
+    }
+    const ref = db.collection("agencies").doc(agencyId);
+    const snap = await ref.get();
+    if (!snap.exists) {
+      return res.status(404).json({ success: false, error: "Agency not found" });
+    }
+
+    const members = await db.collection("users").where("agencyId", "==", agencyId).get();
+    const clear = {
+      agencyId: "",
+      agencyName: "",
+      agencyHost: false,
+      isAgencyOwner: false,
+      agencyApproved: false,
+    };
+    for (let i = 0; i < members.docs.length; i += 400) {
+      const batch = db.batch();
+      members.docs.slice(i, i + 400).forEach((m) => batch.set(m.ref, clear, { merge: true }));
+      await batch.commit();
+    }
+    await ref.delete();
+    console.log(`ADMIN DELETE AGENCY: admin=${req.user.uid} agency=${agencyId} bd=${snap.data().bdUserId || "-"}`);
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("ADMIN DELETE AGENCY ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// ADMIN: kisi bhi agency se kisi bhi host/user ko hatao.
+// body: { agencyId, userId }
+app.post("/admin/remove-agency-host", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const agencyId = String((req.body && req.body.agencyId) || "");
+    const userId = String((req.body && req.body.userId) || "");
+    if (!isValidUid(agencyId) || !isValidUid(userId)) {
+      return res.status(400).json({ success: false, error: "Invalid request" });
+    }
+    const agencyRef = db.collection("agencies").doc(agencyId);
+    const userRef = db.collection("users").doc(userId);
+
+    await db.runTransaction(async (tx) => {
+      const [aSnap, uSnap] = await Promise.all([tx.get(agencyRef), tx.get(userRef)]);
+      if (!aSnap.exists) throw Object.assign(new Error("Agency not found"), { code: 404 });
+      if (!uSnap.exists) throw Object.assign(new Error("User not found"), { code: 404 });
+      const u = uSnap.data();
+      if (u.agencyId !== agencyId) {
+        throw Object.assign(new Error("Ye user is agency me nahi hai"), { code: 400 });
+      }
+      if (aSnap.data().ownerUserId === userId) {
+        throw Object.assign(new Error("Owner ko host ki tarah nahi hata sakte. Agency delete karo."), { code: 400 });
+      }
+      tx.set(
+        userRef,
+        { agencyId: "", agencyName: "", agencyHost: false },
+        { merge: true }
+      );
+      const members = Math.max(0, (aSnap.data().totalMembers || 0) - 1);
+      tx.update(agencyRef, { totalMembers: members });
+    });
+
+    console.log(`ADMIN REMOVE HOST: admin=${req.user.uid} agency=${agencyId} user=${userId}`);
+    return res.json({ success: true });
+  } catch (e) {
+    if (e && e.code && Number.isInteger(e.code) && e.code >= 400 && e.code < 500) {
+      return res.status(e.code).json({ success: false, error: e.message });
+    }
+    console.error("ADMIN REMOVE HOST ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
 // body: { agencyId } -> agency ke hosts (View ke liye)
 app.post("/bd/agency-hosts", generalLimiter, verifyUser, requireBD, async (req, res) => {
   try {
@@ -3284,6 +3417,21 @@ const server =
     }
 
   );
+
+
+// =====================================================
+// KEEP WARM (Render free plan 15 min idle par so jata hai -> pehla
+// /token 30-50 sec leta tha = live me voice late / join atakta tha).
+// Server khud apne /health ko har 10 min hit karta hai.
+// Render par RENDER_EXTERNAL_URL khud set hota hai. Isse bhi pakka
+// karna ho to UptimeRobot se /health ko har 5 min ping karwao.
+// =====================================================
+const KEEP_WARM_URL = process.env.RENDER_EXTERNAL_URL || process.env.KEEP_WARM_URL;
+if (KEEP_WARM_URL && typeof fetch === "function") {
+  setInterval(() => {
+    fetch(`${KEEP_WARM_URL}/health`).catch(() => {});
+  }, 10 * 60 * 1000).unref();
+}
 
 
 // =====================================================
