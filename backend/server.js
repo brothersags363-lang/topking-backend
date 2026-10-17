@@ -3119,6 +3119,83 @@ app.post("/admin/list-bds", generalLimiter, verifyUser, requireAdminDoc, async (
   }
 });
 
+// =====================================================
+// ADMIN SPECIAL FRAMES
+// - Admin kisi bhi user ko special frame de sakta hai (users/{uid}.adminFrame)
+// - Ye purane level/agency/BD frames se alag hai, unhe nahi chhedta
+// =====================================================
+const ADMIN_FRAME_KEYS = ["gold_heart", "bd_helmet", "agency_ref", "agency_wings", "tk_team"];
+
+function userBrief(id, d) {
+  return {
+    uid: id,
+    username: d.username || "",
+    name: d.name || d.realName || "",
+    profileImg: d.profileImg || "",
+    level: d.level || 1,
+    adminFrame: d.adminFrame || null,
+  };
+}
+
+// body: { q }  -> username prefix search (max 15)
+app.post("/admin/search-users", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const q = cleanText(req.body && req.body.q, 40).toLowerCase().replace(/^@/, "");
+    if (q.length < 1) return res.json({ success: true, users: [] });
+    const snap = await db
+      .collection("users")
+      .where("username", ">=", q)
+      .where("username", "<=", q + "\uf8ff")
+      .orderBy("username")
+      .limit(15)
+      .get();
+    return res.json({ success: true, users: snap.docs.map((d) => userBrief(d.id, d.data())) });
+  } catch (e) {
+    console.error("ADMIN SEARCH USERS ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// body: { uid, frame }  frame = key ya null/"" (hatane ke liye)
+app.post("/admin/set-user-frame", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const uid = String((req.body && req.body.uid) || "");
+    const frame = req.body && req.body.frame ? String(req.body.frame) : null;
+    if (!isValidUid(uid)) {
+      return res.status(400).json({ success: false, error: "Invalid user" });
+    }
+    if (frame !== null && !ADMIN_FRAME_KEYS.includes(frame)) {
+      return res.status(400).json({ success: false, error: "Invalid frame" });
+    }
+    const ref = db.collection("users").doc(uid);
+    const snap = await ref.get();
+    if (!snap.exists) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+    await ref.set(
+      { adminFrame: frame === null ? admin.firestore.FieldValue.delete() : frame },
+      { merge: true }
+    );
+    return res.json({ success: true, uid, frame });
+  } catch (e) {
+    console.error("ADMIN SET FRAME ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// jin users ko abhi admin frame mila hua hai
+app.post("/admin/list-framed-users", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const snap = await db.collection("users").where("adminFrame", "in", ADMIN_FRAME_KEYS).limit(200).get();
+    const users = snap.docs.map((d) => userBrief(d.id, d.data()));
+    users.sort((a, b) => a.username.localeCompare(b.username));
+    return res.json({ success: true, users });
+  } catch (e) {
+    console.error("ADMIN LIST FRAMED ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
 // ---------- BD: apni agencies ----------
 
 app.post("/bd/my-agencies", generalLimiter, verifyUser, requireBD, async (req, res) => {
@@ -3366,6 +3443,261 @@ app.post("/bd/agency-hosts", generalLimiter, verifyUser, requireBD, async (req, 
     console.error("BD AGENCY HOSTS ERROR:", e);
     return res.status(500).json({ success: false, error: "Server error" });
   }
+});
+
+// =====================================================
+// AGENCY JOIN REQUESTS (user -> agency)
+// User agency profile par "Request to Join" dabata hai, agency owner
+// accept kare to user us agency ka host/member ban jata hai.
+// Collection: agencyJoinRequests/{agencyId}_{userId}
+// (agencyHostRequests = agency -> user invite, alag cheez hai)
+// =====================================================
+
+function joinReqId(agencyId, userId) {
+  return `${agencyId}_${userId}`;
+}
+
+function httpErr(code, message) {
+  return Object.assign(new Error(message), { code });
+}
+
+function sendJoinError(res, e, label) {
+  if (e && e.code && Number.isInteger(e.code) && e.code >= 400 && e.code < 500) {
+    return res.status(e.code).json({ success: false, error: e.message });
+  }
+  console.error(label, e);
+  return res.status(500).json({ success: false, error: "Server error" });
+}
+
+// body: { agencyId } -> is user ka is agency ke saath status
+app.post("/agency/join-status", generalLimiter, verifyUser, async (req, res) => {
+  try {
+    const agencyId = String((req.body && req.body.agencyId) || "");
+    if (!isValidUid(agencyId)) {
+      return res.status(400).json({ success: false, error: "Invalid agency" });
+    }
+    const uid = req.user.uid;
+    const [aSnap, uSnap, rSnap] = await Promise.all([
+      db.collection("agencies").doc(agencyId).get(),
+      db.collection("users").doc(uid).get(),
+      db.collection("agencyJoinRequests").doc(joinReqId(agencyId, uid)).get(),
+    ]);
+    if (!aSnap.exists) {
+      return res.status(404).json({ success: false, error: "Agency not found" });
+    }
+    const a = aSnap.data();
+    const u = uSnap.exists ? uSnap.data() : {};
+
+    let status = "none";
+    if (a.ownerUserId === uid) status = "owner";
+    else if (u.agencyId === agencyId) status = "member";
+    else if (u.agencyId) status = "in_other_agency";
+    else if (rSnap.exists && rSnap.data().status === "pending") status = "pending";
+
+    return res.json({ success: true, status, blocked: a.status === "blocked" });
+  } catch (e) {
+    return sendJoinError(res, e, "AGENCY JOIN STATUS ERROR:");
+  }
+});
+
+// body: { agencyId } -> join request bhejo
+app.post("/agency/request-join", generalLimiter, verifyUser, async (req, res) => {
+  try {
+    const agencyId = String((req.body && req.body.agencyId) || "");
+    if (!isValidUid(agencyId)) {
+      return res.status(400).json({ success: false, error: "Invalid agency" });
+    }
+    const uid = req.user.uid;
+    const agencyRef = db.collection("agencies").doc(agencyId);
+    const userRef = db.collection("users").doc(uid);
+    const reqRef = db.collection("agencyJoinRequests").doc(joinReqId(agencyId, uid));
+
+    await db.runTransaction(async (tx) => {
+      const [aSnap, uSnap, rSnap] = await Promise.all([
+        tx.get(agencyRef),
+        tx.get(userRef),
+        tx.get(reqRef),
+      ]);
+      if (!aSnap.exists) throw httpErr(404, "Agency not found");
+      if (!uSnap.exists) throw httpErr(404, "User not found");
+
+      const a = aSnap.data();
+      const u = uSnap.data();
+
+      if (a.status === "blocked") throw httpErr(400, "Ye agency abhi available nahi hai");
+      if (a.ownerUserId === uid) throw httpErr(400, "Ye aapki apni agency hai");
+      if (u.agencyId) throw httpErr(400, "Aap pehle se kisi agency me ho");
+      if (rSnap.exists && rSnap.data().status === "pending") {
+        throw httpErr(400, "Request pehle se bheji ja chuki hai");
+      }
+
+      // same doc id -> duplicate pending request kabhi nahi banegi
+      tx.set(reqRef, {
+        agencyId,
+        agencyName: a.agencyName || "",
+        agencyLogo: a.logo || a.agencyLogo || "",
+        ownerUserId: a.ownerUserId || "",
+        userId: uid,
+        username: u.username || "",
+        profileImg: u.profileImg || "",
+        status: "pending",
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    });
+
+    return res.json({ success: true });
+  } catch (e) {
+    return sendJoinError(res, e, "AGENCY REQUEST JOIN ERROR:");
+  }
+});
+
+// body: { agencyId } -> apni pending request wapas lo
+app.post("/agency/cancel-join-request", generalLimiter, verifyUser, async (req, res) => {
+  try {
+    const agencyId = String((req.body && req.body.agencyId) || "");
+    if (!isValidUid(agencyId)) {
+      return res.status(400).json({ success: false, error: "Invalid agency" });
+    }
+    const reqRef = db
+      .collection("agencyJoinRequests")
+      .doc(joinReqId(agencyId, req.user.uid));
+    const snap = await reqRef.get();
+    if (!snap.exists || snap.data().status !== "pending") {
+      return res.status(404).json({ success: false, error: "Pending request nahi mili" });
+    }
+    await reqRef.update({
+      status: "cancelled",
+      respondedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return res.json({ success: true });
+  } catch (e) {
+    return sendJoinError(res, e, "AGENCY CANCEL JOIN ERROR:");
+  }
+});
+
+// body: { agencyId } -> sirf agency owner: pending requests ki list
+app.post("/agency/join-requests", generalLimiter, verifyUser, async (req, res) => {
+  try {
+    const agencyId = String((req.body && req.body.agencyId) || "");
+    if (!isValidUid(agencyId)) {
+      return res.status(400).json({ success: false, error: "Invalid agency" });
+    }
+    const aSnap = await db.collection("agencies").doc(agencyId).get();
+    if (!aSnap.exists) {
+      return res.status(404).json({ success: false, error: "Agency not found" });
+    }
+    if (aSnap.data().ownerUserId !== req.user.uid) {
+      return res.status(403).json({ success: false, error: "Access denied" });
+    }
+
+    const snap = await db
+      .collection("agencyJoinRequests")
+      .where("agencyId", "==", agencyId)
+      .where("status", "==", "pending")
+      .limit(100)
+      .get();
+
+    const requests = snap.docs
+      .map((d) => {
+        const r = d.data();
+        const t = r.createdAt && r.createdAt.toMillis ? r.createdAt.toMillis() : 0;
+        return {
+          id: d.id,
+          userId: r.userId,
+          username: r.username || "",
+          profileImg: r.profileImg || "",
+          createdAt: t,
+        };
+      })
+      .sort((a, b) => b.createdAt - a.createdAt); // naye pehle (index ki zarurat nahi)
+
+    return res.json({ success: true, requests });
+  } catch (e) {
+    return sendJoinError(res, e, "AGENCY JOIN REQUESTS ERROR:");
+  }
+});
+
+// body: { requestId, accept: true/false } -> sirf agency owner
+app.post("/agency/respond-join-request", generalLimiter, verifyUser, async (req, res) => {
+  try {
+    const requestId = String((req.body && req.body.requestId) || "");
+    const accept = !!(req.body && req.body.accept === true);
+    if (!isValidUid(requestId)) {
+      return res.status(400).json({ success: false, error: "Invalid request" });
+    }
+
+    const reqRef = db.collection("agencyJoinRequests").doc(requestId);
+
+    const result = await db.runTransaction(async (tx) => {
+      const rSnap = await tx.get(reqRef);
+      if (!rSnap.exists) throw httpErr(404, "Request not found");
+      const r = rSnap.data();
+      if (r.status !== "pending") throw httpErr(400, "Ye request pehle hi handle ho chuki hai");
+
+      const agencyRef = db.collection("agencies").doc(r.agencyId);
+      const userRef = db.collection("users").doc(r.userId);
+      const [aSnap, uSnap] = await Promise.all([tx.get(agencyRef), tx.get(userRef)]);
+
+      if (!aSnap.exists) throw httpErr(404, "Agency not found");
+      const a = aSnap.data();
+      // owner check server par: koi aur kisi ki request accept nahi kar sakta
+      if (a.ownerUserId !== req.user.uid) throw httpErr(403, "Access denied");
+
+      const now = admin.firestore.FieldValue.serverTimestamp();
+
+      if (!accept) {
+        tx.update(reqRef, { status: "rejected", respondedAt: now });
+        return { joined: false };
+      }
+
+      if (a.status === "blocked") throw httpErr(400, "Agency blocked hai");
+      if (!uSnap.exists) throw httpErr(404, "User not found");
+
+      // user is beech kisi aur agency me chala gaya ho
+      if (uSnap.data().agencyId) {
+        tx.update(reqRef, { status: "cancelled", respondedAt: now });
+        return { joined: false, alreadyInAgency: true };
+      }
+
+      tx.set(
+        userRef,
+        {
+          agencyId: r.agencyId,
+          agencyName: a.agencyName || "",
+          agencyHost: true,
+        },
+        { merge: true }
+      );
+      tx.update(agencyRef, {
+        totalMembers: admin.firestore.FieldValue.increment(1),
+      });
+      tx.update(reqRef, { status: "accepted", respondedAt: now });
+      return { joined: true };
+    });
+
+    if (result.alreadyInAgency) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Ye user ab kisi aur agency me hai" });
+    }
+
+    console.log(
+      `AGENCY JOIN ${accept ? "ACCEPT" : "REJECT"}: owner=${req.user.uid} request=${requestId}`
+    );
+    return res.json({ success: true, joined: result.joined });
+  } catch (e) {
+    return sendJoinError(res, e, "AGENCY RESPOND JOIN ERROR:");
+  }
+});
+
+// Live/Gift reward (server-side). payments.js se PEHLE mount hota hai, isliye
+// agar payments.js me purana /reward/claim ho to bhi ye wala hi chalega.
+require("./rewards")({
+  app,
+  db,
+  admin,
+  verifyUser,
+  rateLimit,
 });
 
 // payments module is optional: server still starts if ./payments.js is absent
