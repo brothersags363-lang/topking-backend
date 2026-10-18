@@ -18,6 +18,7 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useLiveBanGuard } from '../utils/liveBan';
 
 let db = null;
 let auth = null;
@@ -43,6 +44,7 @@ const ROOM_NOTICE =
 
 export default function LiveStart() {
   const router = useRouter();
+  useLiveBanGuard(true);
 
   const [roomPhoto, setRoomPhoto] = useState(null);
   const [roomTitle, setRoomTitle] = useState('');

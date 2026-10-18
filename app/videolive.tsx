@@ -57,6 +57,7 @@ import { WebView } from "react-native-webview";
 import { gifts } from "../assets/giftsData";
 import { giftHtml } from "../assets/giftWeb";
 import { callApi } from "../utils/api";
+import { useLiveBanGuard } from "../utils/liveBan";
 import LevelFrame from "../components/LevelFrame";
 
 import {
@@ -715,6 +716,8 @@ export default function VideoLive() {
   // roomId always comes from the list / from livevideostart.tsx.
   const roomId = params?.id ? String(params.id) : null;
   const isHost = String(params?.role || "viewer") === "host";
+  // Official ne ban lagaya to turant bahar (host = live ban, viewer = entry ban)
+  useLiveBanGuard(isHost);
 
   // ---------- room doc ----------
   const [roomData, setRoomData] = useState<any>(null);

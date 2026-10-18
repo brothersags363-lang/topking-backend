@@ -83,6 +83,7 @@ import { giftHtml } from "../assets/giftWeb";
 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { callApi } from '../utils/api';
+import { useLiveBanGuard } from '../utils/liveBan';
 
 // import LottieView from "lottie-react-native";
 // import { gifts } from "../assets/giftsData";
@@ -1290,6 +1291,9 @@ useFocusEffect(
     return () => { isFocusedRef.current = false; };
   }, [])
 );
+
+// Official ne ban lagaya to turant bahar (host = live ban, baaki = entry ban)
+useLiveBanGuard(currentUserRole === 'host', handleRoomEnded);
 
 const [joined,setJoined]=useState(false);
 

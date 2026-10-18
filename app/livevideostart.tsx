@@ -32,6 +32,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useRouter } from "expo-router";
+import { useLiveBanGuard } from "../utils/liveBan";
 
 import { getAuth } from "firebase/auth";
 import {
@@ -64,6 +65,7 @@ const withTimeout = (p: Promise<any>, ms: number) =>
 
 export default function VideoLiveStart() {
   const router = useRouter();
+  useLiveBanGuard(true);
   const auth = getAuth();
 
   const [title, setTitle] = useState("");

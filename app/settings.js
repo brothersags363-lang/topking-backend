@@ -52,6 +52,7 @@ export default function Settings() {
   const router = useRouter();
 
   const [isBD, setIsBD] = useState(false);
+  const [isOfficial, setIsOfficial] = useState(false);
   const [hasAgency, setHasAgency] = useState(false);
   const [joinedAgency, setJoinedAgency] = useState(false);
 
@@ -64,6 +65,7 @@ export default function Settings() {
         if (!snap.exists()) return;
         const d = snap.data();
         setIsBD(d.isBD === true);
+        setIsOfficial(d.isOfficial === true);
         setHasAgency(d.agencyApproved === true);
         setJoinedAgency(!!d.agencyId);
       } catch (e) {}
@@ -217,6 +219,15 @@ export default function Settings() {
               iconColor="#FF9800"
               label="BD"
               onPress={() => router.push("../bd")}
+            />
+          )}
+
+          {isOfficial && (
+            <Row
+              icon="shield-checkmark-outline"
+              iconColor="#6c5ce7"
+              label="Official"
+              onPress={() => router.push("../officialPanel")}
             />
           )}
 

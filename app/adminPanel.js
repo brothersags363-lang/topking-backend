@@ -11,6 +11,22 @@ import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import useIsAdmin from "./useIsAdmin";
 
+// Saare buttons chhote, 2 column grid me. Route / rang pehle jaise hi hain.
+const ITEMS = [
+  { label: "Agency Panel", icon: "business", route: "/agencyPanel", bg: "#00BFFF", fg: "#fff" },
+  { label: "BD Panel", icon: "briefcase", route: "/bdPanel", bg: "#e67e22", fg: "#fff" },
+  { label: "Official", icon: "shield-checkmark", route: "/officialAdmin", bg: "#6c5ce7", fg: "#fff" },
+  { label: "Special Frames", icon: "color-palette", route: "/adminFrames", bg: "#c0392b", fg: "#fff" },
+  { label: "Agency Rewards", icon: "trophy", route: "/agencyRewards", bg: "#FFD700", fg: "#000" },
+  { label: "Add Stars", icon: "star", route: "/addStars", bg: "#FFD700", fg: "#000" },
+  { label: "Verified Tick", icon: "checkmark-circle", route: "/adminVerify", bg: "#2980b9", fg: "#fff" },
+  { label: "Withdrawals", icon: "wallet", route: "/withdrawals", bg: "#FFD700", fg: "#000" },
+  { label: "Feedback", icon: "chatbox-ellipses", route: "/feedbackAdmin", bg: "#FFD700", fg: "#000" },
+  { label: "Profile Details", icon: "people", route: "/profileDetails", bg: "#8e44ad", fg: "#fff" },
+  { label: "Reports", icon: "flag", route: "/reportsAdmin", bg: "#e74c3c", fg: "#fff" },
+  { label: "All Videos", icon: "videocam", route: "/adminVideos", bg: "#16a085", fg: "#fff" },
+];
+
 export default function AdminPanel() {
   const router = useRouter();
   const isAdmin = useIsAdmin();
@@ -21,17 +37,14 @@ export default function AdminPanel() {
       router.back();
       return true;
     };
-    const backHandler = BackHandler.addEventListener(
-      "hardwareBackPress",
-      backAction
-    );
+    const backHandler = BackHandler.addEventListener("hardwareBackPress", backAction);
     return () => backHandler.remove();
   }, [router]);
 
   if (!isAdmin) {
     return (
       <View style={styles.center}>
-        <Text style={{ color: "red", fontSize: 22 }}>
+        <Text style={{ color: "red", fontSize: 20 }}>
           {isAdmin === null ? "Checking..." : "Access Denied"}
         </Text>
       </View>
@@ -39,114 +52,30 @@ export default function AdminPanel() {
   }
 
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 30 }}>
       <Text style={styles.title}>Admin Panel</Text>
 
-      <TouchableOpacity
-        style={styles.agencyBtn}
-        onPress={() => router.push("/agencyPanel")}
-      >
-        <Text style={styles.agencyBtnText}>Agency Panel</Text>
-      </TouchableOpacity>
-
-      {/* NEW: BD Panel (user ko BD banao) */}
-      <TouchableOpacity
-        style={styles.bdBtn}
-        onPress={() => router.push("/bdPanel")}
-      >
-        <Ionicons name="briefcase" size={22} color="#fff" />
-        <Text style={styles.btnLabel}>BD Panel</Text>
-      </TouchableOpacity>
-
-      {/* NEW: Special Frames (kisi bhi user ko frame do) */}
-      <TouchableOpacity
-        style={styles.frameBtn}
-        onPress={() => router.push("/adminFrames")}
-      >
-        <Ionicons name="color-palette" size={22} color="#fff" />
-        <Text style={styles.btnLabel}>Special Frames</Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={styles.yellowBtn}
-        onPress={() => router.push("/agencyRewards")}
-      >
-        <Ionicons name="trophy" size={22} color="#000" />
-        <Text style={styles.yellowText}>Agency Rewards</Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={styles.yellowBtn}
-        onPress={() => router.push("/addStars")}
-      >
-        <Ionicons name="star" size={22} color="#000" />
-        <Text style={styles.yellowText}>Add Stars</Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={styles.verifyBtn}
-        onPress={() => router.push("/adminVerify")}
-      >
-        <Ionicons name="checkmark-circle" size={22} color="#fff" />
-        <Text style={styles.btnLabel}>Verified Tick</Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={styles.yellowBtn}
-        onPress={() => router.push("/withdrawals")}
-      >
-        <Ionicons name="wallet" size={22} color="#000" />
-        <Text style={styles.yellowText}>Withdrawal Requests</Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={styles.yellowBtn}
-        onPress={() => router.push("/feedbackAdmin")}
-      >
-        <Ionicons name="chatbox-ellipses" size={22} color="#000" />
-        <Text style={styles.yellowText}>Feedback</Text>
-      </TouchableOpacity>
-
-      {/* NEW: Profile Details */}
-      <TouchableOpacity
-        style={styles.profileBtn}
-        onPress={() => router.push("/profileDetails")}
-      >
-        <Ionicons name="people" size={22} color="#fff" />
-        <Text style={styles.btnLabel}>Profile Details</Text>
-      </TouchableOpacity>
-
-      {/* NEW: Reports (separate report system) */}
-      <TouchableOpacity
-        style={styles.reportBtn}
-        onPress={() => router.push("/reportsAdmin")}
-      >
-        <Ionicons name="flag" size={22} color="#fff" />
-        <Text style={styles.btnLabel}>Reports</Text>
-      </TouchableOpacity>
-      {/* NEW: All Videos (admin kisi ka bhi video delete kar sakta hai) */}
-      <TouchableOpacity
-        style={styles.videoBtn}
-        onPress={() => router.push("/adminVideos")}
-      >
-        <Ionicons name="videocam" size={22} color="#fff" />
-        <Text style={styles.btnLabel}>All Videos</Text>
-      </TouchableOpacity>
+      <View style={styles.grid}>
+        {ITEMS.map((it) => (
+          <TouchableOpacity
+            key={it.route}
+            style={[styles.btn, { backgroundColor: it.bg }]}
+            activeOpacity={0.8}
+            onPress={() => router.push(it.route)}
+          >
+            <Ionicons name={it.icon} size={16} color={it.fg} />
+            <Text style={[styles.label, { color: it.fg }]} numberOfLines={1}>
+              {it.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
     </ScrollView>
   );
 }
 
-const row = {
-  padding: 15,
-  borderRadius: 15,
-  flexDirection: "row",
-  justifyContent: "center",
-  alignItems: "center",
-  marginBottom: 20,
-};
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#000", padding: 15 },
+  container: { flex: 1, backgroundColor: "#000", paddingHorizontal: 12, paddingTop: 10 },
   center: {
     flex: 1,
     backgroundColor: "#000",
@@ -155,20 +84,21 @@ const styles = StyleSheet.create({
   },
   title: {
     color: "#fff",
-    fontSize: 25,
+    fontSize: 20,
     fontWeight: "bold",
     textAlign: "center",
-    marginBottom: 20,
+    marginBottom: 14,
   },
-  agencyBtn: { ...row, backgroundColor: "#00BFFF" },
-  agencyBtnText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
-  yellowBtn: { ...row, backgroundColor: "#FFD700" },
-  yellowText: { color: "#000", fontSize: 18, fontWeight: "bold", marginLeft: 10 },
-  profileBtn: { ...row, backgroundColor: "#8e44ad" },
-  reportBtn: { ...row, backgroundColor: "#e74c3c" },
-  videoBtn: { ...row, backgroundColor: "#16a085" },
-  bdBtn: { ...row, backgroundColor: "#e67e22" },
-  frameBtn: { ...row, backgroundColor: "#c0392b" },
-  verifyBtn: { ...row, backgroundColor: "#2980b9" },
-  btnLabel: { color: "#fff", fontSize: 18, fontWeight: "bold", marginLeft: 10 },
+  grid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
+  btn: {
+    width: "48.5%",
+    paddingVertical: 9,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  label: { fontSize: 13, fontWeight: "bold", marginLeft: 6 },
 });
