@@ -168,7 +168,7 @@ const [loadingButton, setLoadingButton] = useState(null);
       let finalCover = cloudUrl || hostAvatar;
 
       const initialSeatsObject = {};
-      for (let i = 1; i <= 10; i++) {
+      for (let i = 1; i <= 14; i++) {
         initialSeatsObject[`seat_${i}`] = {
           userId: i === 1 ? currentUid : null,
           userName: i === 1 ? hostName : null,
@@ -193,7 +193,7 @@ const [loadingButton, setLoadingButton] = useState(null);
         // fields on this document — keeps this doc small and cheap to
         // sync at 200-300 concurrent viewers. See LiveRoom.js.
         invitationIncoming: null, 
-        seatsCount: 10,
+        seatCount: 8,
         seatsData: initialSeatsObject, 
         roomCover: finalCover, 
         createdAt: Date.now()

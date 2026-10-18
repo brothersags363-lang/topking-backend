@@ -13,7 +13,10 @@ ScrollView,
 Modal,
 FlatList,
 ActivityIndicator,
+BackHandler,
 } from "react-native";
+
+import { useRouter } from "expo-router";
 
 import { auth, db } from "./firebaseConfig";
 
@@ -38,11 +41,29 @@ import {
 
 export default function Agency(){
 
+const router = useRouter();
+
+// Phone ka back button: profile pe wapas jao.
+// (Profile tab ka apna handler "/" pe bhejta hai, isliye yaha alag handler zaroori hai)
+// NOTE: ye early return (if(!agency) return null) se pehle hona chahiye.
+useEffect(() => {
+  const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+    if (router.canGoBack()) router.back();
+    else router.replace("/(tabs)/profile");
+    return true;
+  });
+  return () => sub.remove();
+}, [router]);
+
 const [agency,setAgency]=useState(null);
 
 const [hosts,setHosts]=useState([]);
 
 const [loading, setLoading] = useState(true);
+
+const [newAgencyName,setNewAgencyName]=useState("");
+const [hostUsername,setHostUsername]=useState("");
+const [hostVisible,setHostVisible]=useState(false);
 
 
 const getLevelTheme = (level) => {

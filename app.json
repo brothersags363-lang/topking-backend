@@ -30,6 +30,19 @@
 
       "predictiveBackGestureEnabled": false,
 
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            { "scheme": "https", "host": "topking.app", "pathPrefix": "/profile" },
+            { "scheme": "https", "host": "topking.app", "pathPrefix": "/video" },
+            { "scheme": "https", "host": "topking.app", "pathPrefix": "/live" }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ],
+
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
@@ -74,6 +87,13 @@
 
       "expo-web-browser",
       "@react-native-google-signin/google-signin",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow Top King to access your microphone."
+        }
+      ],
+
       "expo-video",
       "expo-asset",
       "expo-font",

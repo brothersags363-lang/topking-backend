@@ -12,7 +12,6 @@ import {
   Dimensions,
   Platform,
   StatusBar,
-  Image,
   BackHandler,
   Modal,
   Animated,
@@ -21,6 +20,7 @@ import {
   Keyboard,
   FlatList,
 } from 'react-native';
+import Image from '../../components/FastImage';
 
 
 import {

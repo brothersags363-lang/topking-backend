@@ -26,7 +26,6 @@ import {
   TouchableOpacity,
   TextInput,
   FlatList,
-  Image,
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
@@ -56,6 +55,8 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
 import { auth, db } from "./firebaseConfig";
+import { callApi } from "../utils/api";
+import Image from "../components/FastImage";
 
 import {
   collection,
@@ -1450,16 +1451,10 @@ export default function ChatScreen() {
         ]);
 
         // Best-effort push notification - failure here shouldn't matter
-        fetch("https://topking-backend.onrender.com/send-message-notification", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            receiverUid: userId,
-            senderUid: currentUid,
-            senderName: myData?.username || currentUser?.displayName || "User",
-            message: outgoingText,
-          }),
-        }).catch((e) => console.log(e));
+        callApi("/send-message-notification", {
+          receiverUid: userId,
+          message: outgoingText,
+        }).catch((e) => console.log("PUSH ERROR =", e?.message));
       } catch (err) {
         console.log("SEND ERROR =", err);
         if (firstClaimed) releaseFirstClaim();
@@ -1788,16 +1783,10 @@ export default function ChatScreen() {
         ),
       ]);
 
-      fetch("https://topking-backend.onrender.com/send-message-notification", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      callApi("/send-message-notification", {
           receiverUid: userId,
-          senderUid: currentUid,
-          senderName: myData?.username || currentUser?.displayName || "User",
           message: label,
-        }),
-      }).catch(() => {});
+        }).catch((e) => console.log("PUSH ERROR =", e?.message));
 
       setUploads((prev) => prev.filter((u) => u.id !== localId));
     } catch (err) {

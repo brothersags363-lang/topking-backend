@@ -30,7 +30,7 @@ import {
 } from "firebase/firestore";
 import { useRouter } from "expo-router";
 import { db, auth } from "./firebaseConfig";
-import { callApi } from "./api";
+import { callApi } from "../utils/api";
 
 export default function Reward() {
 const router = useRouter();
@@ -54,6 +54,8 @@ const [lastLiveClaimDate, setLastLiveClaimDate] = useState("");
 
 const [lastGiftClaimDate, setLastGiftClaimDate] = useState("");
 
+const [claiming, setClaiming] = useState(false);
+
 
 // Mobile hardware back button
 useEffect(() => {
@@ -76,7 +78,7 @@ useEffect(() => {
 
 const liveCompleted = liveMinutes >= 120;
 
-const viewerCompleted = viewers >= 50;
+const viewerCompleted = viewers >= 5;
 
 const giftCompleted = dailyGifts >= 6500;
 
@@ -99,12 +101,11 @@ timeZone:"Asia/Kolkata"
 const checkDailyReset = async()=>{};
 
 
-// 2 hour + 50 viewers reward
+// 2 hour + 5 unique viewers reward (final check server karta hai)
 
 const canClaimLiveReward =
 liveCompleted &&
 viewerCompleted &&
-dailyGifts >= 1000 &&
 !liveRewardClaimed;
 
 
@@ -119,6 +120,9 @@ giftCompleted &&
 useEffect(() => {
 
 checkDailyReset();
+
+// gifts ka aaj ka hisaab server se sync (read-only jaisa, client kuch nahi likhta)
+callApi("/reward/status",{}).catch(()=>{});
 
 const uid = auth.currentUser?.uid;
 
@@ -199,6 +203,10 @@ return;
 
 }
 
+if(claiming) return;
+
+setClaiming(true);
+
 const res = await callApi("/reward/claim",{ type:"live" });
 
 Alert.alert(
@@ -211,6 +219,10 @@ Alert.alert(
 console.log(error);
 
 Alert.alert("Reward", error.message || "Could not claim reward");
+
+}finally{
+
+setClaiming(false);
 
 }
 
@@ -236,6 +248,10 @@ return;
 
 }
 
+if(claiming) return;
+
+setClaiming(true);
+
 const res = await callApi("/reward/claim",{ type:"gift" });
 
 Alert.alert(
@@ -248,6 +264,10 @@ Alert.alert(
 console.log(error);
 
 Alert.alert("Reward", error.message || "Could not claim reward");
+
+}finally{
+
+setClaiming(false);
 
 }
 
@@ -341,7 +361,7 @@ width:`${Math.min(
 
 <Text style={styles.progressText}>
 
-{liveMinutes} / 120 Minutes
+{Math.min(liveMinutes,120)} / 120 Minutes
 
 </Text>
 
@@ -352,7 +372,7 @@ liveCompleted
 ?
 "✅ Completed"
 :
-`${120-liveMinutes} Minutes Left`
+`${Math.max(0,120-liveMinutes)} Minutes Left`
 }
 
 </Text>
@@ -373,7 +393,7 @@ color="#00D2FF"
 />
 
 <Text style={styles.cardTitle}>
-50 Unique Viewers
+5 Unique Viewers
 </Text>
 
 </View>
@@ -385,7 +405,7 @@ style={[
 styles.progressFill,
 {
 width:`${Math.min(
-(viewers/50)*100,
+(viewers/5)*100,
 100
 )}%`
 }
@@ -396,7 +416,7 @@ width:`${Math.min(
 
 <Text style={styles.progressText}>
 
-{viewers} / 50 Viewers
+{Math.min(viewers,5)} / 5 Viewers
 
 </Text>
 
@@ -407,7 +427,7 @@ viewerCompleted
 ?
 "✅ Completed"
 :
-`${50-viewers} More Needed`
+`${Math.max(0,5-viewers)} More Needed`
 }
 
 </Text>
@@ -451,7 +471,7 @@ width:`${Math.min(
 
 <Text style={styles.progressText}>
 
-{dailyGifts} / 6500 Stars
+{Math.min(dailyGifts,6500)} / 6500 Stars
 
 </Text>
 
@@ -462,7 +482,7 @@ giftCompleted
 ?
 "✅ Completed"
 :
-`${6500-dailyGifts} Stars Left`
+`${Math.max(0,6500-dailyGifts)} Stars Left`
 }
 
 </Text>
@@ -486,12 +506,12 @@ style={styles.rewardCard}
 
 
 <Text style={styles.rewardSmall}>
-Complete 2 Hours Live + 50 Unique Viewers + 1000 Gifts
+Complete 2 Hours Live + 5 Unique Viewers
 </Text>
 
 
 <Text style={styles.rewardValue}>
-⭐ 400 Stars
+⭐ 300 Stars
 </Text>
 
 
@@ -509,7 +529,7 @@ Complete 6500 Gifts in 1 Day
 
 
 <Text style={styles.rewardValue}>
-⭐ 250 Stars
+⭐ 180 Stars
 </Text>
 
 
@@ -519,7 +539,7 @@ Complete 6500 Gifts in 1 Day
 
 <TouchableOpacity
 
-disabled={!canClaimLiveReward}
+disabled={!canClaimLiveReward || claiming}
 
 onPress={claimLiveReward}
 
@@ -548,7 +568,7 @@ liveRewardClaimed
 
 :
 
-"Claim 2H + 50 View + 1000 Gift Reward"
+"Claim 2H + 5 Viewers Reward (300 Stars)"
 
 }
 
@@ -561,7 +581,7 @@ liveRewardClaimed
 
 <TouchableOpacity
 
-disabled={!canClaimGiftReward}
+disabled={!canClaimGiftReward || claiming}
 
 onPress={claimGiftReward}
 
@@ -590,7 +610,7 @@ giftRewardClaimed
 
 :
 
-"Claim 6500 Gift Reward"
+"Claim 6500 Gift Reward (180 Stars)"
 
 }
 

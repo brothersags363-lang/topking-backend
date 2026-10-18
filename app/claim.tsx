@@ -2,9 +2,16 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { doc, onSnapshot } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
+import mobileAds, {
+  AdEventType,
+  RewardedAd,
+  RewardedAdEventType,
+  TestIds,
+} from 'react-native-google-mobile-ads';
 import {
   ActivityIndicator,
   Alert,
+  BackHandler,
   Platform,
   SafeAreaView,
   ScrollView,
@@ -16,7 +23,7 @@ import {
 } from 'react-native';
 
 import { auth, db } from './firebaseConfig';
-import { callApi } from './api';
+import { callApi } from '../utils/api';
 
 // ==========================================
 // REWARD SETTINGS  (yahin se change kar sakte ho)
@@ -31,34 +38,66 @@ const STAR_FIELD = 'stars';
 // ==========================================
 // ADS SYSTEM  (yahan apna ad SDK lagana)
 // ==========================================
-// Jab tak ads nahi lage hain, ADS_ENABLED = false rakho.
-// false hone par claim NAHI hoga (button dabane par sirf message aayega).
-// Ads lagane ke baad ise true kar dena aur neeche TODO block bhar dena.
-const ADS_ENABLED = false;
+// ADS_ENABLED = false karoge to claim band ho jayega (sirf message aayega).
+const ADS_ENABLED = true;
+
+// Debug build me Google ka test ad aayega. Release build me tumhara real
+// Rewarded Ad Unit ID chalega.
+// TODO: neeche XXXXXXXXXX ki jagah AdMob -> Ad units -> Rewarded wali ID daalo
+// (format: ca-app-pub-7990312046971352/1234567890)
+const AD_UNIT_ID = __DEV__
+  ? TestIds.REWARDED
+  : 'ca-app-pub-7990312046971352/XXXXXXXXXX';
 
 // Ye function ad dikhata hai aur sirf tab `true` return karta hai
 // jab user ne ad POORA dekh liya ho (reward earn hua ho).
 async function showRewardedAd(): Promise<boolean> {
   if (!ADS_ENABLED) return false;
 
-  // TODO: yahan apna real rewarded ad lagao. Example (AdMob,
-  // react-native-google-mobile-ads):
-  //
-  // return new Promise((resolve) => {
-  //   const ad = RewardedAd.createForAdRequest(AD_UNIT_ID);
-  //   let earned = false;
-  //   ad.addAdEventListener(RewardedAdEventType.LOADED, () => ad.show());
-  //   ad.addAdEventListener(RewardedAdEventType.EARNED_REWARD, () => { earned = true; });
-  //   ad.addAdEventListener(AdEventType.CLOSED, () => resolve(earned));
-  //   ad.addAdEventListener(AdEventType.ERROR, () => resolve(false));
-  //   ad.load();
-  // });
+  return new Promise<boolean>((resolve) => {
+    const ad = RewardedAd.createForAdRequest(AD_UNIT_ID);
+    let earned = false;
+    let done = false;
+    const unsubs: Array<() => void> = [];
 
-  return false;
+    const finish = (result: boolean) => {
+      if (done) return;
+      done = true;
+      unsubs.forEach((u) => u());
+      resolve(result);
+    };
+
+    unsubs.push(
+      ad.addAdEventListener(RewardedAdEventType.LOADED, () => ad.show()),
+      ad.addAdEventListener(RewardedAdEventType.EARNED_REWARD, () => {
+        earned = true;
+      }),
+      ad.addAdEventListener(AdEventType.CLOSED, () => finish(earned)),
+      ad.addAdEventListener(AdEventType.ERROR, () => finish(false))
+    );
+
+    ad.load();
+  });
 }
 
 export default function ClaimScreen() {
   const router = useRouter();
+
+  // Phone ka back button: profile pe wapas jao.
+  // (Profile tab ka apna handler "/" pe bhejta hai, isliye yaha alag handler zaroori hai)
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (router.canGoBack()) router.back();
+      else router.replace('/(tabs)/profile');
+      return true;
+    });
+    return () => sub.remove();
+  }, [router]);
+
+  // AdMob SDK initialize
+  useEffect(() => {
+    mobileAds().initialize().catch(() => {});
+  }, []);
 
   const [balance, setBalance] = useState<number | null>(null);
   const [busy, setBusy] = useState<null | 'one' | 'two'>(null);

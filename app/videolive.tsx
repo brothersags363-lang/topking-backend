@@ -41,12 +41,14 @@ import {
   ActivityIndicator,
   Share,
   ScrollView,
+  AppState,
   Alert,
   Switch,
   TouchableWithoutFeedback,
 } from "react-native";
 
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -54,6 +56,8 @@ import LottieView from "lottie-react-native";
 import { WebView } from "react-native-webview";
 import { gifts } from "../assets/giftsData";
 import { giftHtml } from "../assets/giftWeb";
+import { callApi } from "../utils/api";
+import LevelFrame from "../components/LevelFrame";
 
 import {
   doc,
@@ -95,7 +99,7 @@ try {
 
 const { width, height } = Dimensions.get("window");
 
-const AGORA_APP_ID = "4e23c17b272f4a1c920c214be58486f4";
+const AGORA_APP_ID = "f75d0020d44345edb12bbf6847ef3d38";
 const TOKEN_ENDPOINT = "https://topking-backend.onrender.com/token";
 const STABLE_AVATAR = "https://avatar.iran.liara.run/public/65";
 
@@ -430,8 +434,8 @@ const ChatItem = memo(({ chat, onUser }: any) => {
       <View style={styles.sysRow}>
         <TouchableOpacity activeOpacity={0.8} onPress={openUser}>
           <Image source={{ uri: chat.userImg || STABLE_AVATAR }} style={styles.sysAva} />
-          {chat.level >= 10 && getLevelFrame(chat.level) && (
-            <Image source={getLevelFrame(chat.level)} style={styles.sysFrame} />
+          {(chat.level >= 10 || chat.special || !!chat.senderId) && (
+            <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated={false} style={styles.sysFrame} />
           )}
         </TouchableOpacity>
         <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", marginLeft: 6 }}>
@@ -491,8 +495,8 @@ const ChatItem = memo(({ chat, onUser }: any) => {
         style={{ width: 38, height: 38, justifyContent: "center", alignItems: "center" }}
       >
         <Image source={{ uri: chat.userImg || STABLE_AVATAR }} style={styles.chatAva} />
-        {chat.level >= 10 && getLevelFrame(chat.level) && (
-          <Image source={getLevelFrame(chat.level)} style={styles.chatFrame} />
+        {(chat.level >= 10 || chat.special || !!chat.senderId) && (
+          <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated={false} style={styles.chatFrame} />
         )}
       </TouchableOpacity>
       <View style={styles.chatContent}>
@@ -527,7 +531,8 @@ const ChatItem = memo(({ chat, onUser }: any) => {
       </View>
     </View>
   );
-});
+}, (prev: any, next: any) => prev.chat.id === next.chat.id && prev.onUser === next.onUser);
+// SMOOTH: chat message kabhi edit nahi hota -> sirf id compare, purani rows re-render nahi.
 
 const chatKeyExtractor = (item: any, index: number) => item.id || String(index);
 
@@ -626,10 +631,8 @@ const PkTimerPill = memo(({ endAt }: { endAt: number }) => {
       pointerEvents="none"
       style={[styles.pkTimerPill, urgent && { backgroundColor: "rgba(220,38,38,0.95)" }, { transform: [{ scale: pulse }] }]}
     >
-      <Text style={styles.pkTimerTxt}>
-        {urgent ? "🔥 " : "⏱ "}
-        {fmtClock(left)}
-      </Text>
+      <Text style={styles.pkTimerPk}>PK</Text>
+      <Text style={styles.pkTimerTxt}>{fmtClock(left)}</Text>
     </Animated.View>
   );
 });
@@ -662,7 +665,7 @@ const PkVsIntro = memo(({ leftName, leftImg, rightName, rightImg }: any) => {
   return (
     <Animated.View pointerEvents="none" style={[styles.pkIntroWrap, { opacity: fade }]}>
       <Animated.View style={[styles.pkIntroSide, { transform: [{ translateX: lx }] }]}>
-        <Image source={{ uri: leftImg || STABLE_AVATAR }} style={[styles.pkIntroAva, { borderColor: "#FF3D71" }]} />
+        <Image source={{ uri: leftImg || STABLE_AVATAR }} style={[styles.pkIntroAva, { borderColor: "#1E90FF" }]} />
         <Text numberOfLines={1} style={styles.pkIntroName}>
           {leftName}
         </Text>
@@ -673,7 +676,7 @@ const PkVsIntro = memo(({ leftName, leftImg, rightName, rightImg }: any) => {
       </Animated.View>
 
       <Animated.View style={[styles.pkIntroSide, { transform: [{ translateX: rx }] }]}>
-        <Image source={{ uri: rightImg || STABLE_AVATAR }} style={[styles.pkIntroAva, { borderColor: "#2D9CFF" }]} />
+        <Image source={{ uri: rightImg || STABLE_AVATAR }} style={[styles.pkIntroAva, { borderColor: "#FF2D95" }]} />
         <Text numberOfLines={1} style={styles.pkIntroName}>
           {rightName}
         </Text>
@@ -695,7 +698,7 @@ const PkSupporters = memo(({ gifters, side }: any) => {
         <Image
           key={g.uid}
           source={{ uri: g.img || STABLE_AVATAR }}
-          style={[styles.pkSupAva, { marginLeft: i === 0 ? 0 : -8, borderColor: ["#FFD700", "#C0C0C0", "#CD7F32"][i] }]}
+          style={[styles.pkSupAva, { marginLeft: i === 0 ? 0 : -6, borderColor: ["#FFD700", "#C0C0C0", "#CD7F32"][i] }]}
         />
       ))}
     </View>
@@ -803,6 +806,7 @@ export default function VideoLive() {
 
   const chatListRef = useRef<FlatList>(null);
   const heartbeatRef = useRef<any>(null);
+  const rewardPingRef = useRef<any>(null);
 
   // ---------- PREMIUM: follow / likes / viewers / moderation / summary ----------
   const [isFollowing, setIsFollowing] = useState(false);
@@ -1048,8 +1052,17 @@ export default function VideoLive() {
       updateDoc(roomRef, { lastHeartbeat: serverTimestamp() }).catch(() => {});
     }, HEARTBEAT_INTERVAL);
 
+    // Live reward: host ka time server gintta hai (30s ping)
+    const rewardPing = () => {
+      if (AppState.currentState !== "active") return;
+      callApi("/reward/live-ping", { roomId }).catch(() => {});
+    };
+    rewardPing();
+    rewardPingRef.current = setInterval(rewardPing, 30000);
+
     return () => {
       clearInterval(heartbeatRef.current);
+      clearInterval(rewardPingRef.current);
       // Host leaving → live is really over, take it out of the list.
       updateDoc(roomRef, {
         status: "ended",
@@ -1313,11 +1326,45 @@ export default function VideoLive() {
     };
   }, []);
 
-  // ---------- auto-scroll chat ----------
+  // ---------- SCREEN-ON FIX ----------
+  // Pehle yahan keep-awake tha hi nahi -> phone ka screen timeout (~10-30s)
+  // live ke beech screen band kar deta tha. Ab screen khuli rehti hai,
+  // har 15s me dobara activate (Android me pehli call fail ho sakti hai).
+  const keepAwakeOn = useCallback(() => {
+    activateKeepAwakeAsync("video-live").catch(() => {
+      setTimeout(() => {
+        activateKeepAwakeAsync("video-live").catch(() => {});
+      }, 1500);
+    });
+  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      keepAwakeOn();
+      const t = setInterval(keepAwakeOn, 15000);
+      return () => {
+        clearInterval(t);
+        try {
+          deactivateKeepAwake("video-live");
+        } catch (_) {}
+      };
+    }, [keepAwakeOn])
+  );
   useEffect(() => {
-    if (!chatMessages.length) return;
-    requestAnimationFrame(() => chatListRef.current?.scrollToEnd({ animated: true }));
-  }, [chatMessages.length]);
+    keepAwakeOn();
+    const sub = AppState.addEventListener("change", (st) => {
+      if (st === "active") keepAwakeOn();
+    });
+    return () => {
+      sub.remove();
+      try {
+        deactivateKeepAwake("video-live");
+      } catch (_) {}
+    };
+  }, [keepAwakeOn]);
+
+  // SMOOTH: chat list ab inverted hai (newest neeche, khud bottom se start) ->
+  // har message par scrollToEnd ki zarurat nahi, scroll jerk khatam.
+  const chatListData = React.useMemo(() => chatMessages.slice().reverse(), [chatMessages]);
 
   // ============================================================
   // PK
@@ -2682,9 +2729,9 @@ export default function VideoLive() {
   const showRemoteVideo = !isHost && remoteUsers.length > 0;
 
   const pkPanelW = width / 2;
-  const pkPanelH = pkPanelW * 1.3;
+  const pkPanelH = pkPanelW * 1.54;
   const pkBarTop = 112;
-  const pkPanelTop = pkBarTop + 30;
+  const pkPanelTop = pkBarTop + 16;
 
   const myResult = pk?.result; // "win" | "lose" | "draw" — from THIS room's point of view
   const oppResult = myResult === "win" ? "lose" : myResult === "lose" ? "win" : myResult;
@@ -2750,7 +2797,18 @@ export default function VideoLive() {
         </>
       ) : (
         <>
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: "#0A0B14" }]} />
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: "#1A1444" }]} />
+          <View
+            pointerEvents="none"
+            style={{
+              position: "absolute",
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: height * 0.5,
+              backgroundColor: "rgba(8,6,28,0.55)",
+            }}
+          />
 
           {/* score bar */}
           <View style={[styles.pkBarWrap, { top: pkBarTop }]}>
@@ -2758,10 +2816,10 @@ export default function VideoLive() {
               <Animated.View
                 style={{
                   width: pkBarAnim.interpolate({ inputRange: [0, 100], outputRange: ["0%", "100%"] }),
-                  backgroundColor: "#FF3D71",
+                  backgroundColor: "#1E90FF",
                 }}
               />
-              <View style={{ flex: 1, backgroundColor: "#2D9CFF" }} />
+              <View style={{ flex: 1, backgroundColor: "#FF2D95" }} />
             </View>
             {/* lightning marker rides the border between the two scores */}
             <Animated.View
@@ -2771,10 +2829,20 @@ export default function VideoLive() {
                 { left: pkBarAnim.interpolate({ inputRange: [0, 100], outputRange: ["0%", "100%"] }) },
               ]}
             >
-              <Text style={{ fontSize: 16 }}>⚡</Text>
+              <View style={styles.pkSparkGlow} />
             </Animated.View>
-            <Text style={[styles.pkScoreTxt, { left: 10 }]}>⭐ {shownMy}</Text>
-            <Text style={[styles.pkScoreTxt, { right: 10 }]}>{shownOpp} ⭐</Text>
+            <View pointerEvents="none" style={[styles.pkScoreWrap, { left: 4 }]}>
+              <View style={styles.pkStarBox}>
+                <Ionicons name="star" size={9} color="#1E90FF" />
+              </View>
+              <Text style={styles.pkScoreTxt}>{shownMy}</Text>
+            </View>
+            <View pointerEvents="none" style={[styles.pkScoreWrap, { right: 4 }]}>
+              <Text style={styles.pkScoreTxt}>{shownOpp}</Text>
+              <View style={styles.pkStarBox}>
+                <Ionicons name="star" size={9} color="#FF2D95" />
+              </View>
+            </View>
           </View>
 
           {/* two video panels */}
@@ -2847,11 +2915,6 @@ export default function VideoLive() {
               </View>
             </View>
 
-            {/* VS badge on the seam between the two videos */}
-            <View pointerEvents="none" style={styles.pkVsBadge}>
-              <Text style={styles.pkVsBadgeTxt}>VS</Text>
-            </View>
-
             {/* winner banner: the host who got the most gifts */}
             {pkEnded && !!myResult && (
               <PkWinnerBanner
@@ -2897,7 +2960,7 @@ export default function VideoLive() {
         <View style={styles.hostBadge}>
           <TouchableOpacity activeOpacity={0.85} onPress={openHostCard} style={styles.hostAvatarContainer}>
             <Image source={{ uri: hostImg }} style={styles.hostAvatarImg} />
-            {hostLevel >= 10 && levelFrame && <Image source={levelFrame} style={styles.hostLevelFrame} />}
+            {(hostLevel >= 10 || !!hostId) && <LevelFrame level={hostLevel} uid={hostId} animated style={styles.hostLevelFrame} />}
           </TouchableOpacity>
 
           <View style={{ marginLeft: 10 }}>
@@ -3043,10 +3106,13 @@ export default function VideoLive() {
       {/* ================= CHAT OVERLAY ================= */}
       <FlatList
         ref={chatListRef}
-        data={chatMessages}
+        data={chatListData}
+        inverted
         keyExtractor={chatKeyExtractor}
         renderItem={renderChat}
-        ListHeaderComponent={
+        maxToRenderPerBatch={8}
+        updateCellsBatchingPeriod={50}
+        ListFooterComponent={
           <View style={styles.welcomeBox}>
             <Text style={styles.welcomeTxt}>
               📢 Welcome to the live! Be kind and respectful. Abuse, nudity, spam and scams are not allowed.
@@ -3272,10 +3338,12 @@ export default function VideoLive() {
               source={{ uri: joinBanner.userImg || STABLE_AVATAR }}
               style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: "#2a2b38" }}
             />
-            {joinBanner.level >= 10 && getLevelFrame(joinBanner.level) && (
-              <Image
-                source={getLevelFrame(joinBanner.level)}
-                style={{ position: "absolute", width: 50, height: 50, resizeMode: "contain" }}
+            {(joinBanner.level >= 10 || !!joinBanner.senderId) && (
+              <LevelFrame
+                level={joinBanner.level}
+                uid={joinBanner.senderId}
+                animated
+                style={{ position: "absolute", width: 50, height: 50 }}
               />
             )}
           </View>
@@ -3555,10 +3623,12 @@ export default function VideoLive() {
               <>
                 <View style={{ width: 96, height: 96, justifyContent: "center", alignItems: "center" }}>
                   <Image source={{ uri: profileCard.img || STABLE_AVATAR }} style={styles.pcAva} />
-                  {Number(profileCard.level) >= 10 && getLevelFrame(Number(profileCard.level)) && (
-                    <Image
-                      source={getLevelFrame(Number(profileCard.level))}
-                      style={{ position: "absolute", width: 110, height: 110, resizeMode: "contain" }}
+                  {(Number(profileCard.level) >= 10 || !!profileCard.uid) && (
+                    <LevelFrame
+                      level={Number(profileCard.level)}
+                      uid={profileCard.uid}
+                      animated
+                      style={{ position: "absolute", width: 110, height: 110 }}
                     />
                   )}
                 </View>
@@ -4090,15 +4160,40 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 0,
     right: 0,
-    height: 28,
+    height: 16,
     justifyContent: "center",
   },
-  pkBar: { flexDirection: "row", height: 28, overflow: "hidden" },
-  pkScoreTxt: {
+  pkBar: { flexDirection: "row", height: 16, overflow: "hidden" },
+  pkScoreWrap: {
     position: "absolute",
+    top: 0,
+    bottom: 0,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  pkStarBox: {
+    width: 13,
+    height: 13,
+    borderRadius: 3,
+    backgroundColor: "#fff",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  pkSparkGlow: {
+    width: 5,
+    height: 16,
+    borderRadius: 3,
+    backgroundColor: "#fff",
+    shadowColor: "#fff",
+    shadowOpacity: 1,
+    shadowRadius: 6,
+    elevation: 6,
+  },
+  pkScoreTxt: {
     color: "#fff",
-    fontWeight: "900",
-    fontSize: 14,
+    fontWeight: "800",
+    fontSize: 12,
+    marginHorizontal: 4,
     textShadowColor: "rgba(0,0,0,0.6)",
     textShadowOffset: { width: 1, height: 1 },
     textShadowRadius: 3,
@@ -4119,9 +4214,9 @@ const styles = StyleSheet.create({
   pkNamePill: {
     position: "absolute",
     left: 6,
-    bottom: 6,
-    maxWidth: "80%",
-    backgroundColor: "rgba(0,0,0,0.55)",
+    top: 8,
+    maxWidth: "56%",
+    backgroundColor: "rgba(0,0,0,0.5)",
     borderRadius: 10,
     paddingHorizontal: 8,
     paddingVertical: 3,
@@ -4129,16 +4224,19 @@ const styles = StyleSheet.create({
   pkNameTxt: { color: "#fff", fontSize: 11, fontWeight: "700" },
   pkTimerPill: {
     position: "absolute",
-    top: 6,
+    top: 4,
     alignSelf: "center",
-    left: width / 2 - 34,
-    width: 68,
+    left: width / 2 - 48,
+    width: 96,
+    flexDirection: "row",
+    justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.6)",
-    borderRadius: 12,
-    paddingVertical: 3,
+    backgroundColor: "rgba(20,16,50,0.78)",
+    borderRadius: 14,
+    paddingVertical: 4,
   },
-  pkTimerTxt: { color: "#fff", fontWeight: "800", fontSize: 12 },
+  pkTimerPk: { color: "#2AA8FF", fontWeight: "900", fontStyle: "italic", fontSize: 15, marginRight: 6 },
+  pkTimerTxt: { color: "#fff", fontWeight: "800", fontSize: 14 },
   pkResultWrap: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: "center",
@@ -4322,8 +4420,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   pkVsBadgeTxt: { color: "#fff", fontWeight: "900", fontStyle: "italic", fontSize: 12 },
-  pkSupRow: { position: "absolute", top: 6, flexDirection: "row", alignItems: "center" },
-  pkSupAva: { width: 22, height: 22, borderRadius: 11, borderWidth: 1.5, backgroundColor: "#2a2b38" },
+  pkSupRow: { position: "absolute", bottom: 8, flexDirection: "row", alignItems: "center" },
+  pkSupAva: { width: 30, height: 30, borderRadius: 15, borderWidth: 2, backgroundColor: "#2a2b38" },
   pkMuteBtn: {
     position: "absolute",
     top: 34,

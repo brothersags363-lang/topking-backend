@@ -1,9 +1,8 @@
 // ==========================
 // IMPORTS
 // ==========================
-import React, { memo,  useRef, useState, useEffect, useCallback } from 'react';
-
-import { InteractionManager } from "react-native";
+import React, { memo,  useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { 
   View,
@@ -24,6 +23,8 @@ import {
   BackHandler,
     Keyboard, 
       Animated,
+  Easing,
+  AppState,
 } from 'react-native';
 
 
@@ -48,11 +49,14 @@ import {
   startAfter,
   where,
   documentId,
+  writeBatch,
 } from 'firebase/firestore';
 
 
 
 import { VideoView, useVideoPlayer } from 'expo-video';
+import { Image as ExpoImage } from 'expo-image';
+import { useEvent } from 'expo';
 import {
   Ionicons,
   MaterialCommunityIcons,
@@ -63,7 +67,9 @@ import { useRouter, usePathname, useFocusEffect } from 'expo-router';
 // FIREBASE
 // ==========================
 import { db } from '../firebaseConfig';
-import { callApi } from '../api';
+import { useLiveHost } from '../../components/liveHosts';
+import { callApi } from '../../utils/api';
+import { videoLink } from '../../utils/shareLinks';
 
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
 
@@ -76,69 +82,512 @@ import { useUploadState } from '@/services/upload/uploadManager';
 
 const { height, width } = Dimensions.get('screen');
 
-const auth = getAuth(); 
+const auth = getAuth();
 
+const AVATAR_FALLBACK = 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png'; 
 
-
-const FeedVideo = memo(
-function FeedVideo({ uri, active }) {
-
-  const player = useVideoPlayer(uri, (player) => {
-    player.loop = true;
-
-    player.bufferOptions={
-preferredForwardBufferDuration:5
+// Count ko short form me dikhao: 813 -> 813, 76000 -> 76K, 19200 -> 19.2K, 1200000 -> 1.2M
+const formatCount = (n) => {
+  const num = Number(n) || 0;
+  if (num >= 1000000) return (num / 1000000).toFixed(num >= 10000000 ? 0 : 1).replace(/\.0$/, '') + 'M';
+  if (num >= 1000) return (num / 1000).toFixed(num >= 100000 ? 0 : 1).replace(/\.0$/, '') + 'K';
+  return String(num);
 };
+
+const getFeedItemLayout = (_data, index) => ({
+  length: height,
+  offset: height * index,
+  index,
+});
+
+// ==========================
+// SEEN-VIDEO STORE (phone me save)  +  RANKING
+// ==========================
+// seen map: { [videoId]: { t: lastSeenTimestamp, n: kitni baar dekha } }
+const SEEN_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 din ki history rakho
+const SEEN_MAX = 2000;
+// Ek baar dekha hua video itne din tak feed me wapas nahi aayega
+const SEEN_HIDE_MS = 3 * 24 * 60 * 60 * 1000; // 3 din (4 chahiye to 4 kar do)
+
+// FIX: app kill karke kholne par auth.currentUser shuru me NULL hota hai
+// (Firebase login baad me restore karta hai). Isliye pehle key 'guest' ban
+// jaati thi aur seen history kabhi load hi nahi hoti thi -> har baar wahi
+// video upar. Ab uid yaad rakhte hain aur load se pehle auth ka wait karte hain.
+let lastKnownUid = null;
+const keyUid = () => {
+  if (auth.currentUser?.uid) lastKnownUid = auth.currentUser.uid;
+  return lastKnownUid || 'guest';
+};
+
+const waitForAuthUser = async () => {
+  if (auth.currentUser) return auth.currentUser;
+  await new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve(null);
+    };
+    const timer = setTimeout(finish, 4000); // login na ho to atke nahi
+    const unsub = onAuthStateChanged(auth, () => {
+      clearTimeout(timer);
+      try { unsub(); } catch (e) {}
+      finish();
+    });
+  });
+  return auth.currentUser;
+};
+
+const seenStorageKey = () => `seen_videos_v2_${keyUid()}`;
+const lastTopStorageKey = () => `feed_last_top_v1_${keyUid()}`;
+
+const loadSeenMap = async () => {
+  try {
+    const raw = await AsyncStorage.getItem(seenStorageKey());
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    const now = Date.now();
+    const out = {};
+    Object.keys(parsed).forEach((id) => {
+      const info = parsed[id];
+      if (info && typeof info.t === 'number' && now - info.t < SEEN_TTL_MS) {
+        out[id] = info;
+      }
+    });
+    return out;
+  } catch (e) {
+    return {};
+  }
+};
+
+const saveSeenMap = async (map) => {
+  try {
+    const ids = Object.keys(map);
+    if (ids.length > SEEN_MAX) {
+      ids.sort((a, b) => map[b].t - map[a].t);
+      ids.slice(SEEN_MAX).forEach((id) => delete map[id]);
+    }
+    await AsyncStorage.setItem(seenStorageKey(), JSON.stringify(map));
+  } catch (e) {}
+};
+
+// Pichli baar feed me sabse upar kaunsa video tha
+const loadLastTop = async () => {
+  try {
+    return (await AsyncStorage.getItem(lastTopStorageKey())) || null;
+  } catch (e) {
+    return null;
+  }
+};
+
+const saveLastTop = async (id) => {
+  try {
+    await AsyncStorage.setItem(lastTopStorageKey(), id);
+  } catch (e) {}
+};
+
+// ==========================
+// RESUME: jahan video roka tha wahi se dobara chalu
+// ==========================
+// videoPositions: { [videoId]: seconds }  (app chalte waqt memory me)
+// feedCache: last feed + index (screen badalne par wapas aao to wahi video)
+// persistResume: app background / band hone par phone me save (cold start resume)
+const RESUME_TTL_MS = 30 * 60 * 1000; // 30 min ke andar wapas aaye to resume
+const resumeStorageKey = () => `feed_resume_v1_${keyUid()}`;
+const videoPositions: Record<string, number> = {};
+let feedCache: any = null;
+
+const persistResume = async () => {
+  try {
+    if (!feedCache || !feedCache.videos || feedCache.videos.length === 0) return;
+    const start = Math.max(0, feedCache.index - 1);
+    const slice = feedCache.videos.slice(start, start + 30);
+    const idx = feedCache.index - start;
+    const curId = feedCache.videos[feedCache.index]?.id;
+    const payload = JSON.stringify({
+      videos: slice,
+      index: idx,
+      position: curId ? videoPositions[curId] || 0 : 0,
+      savedAt: Date.now(),
+    });
+    await AsyncStorage.setItem(resumeStorageKey(), payload);
+  } catch (e) {}
+};
+
+const loadResume = async () => {
+  if (
+    feedCache &&
+    feedCache.videos &&
+    feedCache.videos.length > 0 &&
+    Date.now() - feedCache.savedAt < RESUME_TTL_MS
+  ) {
+    return feedCache;
+  }
+  try {
+    const raw = await AsyncStorage.getItem(resumeStorageKey());
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    if (
+      !saved ||
+      !saved.videos ||
+      saved.videos.length === 0 ||
+      Date.now() - saved.savedAt > RESUME_TTL_MS
+    ) {
+      return null;
+    }
+    const curId = saved.videos[saved.index]?.id;
+    if (curId && saved.position > 0.5) videoPositions[curId] = saved.position;
+    return saved;
+  } catch (e) {
+    return null;
+  }
+};
+
+// ==========================
+// MY PROFILE (comment / reply / notification me naam + photo)
+// ==========================
+// FIX: app band karke kholne par currentUserData shuru me default 'User' hota
+// tha (Firestore se aane me time lagta hai). Us beech comment karne par
+// "User" naam se jata tha. Ab:
+//  1) naam phone me cache hota hai -> app khulte hi turant sahi naam
+//  2) comment bhejte waqt agar profile load nahi hui to pehle load hoti hai
+//     (ya cache / login ka username) -> kabhi "User" nahi jayega
+const MY_PROFILE_CACHE_KEY = 'my_profile_cache_v1';
+let myProfilePromise: Promise<any> | null = null;
+let myProfileUid: string | null = null;
+
+// users/{uid} doc se wahi naam + dp jo profile screen me dikhta hai
+// (username, nahi to name; photo = profileImg). Email / Google photo kabhi nahi.
+const buildMyProfile = (user, data) => ({
+  uid: user.uid,
+  name: data?.username || data?.name || user.email?.split('@')[0] || 'User',
+  photo: data?.profileImg || AVATAR_FALLBACK,
+  verified: data?.verified || false,
+  verifiedColor: data?.verifiedColor || '',
+});
+
+const readCachedProfile = async () => {
+  try {
+    const raw = await AsyncStorage.getItem(MY_PROFILE_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+};
+
+const saveCachedProfile = (profile) => {
+  AsyncStorage.setItem(MY_PROFILE_CACHE_KEY, JSON.stringify(profile)).catch(() => {});
+};
+
+// Server se profile laata hai (3 baar retry). Fail hua to null --
+// koi galat (email wala) naam kabhi return nahi hota.
+const loadMyProfile = async (force = false) => {
+  const user = await waitForAuthUser();
+  if (!user) return null;
+  if (!force && myProfilePromise && myProfileUid === user.uid) {
+    return myProfilePromise;
+  }
+  myProfileUid = user.uid;
+
+  const p = (async () => {
+    for (let i = 0; i < 3; i++) {
+      try {
+        const snap = await getDoc(doc(db, 'users', user.uid));
+        const profile = buildMyProfile(user, snap.exists() ? snap.data() : {});
+        saveCachedProfile(profile);
+        return profile;
+      } catch (e) {
+        await new Promise((r) => setTimeout(r, 600 * (i + 1)));
+      }
+    }
+    myProfilePromise = null; // dobara try ho sake
+    const cached = await readCachedProfile();
+    if (cached && cached.uid === user.uid && cached.name) return cached;
+    return null;
+  })();
+
+  myProfilePromise = p;
+  return p;
+};
+
+const HOUR_MS = 60 * 60 * 1000;
+const RANK_USER_GAP = 3;      // ek hi user ke videos ke beech minimum gap
+const RANK_LOOKAHEAD = 8;     // gap ke liye kitne aage tak dekhna
+
+const videoTs = (video) => {
+  const c = video.createdAt;
+  if (!c) return 0;
+  if (typeof c.seconds === 'number') return c.seconds * 1000;
+  if (typeof c.toMillis === 'function') return c.toMillis();
+  return 0;
+};
+
+// Sirf UNSEEN videos ke liye score: naya + popular + thoda random.
+// (Seen videos ka order alag hota hai: sabse purana dekha hua pehle.)
+const scoreVideo = (video, now) => {
+  const ageH = Math.max(0, (now - videoTs(video)) / HOUR_MS);
+  let score = 0;
+
+  // Naya video: 48h tak bada bonus, phir dheere dheere kam
+  score += 60 * Math.exp(-ageH / 36);
+
+  // Popular video: chhota bonus (max 12)
+  score += Math.min(12, Math.log10(1 + (video.engagementScore || 0)) * 4);
+
+  // Random jitter: same level ke videos ka order har baar alag
+  score += Math.random() * 45;
+
+  return score;
+};
+
+// RULE:
+//  1) Pehle saare UNSEEN videos (naye pehle)
+//  2) Unseen khatam -> SEEN videos, jo sabse pehle dekha tha wo pehle
+// Seen video kabhi unseen ke upar nahi aata.
+const isRecentlySeen = (seenMap, id, now = Date.now()) => {
+  const info = seenMap[id];
+  return !!info && now - info.t < SEEN_HIDE_MS;
+};
+
+const rankFeed = (
+  list,
+  seenMap,
+  previous = [],
+  lastTopId = null,
+  allowRecentSeen = false
+) => {
+  if (!list || list.length === 0) return [];
+
+  const now = Date.now();
+  const unseen = [];
+  const seen = [];
+  list.forEach((v) => {
+    if (!seenMap[v.id]) {
+      unseen.push(v);
+    } else if (allowRecentSeen || !isRecentlySeen(seenMap, v.id, now)) {
+      // 3 din se purana seen hi wapas aa sakta hai
+      seen.push(v);
+    }
+    // recently seen (3 din ke andar) -> feed se bahar
   });
 
- 
-useEffect(()=>{
+  // score ek baar nikalo (comparator me random nahi chalna chahiye)
+  const scores = new Map(unseen.map((v) => [v.id, scoreVideo(v, now)]));
+  unseen.sort((a, b) => scores.get(b.id) - scores.get(a.id));
+  seen.sort((a, b) => {
+    const sa = seenMap[a.id];
+    const sb = seenMap[b.id];
+    return sa.t - sb.t;
+  });
 
-let mounted=true;
+  const queue = [...unseen, ...seen];
 
-const start=async()=>{
+  // Pichli baar ka top video is baar top par nahi -> 4th position par
+  if (
+    lastTopId &&
+    previous.length === 0 &&
+    queue.length > 1 &&
+    queue[0].id === lastTopId
+  ) {
+    const first = queue.shift();
+    queue.splice(Math.min(3, queue.length), 0, first);
+  }
 
-if(!mounted)return;
+  const keyOf = (v) => v.userId || `video_${v.id}`;
+  const recent = previous.slice(-RANK_USER_GAP).map(keyOf);
+  const result = [];
 
-if(active){
+  while (queue.length > 0) {
+    let idx = queue.findIndex(
+      (v, i) => i < RANK_LOOKAHEAD && !recent.includes(keyOf(v))
+    );
+    if (idx === -1) idx = 0;
 
-await player.play();
+    const [next] = queue.splice(idx, 1);
+    result.push(next);
 
-}else{
+    recent.push(keyOf(next));
+    if (recent.length > RANK_USER_GAP) recent.shift();
+  }
 
-await player.pause();
-
-}
-
+  return result;
 };
 
-start();
 
-return()=>{
 
-mounted=false;
 
+// Active video ko poora bandwidth + bada buffer, agle (preload) video ko
+// chhota buffer -> dono network ke liye ladte nahi, atakna kam hota hai.
+// Kitne videos ke players pehle se ready rakhne hain.
+// (Har ready player ek video decoder pakadta hai -> zyada karoge to
+// kam RAM wale phone atkenge. 10 ek saath safe nahi, isliye 1 peeche + 3 aage.)
+// SPEED: 1 peeche + 2 aage ke players ready -> fast swipe par bhi video turant chalta hai.
+const PRELOAD_BEHIND = 1;
+const PRELOAD_AHEAD = 2;
+
+const ACTIVE_BUFFER = {
+  preferredForwardBufferDuration: 10,
+  minBufferForPlayback: 2,
+  prioritizeTimeOverSizeThreshold: true,
+};
+// Agla video (index+1): itna buffer ki scroll karte hi turant chal pade
+const NEAR_BUFFER = {
+  preferredForwardBufferDuration: 8,
+  minBufferForPlayback: 1,
+  prioritizeTimeOverSizeThreshold: true,
+};
+// Door ke videos (pichla / index+2, +3): shuru ke ~3 sec,
+// taaki active video ka bandwidth na khayein
+const PRELOAD_BUFFER = {
+  preferredForwardBufferDuration: 4,
+  minBufferForPlayback: 1,
+  prioritizeTimeOverSizeThreshold: true,
 };
 
-},[active]);
+const FeedVideo = memo(
+function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
 
+  // Thumbnail tab tak dikhta hai jab tak video ka pehla frame na aa jaye
+  const [ready, setReady] = useState(false);
+
+  // useCaching: video phone me cache hota hai -> loop / dubara dekhne par
+  // dobara download nahi, loop point par atakna nahi.
+  const source = useMemo(() => ({ uri, useCaching: true }), [uri]);
+
+  // Pichli baar jaha roka tha (seconds) -> wahi se start
+  const resumeAtRef = useRef(videoPositions[videoId] || 0);
+
+  const player = useVideoPlayer(source, (p) => {
+    p.loop = true;
+    p.bufferOptions = PRELOAD_BUFFER;
+    if (resumeAtRef.current > 0.5) {
+      try { p.currentTime = resumeAtRef.current; } catch (e) {}
+    }
+  });
+
+  // Agar player ready hone par position set nahi hui to ek baar aur seek
+  useEffect(() => {
+    const target = resumeAtRef.current;
+    if (!(target > 0.5)) return;
+
+    const trySeek = () => {
+      try {
+        if (Math.abs(player.currentTime - target) > 1) {
+          player.currentTime = target;
+        }
+      } catch (e) {}
+      resumeAtRef.current = 0;
+    };
+
+    if (player.status === 'readyToPlay') {
+      trySeek();
+      return;
+    }
+
+    const sub = player.addListener('statusChange', ({ status }) => {
+      if (status === 'readyToPlay' && resumeAtRef.current > 0.5) {
+        trySeek();
+      }
+    });
+    return () => sub.remove();
+  }, [player]);
+
+  // Chalte waqt har 1 sec me position yaad rakho (band/pause/screen change par bhi save)
+  useEffect(() => {
+    if (!active || !videoId) return;
+    const save = () => {
+      try {
+        const c = player.currentTime;
+        if (c > 0) videoPositions[videoId] = c;
+      } catch (e) {}
+    };
+    const t = setInterval(save, 1000);
+    return () => {
+      clearInterval(t);
+      save();
+    };
+  }, [active, player, videoId]);
+
+  // App background se wapas aane par video khud dobara chale
+  useEffect(() => {
+    if (!active) return;
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        try { player.play(); } catch (e) {}
+      }
+    });
+    return () => sub.remove();
+  }, [active, player]);
+
+  // Buffer settings alag effect me: sirf buffer badalna hai, play/pause/seek nahi.
+  useEffect(() => {
+    player.bufferOptions = active
+      ? ACTIVE_BUFFER
+      : near
+      ? NEAR_BUFFER
+      : PRELOAD_BUFFER;
+  }, [active, near, player]);
+
+  // SPEED FIX: pehle har baar (even preload hote waqt) currentTime = 0 seek
+  // hota tha, jisse buffer reset ho sakta tha. Ab sirf tab reset hota hai
+  // jab video pehle chal chuka ho aur ab scroll karke nikal gaya ho.
+  // Sirf play / pause. (Pehle yahan pause hote hi video 0 par chala jata tha -
+  // isi wajah se screen badalne / tap-pause ke baad video shuru se start hota tha.)
+  useEffect(() => {
+    if (active) {
+      player.play();
+    } else {
+      player.pause();
+    }
+  }, [active, player]);
+
+  // Video 0 par TABHI jaye jab user usse scroll karke aage/peeche nikal jaye
+  const wasCurrentRef = useRef(false);
+  useEffect(() => {
+    if (isCurrent) {
+      wasCurrentRef.current = true;
+    } else if (wasCurrentRef.current) {
+      wasCurrentRef.current = false;
+      delete videoPositions[videoId];
+      try { player.currentTime = 0; } catch (e) {}
+    }
+  }, [isCurrent, player, videoId]);
+
+  // Buffering ho rahi ho to chhota spinner dikhao (frozen frame nahi lagega)
+  const { status } = useEvent(player, 'statusChange', { status: player.status });
+  const isBuffering = active && ready && status === 'loading';
 
   return (
-    <VideoView
-      style={styles.video}
-      player={player}
-      nativeControls={false}
-      allowsFullscreen={false}
-      allowsPictureInPicture={false}
-      contentFit="cover"
-    />
+    <>
+      <VideoView
+        style={styles.video}
+        player={player}
+        nativeControls={false}
+        allowsFullscreen={false}
+        allowsPictureInPicture={false}
+        contentFit="cover"
+        onFirstFrameRender={() => setReady(true)}
+      />
+      {!ready && thumbnail ? (
+        <ExpoImage source={thumbnail} style={StyleSheet.absoluteFill} contentFit="cover" cachePolicy="memory-disk" pointerEvents="none" />
+      ) : null}
+      {isBuffering ? (
+        <View style={styles.bufferSpinner} pointerEvents="none">
+          <ActivityIndicator size="small" color="#ffffff" />
+        </View>
+      ) : null}
+    </>
   );
 },
 
 (prevProps, nextProps) => {
   return (
     prevProps.uri === nextProps.uri &&
-    prevProps.active === nextProps.active
+    prevProps.active === nextProps.active &&
+    prevProps.near === nextProps.near &&
+    prevProps.isCurrent === nextProps.isCurrent &&
+    prevProps.videoId === nextProps.videoId &&
+    prevProps.thumbnail === nextProps.thumbnail
   );
 }
 
@@ -215,9 +664,12 @@ const VideoItem = memo(function VideoItem({
   item,
   index,
   shouldRenderVideo,
+  nearVideo,
   isVideoActive,
+  isCurrent,
   showHeart,
   showStar,
+  starCount,
   isLiked,
   isFollowing,
   rotateAnim,
@@ -236,6 +688,9 @@ const VideoItem = memo(function VideoItem({
   onOpenProfile,
   onOpenMusic,
 }) {
+  // Is video ka creator abhi live hai? (shared single listener)
+  const hostLive = useLiveHost(item.userId);
+
   return (
     <TouchableOpacity
       activeOpacity={1}
@@ -247,7 +702,13 @@ const VideoItem = memo(function VideoItem({
         <FeedVideo
           uri={item.videoUrl || item.video}
           active={isVideoActive}
+          near={nearVideo}
+          videoId={item.id}
+          isCurrent={isCurrent}
+          thumbnail={item.thumbnail}
         />
+      ) : item.thumbnail ? (
+        <ExpoImage source={item.thumbnail} style={{ width, height, backgroundColor: "#000" }} contentFit="cover" cachePolicy="memory-disk" />
       ) : (
         <View
           style={{
@@ -276,50 +737,60 @@ const VideoItem = memo(function VideoItem({
             left: 0,
             right: 0,
             bottom: 0,
-
             justifyContent: "center",
             alignItems: "center",
-
             zIndex: 99999,
             elevation: 99999,
           }}
           pointerEvents="none"
         >
-          <Animated.Image
-            source={require("../../assets/star-logo.png")}
+          {/* Background transparent -- sirf star + uske upar count */}
+          <Animated.View
             style={{
-              width: 170,
-              height: 170,
+              width: 150,
+              height: 150,
+              justifyContent: "center",
+              alignItems: "center",
               opacity: starOpacity,
-              transform: [
-                { translateY: starJump },
-                { scale: starScale },
-                {
-                  rotateZ: starRotate.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: ["0deg", "720deg"]
-                  })
-                },
-                {
-                  rotateY: starTilt.interpolate({
-                    inputRange: [0, 0.5, 1],
-                    outputRange: ["0deg", "180deg", "360deg"]
-                  })
-                },
-                {
-                  rotateX: starTilt.interpolate({
-                    inputRange: [0, 0.5, 1],
-                    outputRange: ["0deg", "25deg", "0deg"]
-                  })
-                }
-              ],
-              shadowColor: "#FFD700",
-              shadowOpacity: 1,
-              shadowRadius: 35,
-              elevation: 35,
-              resizeMode: "contain",
+              transform: [{ scale: starScale }],
             }}
-          />
+          >
+            <Image
+              source={require("../../assets/star-logo.png")}
+              style={{ width: 150, height: 150, resizeMode: "contain" }}
+            />
+
+            {/* Chamak (shine): star ke upar safed flash, starRotate yahan shine value hai */}
+            <Animated.Image
+              source={require("../../assets/star-logo.png")}
+              style={{
+                position: "absolute",
+                width: 150,
+                height: 150,
+                resizeMode: "contain",
+                tintColor: "#ffffff",
+                opacity: starRotate.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 0.65],
+                }),
+              }}
+            />
+
+            {/* Star ke upar count: 1 / 3 / 10 */}
+            <Text
+              style={{
+                position: "absolute",
+                fontSize: 44,
+                fontWeight: "900",
+                color: "#ffffff",
+                textShadowColor: "rgba(0,0,0,0.55)",
+                textShadowOffset: { width: 0, height: 2 },
+                textShadowRadius: 6,
+              }}
+            >
+              {starCount}
+            </Text>
+          </Animated.View>
         </View>
       )}
 
@@ -375,14 +846,7 @@ const VideoItem = memo(function VideoItem({
             ]}
           >
             <View style={styles.vinylDisc}>
-              <Image
-                source={{
-                  uri:
-                    item.profile ||
-                    "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
-                }}
-                style={styles.musicCenterImage}
-              />
+              <ExpoImage source={item.profile || AVATAR_FALLBACK} style={styles.musicCenterImage} contentFit="cover" cachePolicy="memory-disk" />
               <View style={styles.musicDot} />
             </View>
           </Animated.View>
@@ -408,16 +872,14 @@ const VideoItem = memo(function VideoItem({
 
       <View style={styles.rightIcons}>
 
-        <View style={[styles.iconBox, { marginBottom: 18 }]}>
+        <View style={[styles.iconBox, { marginBottom: 20 }]}>
           <TouchableOpacity onPress={() => onOpenProfile(item.userId)}>
-            <Image
-              source={{
-                uri:
-                  item.profile ||
-                  "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
-              }}
-              style={styles.profileImage}
-            />
+            <ExpoImage source={item.profile || AVATAR_FALLBACK} style={[styles.profileImage, hostLive && styles.profileImageLive]} contentFit="cover" cachePolicy="memory-disk" />
+            {hostLive && (
+              <View style={styles.liveTagFeed} pointerEvents="none">
+                <Text style={styles.liveTagFeedText}>LIVE</Text>
+              </View>
+            )}
           </TouchableOpacity>
 
           {auth.currentUser?.uid !== item.userId && !isFollowing && (
@@ -427,7 +889,7 @@ const VideoItem = memo(function VideoItem({
             >
               <Ionicons
                 name="add"
-                size={12}
+                size={15}
                 color="#000"
               />
             </TouchableOpacity>
@@ -435,26 +897,24 @@ const VideoItem = memo(function VideoItem({
         </View>
 
         <TouchableOpacity style={styles.iconBox} onPress={() => onLike(item.id)}>
-          <Ionicons name="heart" size={40} color={isLiked ? "red" : "white"} />
-          <Text style={styles.iconText}>
-            {item.likes || 0}
-          </Text>
+          <Ionicons name="heart" size={44} color={isLiked ? "#ff2d55" : "#ffffff"} style={styles.iconShadow} />
+          <Text style={styles.iconText}>{formatCount(item.likes)}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
           style={styles.iconBox}
           onPress={() => onOpenComments(item)}
         >
-          <Ionicons name="chatbubble" size={35} color="#ffffff" />
-          <Text style={styles.iconText}>{item.commentsCount || 0}</Text>
+          <Ionicons name="chatbubble-ellipses" size={40} color="#ffffff" style={styles.iconShadow} />
+          <Text style={styles.iconText}>{formatCount(item.commentsCount)}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
           style={styles.iconBox}
           onPress={() => onOpenShare(item)}
         >
-          <Ionicons name="arrow-redo" size={38} color="#ffffff" />
-          <Text style={styles.iconText}>{item.shares || 0}</Text>
+          <Ionicons name="arrow-redo" size={42} color="#ffffff" style={styles.iconShadow} />
+          <Text style={styles.iconText}>{formatCount(item.shares)}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -473,6 +933,160 @@ const VideoItem = memo(function VideoItem({
 });
 
 
+// ==========================
+// COMMENTS: module-level helpers + memoized row
+// (parent ke bahar -> typing / snapshot par poori list re-render nahi hoti)
+// ==========================
+const COMMENT_PAGE_SIZE = 25;
+
+const commentKeyExtractor = (item) => item.id;
+
+const commentTimeAgo = (timestamp) => {
+  if (!timestamp?.seconds) return 'now';
+  const diff = Math.floor((Date.now() - timestamp.seconds * 1000) / 1000);
+  if (diff < 60) return `${Math.max(diff, 0)}s`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
+  if (diff < 2592000) return `${Math.floor(diff / 86400)}d`;
+  return `${Math.floor(diff / 2592000)}mo`;
+};
+
+const cs = StyleSheet.create({
+  row: { flexDirection: 'row', paddingHorizontal: 15, marginBottom: 15, alignItems: 'flex-start' },
+  avatar: { width: 40, height: 40, borderRadius: 20 },
+  body: { marginLeft: 10, flex: 1 },
+  nameRow: { flexDirection: 'row', alignItems: 'center' },
+  name: { color: '#fff', fontWeight: 'bold' },
+  badge: { marginLeft: 5 },
+  text: { color: '#fff' },
+  time: { color: '#999', fontSize: 11, marginTop: 3 },
+  actions: { flexDirection: 'row', marginTop: 8 },
+  actionText: { color: '#999', fontSize: 13, fontWeight: '600' },
+  toggle: { marginTop: 8, marginLeft: 15 },
+  repliesBox: { marginTop: 10, marginLeft: 15, borderLeftWidth: 1, borderLeftColor: '#333', paddingLeft: 12 },
+  replyRow: { flexDirection: 'row', marginBottom: 12, alignItems: 'flex-start' },
+  replyAvatar: { width: 30, height: 30, borderRadius: 15 },
+  replyBody: { marginLeft: 8, flex: 1 },
+  replyName: { color: '#fff', fontWeight: 'bold', fontSize: 13 },
+  replyText: { color: '#fff', marginTop: 2 },
+  replyTime: { color: '#888', fontSize: 11, marginTop: 3 },
+  menu: { paddingLeft: 10, paddingTop: 5 },
+  empty: { color: '#888', textAlign: 'center', marginTop: 30 },
+});
+
+const CommentsEmpty = (
+  <Text style={cs.empty}>No comments yet. Be the first!</Text>
+);
+
+const CommentRow = memo(function CommentRow({
+  item,
+  replyList,
+  expanded,
+  currentUid,
+  onProfile,
+  onReply,
+  onToggleReplies,
+  onDeleteComment,
+  onDeleteReply,
+}) {
+  const replyCount = replyList ? replyList.length : 0;
+
+  return (
+    <View style={cs.row}>
+      <TouchableOpacity onPress={() => onProfile(item.userId)}>
+        <ExpoImage
+          source={{ uri: item.profilePic || AVATAR_FALLBACK }}
+          style={cs.avatar}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          transition={0}
+        />
+      </TouchableOpacity>
+
+      <View style={cs.body}>
+        <View style={cs.nameRow}>
+          <Text style={cs.name}>{item.username}</Text>
+          {item.verified ? (
+            <MaterialCommunityIcons
+              name="check-decagram"
+              size={17}
+              color={item.verifiedColor === 'yellow' ? '#FFD700' : '#ffffff'}
+              style={cs.badge}
+            />
+          ) : null}
+        </View>
+
+        <Text style={cs.text}>{item.text}</Text>
+        <Text style={cs.time}>{commentTimeAgo(item.createdAt)}</Text>
+
+        <View style={cs.actions}>
+          <TouchableOpacity onPress={() => onReply(item)}>
+            <Text style={cs.actionText}>Reply</Text>
+          </TouchableOpacity>
+        </View>
+
+        {replyCount > 0 ? (
+          <TouchableOpacity onPress={() => onToggleReplies(item.id)} style={cs.toggle}>
+            <Text style={cs.actionText}>
+              {expanded
+                ? 'Hide replies'
+                : `View ${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}`}
+            </Text>
+          </TouchableOpacity>
+        ) : null}
+
+        {replyCount > 0 && expanded ? (
+          <View style={cs.repliesBox}>
+            {replyList.map((reply) => (
+              <View key={reply.id} style={cs.replyRow}>
+                <ExpoImage
+                  source={{ uri: reply.profilePic || AVATAR_FALLBACK }}
+                  style={cs.replyAvatar}
+                  contentFit="cover"
+                  cachePolicy="memory-disk"
+                  transition={0}
+                />
+
+                <View style={cs.replyBody}>
+                  <View style={cs.nameRow}>
+                    <Text style={cs.replyName}>{reply.username}</Text>
+                    {reply.verified ? (
+                      <MaterialCommunityIcons
+                        name="check-decagram"
+                        size={15}
+                        color={reply.verifiedColor === 'yellow' ? '#FFD700' : '#ffffff'}
+                        style={cs.badge}
+                      />
+                    ) : null}
+                  </View>
+                  <Text style={cs.replyText}>{reply.text}</Text>
+                  <Text style={cs.replyTime}>{commentTimeAgo(reply.createdAt)}</Text>
+                </View>
+
+                {currentUid === reply.userId ? (
+                  <TouchableOpacity
+                    onPress={() => onDeleteReply(item.id, reply.id)}
+                    style={cs.menu}
+                  >
+                    <Ionicons name="ellipsis-vertical" size={20} color="#fff" />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            ))}
+          </View>
+        ) : null}
+      </View>
+
+      {currentUid === item.userId ? (
+        <TouchableOpacity onPress={() => onDeleteComment(item.id)} style={cs.menu}>
+          <Ionicons name="ellipsis-vertical" size={20} color="#fff" />
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
+});
+
+
 export default function BottomNav() {
   const router = useRouter();
   const pathname = usePathname();
@@ -483,6 +1097,10 @@ const [selectedShareVideo, setSelectedShareVideo] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [activeVideo, setActiveVideo] = useState(0);
   const [currentIndex,setCurrentIndex]=useState(0);
+  // SMOOTH SCROLL: naye video players (native decoder) swipe ke BEECH me nahi,
+  // swipe rukne ke baad mount hote hain -> scroll animation me jhatka nahi.
+  const [mountIndex, setMountIndex] = useState(0);
+  const mountTimeoutRef = useRef(null);
   const [pausedVideoId, setPausedVideoId] = useState(null);
 
 const [loadingMoreVideos, setLoadingMoreVideos] = useState(false);
@@ -544,9 +1162,6 @@ useEffect(() => {
     return;
   }
 
-  likeFollowWindowRef.current = windowKey;
-
-
   const loadNearbyLikesAndFollowing = async () => {
 
     try {
@@ -591,6 +1206,7 @@ useEffect(() => {
         // aur nearby videos ka data update karo
         setLocalLikes(prev => {
 
+          let changed = false;
           const updated = {
             ...prev
           };
@@ -599,12 +1215,16 @@ useEffect(() => {
 
             // Slow network ke dauran optimistic like ko overwrite mat karo.
             if (!pendingLikeRef.current[videoId]) {
-              updated[videoId] = nearbyLikes[videoId] === true;
+              const next = nearbyLikes[videoId] === true;
+              if (!!prev[videoId] !== next) changed = true;
+              updated[videoId] = next;
             }
 
           });
 
-          return updated;
+          // SPEED: kuch nahi badla -> purana object lauta do,
+          // poori screen ka faltu re-render nahi hoga (swipe ke turant baad).
+          return changed ? updated : prev;
 
         });
 
@@ -630,17 +1250,17 @@ useEffect(() => {
 
       if (userIds.length > 0) {
 
+        // FIX: follow data profile.tsx wali top-level "follows" collection
+        // me hai (doc id = myUid_targetUid). Pehle yahan users/{uid}/following
+        // padha ja raha tha, jo profile ke count se match hi nahi karta tha.
+        const followDocIds = userIds.map(id => `${user.uid}_${id}`);
+
         const followingQuery = query(
-          collection(
-            db,
-            "users",
-            user.uid,
-            "following"
-          ),
+          collection(db, "follows"),
           where(
             documentId(),
             "in",
-            userIds
+            followDocIds
           )
         );
 
@@ -654,7 +1274,11 @@ useEffect(() => {
         followingSnapshot.forEach(
           (followDoc) => {
 
-            nearbyFollowing[followDoc.id] = true;
+            const targetId =
+              followDoc.data()?.followingId ||
+              followDoc.id.slice(user.uid.length + 1);
+
+            if (targetId) nearbyFollowing[targetId] = true;
 
           }
         );
@@ -662,18 +1286,23 @@ useEffect(() => {
 
         setFollowingUsers(prev => {
 
+          let changed = false;
           const updated = {
             ...prev
           };
 
           userIds.forEach(userId => {
 
-            updated[userId] =
-              nearbyFollowing[userId] === true;
+            // Follow tap abhi server tak ja raha ho to optimistic state mat todo
+            if (pendingFollowRef.current[userId]) return;
+
+            const next = nearbyFollowing[userId] === true;
+            if (!!prev[userId] !== next) changed = true;
+            updated[userId] = next;
 
           });
 
-          return updated;
+          return changed ? updated : prev;
 
         });
 
@@ -691,8 +1320,15 @@ useEffect(() => {
   };
 
 
-  loadNearbyLikesAndFollowing();
+  // SPEED: fast swipe karte waqt har video par Firestore query nahi chalegi.
+  // Swipe ruke (350ms) tab hi like/follow check hoga. Pehli baar turant.
+  const delay = likeFollowWindowRef.current === "" ? 0 : 350;
+  const timer = setTimeout(() => {
+    likeFollowWindowRef.current = windowKey;
+    loadNearbyLikesAndFollowing();
+  }, delay);
 
+  return () => clearTimeout(timer);
 
 }, [
   currentIndex,
@@ -706,12 +1342,14 @@ const lastTap = useRef(null);
 const tapTimeout = useRef(null);
 const likeQueueRef = useRef({});
 const pendingLikeRef = useRef({});
+const pendingFollowRef = useRef({});
 const viewTimeout = useRef(null);
 const heartTimeout = useRef(null);
 
 useEffect(() => {
   return () => {
     if (tapTimeout.current) clearTimeout(tapTimeout.current);
+    if (mountTimeoutRef.current) clearTimeout(mountTimeoutRef.current);
     if (viewTimeout.current) clearTimeout(viewTimeout.current);
     if (heartTimeout.current) clearTimeout(heartTimeout.current);
   };
@@ -724,10 +1362,15 @@ const commentAnim = useRef(new Animated.Value(height)).current;
 const keyboardHeight = useRef(new Animated.Value(0)).current;
 
 const [selectedVideoId, setSelectedVideoId] = useState(null);
-const [commentText, setCommentText] = useState('');
+const commentTextRef = useRef('');
+const onCommentChange = useCallback((t) => { commentTextRef.current = t; }, []);
+const clearCommentInput = () => {
+  commentTextRef.current = '';
+  commentInputRef.current?.clear?.();
+};
 const [comments, setComments] = useState([]);
 const [commentsLoading, setCommentsLoading] = useState(false);
-const replyUnsubscribers = useRef([]);
+const replyUnsubscribers = useRef(new Map());
 const [replyingTo, setReplyingTo] = useState(null);
 
 const [replies, setReplies] = useState({});
@@ -738,11 +1381,87 @@ const [expandedReplies, setExpandedReplies] = useState({});
 
 const [replyCounts, setReplyCounts] = useState({});
 
+const [commentLimit, setCommentLimit] = useState(COMMENT_PAGE_SIZE);
+
+const deleteCommentRef = useRef(null);
+const deleteReplyRef = useRef(null);
+const onDeleteComment = useCallback((id) => deleteCommentRef.current?.(id), []);
+const onDeleteReply = useCallback((cid, rid) => deleteReplyRef.current?.(cid, rid), []);
+
+const onToggleReplies = useCallback((id) => {
+  setExpandedReplies((prev) => ({ ...prev, [id]: !prev[id] }));
+}, []);
+
+const onCommentReply = useCallback((c) => {
+  setReplyingTo({ id: c.id, username: c.username });
+  setReplyText("");
+  setTimeout(() => commentInputRef.current?.focus(), 100);
+}, []);
+
+const onCommentProfile = useCallback((userId) => {
+  setShowComments(false);
+  setSelectedVideoId(null);
+  router.push({ pathname: "/userProfile", params: { userId } });
+}, [router]);
+
+// Scroll karte-karte aur comments load (pagination)
+const loadMoreComments = useCallback(() => {
+  setCommentLimit((l) => (comments.length >= l ? l + COMMENT_PAGE_SIZE : l));
+}, [comments.length]);
+
+// Smooth band hone ka ek hi raasta (backdrop + Android back dono yahi use karte hain)
+const closingCommentsRef = useRef(false);
+const closeComments = useCallback(() => {
+  if (closingCommentsRef.current) return;
+  closingCommentsRef.current = true;
+  Keyboard.dismiss();
+  Animated.timing(commentAnim, {
+    toValue: height,
+    duration: 200,
+    useNativeDriver: true,
+  }).start(() => {
+    closingCommentsRef.current = false;
+    setShowComments(false);
+    setSelectedVideoId(null);
+    setComments([]);
+    setReplies({});
+    setReplyingTo(null);
+    setCommentsLoading(false);
+  });
+}, [commentAnim]);
+
 const [currentUserData, setCurrentUserData] = useState({
-  
-  name: 'User',
+  // name shuru me KHALI: "User" default se galat naam se comment jata tha
+  name: '',
   photo: 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
+  verified: false,
+  verifiedColor: '',
 });
+
+// Latest loaded profile (uid ke saath) -- comment/like bhejte waqt yahi use hota hai
+const currentUserRef = useRef<any>(null);
+
+const applyMyProfile = (p) => {
+  currentUserRef.current = p;
+  setCurrentUserData({
+    name: p.name,
+    photo: p.photo,
+    verified: p.verified || false,
+    verifiedColor: p.verifiedColor || '',
+  });
+};
+
+// Hamesha ek sahi profile deta hai (load na hui ho to pehle load karta hai)
+const getMyProfileNow = async (user) => {
+  const cur = currentUserRef.current;
+  if (cur && cur.uid === user.uid && cur.name) return cur;
+  const fresh = await loadMyProfile(true);
+  if (fresh) {
+    applyMyProfile(fresh);
+    return fresh;
+  }
+  return null; // galat naam se comment nahi jayega
+};
   
 const [selectedVideoData, setSelectedVideoData] = useState(null);
 
@@ -750,8 +1469,10 @@ const [showStarPopup, setShowStarPopup] = useState(false);
 const [selectedStar, setSelectedStar] = useState(null);
 
 const [myStars, setMyStars] = useState(0);
+const starSending = useRef(false);
 
 const [starAnimationVideoId, setStarAnimationVideoId] = useState(null);
+const [starAnimationCount, setStarAnimationCount] = useState(0);
 
 const starScale = useRef(new Animated.Value(0)).current;
 
@@ -772,27 +1493,7 @@ const rotateAnim = useRef(new Animated.Value(0)).current;
 const textAnim = useRef(new Animated.Value(0)).current;
 
 
-useEffect(() => {
-
-    const user = auth.currentUser;
-
-    if (!user) return;
-
-    const loadBlockedUsers = async () => {
-
-        const snapshot = await getDocs(
-            collection(db, "users", user.uid, "blockedUsers")
-        );
-
-        const ids = snapshot.docs.map(doc => doc.id);
-
-        setBlockedUsers(ids);
-
-    };
-
-    loadBlockedUsers();
-
-}, []);
+// (blocked users ab FIRST LOAD ke saath parallel load hote hain)
 
 
 
@@ -941,77 +1642,288 @@ const arrangeFeedVideos = (inputVideos, previousVideos = []) => {
   return result;
 };
 
-// FETCH FIRST 3 VIDEOS
-// ==========================
-useEffect(() => {
+// ======================================================
+// SMART FEED v2  (score-based ranking, "har baar naya top video")
+// ------------------------------------------------------
+// Har video ko ek SCORE milta hai (module ke upar scoreVideo dekho):
+//   + naya video  -> bonus (48h me sabse zyada, phir dheere dheere kam)
+//   + unseen      -> bada bonus
+//   + popular     -> chhota bonus (engagementScore)
+//   - seen        -> penalty. Jitna RECENT dekha utna zyada neeche,
+//                    time ke saath dheere dheere wapas upar aata hai
+//   + random jitter -> same score wale videos ka order har baar alag
+//
+// Result:
+//   * Jo video abhi dekha wo agli baar top par nahi aata
+//   * Pichli baar ka top video agli baar top par KABHI nahi (lastTopId)
+//   * Naye + unseen videos pehle, phir purane unseen, phir seen
+//     (sabse purana dekha hua pehle) -> feed kabhi boring/khaali nahi
+//   * Ek hi user ke videos lagatar nahi (3 ka gap)
+//   * App background se 3 min baad wapas aaye to feed khud refresh
+//   * Firestore reads sirf zaroorat ke hisaab se (lazy pages of 30)
+// ======================================================
+const PAGE_SIZE = 30;              // ek Firestore query me docs
+const FIRST_SHOW = 10;             // pehli baar kitne video dikhane
+const NEXT_BATCH_WANT = 10;        // load-more me kitne
+const SEEN_DWELL_MS = 1000;        // itni der dekha = "seen"
+const RESUME_REFRESH_MS = 30 * 60 * 1000; // itni der (30 min) background me raha to hi naya feed, warna wahi video resume
 
+const blockedRef = useRef([]);
+const seenRef = useRef({});
+const lastTopIdRef = useRef(null);
+const poolRef = useRef([]);             // candidates jo abhi tak dikhaye nahi
+const fetchedIdsRef = useRef(new Set());
+const exhaustedRef = useRef(false);
+const fillChainRef = useRef(Promise.resolve());
+const sessionRef = useRef(0);           // refresh par purane fetch cancel
+const videosRef = useRef([]);
+const currentIndexRef = useRef(0);
+const seenTimeout = useRef(null);
+const seenSaveTimeout = useRef(null);
+const refreshRef = useRef(null);
+const lastViewableIndexRef = useRef(-1);
+const lastViewableIdRef = useRef(null);
+const initialIndexRef = useRef(0);
+
+videosRef.current = videos;
+currentIndexRef.current = currentIndex;
+
+const markSeen = (videoId) => {
+  if (!videoId) return;
+  const now = Date.now();
+  const prev = seenRef.current[videoId];
+  // 30 min ke andar baar-baar scroll karne par count na badhe
+  const n = prev && now - prev.t < 30 * 60 * 1000 ? prev.n : (prev?.n || 0) + 1;
+  seenRef.current[videoId] = { t: now, n };
+  if (seenSaveTimeout.current) clearTimeout(seenSaveTimeout.current);
+  seenSaveTimeout.current = setTimeout(() => {
+    saveSeenMap(seenRef.current);
+  }, 400);
+};
+
+useEffect(() => {
+  return () => {
+    if (seenTimeout.current) clearTimeout(seenTimeout.current);
+    if (seenSaveTimeout.current) clearTimeout(seenSaveTimeout.current);
+    saveSeenMap(seenRef.current);
+    persistResume();
+  };
+}, []);
+
+// Feed + current index yaad rakho (screen badal kar wapas aane par wahi video)
+useEffect(() => {
+  if (videos.length === 0) return;
+  feedCache = { videos, index: currentIndex, savedAt: Date.now() };
+}, [videos, currentIndex]);
+
+const toVideo = (docItem) => {
+  const data = docItem.data();
+  return {
+    id: docItem.id,
+    ...data,
+    verified: data.verified || false,
+    verifiedColor: data.verifiedColor || "",
+  };
+};
+
+const isAllowedVideo = (data) =>
+  data.status !== "blocked" &&
+  data.hidden !== true &&
+  !blockedRef.current.includes(data.userId);
+
+const fetchVideoPage = (cursor) =>
+  getDocs(
+    cursor
+      ? query(
+          collection(db, "all_videos"),
+          orderBy("createdAt", "desc"),
+          orderBy("__name__", "desc"),
+          startAfter(cursor),
+          limit(PAGE_SIZE)
+        )
+      : query(
+          collection(db, "all_videos"),
+          orderBy("createdAt", "desc"),
+          orderBy("__name__", "desc"),
+          limit(PAGE_SIZE)
+        )
+  );
+
+const resetFeedState = () => {
+  sessionRef.current += 1;
+  poolRef.current = [];
+  fetchedIdsRef.current = new Set();
+  exhaustedRef.current = false;
+  lastVideoDocRef.current = null;
+  loadingMoreRef.current = false;
+  fillChainRef.current = Promise.resolve();
+  return sessionRef.current;
+};
+
+// Ek page ke docs pool me daalo (duplicate / blocked / hidden skip)
+const ingestSnap = (snap) => {
+  if (!snap || snap.empty) {
+    exhaustedRef.current = true;
+    return;
+  }
+  lastVideoDocRef.current = snap.docs[snap.docs.length - 1];
+  snap.forEach((docItem) => {
+    if (fetchedIdsRef.current.has(docItem.id)) return;
+    fetchedIdsRef.current.add(docItem.id);
+    if (!isAllowedVideo(docItem.data())) return;
+    poolRef.current.push(toVideo(docItem));
+  });
+  if (snap.docs.length < PAGE_SIZE) exhaustedRef.current = true;
+};
+
+const countUnseen = () =>
+  poolRef.current.reduce((n, v) => (seenRef.current[v.id] ? n : n + 1), 0);
+
+// Pool me kam se kam `minUnseen` unseen video hone tak pages padho.
+// Chain se serialize hota hai -> do jagah se ek saath same page nahi aata.
+const ensurePool = (minUnseen, session) => {
+  const run = async () => {
+    let guard = 0;
+    while (
+      session === sessionRef.current &&
+      countUnseen() < minUnseen &&
+      !exhaustedRef.current &&
+      guard < 25
+    ) {
+      const snap = await fetchVideoPage(lastVideoDocRef.current);
+      if (session !== sessionRef.current) return;
+      ingestSnap(snap);
+      guard++;
+    }
+  };
+  fillChainRef.current = fillChainRef.current.then(run, run);
+  return fillChainRef.current;
+};
+
+// Pool ko rank karo, top `n` nikalo (user-gap ke saath)
+const pullFromPool = (n, previous) => {
+  const lastTop = previous.length === 0 ? lastTopIdRef.current : null;
+  let ranked = rankFeed(poolRef.current, seenRef.current, previous, lastTop);
+
+  // Feed bilkul khali na rahe: agar koi naya/purana video hi nahi bacha
+  // (sab 3 din ke andar dekhe hue), to sabse purana dekha hua dikhao.
+  if (
+    ranked.length === 0 &&
+    previous.length === 0 &&
+    exhaustedRef.current &&
+    poolRef.current.length > 0
+  ) {
+    ranked = rankFeed(poolRef.current, seenRef.current, previous, null, true);
+  }
+
+  const picked = ranked.slice(0, n);
+  const ids = new Set(picked.map((v) => v.id));
+  poolRef.current = poolRef.current.filter((v) => !ids.has(v.id));
+  return picked;
+};
+
+const syncHasMore = () => {
+  const now = Date.now();
+  const hasEligible = poolRef.current.some(
+    (v) => !isRecentlySeen(seenRef.current, v.id, now)
+  );
+  setHasMoreVideos(hasEligible || !exhaustedRef.current);
+};
+
+// FIRST LOAD
+useEffect(() => {
   let cancelled = false;
 
   const loadFirstVideos = async () => {
-
     try {
+      // FIX: cold start par pehle login restore hone do, tabhi seen history
+      // aur blocked users sahi key se load honge.
+      // SPEED: feed ka first page login ka wait kiye bina turant shuru.
+      // (pehle auth restore hone tak max 4s ruka rehta tha)
+      const firstPagePromise = fetchVideoPage(null);
+      firstPagePromise.catch(() => {}); // cancel hone par unhandled error na aaye
 
-      const q = query(
-        collection(db, "all_videos"),
-        orderBy("createdAt", "desc"),
-        orderBy("__name__", "desc"),
-        limit(6)
-      );
+      const user = await waitForAuthUser();
+      if (cancelled) return;
 
-      const snapshot = await getDocs(q);
+      // Sab ek saath -> sabse kam wait
+      const [seenMap, blockedIds, lastTop, firstSnap, resume] = await Promise.all([
+        loadSeenMap(),
+        user
+          ? getDocs(collection(db, "users", user.uid, "blockedUsers"))
+              .then((s) => s.docs.map((d) => d.id))
+              .catch(() => [])
+          : Promise.resolve([]),
+        loadLastTop(),
+        firstPagePromise,
+        loadResume(),
+      ]);
 
       if (cancelled) return;
 
-      const loadedVideos = [];
+      seenRef.current = seenMap;
+      lastTopIdRef.current = lastTop;
+      blockedRef.current = blockedIds;
+      setBlockedUsers(blockedIds);
 
-      snapshot.forEach((docItem) => {
+      const session = resetFeedState();
 
-        const data = docItem.data();
-
-        if (
-          data.status !== "blocked" &&
-          data.hidden !== true &&
-          !blockedUsers.includes(data.userId)
-        ) {
-
-          loadedVideos.push({
-            id: docItem.id,
-            ...data,
-            verified: data.verified || false,
-            verifiedColor: data.verifiedColor || "",
-          });
-
+      // RESUME: pichla feed + video wapas (jaha roka tha wahi se)
+      let restoredList = null;
+      let restoredIdx = 0;
+      if (resume && resume.videos && resume.videos.length) {
+        const curId = resume.videos[resume.index]?.id;
+        const alive = resume.videos.filter(
+          (v) =>
+            v &&
+            v.id &&
+            v.status !== "blocked" &&
+            v.hidden !== true &&
+            !blockedIds.includes(v.userId)
+        );
+        if (alive.length) {
+          const found = alive.findIndex((v) => v.id === curId);
+          restoredList = alive;
+          restoredIdx = found >= 0 ? found : 0;
+          alive.forEach((v) => fetchedIdsRef.current.add(v.id));
         }
-
-      });
-
-      if (snapshot.docs.length > 0) {
-
-        lastVideoDocRef.current =
-          snapshot.docs[snapshot.docs.length - 1];
-
       }
 
-      setHasMoreVideos(snapshot.docs.length === 6);
+      ingestSnap(firstSnap);
 
-      // User variety:
-      // same user ke videos ko lagatar aane se roko.
-      const mixedVideos = arrangeFeedVideos(loadedVideos);
+      if (restoredList) {
+        initialIndexRef.current = restoredIdx;
+        lastViewableIndexRef.current = restoredIdx;
+        lastViewableIdRef.current = restoredList[restoredIdx].id;
+        setCurrentIndex(restoredIdx);
+        setActiveVideo(restoredIdx);
+        setMountIndex(restoredIdx);
+        setVideos(restoredList);
+        syncHasMore();
+        ensurePool(NEXT_BATCH_WANT * 2, session).catch(() => {});
+        return;
+      }
 
-      setVideos(mixedVideos);
+      // Sab 30 newest dekhe hue hon to aur pages padho jab tak unseen mile
+      await ensurePool(FIRST_SHOW + 2, session);
+      if (cancelled) return;
 
+      const picked = pullFromPool(FIRST_SHOW, []);
+      setVideos(picked);
+      syncHasMore();
+
+      if (picked[0]) {
+        lastTopIdRef.current = picked[0].id;
+        saveLastTop(picked[0].id);
+      }
+
+      // Background me agla batch taiyar rakho
+      ensurePool(NEXT_BATCH_WANT * 2, session).catch(() => {});
     } catch (error) {
-
       console.log("Firebase Video Error:", error);
-
     } finally {
-
-      if (!cancelled) {
-        setLoading(false);
-      }
-
+      if (!cancelled) setLoading(false);
     }
-
   };
 
   loadFirstVideos();
@@ -1019,219 +1931,173 @@ useEffect(() => {
   return () => {
     cancelled = true;
   };
+}, []);
 
-}, [blockedUsers]);
-
-// Pull-to-refresh: same feed, fresh order + user variety.
+// PULL-TO-REFRESH (aur app wapas aane par auto-refresh)
 const refreshVideos = useCallback(async () => {
   if (refreshing) return;
   setRefreshing(true);
 
   try {
+    // Jo video abhi screen par hai wo user ne dekha -> seen
+    const cur = videosRef.current[currentIndexRef.current];
+    if (cur) markSeen(cur.id);
 
-    const q = query(
-      collection(db, "all_videos"),
-      orderBy("createdAt", "desc"),
-      orderBy("__name__", "desc"),
-      limit(6)
-    );
+    const session = resetFeedState();
+    Object.keys(videoPositions).forEach((k) => delete videoPositions[k]);
+    setHasMoreVideos(true);
 
-    const snapshot = await getDocs(q);
-    const refreshedVideos = [];
+    await ensurePool(FIRST_SHOW + 2, session);
 
-    snapshot.forEach((docItem) => {
+    const picked = pullFromPool(FIRST_SHOW, []);
 
-      const data = docItem.data();
-
-      if (
-        data.status !== "blocked" &&
-        data.hidden !== true &&
-        !blockedUsers.includes(data.userId)
-      ) {
-
-        refreshedVideos.push({
-          id: docItem.id,
-          ...data,
-          verified: data.verified || false,
-          verifiedColor: data.verifiedColor || "",
-        });
-
-      }
-
-    });
-
-    const mixedVideos = arrangeFeedVideos(refreshedVideos);
-
-    lastVideoDocRef.current = snapshot.docs.length
-      ? snapshot.docs[snapshot.docs.length - 1]
-      : null;
-
-    setHasMoreVideos(snapshot.docs.length === 6);
+    lastViewableIndexRef.current = -1;
+    lastViewableIdRef.current = null;
     setCurrentIndex(0);
     setActiveVideo(0);
+    setMountIndex(0);
     setPausedVideoId(null);
-    setVideos(mixedVideos);
+    setVideos(picked);
+    syncHasMore();
+    scrollRef.current?.scrollToOffset?.({ offset: 0, animated: false });
 
+    if (picked[0]) {
+      lastTopIdRef.current = picked[0].id;
+      saveLastTop(picked[0].id);
+    }
+
+    ensurePool(NEXT_BATCH_WANT * 2, session).catch(() => {});
   } catch (error) {
-
     console.log("Refresh Videos Error:", error);
-
   } finally {
-
     setRefreshing(false);
-
   }
+}, [refreshing]);
 
-}, [blockedUsers, refreshing]);
+refreshRef.current = refreshVideos;
 
+// App background -> seen turant save; 3+ min baad wapas aaye -> naya feed
+useEffect(() => {
+  let backgroundAt = 0;
 
-
-// ==========================
-// LOAD NEXT 5 VIDEOS
-// ==========================
-const loadMoreVideos = useCallback(async () => {
-
-  if (loadingMoreRef.current) {
-    return;
-  }
-
-  if (!hasMoreVideos) {
-    return;
-  }
-
-  if (!lastVideoDocRef.current) {
-    return;
-  }
-
-  loadingMoreRef.current = true;
-
-  try {
-
-    const nextQuery = query(
-      collection(db, "all_videos"),
-      orderBy("createdAt", "desc"),
-      orderBy("__name__", "desc"),
-      startAfter(lastVideoDocRef.current),
-      limit(5)
-    );
-
-    const snapshot = await getDocs(nextQuery);
-
-    if (snapshot.empty) {
-
-      setHasMoreVideos(false);
-
+  const sub = AppState.addEventListener('change', (state) => {
+    if (state === 'background' || state === 'inactive') {
+      if (!backgroundAt) backgroundAt = Date.now();
+      saveSeenMap(seenRef.current);
+      persistResume();
       return;
     }
 
-    const newVideos = [];
-
-    snapshot.forEach((docItem) => {
-
-      const data = docItem.data();
-
-      if (
-        data.status !== "blocked" &&
-        data.hidden !== true &&
-        !blockedUsers.includes(data.userId)
-      ) {
-
-        newVideos.push({
-          id: docItem.id,
-          ...data,
-          verified: data.verified || false,
-          verifiedColor: data.verifiedColor || "",
-        });
-
-      }
-
-    });
-
-    lastVideoDocRef.current =
-      snapshot.docs[snapshot.docs.length - 1];
-
-    if (snapshot.docs.length < 5) {
-      setHasMoreVideos(false);
-    }
-
-    if (newVideos.length > 0) {
-
-      setVideos(prevVideos => {
-
-        const existingIds = new Set(
-          prevVideos.map(video => video.id)
-        );
-
-        const uniqueNewVideos = newVideos.filter(
-          video => !existingIds.has(video.id)
-        );
-
-        // IMPORTANT:
-        // Previous feed ke last 3 users ko bhi cooldown me rakho.
-        // Isliye page boundary par bhi same user turant repeat nahi hoga.
-        const mixedNewVideos = arrangeFeedVideos(
-          uniqueNewVideos,
-          prevVideos
-        );
-
-        return [
-          ...prevVideos,
-          ...mixedNewVideos
-        ];
-
-      });
-
-    }
-
-  } catch (error) {
-
-    console.log(
-      "Load More Videos Error:",
-      error
-    );
-
-  } finally {
-
-    loadingMoreRef.current = false;
-
-  }
-
-}, [hasMoreVideos, blockedUsers]);
-
-
-
-
-
-
-  useEffect(() => {
-  const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
-    if (user) {
-      try {
-        const userRef = doc(db, 'users', user.uid);
-        const userSnap = await getDoc(userRef);
-
-        if (userSnap.exists()) {
-          const data = userSnap.data();
-
-          setCurrentUserData({
-            name: data.username || data.name || 'User',
-            photo:
-              data.profileImg ||
-              'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
-               verified: data.verified || false,
-               verifiedColor: data.verifiedColor || "",
-          });
-        }
-      } catch (error) {
-        console.log(error);
+    if (state === 'active') {
+      const away = backgroundAt ? Date.now() - backgroundAt : 0;
+      backgroundAt = 0;
+      if (away > RESUME_REFRESH_MS) {
+        refreshRef.current?.();
       }
     }
   });
 
-  return () => unsubscribeAuth();
+  return () => sub.remove();
 }, []);
 
+// LOAD MORE (background me, user ke last 4 video par pahunchne se pehle)
+const loadMoreVideos = useCallback(async () => {
+  if (loadingMoreRef.current) return;
+  if (!hasMoreVideos) return;
 
+  loadingMoreRef.current = true;
+
+  try {
+    const session = sessionRef.current;
+
+    await ensurePool(NEXT_BATCH_WANT * 2, session);
+    if (session !== sessionRef.current) return;
+
+    const picked = pullFromPool(NEXT_BATCH_WANT, videosRef.current);
+
+    if (picked.length > 0) {
+      setVideos((prev) => {
+        const ids = new Set(prev.map((v) => v.id));
+        const fresh = picked.filter((v) => !ids.has(v.id));
+        return fresh.length ? [...prev, ...fresh] : prev;
+      });
+    }
+
+    syncHasMore();
+  } catch (error) {
+    console.log("Load More Videos Error:", error);
+  } finally {
+    loadingMoreRef.current = false;
+  }
+}, [hasMoreVideos]);
+
+
+
+
+
+
+useEffect(() => {
+  let alive = true;
+  let unsubDoc = null;
+
+  // 1) Phone me saved naam turant (app khulte hi)
+  readCachedProfile().then((c) => {
+    if (alive && c && c.name && !currentUserRef.current) applyMyProfile(c);
+  });
+
+  // 2) Login restore hote hi users/{uid} ko LIVE sunte raho:
+  //    profile me naam / dp badalte hi yahan bhi turant badal jata hai.
+  const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+    if (unsubDoc) { unsubDoc(); unsubDoc = null; }
+
+    if (!user) {
+      currentUserRef.current = null;
+      AsyncStorage.removeItem(MY_PROFILE_CACHE_KEY).catch(() => {});
+      return;
+    }
+
+    unsubDoc = onSnapshot(
+      doc(db, 'users', user.uid),
+      (snap) => {
+        if (!alive) return;
+        const profile = buildMyProfile(user, snap.exists() ? snap.data() : {});
+        saveCachedProfile(profile);
+        applyMyProfile(profile);
+      },
+      () => {
+        loadMyProfile(true).then((p) => {
+          if (alive && p) applyMyProfile(p);
+        });
+      }
+    );
+  });
+
+  return () => {
+    alive = false;
+    if (unsubDoc) unsubDoc();
+    unsubscribeAuth();
+  };
+}, []);
+
+// Mere saare videos me naam + dp apne aap naya dikhe (feed me abhi load videos)
+useEffect(() => {
+  const uid = auth.currentUser?.uid;
+  const name = currentUserData.name;
+  const photo = currentUserData.photo;
+  if (!uid || !name) return;
+
+  setVideos((prev) => {
+    let changed = false;
+    const next = prev.map((v) => {
+      if (v.userId === uid && (v.username !== name || v.profile !== photo)) {
+        changed = true;
+        return { ...v, username: name, profile: photo };
+      }
+      return v;
+    });
+    return changed ? next : prev;
+  });
+}, [currentUserData.name, currentUserData.photo, videos.length]);
 
 useEffect(() => {
   let unsubscribeWallet = null;
@@ -1327,9 +2193,9 @@ useEffect(() => {
 
 
 useEffect(() => {
+    if (!showComments) commentTextRef.current = '';
 
     if (showComments) {
-
         Animated.spring(commentAnim,{
             toValue:0,
             useNativeDriver:true,
@@ -1357,8 +2223,9 @@ useEffect(() => {
       setIsFocused(true);
   return () => {
   setIsFocused(false);
+  persistResume();
 };
-    }, [activeVideo])
+    }, [])
   );
 
 
@@ -1378,11 +2245,14 @@ if (showSharePopup) {
 
     // Comments open hain to unko close karo
     if (showComments) {
-      setShowComments(false);
+      closeComments();
       return true;
     }
 
-    return false;
+    // Feed home screen hai: back dabane par app se bahar jao
+    // (camera/edit/post jaisi purani screens wapas nahi khulengi)
+    BackHandler.exitApp();
+    return true;
   };
 
   const backHandler = BackHandler.addEventListener(
@@ -1396,143 +2266,110 @@ if (showSharePopup) {
 
 
 
+// ==========================================================
+// COMMENTS LISTENER
+// FIX (loading hi loading): pehle ye effect sirf [selectedVideoId]
+// par chalta tha. Comment band karne ke baad (back / profile se) ID
+// same rehti thi, to dubara kholne par effect chalta hi nahi tha aur
+// `commentsLoading` hamesha true reh jaata tha.
+// Ab effect `showComments` par bhi depend karta hai: khulte hi
+// listener lagta he, band hote hi cleanup se band ho jaata he.
+// (Star popup ab comments ka listener nahi chalata.)
+// ==========================================================
 useEffect(() => {
+  if (!showComments || !selectedVideoId) return;
 
-if (!selectedVideoId) return;
+  const videoId = selectedVideoId;
+  const replyMap = replyUnsubscribers.current;
+  let cancelled = false;
 
+  const q = query(
+    collection(db, "all_videos", videoId, "comments"),
+    orderBy("createdAt", "desc"),
+    limit(commentLimit)
+  );
 
-setComments([]);
-setReplies({});
-setCommentsLoading(true);
+  const unsubscribe = onSnapshot(
+    q,
+    (snapshot) => {
+      if (cancelled) return;
 
+      const fresh = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-// purane reply listeners band karo
-replyUnsubscribers.current.forEach(unsub => unsub());
-replyUnsubscribers.current = [];
+      // Jo comment badla nahi uska purana object rakho -> memo row re-render nahi hoti
+      setComments((prev) => {
+        const old = new Map(prev.map((c) => [c.id, c]));
+        return fresh.map((n) => {
+          const o = old.get(n.id);
+          return o &&
+            o.text === n.text &&
+            o.username === n.username &&
+            o.profilePic === n.profilePic &&
+            o.verified === n.verified &&
+            o.verifiedColor === n.verifiedColor &&
+            o.createdAt?.seconds === n.createdAt?.seconds
+            ? o
+            : n;
+        });
+      });
+      setCommentsLoading(false);
 
+      // Reply listeners DIFF se: sirf naye comments ke liye lagao,
+      // delete hue comments ke band karo (pehle har snapshot par sab dobara bante the)
+      const liveIds = new Set(fresh.map((c) => c.id));
+      const removed = [];
+      replyMap.forEach((unsub, id) => {
+        if (!liveIds.has(id)) {
+          unsub();
+          replyMap.delete(id);
+          removed.push(id);
+        }
+      });
+      if (removed.length) {
+        setReplies((prev) => {
+          const next = { ...prev };
+          removed.forEach((id) => delete next[id]);
+          return next;
+        });
+      }
 
-const q = query(
-  collection(
-    db,
-    "all_videos",
-    selectedVideoId,
-    "comments"
-  ),
-  orderBy("createdAt","desc")
-);
+      fresh.forEach((c) => {
+        if (replyMap.has(c.id)) return;
 
+        const replyQuery = query(
+          collection(db, "all_videos", videoId, "comments", c.id, "replies"),
+          orderBy("createdAt", "asc")
+        );
 
+        const replyUnsub = onSnapshot(
+          replyQuery,
+          (replySnap) => {
+            if (cancelled) return;
+            const list = replySnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            setReplies((prev) => {
+              if (list.length === 0 && !prev[c.id]) return prev; // faltu render nahi
+              return { ...prev, [c.id]: list };
+            });
+          },
+          () => {}
+        );
 
-const unsubscribe = onSnapshot(
-q,
-(snapshot)=>{
+        replyMap.set(c.id, replyUnsub);
+      });
+    },
+    (error) => {
+      console.log("Comment Load Error", error);
+      if (!cancelled) setCommentsLoading(false);
+    }
+  );
 
-
-const data = snapshot.docs.map(doc=>({
-id:doc.id,
-...doc.data()
-}));
-
-
-setComments(data);
-
-// FIX: purane reply listeners yahan bhi band karo, sirf effect
-// ke start par nahi. Warna har naya comment aane/update hone par
-// har comment ke liye ek naya duplicate listener jama hota rehta
-// hai (listener + memory leak, jo time ke saath app ko slow
-// karta hai).
-replyUnsubscribers.current.forEach(unsub => unsub());
-replyUnsubscribers.current = [];
-
-data.forEach((comment)=>{
-
-
-const replyQuery = query(
-
-collection(
-db,
-"all_videos",
-selectedVideoId,
-"comments",
-comment.id,
-"replies"
-),
-
-orderBy(
-"createdAt",
-"asc"
-)
-
-);
-
-
-
-const replyUnsub = onSnapshot(
-replyQuery,
-(replySnap)=>{
-
-
-setReplies(prev=>({
-
-...prev,
-
-[comment.id]:
-
-replySnap.docs.map(doc=>({
-id:doc.id,
-...doc.data()
-}))
-
-}));
-
-
-});
-
-
-replyUnsubscribers.current.push(replyUnsub);
-
-
-
-});
-
-
-
-setCommentsLoading(false);
-
-
-},
-
-(error)=>{
-
-console.log("Comment Load Error",error);
-
-setCommentsLoading(false);
-
-}
-
-);
-
-
-
-return ()=>{
-
-
-unsubscribe();
-
-
-replyUnsubscribers.current.forEach(
-unsub=>unsub()
-);
-
-
-replyUnsubscribers.current=[];
-
-
-};
-
-
-
-},[selectedVideoId]);
+  return () => {
+    cancelled = true;
+    unsubscribe();
+    replyMap.forEach((unsub) => unsub());
+    replyMap.clear();
+  };
+}, [showComments, selectedVideoId, commentLimit]);
 
   // INTERACTIONS
   
@@ -1643,8 +2480,8 @@ replyUnsubscribers.current=[];
                 type: "like",
                 isRead: false,
                 senderId: user.uid,
-                senderName: currentUserData.name,
-                senderPhoto: currentUserData.photo,
+                senderName: (currentUserRef.current?.name || currentUserData.name || user.displayName || user.email?.split('@')[0] || 'User'),
+                senderPhoto: (currentUserRef.current?.photo || currentUserData.photo),
                 videoId: videoId,
                 videoCaption: videoData.caption || "",
                 videoThumbnail:
@@ -1694,30 +2531,49 @@ replyUnsubscribers.current=[];
 
 const handleFollow = async (targetUserId) => {
   const user = auth.currentUser;
-  if (!user || user.uid === targetUserId) return;
+  if (!user) {
+    Alert.alert("Login Required", "Please login to follow.");
+    return;
+  }
+  if (user.uid === targetUserId) return;
 
-  const followingRef = doc(db, "users", user.uid, "following", targetUserId);
-  const followerRef = doc(db, "users", targetUserId, "followers", user.uid);
-  const myUserRef = doc(db, "users", user.uid);
-  const targetUserRef = doc(db, "users", targetUserId);
   const isFollowing = !!followingUsers[targetUserId];
 
+  // Server me jaate waqt nearby-loader is state ko overwrite na kare
+  pendingFollowRef.current[targetUserId] =
+    (pendingFollowRef.current[targetUserId] || 0) + 1;
+
+  // Optimistic: button turant badle
+  setFollowingUsers(prev => ({ ...prev, [targetUserId]: !isFollowing }));
+
   try {
+    // FIX: profile.tsx isi "follows" collection se Followers / Following
+    // count nikalta hai (doc id = myUid_targetUid). Pehle yahan
+    // users/{uid}/following + counter update hota tha, isliye profile ka
+    // count kabhi nahi badhta tha (aur doosre user ke doc ka write rules
+    // se fail hokar poora follow roll-back ho jata tha).
+    const edgeRef = doc(db, "follows", `${user.uid}_${targetUserId}`);
+
     if (isFollowing) {
-      await deleteDoc(followingRef);
-      await deleteDoc(followerRef);
-      await updateDoc(myUserRef, { following: increment(-1) });
-      await updateDoc(targetUserRef, { followers: increment(-1) });
-      setFollowingUsers(prev => ({ ...prev, [targetUserId]: false }));
+      await deleteDoc(edgeRef);
     } else {
-      await setDoc(followingRef, { createdAt: serverTimestamp() });
-      await setDoc(followerRef, { createdAt: serverTimestamp() });
-      await updateDoc(myUserRef, { following: increment(1) });
-      await updateDoc(targetUserRef, { followers: increment(1) });
-      setFollowingUsers(prev => ({ ...prev, [targetUserId]: true }));
+      await setDoc(edgeRef, {
+        followerId: user.uid,
+        followingId: targetUserId,
+        createdAt: Date.now(),
+      });
     }
   } catch (e) {
+    // fail hua to wapas purani state
+    setFollowingUsers(prev => ({ ...prev, [targetUserId]: isFollowing }));
     console.log("Follow Error:", e);
+    Alert.alert("Error", "Follow nahi ho paya, dobara try karo.");
+  } finally {
+    pendingFollowRef.current[targetUserId] =
+      Math.max(0, (pendingFollowRef.current[targetUserId] || 1) - 1);
+    if (!pendingFollowRef.current[targetUserId]) {
+      delete pendingFollowRef.current[targetUserId];
+    }
   }
 };
 
@@ -1825,6 +2681,7 @@ const onOpenComments = useCallback((item) => {
   setReplies({});
   setExpandedReplies({});
   setReplyingTo(null);
+  setCommentLimit(COMMENT_PAGE_SIZE);
   setCommentsLoading(true);
   setSelectedVideoId(item.id);
   setSelectedVideoData({
@@ -1854,79 +2711,56 @@ const onOpenStar = useCallback((videoId) => {
 
 const playStarAnimation = () => {
 
-  starScale.setValue(0.2);
+  // Total ~3 second: chhota -> bara, beech me chamak, last me fade out
+  // (starRotate yahan shine value ki tarah use hota hai)
+  starScale.setValue(0.5);
   starOpacity.setValue(0);
   starRotate.setValue(0);
-  starJump.setValue(40);
-  starTilt.setValue(0);
 
-  Animated.parallel([
+  const shinePulse = Animated.sequence([
+    Animated.timing(starRotate,{ toValue:1, duration:300, useNativeDriver:true }),
+    Animated.timing(starRotate,{ toValue:0, duration:300, useNativeDriver:true }),
+  ]);
 
-    Animated.spring(starScale,{
-      toValue:1.3,
-      friction:3,
-      tension:120,
-      useNativeDriver:true,
-    }),
+  Animated.sequence([
 
-    Animated.timing(starOpacity,{
-      toValue:1,
-      duration:150,
-      useNativeDriver:true,
-    }),
-
-    Animated.timing(starRotate,{
-      toValue:1,
-      duration:1200,
-      useNativeDriver:true,
-    }),
-
-    Animated.timing(starTilt,{
-      toValue:1,
-      duration:1200,
-      useNativeDriver:true,
-    }),
-
-    Animated.spring(starJump,{
-      toValue:-50,
-      friction:4,
-      useNativeDriver:true,
-    })
-
-  ]).start(()=>{
-
-    Animated.sequence([
-
-      Animated.spring(starScale,{
-        toValue:1.6,
-        friction:3,
+    Animated.parallel([
+      // chhota se bara (2.6 sec)
+      Animated.timing(starScale,{
+        toValue:1.25,
+        duration:2600,
+        easing:Easing.out(Easing.cubic),
         useNativeDriver:true,
       }),
 
-      Animated.delay(700),
+      Animated.timing(starOpacity,{
+        toValue:1,
+        duration:250,
+        useNativeDriver:true,
+      }),
 
-      Animated.parallel([
+      // chamak 4 baar
+      Animated.sequence([
+        shinePulse, shinePulse, shinePulse, shinePulse,
+      ]),
+    ]),
 
-        Animated.timing(starOpacity,{
-          toValue:0,
-          duration:500,
-          useNativeDriver:true,
-        }),
+    // last me fade out (0.4 sec)
+    Animated.parallel([
+      Animated.timing(starOpacity,{
+        toValue:0,
+        duration:400,
+        useNativeDriver:true,
+      }),
+      Animated.timing(starScale,{
+        toValue:1.4,
+        duration:400,
+        useNativeDriver:true,
+      }),
+    ]),
 
-        Animated.timing(starScale,{
-          toValue:2,
-          duration:500,
-          useNativeDriver:true,
-        })
-
-      ])
-
-    ]).start(()=>{
-
-      setStarAnimationVideoId(null);
-
-    });
-
+  ]).start(()=>{
+    setStarAnimationVideoId(null);
   });
 
 };
@@ -1940,7 +2774,7 @@ const playStarAnimation = () => {
 
     try {
       const result = await Share.share({ 
-        message: `Check out this amazing video on Star App! ${videoUrl || ''}`,
+        message: `Check out this amazing video on TopKing 👑\n${videoLink(videoId)}`,
       });
       if (result.action === Share.sharedAction) {
         setVideos(prev => prev.map(video =>
@@ -2080,187 +2914,183 @@ const deleteReply = async (commentId, replyId) => {
 
 
 const postComment = async () => {
-
-// Reply mode
-if (replyingTo) {
-  await postReply();
-  return;
-}
-
-console.log("Selected Video:", selectedVideoId);
-console.log("Comment:", commentText);
+  // Reply mode
+  if (replyingTo) {
+    await postReply();
+    return;
+  }
 
   const user = auth.currentUser;
-
   if (!user) {
     Alert.alert('Login Required');
     return;
   }
 
-  if (!commentText.trim()) {
+  const text = commentTextRef.current.trim();
+  const videoId = selectedVideoId;
+  if (!text || !videoId) return;
+
+  // FIX: sahi naam/photo pakka karo (profile load na hui ho to yahin load hogi)
+  const me = await getMyProfileNow(user);
+  if (!me) {
+    Alert.alert('Profile load nahi hui', 'Internet check karke dobara try karo.');
     return;
   }
 
-const text = commentText.trim();
+  const videoMeta = videosRef.current.find((v) => v.id === videoId);
 
-// Turant UI clear karo
-setCommentText("");
-Keyboard.dismiss();
-
-  // Comment count turant screen par badhe.
-  setVideos(prev => prev.map(video =>
-    video.id === selectedVideoId
+  // Turant UI clear + count badhao (optimistic)
+  clearCommentInput();
+  Keyboard.dismiss();
+  setVideos((prev) => prev.map((video) =>
+    video.id === videoId
       ? { ...video, commentsCount: (video.commentsCount || 0) + 1 }
       : video
   ));
 
   try {
-    await addDoc(
-      collection(
-        db,
-        'all_videos',
-        selectedVideoId,
-        'comments'
-      ),
-      {
-        text: text,
-        username: currentUserData.name,
-profilePic: currentUserData.photo,
-        userId: user.uid,
-         verified: currentUserData?.verified || false,
-         verifiedColor:
-  currentUserData?.verifiedColor || "",
-        createdAt: serverTimestamp(),
-      }
-    );
+    // Comment + counter EK hi atomic batch me
+    const batch = writeBatch(db);
+    const commentRef = doc(collection(db, 'all_videos', videoId, 'comments'));
 
-    await updateDoc(
-      doc(db, 'all_videos', selectedVideoId),
-      {
-        commentsCount: increment(1),
-        engagementScore: increment(3),
-      }
-    );
+    batch.set(commentRef, {
+      text,
+      username: me.name,
+      profilePic: me.photo,
+      userId: user.uid,
+      verified: me.verified || false,
+      verifiedColor: me.verifiedColor || "",
+      createdAt: serverTimestamp(),
+    });
 
+    batch.update(doc(db, 'all_videos', videoId), {
+      commentsCount: increment(1),
+      engagementScore: increment(3),
+    });
 
-const videoSnap = await getDoc(
-  doc(db, "all_videos", selectedVideoId)
-);
-
-if (videoSnap.exists()) {
-
-  const videoData = videoSnap.data();
-
-  if (videoData.userId !== user.uid) {
-
-    await addDoc(
-  collection(
-    db,
-    "users",
-    videoData.userId,
-    "notifications"
-  ),
-  {
-    type: "comment",
-isRead: false,
-    senderId: user.uid,
-    senderName: currentUserData.name,
-    senderPhoto: currentUserData.photo,
-
-    videoId: selectedVideoId, // IMPORTANT
-
-    text: text,
-
-    videoCaption: videoData.caption || "",
-
-    videoThumbnail:
-      videoData.thumbnail ||
-      videoData.videoThumbnail ||
-      "",
-
-    createdAt: serverTimestamp(),
-  }
-);
-
-  }
-
-}
-
-
-
-
-    
+    await batch.commit();
   } catch (error) {
-    setVideos(prev => prev.map(video =>
-      video.id === selectedVideoId
+    setVideos((prev) => prev.map((video) =>
+      video.id === videoId
         ? { ...video, commentsCount: Math.max(0, (video.commentsCount || 1) - 1) }
         : video
     ));
     console.log('Comment Error:', error);
+    return;
   }
+
+  // Notification BACKGROUND me (UI ko wait nahi karna padta)
+  (async () => {
+    try {
+      let meta = videoMeta;
+      if (!meta) {
+        const snap = await getDoc(doc(db, 'all_videos', videoId));
+        meta = snap.exists() ? snap.data() : null;
+      }
+      if (!meta || !meta.userId || meta.userId === user.uid) return;
+
+      await addDoc(collection(db, 'users', meta.userId, 'notifications'), {
+        type: 'comment',
+        isRead: false,
+        senderId: user.uid,
+        senderName: me.name,
+        senderPhoto: me.photo,
+        videoId,
+        text,
+        videoCaption: meta.caption || '',
+        videoThumbnail: meta.thumbnail || meta.videoThumbnail || '',
+        createdAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.log('Notification Error:', e);
+    }
+  })();
 };
-
-
-
 
 
 const postReply = async () => {
-
   const user = auth.currentUser;
-
   if (!user) return;
 
-  if (!commentText.trim()) return;
+  const text = commentTextRef.current.trim();
+  const videoId = selectedVideoId;
+  const parent = replyingTo;
+  if (!text || !videoId || !parent) return;
 
-  const text = commentText.trim();
+  const me = await getMyProfileNow(user);
+  if (!me) {
+    Alert.alert('Profile load nahi hui', 'Internet check karke dobara try karo.');
+    return;
+  }
 
-  setCommentText("");
-
+  // Turant UI: input clear, reply mode band, replies khul jaayein
+  clearCommentInput();
   Keyboard.dismiss();
+  setReplyingTo(null);
+  setExpandedReplies((prev) => ({ ...prev, [parent.id]: true }));
 
   try {
-
-    await addDoc(
-
-      collection(
-        db,
-        "all_videos",
-        selectedVideoId,
-        "comments",
-        replyingTo.id,
-        "replies"
-      ),
-
-      {
-        text: text,
-        username: currentUserData.name,
-        profilePic: currentUserData.photo,
-        userId: user.uid,
-        verified: currentUserData.verified || false,
-        verifiedColor:
-          currentUserData.verifiedColor || "",
-        createdAt: serverTimestamp(),
-      }
-
+    const batch = writeBatch(db);
+    const replyRef = doc(
+      collection(db, 'all_videos', videoId, 'comments', parent.id, 'replies')
     );
 
-await updateDoc(
-  doc(db, "all_videos", selectedVideoId),
-  {
-    commentsCount: increment(1),
-    engagementScore: increment(1),
-  }
-);
+    batch.set(replyRef, {
+      text,
+      username: me.name,
+      profilePic: me.photo,
+      userId: user.uid,
+      verified: me.verified || false,
+      verifiedColor: me.verifiedColor || "",
+      createdAt: serverTimestamp(),
+    });
 
-    setReplyingTo(null);
+    batch.update(doc(db, 'all_videos', videoId), {
+      commentsCount: increment(1),
+      engagementScore: increment(1),
+    });
 
+    await batch.commit();
   } catch (error) {
-
     console.log("Reply Error:", error);
-
   }
-
 };
+
+
+// Memoized rows ke liye stable handlers (latest function ref se)
+deleteCommentRef.current = deleteComment;
+deleteReplyRef.current = deleteReply;
+
+const currentUid = auth.currentUser?.uid;
+
+const myName = currentUserData.name;
+const myPhoto = currentUserData.photo;
+
+const renderComment = useCallback(({ item: rawItem }) => {
+  const mine = (o) =>
+    currentUid && myName && o.userId === currentUid &&
+    (o.username !== myName || o.profilePic !== myPhoto)
+      ? { ...o, username: myName, profilePic: myPhoto }
+      : o;
+  const item = mine(rawItem);
+  const rl = replies[rawItem.id];
+  const replyList = rl ? rl.map(mine) : rl;
+  return (
+  <CommentRow
+    item={item}
+    replyList={replyList}
+    expanded={!!expandedReplies[item.id]}
+    currentUid={currentUid}
+    onProfile={onCommentProfile}
+    onReply={onCommentReply}
+    onToggleReplies={onToggleReplies}
+    onDeleteComment={onDeleteComment}
+    onDeleteReply={onDeleteReply}
+  />
+  );
+}, [replies, expandedReplies, currentUid, myName, myPhoto, onCommentProfile, onCommentReply,
+    onToggleReplies, onDeleteComment, onDeleteReply]);
+
 
 
 
@@ -2289,33 +3119,63 @@ await updateDoc(
 
     const index = viewableItems[0].index;
 
-    InteractionManager.runAfterInteractions(() => {
+    // SPEED: same video dobara report ho to kuch mat karo
+    // (faltu re-render + timers reset nahi honge)
+    if (index === lastViewableIndexRef.current && viewableItems[0].item?.id === lastViewableIdRef.current) {
+      return;
+    }
+    lastViewableIndexRef.current = index;
+    lastViewableIdRef.current = viewableItems[0].item?.id;
 
-      setCurrentIndex(index);
-      setActiveVideo(index);
-      setPausedVideoId(null);
+    // requestIdleCallback hata diya: wo play shuru hone me delay
+    // karta tha. Ab video turant chalta hai.
+    setCurrentIndex(index);
+    setActiveVideo(index);
+    setPausedVideoId(null);
 
-    });
+    // Players ka window swipe settle hone ke baad badlo (heavy mount scroll me nahi)
+    if (mountTimeoutRef.current) clearTimeout(mountTimeoutRef.current);
+    mountTimeoutRef.current = setTimeout(() => {
+      setMountIndex(index);
+    }, 250);
 
-    if (viewableItems[0].item) {
+    const currentItem = viewableItems[0].item;
+
+    if (currentItem) {
 
       if (viewTimeout.current) {
         clearTimeout(viewTimeout.current);
       }
 
       viewTimeout.current = setTimeout(() => {
-
-        trackView(
-          viewableItems[0].item.id
-        );
-
+        trackView(currentItem.id);
       }, 2000);
+
+      // SEEN: user ne ~3 sec dekha -> dubara feed me nahi aayega
+      if (seenTimeout.current) {
+        clearTimeout(seenTimeout.current);
+      }
+
+      seenTimeout.current = setTimeout(() => {
+        markSeen(currentItem.id);
+      }, SEEN_DWELL_MS);
 
     }
 
   }
 
 }).current;
+
+// Agle 10 videos ke thumbnails pehle se cache me -> swipe par black flash nahi
+useEffect(() => {
+  const urls = videos
+    .slice(currentIndex + 1, currentIndex + 4)
+    .map((v) => v.thumbnail)
+    .filter((t) => typeof t === 'string' && t.length > 0);
+  if (urls.length) {
+    try { ExpoImage.prefetch(urls, 'memory-disk'); } catch (e) {}
+  }
+}, [currentIndex, videos]);
 
 // ==========================
 // PRELOAD NEXT 5 VIDEOS
@@ -2326,9 +3186,9 @@ useEffect(() => {
     return;
   }
 
-  // Last 3 videos se pehle next 5 videos background me load
+  // Last 4 videos se pehle agle videos background me load
   if (
-    currentIndex >= videos.length - 3 &&
+    currentIndex >= videos.length - 4 &&
     hasMoreVideos &&
     !loadingMoreRef.current
   ) {
@@ -2346,12 +3206,26 @@ useEffect(() => {
 
 
  const viewConfigRef = useRef({
-  itemVisiblePercentThreshold: 80,
+  // 50%: video thoda pehle chalna shuru (60 me delay lagta tha)
+  itemVisiblePercentThreshold: 50,
+  minimumViewTime: 0,
 });
 
   const getIconColor = (path) => pathname === path ? '#3498db' : '#ffffff';
 
 
+
+const feedRefreshControl = useMemo(
+  () => (
+    <RefreshControl
+      refreshing={refreshing}
+      onRefresh={refreshVideos}
+      tintColor="#f1c40f"
+      colors={["#f1c40f"]}
+    />
+  ),
+  [refreshing, refreshVideos]
+);
 
 const renderItem = useCallback(({ item, index }) => {
   // FIX: yahan sirf is ek item ke liye zaroori booleans/values
@@ -2359,16 +3233,25 @@ const renderItem = useCallback(({ item, index }) => {
   // ke andar hai. Isse sirf wahi row re-render hoti hai jiska
   // data sach me badla, poori list nahi.
   const isVideoActive = isFocused && activeVideo === index && pausedVideoId !== item.id;
-  const shouldRenderVideo = index >= currentIndex - 1 && index <= currentIndex + 2;
+  // Pichla 1 + agle 3 videos ke player pehle se ready rakho:
+  // scroll karte hi video turant chalega (na ruka, na black screen).
+  const shouldRenderVideo =
+    index === currentIndex ||
+    (index >= mountIndex - PRELOAD_BEHIND && index <= mountIndex + PRELOAD_AHEAD);
+  const nearVideo = index === currentIndex + 1;
+  const isCurrent = activeVideo === index;
 
   return (
     <VideoItem
       item={item}
       index={index}
       shouldRenderVideo={shouldRenderVideo}
+      nearVideo={nearVideo}
       isVideoActive={isVideoActive}
+      isCurrent={isCurrent}
       showHeart={heartVideoId === item.id}
       showStar={starAnimationVideoId === item.id}
+      starCount={starAnimationCount}
       isLiked={!!localLikes[item.id]}
       isFollowing={!!followingUsers[item.userId]}
       rotateAnim={rotateAnim}
@@ -2391,10 +3274,12 @@ const renderItem = useCallback(({ item, index }) => {
 },[
   activeVideo,
   currentIndex,
+  mountIndex,
   isFocused,
   pausedVideoId,
   heartVideoId,
   starAnimationVideoId,
+  starAnimationCount,
   localLikes,
   followingUsers,
   onItemPress,
@@ -2430,41 +3315,30 @@ const renderItem = useCallback(({ item, index }) => {
         snapToInterval={height}
         snapToAlignment="start"
         decelerationRate="fast"
-        scrollEventThrottle={16}
 disableIntervalMomentum={true}
         showsVerticalScrollIndicator={false}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewConfigRef.current}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={refreshVideos}
-            tintColor="#f1c40f"
-            colors={["#f1c40f"]}
-          />
-        }
+        refreshControl={feedRefreshControl}
 
-        removeClippedSubviews={true}
+        /* removeClippedSubviews video surface ko baar-baar detach/attach
+           karta tha (black flash + atakna) -> band. */
+        removeClippedSubviews={false}
         windowSize={5}
-initialNumToRender={2}
-maxToRenderPerBatch={2}
-updateCellsBatchingPeriod={30}
-maintainVisibleContentPosition={{
-minIndexForVisible:0
-}}
-
-scrollEventThrottle={8}
-    
-disableVirtualization={false}
+        initialNumToRender={2}
+        maxToRenderPerBatch={2}
+        updateCellsBatchingPeriod={30}
+        overScrollMode="never"
+        scrollEventThrottle={16}
+        directionalLockEnabled
 
 
 
 
 
 
-        getItemLayout={(data, index) => (
-          { length: height, offset: height * index, index }
-        )}
+        getItemLayout={getFeedItemLayout}
+        initialScrollIndex={initialIndexRef.current}
       />
 
 
@@ -2594,10 +3468,18 @@ Alert.alert("Not enough Stars");
 return;
 }
 
+// double tap se 2 baar star na jaye
+if(starSending.current) return;
+starSending.current=true;
+
+const giftAmount=selectedStar;
+
 try{
 
 
 setShowStarPopup(false);
+
+setStarAnimationCount(giftAmount);
 
 setStarAnimationVideoId(selectedVideoId);
 
@@ -2606,17 +3488,21 @@ setSelectedStar(null);
 playStarAnimation();
 
 
-const res = await callApi("/gift/video-star",{
+await callApi("/gift/video-star",{
 videoId:selectedVideoId,
-stars:selectedStar
+stars:giftAmount
 });
 
-setMyStars(prev => prev - selectedStar);
+// myStars wallet snapshot se khud update hota hai (manual minus se double minus hota tha)
 
 }catch(e){
 
 console.log(e);
 Alert.alert("Star", (e as any)?.message || "Could not send star");
+
+}finally{
+
+starSending.current=false;
 
 }
 
@@ -2778,27 +3664,7 @@ Alert.alert("Star", (e as any)?.message || "Could not send star");
   <Pressable
     style={StyleSheet.absoluteFill}
 
-   onPress={() => {
-
-Animated.timing(commentAnim,{
-toValue:height,
-duration:200,
-useNativeDriver:true
-}).start(()=>{
-
-setShowComments(false);
-
-setSelectedVideoId(null);
-
-setComments([]);
-
-setReplies({});
-
-setCommentsLoading(false);
-
-});
-
-}}
+   onPress={closeComments}
   />
 
   {/* Bottom Sheet */}
@@ -2917,406 +3783,28 @@ translateY:commentAnim
 
 
 
-{
-commentsLoading ? (
-
-<View
-style={{
-flex:1,
-justifyContent:"center",
-alignItems:"center",
-marginTop:20,
-}}
->
-
-<ActivityIndicator
-size="large"
-color="#FFD700"
-/>
-
-</View>
-
+{commentsLoading ? (
+  <View style={{ flex: 1, justifyContent: "center", alignItems: "center", marginTop: 20 }}>
+    <ActivityIndicator size="large" color="#FFD700" />
+  </View>
 ) : (
-
-
-
-    <FlatList
-      data={comments}
-      removeClippedSubviews={false}
-
-initialNumToRender={10}
-
-maxToRenderPerBatch={8}
-
-windowSize={8}
-
-keyboardDismissMode="interactive"
-
-keyboardShouldPersistTaps="handled"
-      keyExtractor={(item) => item.id}
-  style={{ flex: 1, marginTop: 20 }}
-  contentContainerStyle={{
-    paddingBottom: 80, // input box ke liye space
-  }}
-
-
-
-  showsVerticalScrollIndicator={false}
-  keyboardShouldPersistTaps="handled"
-
-      renderItem={({ item }) => (
-
-     <View
-  style={{
-    flexDirection: 'row',
-    paddingHorizontal: 15,
-    marginBottom: 15,
-    alignItems: 'flex-start',
-  }}
->
-
-          <TouchableOpacity
-  onPress={() => {
-    setShowComments(false);
-
-    router.push({
-      pathname: "/userProfile",
-      params: {
-        userId: item.userId,
-      },
-    });
-  }}
->
-  <Image
-    source={{ uri: item.profilePic }}
-    style={{
-      width: 40,
-      height: 40,
-      borderRadius: 20,
-    }}
+  <FlatList
+    data={comments}
+    renderItem={renderComment}
+    keyExtractor={commentKeyExtractor}
+    style={{ flex: 1, marginTop: 20 }}
+    contentContainerStyle={{ paddingBottom: 80 }}
+    showsVerticalScrollIndicator={false}
+    keyboardDismissMode="interactive"
+    keyboardShouldPersistTaps="handled"
+    removeClippedSubviews={false}
+    initialNumToRender={10}
+    maxToRenderPerBatch={8}
+    windowSize={8}
+    onEndReached={loadMoreComments}
+    onEndReachedThreshold={0.5}
+    ListEmptyComponent={CommentsEmpty}
   />
-</TouchableOpacity>
-
-          <View
-            style={{
-              marginLeft: 10,
-              flex: 1,
-            }}
-          >
-
-           
-<View
-  style={{
-    flexDirection: "row",
-    alignItems: "center",
-  }}
->
-  <Text
-    style={{
-      color: "#fff",
-      fontWeight: "bold",
-    }}
-  >
-    {item.username}
-  </Text>
-
-
-{item.verified && (
-<View
-  style={{
-    marginLeft: 5,
-    width: 16,
-    height: 16,
-    justifyContent: "center",
-    alignItems: "center",
-    position: "relative",
-  }}
->
-
-
- <MaterialCommunityIcons
-  name="check-decagram"
-  size={17}
-  color={
-    item?.verifiedColor === "yellow"
-      ? "#FFD700"
-      : "#ffffff"
-  }
-/>
-
-  
-</View>
-)}
-
-
-</View>
-
-
-            <Text style={{ color: '#fff' }}>
-              {item.text}
-            </Text>
-
-            <Text
-              style={{
-                color: '#999',
-                fontSize: 11,
-                marginTop: 3,
-              }}
-            >
-              {getTimeAgo(item.createdAt)}
-            </Text>
-
-<View
-  style={{
-    flexDirection: "row",
-    marginTop: 8,
-  }}
->
-
-  <TouchableOpacity
-    onPress={() => {
-
-  setReplyingTo({
-    id: item.id,
-    username: item.username,
-  });
-
-  setReplyText("");
-
-  setTimeout(() => {
-    commentInputRef.current?.focus();
-  }, 100);
-
-}}
-  >
-
-    <Text
-      style={{
-        color: "#999",
-        fontSize: 13,
-        fontWeight: "600",
-      }}
-    >
-      Reply
-    </Text>
-
-  </TouchableOpacity>
-
-</View>
-
-
-
-{
-  replies[item.id]?.length > 0 && (
-
-    <TouchableOpacity
-      onPress={() => {
-
-        setExpandedReplies(prev => ({
-          ...prev,
-          [item.id]: !prev[item.id],
-        }));
-
-      }}
-
-      style={{
-        marginTop: 8,
-        marginLeft: 15,
-      }}
-    >
-
-      <Text
-        style={{
-          color: "#999",
-          fontSize: 13,
-          fontWeight: "600",
-        }}
-      >
-
-        {
-          expandedReplies[item.id]
-            ? "Hide replies"
-            : `View ${replies[item.id].length} ${
-                replies[item.id].length === 1
-                  ? "reply"
-                  : "replies"
-              }`
-        }
-
-      </Text>
-
-    </TouchableOpacity>
-
-  )
-}
-
-
-
-{
-  replies[item.id]?.length > 0 &&
-expandedReplies[item.id] && (
-
-    <View
-      style={{
-        marginTop: 10,
-        marginLeft: 15,
-        borderLeftWidth: 1,
-        borderLeftColor: "#333",
-        paddingLeft: 12,
-      }}
-    >
-
-      {replies[item.id].map((reply) => (
-
-        <View
-          key={reply.id}
-          style={{
-            flexDirection: "row",
-            marginBottom: 12,
-            alignItems: "flex-start",
-          }}
-        >
-
-          <Image
-            source={{ uri: reply.profilePic }}
-            style={{
-              width: 30,
-              height: 30,
-              borderRadius: 15,
-            }}
-          />
-
-          <View
-            style={{
-              marginLeft: 8,
-              flex: 1,
-            }}
-          >
-
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-              }}
-            >
-
-              <Text
-                style={{
-                  color: "#fff",
-                  fontWeight: "bold",
-                  fontSize: 13,
-                }}
-              >
-                {reply.username}
-              </Text>
-
-              {reply.verified && (
-
-                <MaterialCommunityIcons
-                  name="check-decagram"
-                  size={15}
-                  color={
-                    reply.verifiedColor === "yellow"
-                      ? "#FFD700"
-                      : "#ffffff"
-                  }
-                  style={{ marginLeft: 5 }}
-                />
-
-              )}
-
-            </View>
-
-            <Text
-              style={{
-                color: "#fff",
-                marginTop: 2,
-              }}
-            >
-              {reply.text}
-            </Text>
-
-            <Text
-              style={{
-                color: "#888",
-                fontSize: 11,
-                marginTop: 3,
-              }}
-            >
-              {getTimeAgo(reply.createdAt)}
-            </Text>
-
-
-          </View>
-
-{
-auth.currentUser?.uid === reply.userId && (
-
-<TouchableOpacity
-
-onPress={()=>deleteReply(
-item.id,
-reply.id
-)}
-
-style={{
-  paddingLeft:10,
-  paddingTop:5,
-}}
-
->
-
-<Ionicons
-  name="ellipsis-vertical"
-  size={20}
-  color="#fff"
-/>
-
-</TouchableOpacity>
-
-)
-}
-
-
-        </View>
-
-      ))}
-
-    </View>
-
-  )
-}
-
-
-          </View>
-
-
-{auth.currentUser?.uid === item.userId && (
-
-    <TouchableOpacity
-      onPress={() =>
-        deleteComment(item.id)
-      }
-      style={{
-        paddingLeft: 10,
-        paddingTop: 5,
-      }}
-    >
-      <Ionicons
-        name="ellipsis-vertical"
-        size={20}
-        color="#fff"
-      />
-    </TouchableOpacity>
-
-  )}
-
-
-        </View>
-
-      )}
-    />
-
 )}
 
     <Animated.View
@@ -3347,12 +3835,13 @@ translateY:Animated.multiply(keyboardHeight,-1)
 
     <TextInput
     ref={commentInputRef}
-  value={commentText}
-  onChangeText={setCommentText}
+  onChangeText={onCommentChange}
   placeholder={
   replyingTo
     ? `Reply to @${replyingTo.username}`
-    : `Comment as ${currentUserData.name}...`
+    : currentUserData.name
+    ? `Comment as ${currentUserData.name}...`
+    : 'Add a comment...'
 }
   placeholderTextColor="#999"
   style={styles.commentInput}
@@ -3365,7 +3854,7 @@ translateY:Animated.multiply(keyboardHeight,-1)
 
   // Keyboard ka send button dabane par
   onSubmitEditing={() => {
-    if (commentText.trim()) {
+    if (commentTextRef.current.trim()) {
       postComment();
     }
   }}
@@ -3490,7 +3979,7 @@ const styles = StyleSheet.create({
   fullScreenOverlay: { flex: 1, backgroundColor: '#000' },
   video: {
   width: '100%',
-  height: '90%',
+  height: '89%',
 },
   overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.1)' },
 
@@ -3560,12 +4049,14 @@ backgroundColor:"#fff",
 },
 
 
+  bufferSpinner: { position: 'absolute', top: '50%', left: 0, right: 0, alignItems: 'center', zIndex: 5 },
+
   rightIcons:  {
   position: 'absolute',
 
-  right: -10,
+  right: 3,
 
-  bottom: 120,   // video ke niche se kitna upar
+  bottom: 110,   // video ke niche se kitna upar
 
   alignItems: 'center',
 
@@ -3573,21 +4064,35 @@ backgroundColor:"#fff",
 },
 
 
-  iconBox: { marginBottom: 8, alignItems: 'center' },
-  iconText: { color: '#ffffff', fontWeight: 'bold', marginTop: 4, fontSize: 12 },
-  profileImage: { width: 50, height: 50, borderRadius: 25, borderWidth: 1, borderColor: '#ffffff' },
+  iconBox: { marginBottom: 14, alignItems: 'center' },
+  iconShadow: { textShadowColor: 'rgba(0,0,0,0.35)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
+  iconText: { color: '#ffffff', fontWeight: '700', marginTop: 2, fontSize: 14, textShadowColor: 'rgba(0,0,0,0.6)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
+  profileImage: { width: 50, height: 50, borderRadius: 18, borderWidth: 1.5, borderColor: '#ffffff' },
+  profileImageLive: { borderWidth: 3, borderColor: '#FFD700' },
+  liveTagFeed: {
+    position: 'absolute',
+    top: -7,
+    alignSelf: 'center',
+    backgroundColor: '#FF2D55',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderWidth: 1,
+    borderColor: '#fff',
+  },
+  liveTagFeedText: { color: '#fff', fontSize: 9, fontWeight: '900', letterSpacing: 0.6 },
 
  plusIconSmall:{
 
 position:'absolute',
 
-bottom:-6,
+bottom:-8,
 
 alignSelf:'center',
 
 backgroundColor:'#FFD700',
 
-width:20,
+width:27,
 
 height:20,
 
@@ -3601,8 +4106,8 @@ zIndex:9999,
 
 },
 
-  starImage: { width: 90, height: 90, resizeMode: 'contain' },
-  starUpText: { color: '#FFD700', fontSize: 12, fontWeight: 'bold', marginTop: -25, textShadowColor: 'rgba(0,0,0,0.6)', textShadowOffset: {width: 1, height: 1}, textShadowRadius: 2 },
+  starImage: { width: 65, height: 65, resizeMode: 'contain' },
+  starUpText: { color: '#fffef7', fontSize: 13, fontWeight: 'bold', marginTop: 0, textShadowColor: 'rgba(0,0,0,0.6)', textShadowOffset: {width: 1, height: 1}, textShadowRadius: 2 },
   topTabsContainer: { position: 'absolute', top: Platform.OS === 'ios' ? 50 : 30, width: width, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', zIndex: 10 },
   tabText: { color: '#ffffff', fontSize: 18, marginHorizontal: 15, textShadowColor: 'rgba(0,0,0,0.8)', textShadowRadius: 3 },
   activeUnderline: { width: 30, height: 3, backgroundColor: '#ffffff', alignSelf: 'center', marginTop: 2, borderRadius: 2 },
@@ -3738,9 +4243,8 @@ starRow: {
 starCard: {
   width: 90,
   height: 100,
-  backgroundColor: '#222',
+  backgroundColor: 'transparent',
   borderRadius: 20,
-
   justifyContent: 'center',
   alignItems: 'center',
 },
@@ -3760,10 +4264,10 @@ starNumber: {
 },
 
 starValue: {
-  color: '#FFD700',
+  color: '#272725',
   fontWeight: 'bold',
   fontSize: 15,
-  marginTop: -20,   // upar layega
+  marginTop: -45,   // upar layega
 },
 
 popupStarImage: {
@@ -3783,16 +4287,16 @@ myStarBox: {
 },
 
 myStarImage: {
-  width: 45,
-  height: 45,
+  width: 40,
+  height: 40,
   resizeMode: 'contain',
 },
 
 myStarText: {
-  color: '#FFD700',
+  color: '#f5e900',
   fontSize: 24,
   fontWeight: 'bold',
-  marginLeft: -5,
+  marginLeft: -0,
 },
 
 sharePopupContainer: {

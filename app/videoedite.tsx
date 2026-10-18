@@ -52,6 +52,14 @@ const DEFAULT_AVATAR = 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png'
 
 const auth = getAuth();
 
+// Count short form me: 813 -> 813, 19200 -> 19.2K, 1200000 -> 1.2M (index.tsx jaisa)
+const formatCount = (n) => {
+  const num = Number(n) || 0;
+  if (num >= 1000000) return (num / 1000000).toFixed(num >= 10000000 ? 0 : 1).replace(/\.0$/, '') + 'M';
+  if (num >= 1000) return (num / 1000).toFixed(num >= 100000 ? 0 : 1).replace(/\.0$/, '') + 'K';
+  return String(num);
+};
+
 /* ---------------- Verified badge ---------------- */
 
 const VerifiedBadge = ({ color, size = 18 }) => (
@@ -870,26 +878,29 @@ export default function App() {
           </View>
         )}
 
-        {/* Side bar */}
+        {/* Side bar (index.tsx jaisa design) */}
         <View style={styles.sideBar}>
-          <TouchableOpacity
-            onPress={() =>
-              router.push({ pathname: '../Profile', params: { userId: item.userId } })
-            }
-          >
-            <Image
-              source={{ uri: item.profile || DEFAULT_AVATAR }}
-              style={styles.profileImage}
-            />
-          </TouchableOpacity>
+          <View style={[styles.iconBox, { marginBottom: 20 }]}>
+            <TouchableOpacity
+              onPress={() =>
+                router.push({ pathname: '../Profile', params: { userId: item.userId } })
+              }
+            >
+              <Image
+                source={{ uri: item.profile || DEFAULT_AVATAR }}
+                style={styles.profileImage}
+              />
+            </TouchableOpacity>
+          </View>
 
           <TouchableOpacity style={styles.iconBox} onPress={() => handleLike(item.id)}>
             <Ionicons
               name="heart"
-              size={38}
-              color={localLikes[item.id] ? 'red' : '#fff'}
+              size={44}
+              color={localLikes[item.id] ? '#ff2d55' : '#ffffff'}
+              style={styles.iconShadow}
             />
-            <Text style={styles.iconText}>{item.likes || 0}</Text>
+            <Text style={styles.iconText}>{formatCount(item.likes)}</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -904,8 +915,13 @@ export default function App() {
               setShowComments(true);
             }}
           >
-            <Ionicons name="chatbubble" size={35} color="#fff" />
-            <Text style={styles.iconText}>{item.commentsCount || 0}</Text>
+            <Ionicons
+              name="chatbubble-ellipses"
+              size={40}
+              color="#ffffff"
+              style={styles.iconShadow}
+            />
+            <Text style={styles.iconText}>{formatCount(item.commentsCount)}</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -915,10 +931,11 @@ export default function App() {
               setShowSharePopup(true);
             }}
           >
-            <Ionicons name="arrow-redo" size={35} color="#FFD700" />
-            <Text style={styles.iconText}>{item.shares || 0}</Text>
+            <Ionicons name="arrow-redo" size={42} color="#ffffff" style={styles.iconShadow} />
+            <Text style={styles.iconText}>{formatCount(item.shares)}</Text>
           </TouchableOpacity>
 
+          {/* Delete button: pehle jaisa, sabse niche */}
           {auth.currentUser?.uid === item.userId && (
             <TouchableOpacity
               style={styles.iconBox}
@@ -1331,7 +1348,7 @@ const styles = StyleSheet.create({
 
   sideBar: {
     position: 'absolute',
-    right: 7,
+    right: 3,
     bottom: 65,
     alignItems: 'center',
     zIndex: 999,
@@ -1368,15 +1385,28 @@ const styles = StyleSheet.create({
   profileImage: {
     width: 50,
     height: 50,
-    borderRadius: 30,
-    borderWidth: 2,
-    borderColor: '#fff',
-    marginBottom: 15,
+    borderRadius: 18,
+    borderWidth: 1.5,
+    borderColor: '#ffffff',
   },
 
-  iconBox: { alignItems: 'center', marginBottom: 10 },
+  iconBox: { alignItems: 'center', marginBottom: 14 },
 
-  iconText: { color: '#fff', fontWeight: 'bold', marginTop: 3 },
+  iconShadow: {
+    textShadowColor: 'rgba(0,0,0,0.35)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
+
+  iconText: {
+    color: '#ffffff',
+    fontWeight: '700',
+    marginTop: 2,
+    fontSize: 14,
+    textShadowColor: 'rgba(0,0,0,0.6)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
 
   videoLoading: {
     ...StyleSheet.absoluteFillObject,

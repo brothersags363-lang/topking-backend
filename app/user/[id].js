@@ -33,6 +33,22 @@ import {
   getDocs,
 } from 'firebase/firestore';
 
+// Grid thumbnail: muted, paused video (expo-video)
+function VideoThumb({ uri }) {
+  const player = useVideoPlayer(uri || null, (p) => {
+    p.muted = true;
+    p.loop = false;
+  });
+  return (
+    <VideoView
+      player={player}
+      style={{ flex: 1 }}
+      contentFit="cover"
+      nativeControls={false}
+    />
+  );
+}
+
 const { width } = Dimensions.get('window');
 const ITEM_SIZE = width / 3 - 2;
 
@@ -248,13 +264,7 @@ export default function UserPage() {
               style={styles.videoGrid}
     onPress={() => router.push(`/user/${item.id}`)}
             >
-              <Video
-                source={{ uri: item.videoUrl }}
-                style={{ flex: 1 }}
-                resizeMode={ResizeMode.COVER}
-                isMuted
-                shouldPlay={false}
-              />
+              <VideoThumb uri={item.videoUrl} />
             </TouchableOpacity>
           )}
         />

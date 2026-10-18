@@ -8,8 +8,10 @@ import {
 import { useCallback, useEffect, useMemo, useState, memo } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Image,
+  Modal,
   SafeAreaView,
   StatusBar,
   StyleSheet,
@@ -18,6 +20,7 @@ import {
   View,
 } from "react-native";
 import { db } from "./firebaseConfig";
+import { callApi } from "../utils/api";
 
 /**
  * Agency Top / Leaderboard
@@ -235,6 +238,12 @@ export default function AgencyTop({ navigation, router }) {
   const [loading, setLoading] = useState(true);
   const [showAll, setShowAll] = useState(false);
 
+  // JOIN REQUEST POPUP
+  const [selectedAgency, setSelectedAgency] = useState(null);
+  // loading | none | pending | member | owner | in_other_agency | blocked
+  const [joinStatus, setJoinStatus] = useState("loading");
+  const [sending, setSending] = useState(false);
+
   useEffect(() => {
     const q = query(
       collection(db, "agencies"),
@@ -278,15 +287,57 @@ export default function AgencyTop({ navigation, router }) {
     else if (navigation?.goBack) navigation.goBack();
   }, [router, navigation]);
 
-  const openAgency = useCallback((agency) => {
-    // Optional: replace with your own agency profile route.
-    if (router?.push) {
-      router.push({
-        pathname: "/AgencyProfile",
-        params: { agencyId: agency.id },
-      });
+  // Agency par tap -> popup khulta hai (request bhejo ya cancel karo)
+  const openAgency = useCallback(async (agency) => {
+    setSelectedAgency(agency);
+    setJoinStatus("loading");
+    try {
+      const res = await callApi("/agency/join-status", { agencyId: agency.id });
+      if (res && res.success === false) throw new Error(res.error);
+      setJoinStatus(res?.blocked ? "blocked" : res?.status || "none");
+    } catch (e) {
+      console.log("JOIN STATUS ERROR:", e);
+      setJoinStatus("none");
     }
-  }, [router]);
+  }, []);
+
+  const closePopup = useCallback(() => {
+    if (sending) return;
+    setSelectedAgency(null);
+  }, [sending]);
+
+  const sendJoinRequest = useCallback(async () => {
+    if (!selectedAgency || sending) return;
+    try {
+      setSending(true);
+      const res = await callApi("/agency/request-join", {
+        agencyId: selectedAgency.id,
+      });
+      if (res && res.success === false) throw new Error(res.error);
+      setJoinStatus("pending");
+      Alert.alert("Request Sent", "Agency owner accept karega to aap join ho jaoge.");
+    } catch (e) {
+      Alert.alert("Error", e?.message || "Request nahi bheji ja saki");
+    } finally {
+      setSending(false);
+    }
+  }, [selectedAgency, sending]);
+
+  const cancelJoinRequest = useCallback(async () => {
+    if (!selectedAgency || sending) return;
+    try {
+      setSending(true);
+      const res = await callApi("/agency/cancel-join-request", {
+        agencyId: selectedAgency.id,
+      });
+      if (res && res.success === false) throw new Error(res.error);
+      setJoinStatus("none");
+    } catch (e) {
+      Alert.alert("Error", e?.message || "Request cancel nahi ho saki");
+    } finally {
+      setSending(false);
+    }
+  }, [selectedAgency, sending]);
 
   // Stable renderItem reference for FlatList -> kam re-renders, smooth scroll.
   // "rest" list ka pehla item asal me overall #4 rank hai (top 3 podium me
@@ -427,6 +478,123 @@ export default function AgencyTop({ navigation, router }) {
           />
         )}
       </View>
+
+      {/* Agency join request popup */}
+      <Modal
+        visible={!!selectedAgency}
+        transparent
+        animationType="fade"
+        onRequestClose={closePopup}
+      >
+        <View style={styles.modalBg}>
+          <View style={styles.popup}>
+            {selectedAgency && (
+              <>
+                <AgencyAvatar agency={selectedAgency} size={84} />
+                <Text numberOfLines={1} style={styles.popupName}>
+                  {selectedAgency.agencyName || "Unnamed Agency"}
+                </Text>
+                <Text style={styles.popupOwner}>
+                  {selectedAgency.ownerName
+                    ? `Owner • ${selectedAgency.ownerName}`
+                    : "Official Agency"}
+                </Text>
+
+                <View style={styles.popupStats}>
+                  <Ionicons name="star" size={13} color="#FFD34E" />
+                  <Text style={styles.popupStatText}>
+                    {formatNumber(selectedAgency.totalStars)} stars
+                  </Text>
+                  <View style={styles.dot} />
+                  <Ionicons name="people" size={12} color="#AEB9D8" />
+                  <Text style={styles.popupStatText}>
+                    {formatNumber(selectedAgency.totalMembers)} members
+                  </Text>
+                </View>
+
+                {joinStatus === "loading" ? (
+                  <ActivityIndicator
+                    color="#FFD34E"
+                    style={{ marginVertical: 22 }}
+                  />
+                ) : joinStatus === "none" ? (
+                  <>
+                    <Text style={styles.popupQuestion}>
+                      Is agency ko join request bhejni hai?
+                    </Text>
+                    <View style={styles.popupBtnRow}>
+                      <TouchableOpacity
+                        style={[styles.popupBtn, styles.rejectPopupBtn]}
+                        onPress={closePopup}
+                        disabled={sending}
+                      >
+                        <Text style={styles.rejectPopupText}>Reject</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.popupBtn, styles.sendPopupBtn]}
+                        onPress={sendJoinRequest}
+                        disabled={sending}
+                      >
+                        {sending ? (
+                          <ActivityIndicator color="#000" />
+                        ) : (
+                          <Text style={styles.sendPopupText}>Send Request</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                ) : joinStatus === "pending" ? (
+                  <>
+                    <Text style={styles.popupQuestion}>
+                      Request bhej di gayi hai. Agency owner ke accept karne ka
+                      intezaar hai.
+                    </Text>
+                    <View style={styles.popupBtnRow}>
+                      <TouchableOpacity
+                        style={[styles.popupBtn, styles.rejectPopupBtn]}
+                        onPress={cancelJoinRequest}
+                        disabled={sending}
+                      >
+                        {sending ? (
+                          <ActivityIndicator color="#fff" />
+                        ) : (
+                          <Text style={styles.rejectPopupText}>
+                            Cancel Request
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.popupBtn, styles.sendPopupBtn]}
+                        onPress={closePopup}
+                      >
+                        <Text style={styles.sendPopupText}>OK</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.popupQuestion}>
+                      {joinStatus === "member"
+                        ? "Aap is agency ke member ho."
+                        : joinStatus === "owner"
+                        ? "Ye aapki apni agency hai."
+                        : joinStatus === "blocked"
+                        ? "Ye agency abhi available nahi hai."
+                        : "Aap pehle se kisi agency me ho."}
+                    </Text>
+                    <TouchableOpacity
+                      style={[styles.popupBtn, styles.sendPopupBtn, { alignSelf: "stretch" }]}
+                      onPress={closePopup}
+                    >
+                      <Text style={styles.sendPopupText}>OK</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -821,6 +989,62 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     marginRight: 5,
   },
+
+  /* JOIN REQUEST POPUP */
+  modalBg: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.72)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  popup: {
+    width: "86%",
+    alignItems: "center",
+    backgroundColor: "#0D1330",
+    borderWidth: 1,
+    borderColor: "#28335F",
+    borderRadius: 20,
+    padding: 22,
+  },
+  popupName: {
+    color: "#FFFFFF",
+    fontSize: 19,
+    fontWeight: "900",
+    marginTop: 12,
+    maxWidth: "95%",
+  },
+  popupOwner: { color: "#8C98B8", fontSize: 12, marginTop: 3 },
+  popupStats: { flexDirection: "row", alignItems: "center", marginTop: 10 },
+  popupStatText: {
+    color: "#AEB7D2",
+    fontSize: 12,
+    fontWeight: "700",
+    marginLeft: 3,
+  },
+  popupQuestion: {
+    color: "#D9DEFF",
+    fontSize: 13,
+    textAlign: "center",
+    lineHeight: 19,
+    marginTop: 18,
+    marginBottom: 16,
+  },
+  popupBtnRow: { flexDirection: "row", gap: 10, alignSelf: "stretch" },
+  popupBtn: {
+    flex: 1,
+    height: 46,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rejectPopupBtn: {
+    backgroundColor: "#2A1620",
+    borderWidth: 1,
+    borderColor: "#7A2A3E",
+  },
+  rejectPopupText: { color: "#FF6B85", fontWeight: "900", fontSize: 14 },
+  sendPopupBtn: { backgroundColor: "#FFD34E" },
+  sendPopupText: { color: "#000", fontWeight: "900", fontSize: 14 },
 
   loader: {
     flex: 1,

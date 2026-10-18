@@ -11,6 +11,7 @@ ActivityIndicator,
 Image,
 Modal,
 BackHandler,
+Alert,
 } from "react-native";
 
 import { useRouter } from "expo-router";
@@ -33,6 +34,8 @@ serverTimestamp,
 import { getAuth } from "firebase/auth";
 
 import { db } from "./firebaseConfig";
+
+import { callApi } from "../utils/api";
 
 import { Ionicons } from "@expo/vector-icons";
 
@@ -467,6 +470,12 @@ style={styles.logo}
 Owner : {item.ownerName}
 </Text>
 
+{!!item.bdUsername && (
+<Text style={styles.info}>
+BD : {item.bdUsername}
+</Text>
+)}
+
 <Text style={styles.info}>
 Members : {item.totalMembers || 0}
 </Text>
@@ -570,10 +579,26 @@ item.status==="blocked"
 
 <TouchableOpacity
 style={styles.deleteBtn}
-onPress={async()=>{
+onPress={()=>{
 
-await deleteDoc(
-doc(db,"agencies",item.id)
+Alert.alert(
+"Agency delete karni hai?",
+`${item.agencyName || "Agency"} delete hogi. Owner access aur saare hosts agency se hat jayenge. Ye wapas nahi hoga.`,
+[
+{ text:"Cancel", style:"cancel" },
+{
+text:"Delete",
+style:"destructive",
+onPress: async()=>{
+try{
+await callApi("/admin/delete-agency",{ agencyId:item.id });
+Alert.alert("Agency Deleted");
+}catch(e){
+Alert.alert("Error", e.message || "Delete nahi hui");
+}
+}
+}
+]
 );
 
 }}

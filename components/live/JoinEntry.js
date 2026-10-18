@@ -94,11 +94,11 @@ const glide = (enter, exit) => ({
 
 // ---------- shared pieces ----------
 const Verified = ({ data, size = 16 }) =>
-  data.verified ? (
+  (data.verified === true || data.verified === 'true') ? (
     <MaterialCommunityIcons
       name="check-decagram"
       size={size}
-      color={data.verifiedColor === 'yellow' ? '#FFD700' : '#4FC3F7'}
+      color={data.verifiedColor === 'yellow' ? '#FFD700' : '#FFFFFF'}
       style={{ marginLeft: 3 }}
     />
   ) : null;
@@ -110,8 +110,8 @@ const Who = ({ data, size = 16, subtitle = 'joined' }) => (
         source={{ uri: data.userImg || FALLBACK_AVATAR }}
         style={styles.avatar}
       />
-      {data.level >= 10 && (
-        <LevelFrame level={data.level} animated={false} style={styles.frame} />
+      {(data.level >= 10 || !!data.senderId) && (
+        <LevelFrame level={data.level} uid={data.senderId} animated={false} style={styles.frame} />
       )}
     </View>
     <Text numberOfLines={1} style={[styles.name, { fontSize: size }]}>
@@ -476,8 +476,8 @@ const PinkEntry = ({ data, onDone }) => {
         >
           <Animated.View style={[styles.avatarWrap, { transform: [{ scale: beat }] }]}>
             <Image source={{ uri: data.userImg || FALLBACK_AVATAR }} style={styles.avatar} />
-            {data.level >= 10 && (
-              <LevelFrame level={data.level} animated={false} style={styles.frame} />
+            {(data.level >= 10 || !!data.senderId) && (
+              <LevelFrame level={data.level} uid={data.senderId} animated={false} style={styles.frame} />
             )}
           </Animated.View>
           <Text numberOfLines={1} style={[styles.name, { fontSize: 17, flexShrink: 1 }]}>

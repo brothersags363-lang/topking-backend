@@ -29,6 +29,8 @@ import {
 
 export default function FeedbackScreen() {
 
+  const router = useRouter();
+
 // Mobile hardware back button
 useEffect(() => {
   const handleBackPress = () => {
@@ -46,8 +48,6 @@ useEffect(() => {
   };
 }, [router]);
 
-
-  const router = useRouter();
 
   const [subject, setSubject] = useState("");
 

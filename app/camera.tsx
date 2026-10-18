@@ -21,7 +21,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import * as ImagePicker from 'expo-image-picker';
-import { Audio } from 'expo-av';
+import { Audio } from '../utils/audio';
 
 import { Ionicons } from '@expo/vector-icons';
 
@@ -35,6 +35,7 @@ import {
   useRouter,
   useLocalSearchParams,
 } from 'expo-router';
+import { useIsFocused } from '@react-navigation/native';
 
 import {
   getDoc,
@@ -43,6 +44,7 @@ import {
 
 import {
   getAuth,
+  onAuthStateChanged,
 } from 'firebase/auth';
 
 import { db } from './firebaseConfig';
@@ -321,24 +323,36 @@ const zoomStyles = StyleSheet.create({
 });
 
 
+// Live/Audio permission cache (app chalne tak yaad rahega)
+let liveAccessCache: { uid: string; allowed: boolean } | null = null;
+
 export default function CameraPage() {
 
   const router = useRouter();
 
   const params = useLocalSearchParams();
-  const {
-    audioUrl,
-    musicName,
-    profile,
-    username,
-  } = params;
+  const first = (v: any) => (Array.isArray(v) ? v[0] : v);
+
+  // Song kahin se bhi aaye (musicDetails ya MusicSelect), sab params
+  // yahan ek jagah normalize hote hain, taaki musicId / artist / image
+  // camera -> EditView -> post tak kabhi na khoye.
+  const audioUrl = first(params.audioUrl);
+  const musicName = first(params.musicName) || first(params.musicTitle);
+  const musicId = first(params.musicId) || '';
+  const profile = first(params.musicImage) || first(params.profile);
+  const username = first(params.musicArtist) || first(params.username);
 
 
   // --------------------------------------------------
   // STATES
   // --------------------------------------------------
 
-  const [canGoLive, setCanGoLive] = useState(false);
+  const [canGoLive, setCanGoLive] = useState(() => {
+    const uid = getAuth().currentUser?.uid;
+    return liveAccessCache && liveAccessCache.uid === uid
+      ? liveAccessCache.allowed
+      : false;
+  });
 
   const [showStickers, setShowStickers] =
     useState(false);
@@ -560,104 +574,57 @@ export default function CameraPage() {
 
     let isMounted = true;
 
+    const auth = getAuth();
 
-    const checkHostPermission =
-      async () => {
+    const checkHostPermission = async (uid: string) => {
 
-        try {
+      try {
 
-          const auth = getAuth();
+        const userSnap = await getDoc(doc(db, 'users', uid));
 
-          const user = auth.currentUser;
+        const data = userSnap.exists() ? userSnap.data() : null;
 
-
-          if (!user || !isMounted) {
-            return;
-          }
-
-
-          const userSnap =
-            await getDoc(
-              doc(
-                db,
-                'users',
-                user.uid
-              )
-            );
-
-
-          if (
-            !userSnap.exists() ||
-            !isMounted
-          ) {
-
-            setCanGoLive(false);
-
-            return;
-          }
-
-
-          const data =
-            userSnap.data();
-
-
-          console.log(
-            'User Data =>',
-            data
-          );
-
-          console.log(
-            'agencyId =',
-            data.agencyId
-          );
-
-          console.log(
-            'agencyApproved =',
-            data.agencyApproved
-          );
-
-          console.log(
-            'waitTick =',
-            data.waitTick
-          );
-
-          console.log(
-            'verified =',
-            data.verified
-          );
-
-
-          const allowed =
-            Boolean(data.agencyId) ||
+        const allowed =
+          !!data &&
+          (Boolean(data.agencyId) ||
             data.agencyApproved === true ||
-            data.verified === true;
+            data.verified === true);
 
+        // Cache save: agli baar camera turant sahi bar dikhayega
+        liveAccessCache = { uid, allowed };
 
-          if (isMounted) {
-            setCanGoLive(allowed);
-          }
-
-        } catch (error) {
-
-          console.log(
-            'Host permission error:',
-            error
-          );
-
-          if (isMounted) {
-            setCanGoLive(false);
-          }
-
+        if (isMounted) {
+          setCanGoLive(allowed);
         }
 
+      } catch (error) {
+        // Network fail ho to purani cached value hi rehne do
+        if (isMounted && !liveAccessCache) {
+          setCanGoLive(false);
+        }
+      }
+
+    };
+
+    // User already ready hai to turant check
+    if (auth.currentUser) {
+      checkHostPermission(auth.currentUser.uid);
+
+      return () => {
+        isMounted = false;
       };
+    }
 
-
-    checkHostPermission();
-
+    // Warna auth ready hone ka wait karo (pehle yahin atak jata tha)
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        checkHostPermission(user.uid);
+      }
+    });
 
     return () => {
       isMounted = false;
+      unsubscribe();
     };
 
   }, []);
@@ -918,6 +885,8 @@ export default function CameraPage() {
 
             musicArtist: username,
 
+            musicId,
+
           },
 
         });
@@ -949,9 +918,14 @@ export default function CameraPage() {
   // --------------------------------------------------
   // SELECTED MUSIC: preload once for smooth recording
   // --------------------------------------------------
+  // Camera focus se bahar jaate hi (EditView/MusicSelect khulte hi) gaane ka
+  // ExoPlayer release ho jata hai, taaki ek hi mp4 ke 3-4 player memory
+  // (OutOfMemoryError) na bharein. Wapas aate hi dobara load ho jata hai.
+  const isCameraFocused = useIsFocused();
   useEffect(() => {
     let cancelled = false;
     const loadSelectedMusic = async () => {
+      if (!isCameraFocused) return;
       if (!audioUrl || typeof audioUrl !== 'string') return;
       try {
         await Audio.setAudioModeAsync({
@@ -979,7 +953,7 @@ export default function CameraPage() {
       musicSoundRef.current = null;
       if (sound) sound.unloadAsync().catch(() => {});
     };
-  }, [audioUrl]);
+  }, [audioUrl, isCameraFocused]);
 
   // --------------------------------------------------
   // START RECORDING
@@ -1100,6 +1074,8 @@ export default function CameraPage() {
               musicImage: profile,
 
               musicArtist: username,
+
+            musicId,
 
               // Exact duration of this camera take. EditView and /merge
               // use this so a 5s take can never receive the full 15s song.
@@ -1346,11 +1322,24 @@ export default function CameraPage() {
 
       {/* MUSIC */}
 
-      <Text
-        style={styles.topMusic}
+      <TouchableOpacity
+        style={styles.topMusicBtn}
+        activeOpacity={0.8}
+        disabled={isRecording || countdown !== null}
+        onPress={() =>
+          router.push({
+            pathname: '/MusicSelect',
+            params: { returnTo: '/camera' },
+          })
+        }
       >
-        🎵 Select Music
-      </Text>
+        <Text
+          style={styles.topMusic}
+          numberOfLines={1}
+        >
+          🎵 {musicName ? String(musicName) : 'Select Music'}
+        </Text>
+      </TouchableOpacity>
 
 
       {/* SIDE ICONS */}
@@ -1770,8 +1759,18 @@ const styles = StyleSheet.create({
   },
 
 
-  topMusic: {
+  topMusicBtn: {
     marginTop: 10,
+    maxWidth: '70%',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    zIndex: 10,
+  },
+
+
+  topMusic: {
     fontSize: 20,
     fontWeight: 'bold',
     color: '#fff',

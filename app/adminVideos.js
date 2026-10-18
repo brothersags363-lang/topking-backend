@@ -13,7 +13,7 @@ import { collection, limit, onSnapshot, orderBy, query } from "firebase/firestor
 import { Ionicons } from "@expo/vector-icons";
 import { db } from "./firebaseConfig";
 import useIsAdmin from "./useIsAdmin";
-import { callApi } from "./api";
+import { callApi } from "../utils/api";
 
 const PLACEHOLDER = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 

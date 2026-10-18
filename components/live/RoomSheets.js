@@ -21,12 +21,16 @@ const Sheet = ({ visible, onClose, title, children, tall, extraBottom = 0 }) => 
   </Modal>
 );
 
+// Tick sirf tab jab verified === true ('true' string bhi chalega).
+// Color: yellow -> yellow tick, baaki sab -> white tick. Blue kabhi nahi.
+const isTrue = (v) => v === true || v === 'true';
+
 const Verified = ({ user }) =>
-  user.verified ? (
+  isTrue(user.verified) ? (
     <MaterialCommunityIcons
       name="check-decagram"
       size={15}
-      color={user.verifiedColor === 'yellow' ? '#FFD700' : '#4FC3F7'}
+      color={user.verifiedColor === 'yellow' ? '#FFD700' : '#FFFFFF'}
       style={{ marginLeft: 4 }}
     />
   ) : null;
@@ -36,8 +40,8 @@ const ViewerRow = memo(({ user, canKick, onKick }) => (
   <View style={s.row}>
     <View style={s.avaWrap}>
       <Image source={{ uri: user.img || user.userImg || AVATAR }} style={s.ava} />
-      {(user.level || 0) >= 10 && (
-        <LevelFrame level={user.level} animated={false}
+      {((user.level || 0) >= 10 || !!(user.uid || user.userId)) && (
+        <LevelFrame level={user.level} uid={user.uid || user.userId} animated={false}
           style={{ position: 'absolute', width: 52, height: 52, top: -6, left: -6 }} />
       )}
     </View>

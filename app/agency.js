@@ -17,7 +17,9 @@ ActivityIndicator,
 
 import { auth, db } from "./firebaseConfig";
 
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
+import useIsAdmin from "./useIsAdmin";
+import { callApi } from "../utils/api";
 
 import {
 doc,
@@ -188,9 +190,45 @@ const HostRow = memo(function HostRow({ item, onRemove }) {
   );
 });
 
+// Join request ki ek row: user ka naam + Accept / Reject
+const JoinRequestRow = memo(function JoinRequestRow({ item, busy, onAccept, onReject }) {
+  return (
+    <View style={styles.requestCard}>
+      <Image
+        source={{
+          uri:
+            item.profileImg ||
+            "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
+        }}
+        style={styles.hostImage}
+      />
+
+      <Text numberOfLines={1} style={styles.requestName}>
+        {item.username || "User"}
+      </Text>
+
+      {busy ? (
+        <ActivityIndicator size="small" color="#FFD700" />
+      ) : (
+        <>
+          <TouchableOpacity style={styles.acceptBtn} onPress={onAccept}>
+            <Ionicons name="checkmark" size={18} color="#000" />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.rejectBtn} onPress={onReject}>
+            <Ionicons name="close" size={18} color="#fff" />
+          </TouchableOpacity>
+        </>
+      )}
+    </View>
+  );
+});
+
 export default function Agency(){
 
   const router = useRouter();
+  // ADMIN: admin kisi bhi agency ke andar ja sakta hai (agencyPanel -> View -> agencyId param)
+  const { agencyId: paramAgencyId } = useLocalSearchParams();
+  const isAdmin = useIsAdmin(); // null = checking
 
   // =========================
   // MOBILE HARDWARE BACK
@@ -241,13 +279,22 @@ const [newLogo,setNewLogo]=useState("");
 
 const [hosts,setHosts]=useState([]);
 
+// JOIN REQUESTS (user -> agency)
+const [requests,setRequests]=useState([]);
+const [requestsVisible,setRequestsVisible]=useState(false);
+const [requestsLoading,setRequestsLoading]=useState(false);
+const [busyRequestId,setBusyRequestId]=useState(null);
+
 
 
 useEffect(()=>{
 
+// admin check complete hone tak wait karo
+if (isAdmin === null) return;
+
 loadAgency();
 
-},[]);
+},[isAdmin, paramAgencyId]);
 
 
 
@@ -282,6 +329,21 @@ const loadAgency=async()=>{
 
 try {
 
+let data;
+
+if (isAdmin === true && paramAgencyId) {
+
+// ADMIN MODE: agencyId se seedha koi bhi agency kholo
+const agencySnap = await getDoc(doc(db,"agencies",String(paramAgencyId)));
+
+if(!agencySnap.exists()){
+return;
+}
+
+data = agencySnap;
+
+} else {
+
 const uid=auth.currentUser.uid;
 
 const q=query(
@@ -297,7 +359,9 @@ return;
 
 }
 
-const data=snap.docs[0];
+data=snap.docs[0];
+
+}
 
 const agencyData = data.data();
 
@@ -310,6 +374,11 @@ setAgency({
 loadHosts(data.id);
 
 calculateAgencyStars(data.id);
+
+// admin view me requests nahi dikhti (sirf owner accept kar sakta hai)
+if (!(isAdmin === true && paramAgencyId)) {
+  loadRequests(data.id);
+}
 
 } catch (e) {
 
@@ -584,9 +653,94 @@ const openEditAgency = () => {
   setEditVisible(true);
 };
 
+const loadRequests = async (agencyId) => {
+
+  try {
+
+    setRequestsLoading(true);
+
+    const res = await callApi("/agency/join-requests", { agencyId });
+
+    if (res && res.success === false) {
+      throw new Error(res.error || "Requests load nahi hui");
+    }
+
+    setRequests((res && res.requests) || []);
+
+  } catch (e) {
+
+    console.log("LOAD JOIN REQUESTS ERROR =", e);
+
+  } finally {
+
+    setRequestsLoading(false);
+
+  }
+
+};
+
+const respondRequest = async (request, accept) => {
+
+  if (busyRequestId) return;
+
+  try {
+
+    setBusyRequestId(request.id);
+
+    const res = await callApi("/agency/respond-join-request", {
+      requestId: request.id,
+      accept,
+    });
+
+    if (res && res.success === false) {
+      throw new Error(res.error || "Request handle nahi ho saki");
+    }
+
+    setRequests((prev) => prev.filter((r) => r.id !== request.id));
+
+    if (accept) {
+      setAgency((prev) => ({
+        ...prev,
+        totalMembers: (prev?.totalMembers || 0) + 1,
+      }));
+      loadHosts(agency.id);
+      Alert.alert("Joined", `${request.username} ab aapki agency me join ho gaya.`);
+    }
+
+  } catch (e) {
+
+    Alert.alert("Error", e?.message || "Kuch gadbad ho gayi");
+    // list refresh: ho sakta hai request pehle hi handle ho chuki ho
+    loadRequests(agency.id);
+
+  } finally {
+
+    setBusyRequestId(null);
+
+  }
+
+};
+
 const removeHost = useCallback(async (host) => {
 
   try {
+
+    if (!isAdmin && agency.ownerUserId !== auth.currentUser?.uid) {
+      Alert.alert("Access Denied");
+      return;
+    }
+
+    // ADMIN: server route se hatao (kisi bhi agency ka user)
+    if (isAdmin === true) {
+      await callApi("/admin/remove-agency-host", {
+        agencyId: agency.id,
+        userId: host.id,
+      });
+      loadAgency();
+      loadHosts(agency.id);
+      Alert.alert("Host Removed");
+      return;
+    }
 
     await updateDoc(
       doc(db,"users",host.id),
@@ -615,7 +769,7 @@ const removeHost = useCallback(async (host) => {
 
   }
 
-}, [agency]);
+}, [agency, isAdmin]);
 
 
 
@@ -669,7 +823,7 @@ const addHost = async () => {
 const requestQuery = query(
   collection(db, "agencyHostRequests"),
   where("agencyId", "==", agency.id),
-  where("ownerUserId", "==", auth.currentUser.uid),
+  where("ownerUserId", "==", agency.ownerUserId),
   where("userId", "==", userDoc.id),
   where("status", "==", "pending")
 );
@@ -820,6 +974,22 @@ Add Host
 
 </View>
 
+{!(isAdmin === true && paramAgencyId) && (
+<TouchableOpacity
+style={styles.requestsBtn}
+onPress={()=>{ setRequestsVisible(true); loadRequests(agency.id); }}
+activeOpacity={0.85}
+>
+<Ionicons name="person-add-outline" size={18} color="#FFD700" />
+<Text style={styles.requestsBtnText}>Join Requests</Text>
+{requests.length > 0 && (
+  <View style={styles.requestsBadge}>
+    <Text style={styles.requestsBadgeText}>{requests.length}</Text>
+  </View>
+)}
+</TouchableOpacity>
+)}
+
 <Text
 style={{
 color:"#FFD700",
@@ -855,6 +1025,53 @@ Agency Hosts
 
 
 </ScrollView>
+
+{/* Join Requests Popup */}
+
+<Modal
+visible={requestsVisible}
+transparent={true}
+animationType="fade"
+onRequestClose={() => setRequestsVisible(false)}
+>
+
+<View style={styles.modalBg}>
+
+<View style={styles.popup}>
+
+<Text style={styles.popupTitle}>Join Requests</Text>
+
+{requestsLoading && requests.length === 0 ? (
+  <ActivityIndicator size="small" color="#FFD700" style={{ marginVertical: 20 }} />
+) : requests.length === 0 ? (
+  <Text style={styles.noRequestsText}>Abhi koi pending request nahi hai.</Text>
+) : (
+  <ScrollView style={{ marginTop: 10 }}>
+    {requests.map((r) => (
+      <JoinRequestRow
+        key={r.id}
+        item={r}
+        busy={busyRequestId === r.id}
+        onAccept={() => respondRequest(r, true)}
+        onReject={() => respondRequest(r, false)}
+      />
+    ))}
+  </ScrollView>
+)}
+
+<TouchableOpacity
+  style={styles.closeBtn}
+  onPress={() => setRequestsVisible(false)}
+  activeOpacity={0.8}
+>
+  <Text style={styles.closeBtnText}>Close</Text>
+</TouchableOpacity>
+
+</View>
+
+</View>
+
+</Modal>
 
 {/* Edit Popup */}
 
@@ -1282,6 +1499,79 @@ removeText:{
 color:"#fff",
 fontWeight:"bold",
 fontSize:15,
+},
+
+requestsBtn:{
+flexDirection:"row",
+alignItems:"center",
+justifyContent:"center",
+backgroundColor:"#1b1b1b",
+borderWidth:1,
+borderColor:"#665500",
+borderRadius:10,
+paddingVertical:13,
+marginTop:15,
+marginHorizontal:5,
+},
+requestsBtnText:{
+color:"#FFD700",
+fontWeight:"bold",
+fontSize:15,
+marginLeft:8,
+},
+requestsBadge:{
+minWidth:20,
+height:20,
+borderRadius:10,
+backgroundColor:"#ff3b30",
+alignItems:"center",
+justifyContent:"center",
+paddingHorizontal:5,
+marginLeft:8,
+},
+requestsBadgeText:{
+color:"#fff",
+fontSize:11,
+fontWeight:"bold",
+},
+noRequestsText:{
+color:"#999",
+textAlign:"center",
+marginVertical:22,
+fontSize:13,
+},
+requestCard:{
+flexDirection:"row",
+alignItems:"center",
+backgroundColor:"#222",
+padding:10,
+borderRadius:10,
+marginBottom:8,
+},
+requestName:{
+flex:1,
+color:"#fff",
+fontSize:16,
+fontWeight:"bold",
+marginLeft:12,
+},
+acceptBtn:{
+width:36,
+height:36,
+borderRadius:18,
+backgroundColor:"#FFD700",
+alignItems:"center",
+justifyContent:"center",
+marginLeft:8,
+},
+rejectBtn:{
+width:36,
+height:36,
+borderRadius:18,
+backgroundColor:"#ff3b30",
+alignItems:"center",
+justifyContent:"center",
+marginLeft:8,
 },
 
 

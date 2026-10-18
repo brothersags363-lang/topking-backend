@@ -1,6 +1,6 @@
 import React, { memo, useEffect } from 'react';
 import { View, Text, Image, TouchableOpacity, StyleSheet } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -10,6 +10,7 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 import LevelFrame from '../LevelFrame';
+import SeatEmoji from './SeatEmoji';
 import { T } from './liveTheme';
 
 const AVATAR = 'https://avatar.iran.liara.run/public/65';
@@ -54,19 +55,24 @@ function SeatItem({ seatKey, seat, stars, isSpeaking, index, onPress }) {
           {active ? (
             <Image source={{ uri: seat.userImg || AVATAR }} style={styles.img} />
           ) : (
-            <>
-              <Ionicons name="add" size={22} color="rgba(255,255,255,0.28)" />
-              <Text style={styles.num}>{index}</Text>
-            </>
+            <MaterialCommunityIcons
+              name={isHost ? 'microphone' : 'sofa'}
+              size={22}
+              color={T.gold}
+            />
           )}
         </View>
 
-        {active && seat.level >= 10 && (
+        {active && (seat.level >= 10 || seat.special || !!seat.userId) && (
           <LevelFrame
             level={seat.level}
-            style={{ position: 'absolute', width: 90, height: 90, zIndex: 10 }}
+            special={seat.special}
+            uid={seat.userId}
+            style={{ position: 'absolute', width: 72, height: 72, zIndex: 10 }}
           />
         )}
+
+        {active && <SeatEmoji reaction={seat.reaction} />}
 
         {isHost && active && (
           <View style={styles.hostTag}>
@@ -77,13 +83,13 @@ function SeatItem({ seatKey, seat, stars, isSpeaking, index, onPress }) {
 
         {muted && (
           <View style={styles.muteBadge}>
-            <Ionicons name="mic-off" size={10} color="#fff" />
+            <Ionicons name="mic-off" size={9} color="#fff" />
           </View>
         )}
       </View>
 
       <Text numberOfLines={1} style={styles.name}>
-        {active ? seat.userName : 'Empty'}
+        {active ? seat.userName : (isHost ? 'Host' : `No.${index}`)}
       </Text>
 
       {active && (
@@ -107,41 +113,42 @@ const same = (a, b) =>
   a.seat?.userImg === b.seat?.userImg &&
   a.seat?.userName === b.seat?.userName &&
   a.seat?.level === b.seat?.level &&
-  a.seat?.isMuted === b.seat?.isMuted;
+  a.seat?.isMuted === b.seat?.isMuted &&
+  a.seat?.reaction?.k === b.seat?.reaction?.k;
 
 export default memo(SeatItem, same);
 
 const styles = StyleSheet.create({
-  item: { width: '25%', alignItems: 'center', marginBottom: 14 },
-  box: { width: 64, height: 64, justifyContent: 'center', alignItems: 'center' },
+  item: { width: '20%', alignItems: 'center', marginBottom: 8 },
+  box: { width: 52, height: 52, justifyContent: 'center', alignItems: 'center' },
   avatarBox: {
-    width: 58, height: 58, borderRadius: 29, overflow: 'hidden',
+    width: 46, height: 46, borderRadius: 23, overflow: 'hidden',
     justifyContent: 'center', alignItems: 'center',
     backgroundColor: 'rgba(255,255,255,0.05)',
   },
   img: { width: '100%', height: '100%' },
   host: { borderWidth: 2, borderColor: T.gold },
   speaker: { borderWidth: 1.5, borderColor: T.violet },
-  empty: { borderWidth: 1, borderColor: T.line, borderStyle: 'dashed' },
+  empty: { borderWidth: 1.5, borderColor: T.gold, backgroundColor: 'rgba(245,196,81,0.08)' },
   speaking: { borderColor: T.green, borderWidth: 2 },
   ring: {
-    position: 'absolute', width: 64, height: 64, borderRadius: 32,
+    position: 'absolute', width: 52, height: 52, borderRadius: 26,
     backgroundColor: 'rgba(46,230,166,0.35)',
   },
-  num: { position: 'absolute', bottom: 4, fontSize: 9, color: 'rgba(255,255,255,0.3)', fontWeight: '700' },
+  num: { position: 'absolute', bottom: 3, fontSize: 8, color: 'rgba(255,255,255,0.3)', fontWeight: '700' },
   hostTag: {
     position: 'absolute', top: -6, flexDirection: 'row', alignItems: 'center',
     backgroundColor: T.gold, borderRadius: 8, paddingHorizontal: 6, paddingVertical: 1, zIndex: 12,
   },
   hostTxt: { fontSize: 8, fontWeight: '800', color: '#1a1200', marginLeft: 2 },
   muteBadge: {
-    position: 'absolute', bottom: 2, right: 2, width: 18, height: 18, borderRadius: 9,
+    position: 'absolute', bottom: 0, right: 0, width: 15, height: 15, borderRadius: 8,
     backgroundColor: 'rgba(255,59,92,0.95)', justifyContent: 'center', alignItems: 'center', zIndex: 12,
   },
-  name: { color: '#fff', fontSize: 11, fontWeight: '600', marginTop: 4, maxWidth: 72 },
+  name: { color: '#fff', fontSize: 10, fontWeight: '600', marginTop: 3, maxWidth: 60 },
   starPill: {
-    flexDirection: 'row', alignItems: 'center', marginTop: 3,
-    backgroundColor: 'rgba(245,196,81,0.14)', borderRadius: 9, paddingHorizontal: 6, paddingVertical: 1,
+    flexDirection: 'row', alignItems: 'center', marginTop: 2,
+    backgroundColor: 'rgba(245,196,81,0.14)', borderRadius: 9, paddingHorizontal: 5, paddingVertical: 1,
   },
-  starTxt: { color: T.gold, fontSize: 10, fontWeight: '700', marginLeft: 3 },
+  starTxt: { color: T.gold, fontSize: 9, fontWeight: '700', marginLeft: 3 },
 });

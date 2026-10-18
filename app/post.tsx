@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import {
   View,
   Text,
@@ -42,19 +42,40 @@ import { useUploadState } from '@/services/upload/uploadManager';
 // Apne project ke actual reels/home route se match kar lena agar alag ho.
 const REELS_HOME_ROUTE = '/';
 
+import { doc, getDoc } from 'firebase/firestore';
+
 import {
-  collection,
-  addDoc,
-  serverTimestamp,
-  doc,
-  getDoc,
-  setDoc,
-  increment,
-  getDocs,
-  query,
-  orderBy,
-  limit,
-} from 'firebase/firestore';
+  Hashtag,
+  cleanTag,
+  extractHashtags,
+  formatCount,
+  subscribeHashtags,
+} from '@/services/hashtags/hashtagService';
+
+const HASH_ROW_HEIGHT = 56;
+
+// memo: list scroll karte time sirf wahi rows re-render hongi jinka data badla
+const HashtagRow = memo(function HashtagRow({
+  item,
+  rank,
+  onPress,
+}: {
+  item: Hashtag;
+  rank: number;
+  onPress: (name: string) => void;
+}) {
+  return (
+    <TouchableOpacity style={styles.hashRow} onPress={() => onPress(item.name)} activeOpacity={0.6}>
+      <View style={styles.hashLeft}>
+        <Text style={styles.hashRank}>{rank}</Text>
+        <Text style={styles.hashName} numberOfLines={1}>#{item.name}</Text>
+      </View>
+      <Text style={styles.hashUses}>
+        {formatCount(item.uses)} {item.uses === 1 ? 'video' : 'videos'}
+      </Text>
+    </TouchableOpacity>
+  );
+});
 
 export default function PostPage() {
 
@@ -192,6 +213,12 @@ useFocusEffect(
     : params?.videoUri;
 
 const player = useVideoPlayer(videoUri ?? "", (player) => {
+  try {
+    player.bufferOptions = {
+      maxBufferBytes: 12 * 1024 * 1024,
+      preferredForwardBufferDuration: 6,
+    };
+  } catch (_) {}
   player.loop = true;
   player.muted = true;
   player.play();
@@ -211,7 +238,7 @@ useEffect(() => {
   const [caption, setCaption] = useState('');
   const [hashtagModal, setHashtagModal] = useState(false);
   const [hashtagQuery, setHashtagQuery] = useState('');
-  const [hashtags, setHashtags] = useState([]);
+  const [hashtags, setHashtags] = useState<Hashtag[]>([]);
   const uploadState = useUploadState(); // { uploading, progress, error, justCompleted }
   const [visibility, setVisibility] = useState('public');
 
@@ -247,29 +274,58 @@ useEffect(() => {
 
   
 
-  // HANDLE POST
-  const extractHashtags = (text = "") => {
-    const found = text.match(/#[\\p{L}\\p{N}_]+/gu) || [];
-    return [...new Set(found.map((tag) => tag.slice(1).toLowerCase()))];
-  };
+  // HASHTAGS
+  // Caption se hashtags automatically nikalte hain (typed ya selected, dono).
+  // Naya hashtag likha ho to upload ke baad service use bana deti hai.
+  const usedHashtags = useMemo(() => extractHashtags(caption), [caption]);
 
-  const usedHashtags = extractHashtags(caption);
+  const [hashtagsLoading, setHashtagsLoading] = useState(true);
 
-  const openHashtags = async () => {
-    setHashtagModal(true);
-    try {
-      const snap = await getDocs(query(collection(db, "hashtags"), orderBy("uses", "desc"), limit(50)));
-      setHashtags(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    } catch (e) { console.log("Hashtag list:", e); }
-  };
+  // Realtime listener: koi bhi naya video post kare, count turant update.
+  useEffect(() => {
+    const unsub = subscribeHashtags(
+      db,
+      (list) => {
+        setHashtags(list);
+        setHashtagsLoading(false);
+      },
+      (e) => {
+        console.log('Hashtag list:', e);
+        setHashtagsLoading(false);
+      }
+    );
+    return unsub;
+  }, []);
 
-  const selectHashtag = (tag) => {
-    const clean = String(tag || "").replace(/^#/, "");
+  // name -> uses (chips me count dikhane ke liye), name -> rank
+  const tagUses = useMemo(() => new Map(hashtags.map((h) => [h.name, h.uses])), [hashtags]);
+  const tagRank = useMemo(() => new Map(hashtags.map((h, i) => [h.name, i + 1])), [hashtags]);
+
+  const searchTag = cleanTag(hashtagQuery);
+  const filteredHashtags = useMemo(
+    () => (searchTag ? hashtags.filter((h) => h.name.includes(searchTag)) : hashtags),
+    [hashtags, searchTag]
+  );
+  const canCreate = searchTag.length > 0 && !tagUses.has(searchTag);
+
+  const selectHashtag = useCallback((tag: string) => {
+    const clean = cleanTag(tag);
     if (!clean) return;
-    const separator = caption.trim().length ? " " : "";
-    setCaption((prev) => `${prev}${separator}#${clean} `);
+    setCaption((prev) => {
+      if (extractHashtags(prev).includes(clean)) return prev; // duplicate nahi
+      const sep = prev.length === 0 || /\s$/.test(prev) ? '' : ' ';
+      return `${prev}${sep}#${clean} `;
+    });
+    setHashtagQuery('');
     setHashtagModal(false);
-  };
+  }, []);
+
+  const renderHashtagRow = useCallback(
+    ({ item }: { item: Hashtag }) => (
+      <HashtagRow item={item} rank={tagRank.get(item.name) || 0} onPress={selectHashtag} />
+    ),
+    [tagRank, selectHashtag]
+  );
 
   // HANDLE POST
   //
@@ -331,6 +387,15 @@ useEffect(() => {
 
       // Turant reels/feed screen par bhej do — user wahin reels dekh
       // sakta hai jab tak upload chalta rehta hai.
+      // FIX: pehle stack ki saari screens (camera, edit, post) hata do,
+      // taaki feed par back dabane se wo wapas na khulein.
+      try {
+        if (router.canDismiss()) {
+          router.dismissAll();
+        }
+      } catch (e) {
+        console.log("dismissAll error:", e);
+      }
       router.replace(REELS_HOME_ROUTE);
     } catch (error) {
       console.log("Post start error:", error);
@@ -417,7 +482,7 @@ onPress={() => {
 <View style={styles.hashContainer}>
   <TouchableOpacity
     style={styles.hashBtn}
-    onPress={openHashtags}
+    onPress={() => setHashtagModal(true)}
   >
     <Ionicons
       name="pricetag"
@@ -425,9 +490,27 @@ onPress={() => {
       color="#FF5E00"
     />
     <Text style={styles.hashText}>
-      Hashtag 
+      Hashtag
     </Text>
   </TouchableOpacity>
+
+  {usedHashtags.length > 0 && (
+    <View style={styles.chipsRow}>
+      {usedHashtags.map((tag) => {
+        const uses = tagUses.get(tag);
+        return (
+          <View key={tag} style={styles.chip}>
+            <Text style={styles.chipText}>#{tag}</Text>
+            {uses === undefined ? (
+              <Text style={styles.chipNew}>New</Text>
+            ) : (
+              <Text style={styles.chipCount}>{formatCount(uses)}</Text>
+            )}
+          </View>
+        );
+      })}
+    </View>
+  )}
 </View>
 
 
@@ -445,34 +528,60 @@ onPress={() => {
             <View style={styles.hashModalBackdrop}>
               <View style={styles.hashModal}>
                 <View style={styles.hashModalHeader}>
-                  <Text style={styles.hashModalTitle}>Hashtags</Text>
+                  <View>
+                    <Text style={styles.hashModalTitle}>Hashtags</Text>
+                    <Text style={styles.hashModalSub}>{hashtags.length} hashtags in app</Text>
+                  </View>
                   <TouchableOpacity onPress={() => setHashtagModal(false)}>
                     <Ionicons name="close" size={26} color="#fff" />
                   </TouchableOpacity>
                 </View>
+
                 <TextInput
                   value={hashtagQuery}
                   onChangeText={setHashtagQuery}
-                  placeholder="Search hashtag..."
+                  placeholder="Search or create hashtag..."
                   placeholderTextColor="#888"
                   style={styles.hashSearch}
                   autoCapitalize="none"
+                  autoCorrect={false}
+                  returnKeyType="done"
+                  onSubmitEditing={() => canCreate && selectHashtag(searchTag)}
                 />
-                <FlatList
-                  data={hashtags.filter((h) =>
-                    !hashtagQuery.trim() ||
-                    String(h.name || "").toLowerCase().includes(hashtagQuery.toLowerCase())
-                  )}
-                  keyExtractor={(item) => item.id}
-                  keyboardShouldPersistTaps="handled"
-                  renderItem={({ item }) => (
-                    <TouchableOpacity style={styles.hashRow} onPress={() => selectHashtag(item.name)}>
-                      <Text style={styles.hashName}>{item.name}</Text>
-                      <Text style={styles.hashUses}>{Number(item.uses || 0)} uses</Text>
-                    </TouchableOpacity>
-                  )}
-                  ListEmptyComponent={<Text style={styles.emptyHash}>No hashtags yet.</Text>}
-                />
+
+                {/* Naya hashtag banao: search me jo likha wo list me na ho to dikhta hai */}
+                {canCreate && (
+                  <TouchableOpacity style={styles.createRow} onPress={() => selectHashtag(searchTag)}>
+                    <Ionicons name="add-circle" size={22} color="#FF5E00" />
+                    <Text style={styles.createText} numberOfLines={1}>
+                      Create <Text style={{ color: '#FF5E00' }}>#{searchTag}</Text>
+                    </Text>
+                    <Text style={styles.hashUses}>New</Text>
+                  </TouchableOpacity>
+                )}
+
+                {hashtagsLoading && hashtags.length === 0 ? (
+                  <ActivityIndicator color="#FF5E00" style={{ marginTop: 20 }} />
+                ) : (
+                  <FlatList
+                    data={filteredHashtags}
+                    keyExtractor={(item) => item.id}
+                    renderItem={renderHashtagRow}
+                    keyboardShouldPersistTaps="handled"
+                    getItemLayout={(_, index) => ({
+                      length: HASH_ROW_HEIGHT,
+                      offset: HASH_ROW_HEIGHT * index,
+                      index,
+                    })}
+                    initialNumToRender={14}
+                    maxToRenderPerBatch={14}
+                    windowSize={7}
+                    removeClippedSubviews
+                    ListEmptyComponent={
+                      !canCreate ? <Text style={styles.emptyHash}>No hashtags yet.</Text> : null
+                    }
+                  />
+                )}
               </View>
             </View>
           </Modal>
@@ -664,7 +773,7 @@ hashRow: {
   flexDirection: 'row',
   justifyContent: 'space-between',
   alignItems: 'center',
-  paddingVertical: 14,
+  height: HASH_ROW_HEIGHT,
   borderBottomWidth: 0.5,
   borderBottomColor: '#333',
 },
@@ -685,6 +794,34 @@ emptyHash: {
   textAlign: 'center',
   paddingVertical: 20,
 },
+
+hashModalSub: { color: '#777', fontSize: 12, marginTop: 2 },
+hashRank: { color: '#555', fontSize: 12, fontWeight: '700', width: 34 },
+hashLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+createRow: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  backgroundColor: '#2A1A10',
+  borderRadius: 12,
+  paddingHorizontal: 12,
+  height: 48,
+  marginBottom: 10,
+},
+createText: { color: '#fff', fontSize: 14, fontWeight: '600', marginLeft: 8, flex: 1 },
+chipsRow: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 10 },
+chip: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  backgroundColor: '#222',
+  borderRadius: 14,
+  paddingHorizontal: 10,
+  paddingVertical: 5,
+  marginRight: 6,
+  marginBottom: 6,
+},
+chipText: { color: '#fff', fontSize: 12, fontWeight: '600' },
+chipCount: { color: '#888', fontSize: 11, marginLeft: 6 },
+chipNew: { color: '#FF5E00', fontSize: 11, marginLeft: 6, fontWeight: '700' },
 
 
 

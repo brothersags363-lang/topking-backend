@@ -40,7 +40,7 @@ import {
   Feather,
 } from "@expo/vector-icons";
 
-import { Audio } from "expo-av";
+import { Audio } from "../utils/audio";
 
 import { LinearGradient } from "expo-linear-gradient";
 
@@ -455,15 +455,17 @@ export default function EditView() {
   // LOAD MUSIC
   // =====================================================
 
+  // Gaana sirf tab load rehta hai jab EditView screen focus mein ho.
+  // Post/MusicSelect khulte hi player release ho jata hai (OOM se bachav),
+  // wapas aate hi dobara load ho jata hai.
   useEffect(() => {
 
-    if (!audioUrl) {
+    if (!audioUrl || !isFocused) {
       return;
     }
 
-
-    let newSound;
-
+    let cancelled = false;
+    let newSound = null;
 
     const loadMusic = async () => {
 
@@ -473,7 +475,6 @@ export default function EditView() {
           "Playing Audio =",
           audioUrl
         );
-
 
         const result =
           await Audio.Sound.createAsync(
@@ -489,15 +490,16 @@ export default function EditView() {
 
           );
 
-
-        newSound =
-          result.sound;
-
-
-        setSound(
+        if (cancelled) {
           result.sound
-        );
+            .unloadAsync()
+            .catch(() => {});
+          return;
+        }
 
+        newSound = result.sound;
+
+        setSound(result.sound);
 
       } catch (e) {
 
@@ -510,11 +512,11 @@ export default function EditView() {
 
     };
 
-
     loadMusic();
 
-
     return () => {
+
+      cancelled = true;
 
       if (newSound) {
 
@@ -522,11 +524,15 @@ export default function EditView() {
           .unloadAsync()
           .catch(() => {});
 
+        newSound = null;
+
       }
+
+      setSound(null);
 
     };
 
-  }, [audioUrl]);
+  }, [audioUrl, isFocused]);
 
 
   // =====================================================
@@ -540,7 +546,14 @@ export default function EditView() {
 
       (player) => {
 
-        player.loop = false;
+        try {
+          // ExoPlayer ka buffer chhota rakho (Android heap 192MB hi hota hai)
+          player.bufferOptions = {
+            maxBufferBytes: 12 * 1024 * 1024,
+            preferredForwardBufferDuration: 6,
+          };
+        } catch (_) {}
+        player.loop = true;
 
         player.muted =
           !!musicTitle;
@@ -594,33 +607,70 @@ export default function EditView() {
 
   // Stop music exactly when the video reaches its own duration.
   // This prevents a longer source song from continuing after a short take.
+  //
+  // Instagram jaisa behaviour:
+  //  - Video loop hota hai, aur har loop par gaana bhi 0 se dobara shuru.
+  //    Isse trim ke baad jitna video bacha, utna hi video + gaana chalta hai.
+  //  - Trim / naya source load hone par asli duration player se aati hai
+  //    (videoDuration state update hota hai), wahi Post ko jaati hai.
   useEffect(() => {
-    if (!sound || !player) return;
+    if (!player) return;
 
-    let subscription;
+    const subs = [];
+    let lastTime = 0;
+
+    const restartMusic = () => {
+      if (!sound || isRecording) return;
+      sound
+        .setPositionAsync(0)
+        .then(() => sound.playAsync())
+        .catch(() => {});
+    };
 
     try {
-      subscription = player.addListener("timeUpdate", async (event) => {
-        const current = Number(event?.currentTime ?? player.currentTime ?? 0);
-        const duration = Number(
-          videoDuration || player.duration || 0
-        );
+      player.timeUpdateEventInterval = 0.1;
 
-        if (duration > 0 && current >= duration - 0.08) {
-          await sound.pauseAsync().catch(() => {});
-          await sound.setPositionAsync(0).catch(() => {});
-        }
-      });
+      subs.push(
+        player.addListener("sourceLoad", (event) => {
+          const loaded = Number(event?.duration ?? player.duration ?? 0);
+
+          if (loaded > 0 && !videoDurationRef.current.isReady) {
+            updateVideoDuration(videoUriRef.current, loaded);
+          }
+
+          lastTime = 0;
+          try {
+            player.currentTime = 0;
+            player.play();
+          } catch (_) {}
+          restartMusic();
+        })
+      );
+
+      subs.push(
+        player.addListener("timeUpdate", (event) => {
+          const current = Number(event?.currentTime ?? 0);
+
+          // Video loop hua (time peeche aaya) -> gaana bhi shuru se
+          if (current + 0.3 < lastTime) {
+            restartMusic();
+          }
+
+          lastTime = current;
+        })
+      );
     } catch (e) {
       console.log("Video/music duration sync unavailable:", e);
     }
 
     return () => {
-      try {
-        subscription?.remove?.();
-      } catch (_) {}
+      subs.forEach((s) => {
+        try {
+          s?.remove?.();
+        } catch (_) {}
+      });
     };
-  }, [sound, player, videoDuration]);
+  }, [sound, player, isRecording, updateVideoDuration]);
 
   // =====================================================
   // VIDEO EDIT / TRIM
@@ -827,7 +877,10 @@ export default function EditView() {
       setIsEditingVideo(false);
 
       if (editedUri) {
-        setVideoUri(editedUri);
+        // Duration 0 = purani (lambi) duration hata do; trimmed video load
+        // hote hi player se sahi duration aa jayegi (sourceLoad).
+        lastRouteVideoUriRef.current = editedUri;
+        updateVideoUri(editedUri, 0);
         console.log("VIDEO EDIT FINISHED =", editedUri);
       } else {
         console.log("VIDEO EDIT FINISHED WITHOUT OUTPUT", event);
@@ -1586,6 +1639,12 @@ export default function EditView() {
 
           params: {
             videoUri,
+            // Trim ke baad ki asli duration saath bhejo, taaki gaana
+            // badalne par video wapas lamba na ho jaye.
+            videoDuration: String(
+              videoDuration || player.duration || 0
+            ),
+            returnTo: "/EditView",
           },
 
         });
@@ -1734,6 +1793,8 @@ export default function EditView() {
             musicArtist,
 
             musicImage,
+
+            musicId,
 
             videoEffect:
               selectedEffect || "none",

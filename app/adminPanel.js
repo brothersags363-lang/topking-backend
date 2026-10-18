@@ -49,12 +49,46 @@ export default function AdminPanel() {
         <Text style={styles.agencyBtnText}>Agency Panel</Text>
       </TouchableOpacity>
 
+      {/* NEW: BD Panel (user ko BD banao) */}
+      <TouchableOpacity
+        style={styles.bdBtn}
+        onPress={() => router.push("/bdPanel")}
+      >
+        <Ionicons name="briefcase" size={22} color="#fff" />
+        <Text style={styles.btnLabel}>BD Panel</Text>
+      </TouchableOpacity>
+
+      {/* NEW: Special Frames (kisi bhi user ko frame do) */}
+      <TouchableOpacity
+        style={styles.frameBtn}
+        onPress={() => router.push("/adminFrames")}
+      >
+        <Ionicons name="color-palette" size={22} color="#fff" />
+        <Text style={styles.btnLabel}>Special Frames</Text>
+      </TouchableOpacity>
+
       <TouchableOpacity
         style={styles.yellowBtn}
         onPress={() => router.push("/agencyRewards")}
       >
         <Ionicons name="trophy" size={22} color="#000" />
         <Text style={styles.yellowText}>Agency Rewards</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.yellowBtn}
+        onPress={() => router.push("/addStars")}
+      >
+        <Ionicons name="star" size={22} color="#000" />
+        <Text style={styles.yellowText}>Add Stars</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.verifyBtn}
+        onPress={() => router.push("/adminVerify")}
+      >
+        <Ionicons name="checkmark-circle" size={22} color="#fff" />
+        <Text style={styles.btnLabel}>Verified Tick</Text>
       </TouchableOpacity>
 
       <TouchableOpacity
@@ -133,5 +167,8 @@ const styles = StyleSheet.create({
   profileBtn: { ...row, backgroundColor: "#8e44ad" },
   reportBtn: { ...row, backgroundColor: "#e74c3c" },
   videoBtn: { ...row, backgroundColor: "#16a085" },
+  bdBtn: { ...row, backgroundColor: "#e67e22" },
+  frameBtn: { ...row, backgroundColor: "#c0392b" },
+  verifyBtn: { ...row, backgroundColor: "#2980b9" },
   btnLabel: { color: "#fff", fontSize: 18, fontWeight: "bold", marginLeft: 10 },
 });

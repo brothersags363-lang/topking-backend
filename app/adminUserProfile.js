@@ -13,7 +13,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { collection, doc, onSnapshot, query, where } from "firebase/firestore";
 import { db } from "./firebaseConfig";
 import useIsAdmin from "./useIsAdmin";
-import { callApi } from "./api";
+import { callApi } from "../utils/api";
 
 const PLACEHOLDER = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 

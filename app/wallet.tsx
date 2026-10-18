@@ -11,10 +11,11 @@ import {
   TextInput,
   ScrollView,
   Modal,
+  Image,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import RazorpayCheckout from 'react-native-razorpay';
 
 
 import { auth, db } from "./firebaseConfig";
@@ -34,6 +35,9 @@ import {
   query,
   orderBy,
   Timestamp,
+  runTransaction,
+  where,
+  limit,
 } from "firebase/firestore";
 
 
@@ -90,6 +94,10 @@ const [purchaseHistory, setPurchaseHistory] = useState([]);
 const [withdrawModal, setWithdrawModal] = useState(false);
 
 const [accountName, setAccountName] = useState("");
+const [withdrawMethod, setWithdrawMethod] = useState("UPI"); // "UPI" | "BANK"
+const [accountNumber, setAccountNumber] = useState("");
+const [confirmAccountNumber, setConfirmAccountNumber] = useState("");
+const [ifsc, setIfsc] = useState("");
 const [mobileNumber, setMobileNumber] = useState("");
 
  useEffect(() => {
@@ -293,142 +301,92 @@ const packages = [
 ];
 
 
-const buyStars = async (stars, price) => {
+// =========================
+// PHONEPE QR RECHARGE
+// =========================
 
-  const options = {
-    description: "Buy Stars",
+const BACKEND = "https://topking-backend.onrender.com";
+// UPI ID neeche likho (QR ke niche dikhega, copy karne ke liye)
 
-    image:
-  "https://razorpay.com/assets/images/razorpay-icon.png",
+const MY_UPI_ID = "yourname@ybl";
 
-    currency: "INR",
+const [payModal, setPayModal] = useState(false);
+const [selectedPkg, setSelectedPkg] = useState(null);
+const [utr, setUtr] = useState("");
+const [submittingPay, setSubmittingPay] = useState(false);
 
-    key: "rzp_test_T91JbTBgzZRuE2",
+// Recharge band hai: koi bhi package par click kare to ye message dikhega
+const RECHARGE_BLOCK_MSG = "Retry";
 
-    amount: Number(price) * 100,
+const buyStars = (stars, price) => {
+  alert(RECHARGE_BLOCK_MSG);
+};
 
-    name: "TopKing",
+const submitRecharge = async () => {
+  if (submittingPay || !selectedPkg) return;
 
-    prefill: {
-      email: auth.currentUser?.email || "",
-      contact: "",
-    },
+  const cleanUtr = utr.trim();
 
-    theme: {
-      color: "#FFD700",
-    },
-
-
-
-modal: {
-  ondismiss: function () {
-    alert("Payment Closed");
-  },
-},
-
-
-  };
+  if (!/^[A-Za-z0-9]{8,30}$/.test(cleanUtr)) {
+    alert("Sahi Transaction ID / UTR daalo (PhonePe me 'Transaction ID' ya 'UTR')");
+    return;
+  }
 
   try {
+    setSubmittingPay(true);
 
+    const token = await auth.currentUser?.getIdToken();
 
-console.log("BUY BUTTON CLICKED");
-console.log(options);
+    if (!token) {
+      alert("Please login again");
+      return;
+    }
 
-    const payment =
-      await RazorpayCheckout.open(options);
+    const res = await fetch(`${BACKEND}/recharge-request`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        amount: Number(selectedPkg.price),
+        utr: cleanUtr,
+      }),
+    });
 
-console.log("PAYMENT SUCCESS");
-console.log(payment);
+    const raw = await res.text();
 
+    let data = null;
+    try {
+      data = JSON.parse(raw);
+    } catch (_) {}
 
-console.log("PAYMENT SUCCESS", payment);
+    if (!data) {
+      console.log("RECHARGE BAD RESPONSE", res.status, raw.slice(0, 200));
+      alert(
+        res.status === 404
+          ? "Server me recharge feature abhi deploy nahi hua (404). Backend deploy karo."
+          : `Server error (${res.status}). Thodi der baad try karo.`
+      );
+      return;
+    }
 
+    if (!res.ok || !data.success) {
+      alert(data.error || "Request failed, try again");
+      return;
+    }
 
-    const uid = auth.currentUser?.uid;
-
-    if (!uid) return;
-
-    const walletRef =
-      doc(db, "wallets", uid);
-
-    const walletSnap =
-      await getDoc(walletRef);
-
-
-
- if (walletSnap.exists()) {
-
-const oldStars =
-walletSnap.data().stars || 0;
-
-const totalStars =
-oldStars + Number(stars);
-
-const newLevel =
-getLevel(totalStars);
-
-await updateDoc(walletRef,{
-
-stars: totalStars,
-
-level: newLevel,
-
-});
-
-
-}
-
-
-   else {
-
-const totalStars =
-Number(stars);
-
-const newLevel =
-getLevel(totalStars);
-
-await setDoc(walletRef,{
-
-stars: totalStars,
-
-level: newLevel,
-
-earnings:0,
-
-receivedStars:0,
-
-});
-
-}
-
-    await addDoc(
-      collection(
-        db,
-        "wallets",
-        uid,
-        "purchaseHistory"
-      ),
-      {
-        stars: Number(stars),
-        amount: Number(price),
-        paymentId:
-          payment.razorpay_payment_id,
-        status: "Completed",
-        createdAt: serverTimestamp(),
-      }
-    );
+    setPayModal(false);
+    setUtr("");
 
     alert(
-      `${stars} Stars Added Successfully`
+      "Request bhej di gayi hai. Admin payment check karke Stars add kar dega."
     );
-
   } catch (error) {
-
     console.log(error);
-
-    alert("Payment Cancelled");
-
+    alert("Network error, try again");
+  } finally {
+    setSubmittingPay(false);
   }
 };
 
@@ -453,6 +411,49 @@ if (tk > availableTK) {
   alert(`You only have ${availableTK.toFixed(2)} TK`);
   return;
 }
+
+// ---- Payment details validation ----
+const cleanName = accountName.trim();
+const cleanMobile = mobileNumber.trim();
+const cleanUpi = upiId.trim();
+const cleanAccNo = accountNumber.trim();
+const cleanConfirmAccNo = confirmAccountNumber.trim();
+const cleanIfsc = ifsc.trim().toUpperCase();
+
+if (cleanName.length < 3) {
+  alert("Account Holder Name sahi se bharo");
+  return;
+}
+
+if (!/^[6-9]\d{9}$/.test(cleanMobile)) {
+  alert("Sahi 10 digit Mobile Number daalo");
+  return;
+}
+
+if (withdrawMethod === "UPI") {
+  if (!/^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/.test(cleanUpi)) {
+    alert("Sahi UPI ID daalo (example: name@ybl)");
+    return;
+  }
+} else {
+  if (!/^\d{9,18}$/.test(cleanAccNo)) {
+    alert("Sahi Account Number daalo (9 se 18 digit)");
+    return;
+  }
+  if (cleanAccNo !== cleanConfirmAccNo) {
+    alert("Account Number aur Confirm Account Number match nahi kar rahe");
+    return;
+  }
+  if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(cleanIfsc)) {
+    alert("Sahi IFSC Code daalo (example: SBIN0001234)");
+    return;
+  }
+}
+
+const payout =
+  withdrawMethod === "BANK"
+    ? { accountNumber: cleanAccNo, ifsc: cleanIfsc }
+    : { upiId: cleanUpi };
 
 
 
@@ -538,15 +539,18 @@ userId: uid,
 agencyId,
 agencyName,
 
-accountName,
+accountName: cleanName,
 
-mobileNumber,
+mobileNumber: cleanMobile,
 
-amount: Number(withdrawAmount) * 44, // ₹
+method: withdrawMethod,
+payout,
+
+amount: Number(withdrawAmount) * 37, // ₹
 tk: Number(withdrawAmount),          // TK
 giftStars: Number(withdrawAmount) * 600,
 
-upiId,
+upiId: withdrawMethod === "UPI" ? cleanUpi : "",
 
 status:"Pending",
 
@@ -575,9 +579,12 @@ profileImg: userData.profileImg || "",
 agencyId,
 agencyName,
 
-accountName,
+accountName: cleanName,
 
-mobileNumber,
+mobileNumber: cleanMobile,
+
+method: withdrawMethod,
+payout,
 
 amount:Number(withdrawAmount),
 
@@ -585,7 +592,7 @@ tk:Number(withdrawAmount),
 
 giftStars:Number(withdrawAmount)*600,
 
-upiId,
+upiId: withdrawMethod === "UPI" ? cleanUpi : "",
 
 status:"Pending",
 
@@ -607,6 +614,10 @@ setMobileNumber("");
 
 setWithdrawAmount("");
 setUpiId("");
+setAccountNumber("");
+setConfirmAccountNumber("");
+setIfsc("");
+setWithdrawMethod("UPI");
 
 }
 catch(error){
@@ -617,6 +628,210 @@ console.log(error);
 
 };
 
+
+// =========================
+// TK -> STARS CONVERT + GIFT
+// =========================
+
+// Convert rate: 1 TK (600 Gift Stars) = 300 Stars, yani aadha (rate yaha se change kar sakte ho)
+const TK_TO_STARS = 300;
+// 1 TK = 600 Gift Stars (withdraw wala same rate)
+const GIFT_STARS_PER_TK = 600;
+
+const [convertModal, setConvertModal] = useState(false);
+const [convertTk, setConvertTk] = useState("");
+const [converting, setConverting] = useState(false);
+
+const [giftModal, setGiftModal] = useState(false);
+const [giftUsername, setGiftUsername] = useState("");
+const [giftAmount, setGiftAmount] = useState("");
+const [sendingGift, setSendingGift] = useState(false);
+
+const convertTkToStars = async () => {
+
+  if (converting) return;
+
+  const uid = auth.currentUser?.uid;
+
+  if (!uid) {
+    alert("Please login again");
+    return;
+  }
+
+  const tk = Number(convertTk);
+
+  if (!tk || tk <= 0) {
+    alert("Please Enter TK");
+    return;
+  }
+
+  if (tk < 1) {
+    alert("Minimum 1 TK convert kar sakte ho");
+    return;
+  }
+
+  const giftStarsNeeded = Math.round(tk * GIFT_STARS_PER_TK);
+  const starsToAdd = Math.floor(tk * TK_TO_STARS);
+
+  try {
+
+    setConverting(true);
+
+    await runTransaction(db, async (t) => {
+
+      const walletRef = doc(db, "wallets", uid);
+      const snap = await t.get(walletRef);
+      const data = snap.exists() ? snap.data() : {};
+
+      if ((data.receivedStars || 0) < giftStarsNeeded) {
+        throw new Error("NOT_ENOUGH_TK");
+      }
+
+      t.update(walletRef, {
+        receivedStars: increment(-giftStarsNeeded),
+        stars: increment(starsToAdd),
+      });
+
+      t.set(doc(collection(db, "wallets", uid, "convertHistory")), {
+        tk,
+        giftStarsUsed: giftStarsNeeded,
+        starsAdded: starsToAdd,
+        createdAt: serverTimestamp(),
+      });
+    });
+
+    alert(`${tk} TK convert ho gaya. ${starsToAdd} Stars add hue.`);
+    setConvertModal(false);
+    setConvertTk("");
+
+  } catch (error) {
+
+    console.log(error);
+
+    if (error?.message === "NOT_ENOUGH_TK") {
+      alert("Itna TK balance nahi hai");
+    } else {
+      alert("Convert fail hua, dobara try karo");
+    }
+
+  } finally {
+    setConverting(false);
+  }
+};
+
+const sendGift = async () => {
+
+  if (sendingGift) return;
+
+  const uid = auth.currentUser?.uid;
+
+  if (!uid) {
+    alert("Please login again");
+    return;
+  }
+
+  const uname = giftUsername.trim().replace(/^@/, "");
+  const amount = Math.floor(Number(giftAmount));
+
+  if (!uname) {
+    alert("User ka username daalo");
+    return;
+  }
+
+  if (!amount || amount <= 0) {
+    alert("Sahi Stars amount daalo");
+    return;
+  }
+
+  if (amount > stars) {
+    alert(`Tumhare paas sirf ${stars} Stars hai`);
+    return;
+  }
+
+  try {
+
+    setSendingGift(true);
+
+    // Username se receiver dhundo
+    const userSnap = await getDocs(
+      query(
+        collection(db, "users"),
+        where("username", "==", uname),
+        limit(1)
+      )
+    );
+
+    if (userSnap.empty) {
+      alert("User nahi mila");
+      return;
+    }
+
+    const receiverUid = userSnap.docs[0].id;
+    const receiverData = userSnap.docs[0].data();
+
+    if (receiverUid === uid) {
+      alert("Khud ko gift nahi bhej sakte");
+      return;
+    }
+
+    await runTransaction(db, async (t) => {
+
+      const senderRef = doc(db, "wallets", uid);
+      const receiverRef = doc(db, "wallets", receiverUid);
+
+      const senderSnap = await t.get(senderRef);
+
+      if ((senderSnap.data()?.stars || 0) < amount) {
+        throw new Error("NOT_ENOUGH_STARS");
+      }
+
+      // Sender se Stars kato
+      t.update(senderRef, {
+        stars: increment(-amount),
+      });
+
+      // Receiver ko Gift Stars do (ye TK me withdraw ho sakte hai)
+      t.set(
+        receiverRef,
+        { receivedStars: increment(amount) },
+        { merge: true }
+      );
+
+      t.set(doc(collection(db, "wallets", uid, "giftHistory")), {
+        type: "sent",
+        toUserId: receiverUid,
+        toUsername: receiverData.username || uname,
+        stars: amount,
+        createdAt: serverTimestamp(),
+      });
+
+      t.set(doc(collection(db, "wallets", receiverUid, "giftHistory")), {
+        type: "received",
+        fromUserId: uid,
+        stars: amount,
+        createdAt: serverTimestamp(),
+      });
+    });
+
+    alert(`${amount} Stars ${uname} ko gift ho gaye 🎁`);
+    setGiftModal(false);
+    setGiftUsername("");
+    setGiftAmount("");
+
+  } catch (error) {
+
+    console.log(error);
+
+    if (error?.message === "NOT_ENOUGH_STARS") {
+      alert("Stars kam hai");
+    } else {
+      alert("Gift fail hua, dobara try karo");
+    }
+
+  } finally {
+    setSendingGift(false);
+  }
+};
 
 
   return (
@@ -651,6 +866,13 @@ console.log(error);
         <Text style={styles.balanceSub}>
           Available Balance
         </Text>
+
+        <TouchableOpacity
+          style={styles.giftBtn}
+          onPress={() => setGiftModal(true)}
+        >
+          <Text style={styles.giftBtnText}>🎁 Gift Stars</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Tabs */}
@@ -873,6 +1095,15 @@ TK≈ {(receivedStars / 600).toFixed(2)}
       </Text>
     </TouchableOpacity>
 
+    <TouchableOpacity
+      style={styles.convertBtn}
+      onPress={() => setConvertModal(true)}
+    >
+      <Text style={styles.convertBtnText}>
+        Convert TK → Stars
+      </Text>
+    </TouchableOpacity>
+
   </View>
 
   <View
@@ -895,7 +1126,7 @@ TK≈ {(receivedStars / 600).toFixed(2)}
 
 
     <Text style={styles.guideText}>
-      • 1 TK = Rs 44
+      • 1 TK = Rs 37
     </Text>
 
     <Text style={styles.guideText}>
@@ -952,7 +1183,9 @@ color:"#888"
 
 
         <Text style={styles.historyDate}>
-          {item.upiId}
+          {item.method === "BANK"
+            ? `Bank A/C ••••${String(item.payout?.accountNumber || "").slice(-4)}`
+            : item.upiId}
         </Text>
 
       </View>
@@ -987,11 +1220,55 @@ animationType="slide"
 
 <View style={styles.modalBg}>
 
+<ScrollView
+contentContainerStyle={{ justifyContent:"center", flexGrow:1 }}
+keyboardShouldPersistTaps="handled"
+>
+
 <View style={styles.modalBox}>
 
 <Text style={styles.modalTitle}>
 Withdrawal Details
 </Text>
+
+<Text style={{ color:"#FFD700", marginBottom:12, fontSize:13, textAlign:"center" }}>
+Payment sahi jagah aaye isliye details dhyan se bharo
+</Text>
+
+{/* Method select */}
+<View style={{ flexDirection:"row", marginBottom:15 }}>
+
+<TouchableOpacity
+style={[
+  styles.methodBtn,
+  withdrawMethod === "UPI" && styles.methodBtnActive
+]}
+onPress={() => setWithdrawMethod("UPI")}
+>
+<Text style={[
+  styles.methodBtnText,
+  withdrawMethod === "UPI" && styles.methodBtnTextActive
+]}>
+UPI
+</Text>
+</TouchableOpacity>
+
+<TouchableOpacity
+style={[
+  styles.methodBtn,
+  withdrawMethod === "BANK" && styles.methodBtnActive
+]}
+onPress={() => setWithdrawMethod("BANK")}
+>
+<Text style={[
+  styles.methodBtnText,
+  withdrawMethod === "BANK" && styles.methodBtnTextActive
+]}>
+Bank Account
+</Text>
+</TouchableOpacity>
+
+</View>
 
 <TextInput
 placeholder="Account Holder Name"
@@ -1005,18 +1282,62 @@ onChangeText={setAccountName}
 placeholder="Mobile Number"
 placeholderTextColor="#777"
 keyboardType="phone-pad"
+maxLength={10}
 style={styles.input}
 value={mobileNumber}
 onChangeText={setMobileNumber}
 />
 
+{withdrawMethod === "UPI" ? (
+
 <TextInput
-placeholder="UPI ID"
+placeholder="UPI ID (example: name@ybl)"
 placeholderTextColor="#777"
+autoCapitalize="none"
+autoCorrect={false}
 style={styles.input}
 value={upiId}
 onChangeText={setUpiId}
 />
+
+) : (
+
+<>
+
+<TextInput
+placeholder="Account Number"
+placeholderTextColor="#777"
+keyboardType="number-pad"
+maxLength={18}
+style={styles.input}
+value={accountNumber}
+onChangeText={setAccountNumber}
+/>
+
+<TextInput
+placeholder="Confirm Account Number"
+placeholderTextColor="#777"
+keyboardType="number-pad"
+maxLength={18}
+style={styles.input}
+value={confirmAccountNumber}
+onChangeText={setConfirmAccountNumber}
+/>
+
+<TextInput
+placeholder="IFSC Code (example: SBIN0001234)"
+placeholderTextColor="#777"
+autoCapitalize="characters"
+autoCorrect={false}
+maxLength={11}
+style={styles.input}
+value={ifsc}
+onChangeText={setIfsc}
+/>
+
+</>
+
+)}
 
 <TextInput
 placeholder="Enter TK (Minimum 25 TK)"
@@ -1035,7 +1356,7 @@ style={{
   fontSize:13
 }}
 >
-1 TK = ₹44
+1 TK = ₹37
 </Text>
 
 <View
@@ -1077,17 +1398,262 @@ Submit
 
 </View>
 
+</ScrollView>
+
 </View>
 
 </Modal>
 
 
 
+{/* ===== Convert TK -> Stars ===== */}
+<Modal visible={convertModal} transparent animationType="slide">
+  <View style={styles.modalBg}>
+    <View style={styles.modalBox}>
+
+      <Text style={styles.modalTitle}>Convert TK → Stars</Text>
+
+      <Text style={{ color: "#aaa", textAlign: "center", marginBottom: 6 }}>
+        Available: {(receivedStars / GIFT_STARS_PER_TK).toFixed(2)} TK
+      </Text>
+
+      <Text style={{ color: "#FFD700", textAlign: "center", marginBottom: 15, fontSize: 13 }}>
+        1 TK = {TK_TO_STARS} Stars
+      </Text>
+
+      <TextInput
+        placeholder="Enter TK (Minimum 1 TK)"
+        placeholderTextColor="#777"
+        keyboardType="numeric"
+        style={styles.input}
+        value={convertTk}
+        onChangeText={setConvertTk}
+      />
+
+      <Text style={{ color: "#fff", marginBottom: 15, marginLeft: 5 }}>
+        You will get: ⭐ {Math.floor((Number(convertTk) || 0) * TK_TO_STARS)} Stars
+      </Text>
+
+      <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+
+        <TouchableOpacity
+          style={styles.cancelBtn}
+          onPress={() => setConvertModal(false)}
+          disabled={converting}
+        >
+          <Text style={{ color: "#fff" }}>Cancel</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.submitBtn}
+          onPress={convertTkToStars}
+          disabled={converting}
+        >
+          {converting ? (
+            <ActivityIndicator color="#000" />
+          ) : (
+            <Text style={{ color: "#000", fontWeight: "bold" }}>Convert</Text>
+          )}
+        </TouchableOpacity>
+
+      </View>
+    </View>
+  </View>
+</Modal>
+
+{/* ===== Gift Stars to a user ===== */}
+<Modal visible={giftModal} transparent animationType="slide">
+  <View style={styles.modalBg}>
+    <ScrollView
+      contentContainerStyle={{ justifyContent: "center", flexGrow: 1 }}
+      keyboardShouldPersistTaps="handled"
+    >
+      <View style={styles.modalBox}>
+
+        <Text style={styles.modalTitle}>🎁 Gift Stars</Text>
+
+        <Text style={{ color: "#aaa", textAlign: "center", marginBottom: 15 }}>
+          Your Stars: ⭐ {stars}
+        </Text>
+
+        <TextInput
+          placeholder="Receiver Username"
+          placeholderTextColor="#777"
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={styles.input}
+          value={giftUsername}
+          onChangeText={setGiftUsername}
+        />
+
+        <TextInput
+          placeholder="Stars Amount"
+          placeholderTextColor="#777"
+          keyboardType="number-pad"
+          style={styles.input}
+          value={giftAmount}
+          onChangeText={setGiftAmount}
+        />
+
+        <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+
+          <TouchableOpacity
+            style={styles.cancelBtn}
+            onPress={() => setGiftModal(false)}
+            disabled={sendingGift}
+          >
+            <Text style={{ color: "#fff" }}>Cancel</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.submitBtn}
+            onPress={sendGift}
+            disabled={sendingGift}
+          >
+            {sendingGift ? (
+              <ActivityIndicator color="#000" />
+            ) : (
+              <Text style={{ color: "#000", fontWeight: "bold" }}>Send Gift</Text>
+            )}
+          </TouchableOpacity>
+
+        </View>
+      </View>
+    </ScrollView>
+  </View>
+</Modal>
+
+<Modal visible={payModal} transparent animationType="slide">
+  <View style={styles.modalBg}>
+    <ScrollView
+      contentContainerStyle={{ justifyContent: "center", flexGrow: 1 }}
+      keyboardShouldPersistTaps="handled"
+    >
+      <View style={styles.modalBox}>
+
+        <Text style={styles.modalTitle}>
+          Pay ₹{selectedPkg?.price}
+        </Text>
+
+        <Text style={{ color: "#aaa", textAlign: "center", marginBottom: 12 }}>
+          PhonePe se scan karke ₹{selectedPkg?.price} bhejo
+        </Text>
+
+        <Text selectable style={styles.upiText}>
+          UPI: {MY_UPI_ID}
+        </Text>
+
+        <Text style={{ color: "#FFD700", marginBottom: 8, fontSize: 13 }}>
+          Payment ke baad Transaction ID / UTR yaha daalo:
+        </Text>
+
+        <TextInput
+          placeholder="Transaction ID / UTR"
+          placeholderTextColor="#777"
+          autoCapitalize="characters"
+          style={styles.input}
+          value={utr}
+          onChangeText={setUtr}
+        />
+
+        <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+
+          <TouchableOpacity
+            style={styles.cancelBtn}
+            onPress={() => setPayModal(false)}
+            disabled={submittingPay}
+          >
+            <Text style={{ color: "#fff" }}>Cancel</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.submitBtn}
+            onPress={submitRecharge}
+            disabled={submittingPay}
+          >
+            {submittingPay ? (
+              <ActivityIndicator color="#000" />
+            ) : (
+              <Text style={{ color: "#000", fontWeight: "bold" }}>
+                I Have Paid
+              </Text>
+            )}
+          </TouchableOpacity>
+
+        </View>
+
+      </View>
+    </ScrollView>
+  </View>
+</Modal>
+
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+
+  giftBtn: {
+    backgroundColor: '#FFD700',
+    paddingVertical: 8,
+    paddingHorizontal: 22,
+    borderRadius: 10,
+    marginTop: 10,
+    marginBottom: 8,
+  },
+
+  giftBtnText: {
+    color: '#000',
+    fontWeight: 'bold',
+    fontSize: 13,
+  },
+
+  convertBtn: {
+    borderWidth: 1,
+    borderColor: '#FFD700',
+    marginTop: 12,
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+
+  convertBtnText: {
+    color: '#FFD700',
+    fontWeight: 'bold',
+    fontSize: 12,
+  },
+
+  methodBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+    backgroundColor: '#1d1d1d',
+    marginHorizontal: 4,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+
+  methodBtnActive: {
+    backgroundColor: '#FFD700',
+    borderColor: '#FFD700',
+  },
+
+  methodBtnText: {
+    color: '#888',
+    fontWeight: 'bold',
+  },
+
+  methodBtnTextActive: {
+    color: '#000',
+  },
+
+  upiText: {
+    color: '#fff',
+    textAlign: 'center',
+    marginVertical: 12,
+    fontWeight: 'bold',
+  },
 
   container: {
     flex: 1,
@@ -1507,3 +2073,5 @@ borderRadius:10
 
 
 });        
+
+

@@ -22,7 +22,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useLocalSearchParams } from "expo-router";
 
-import { Audio } from "expo-av";
+import { Audio } from "../utils/audio";
 import { useIsFocused } from "@react-navigation/native";
 
 import { db } from "./firebaseConfig";
@@ -682,12 +682,26 @@ onPress={async () => {
     return;
   }
 
+  const editParams = {
+    videoUri,
+    videoDuration: firstParam(params.videoDuration) || "",
+    ...musicParams,
+  };
+
+  // EditView se aaye ho to usi EditView par wapas jao (naya stack mat
+  // banao) - isse trim, text, voice sab safe rehta hai aur sirf gaana
+  // badalta hai, Instagram jaisa.
+  if (returnTo === "/EditView") {
+    router.navigate({
+      pathname: "/EditView",
+      params: editParams,
+    });
+    return;
+  }
+
   router.push({
     pathname: "/EditView",
-    params: {
-      videoUri,
-      ...musicParams,
-    },
+    params: editParams,
   });
 }}
 

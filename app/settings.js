@@ -1,7 +1,9 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 
 import {
+  Alert,
   SafeAreaView,
+  ScrollView,
   View,
   Text,
   StyleSheet,
@@ -13,9 +15,82 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
+import { onAuthStateChanged, signOut } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
+import { GoogleSignin } from "@react-native-google-signin/google-signin";
+
+// NOTE: settings.js app/ folder me hai to "./firebaseConfig" sahi hai,
+// warna path apne folder ke hisaab se badlo.
+import { auth, db } from "./firebaseConfig";
+
+// Ek row (icon + title + arrow)
+function Row({ icon, label, onPress, color = "#fff", iconColor }) {
+  return (
+    <TouchableOpacity
+      style={styles.settingRow}
+      activeOpacity={0.6}
+      onPress={onPress}
+    >
+      <View style={styles.iconContainer}>
+        <Ionicons name={icon} size={25} color={iconColor || color} />
+      </View>
+
+      <Text style={[styles.settingTitle, { color }]}>{label}</Text>
+
+      <Ionicons
+        name="chevron-forward"
+        size={24}
+        color="#888"
+        style={styles.arrow}
+      />
+    </TouchableOpacity>
+  );
+}
+
 export default function Settings() {
 
   const router = useRouter();
+
+  const [isBD, setIsBD] = useState(false);
+  const [hasAgency, setHasAgency] = useState(false);
+  const [joinedAgency, setJoinedAgency] = useState(false);
+
+  // User ka role (BD / agency) padho
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (!user) return;
+      try {
+        const snap = await getDoc(doc(db, "users", user.uid));
+        if (!snap.exists()) return;
+        const d = snap.data();
+        setIsBD(d.isBD === true);
+        setHasAgency(d.agencyApproved === true);
+        setJoinedAgency(!!d.agencyId);
+      } catch (e) {}
+    });
+    return () => unsub();
+  }, []);
+
+  // Logout
+  const handleLogout = () => {
+    Alert.alert("Logout", "Do you want to log out??", [
+      { text: "no", style: "cancel" },
+      {
+        text: "yes",
+        onPress: async () => {
+          try {
+            await signOut(auth);
+            try {
+              await GoogleSignin.signOut();
+            } catch (err) {}
+            router.replace("/login");
+          } catch (e) {
+            Alert.alert("Error", "Logout nahi ho saka");
+          }
+        },
+      },
+    ]);
+  };
 
   // =====================================================
   // MOBILE HARDWARE BACK BUTTON
@@ -110,11 +185,11 @@ export default function Settings() {
           SETTINGS CONTENT
       ===================================================== */}
 
-      <View style={styles.content}>
-
-        {/* =====================================================
-            SETTINGS SECTION
-        ===================================================== */}
+      <ScrollView
+        style={styles.content}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 40 }}
+      >
 
         <View style={styles.section}>
 
@@ -122,74 +197,61 @@ export default function Settings() {
             TopKing
           </Text>
 
-
-          {/* =================================================
-              AGENCY REQUEST
-          ================================================= */}
-
-          <TouchableOpacity
-            style={styles.settingRow}
-            activeOpacity={0.6}
-            onPress={openAgencyRequest}
-          >
-
-            {/* LEFT ICON */}
-
-            <View style={styles.iconContainer}>
-
-              <Ionicons
-                name="business-outline"
-                size={25}
-                color="#fff"
-              />
-
-            </View>
-
-
-            {/* TITLE */}
-
-            <Text style={styles.settingTitle}>
-              Agency Request
-            </Text>
-
-
-            {/* RIGHT ARROW */}
-
-            <Ionicons
-              name="chevron-forward"
-              size={24}
-              color="#888"
-              style={styles.arrow}
-            />
-
-          </TouchableOpacity>
-
-        </View>
-
-
-        {/* =====================================================
-            COMING SOON
-        ===================================================== */}
-
-        <View style={styles.comingSoonContainer}>
-
-          <Ionicons
-            name="settings-outline"
-            size={60}
-            color="#FFD700"
+          <Row
+            icon="stats-chart"
+            iconColor="#FFD700"
+            label="Video Rank"
+            onPress={() => router.push("/Videorank")}
           />
 
-          <Text style={styles.comingSoon}>
-            Coming Soon
-          </Text>
+          <Row
+            icon="gift-outline"
+            iconColor="#FFD700"
+            label="Rewards"
+            onPress={() => router.push("../reward")}
+          />
 
-          <Text style={styles.description}>
-            More settings features are coming soon.
-          </Text>
+          {isBD && (
+            <Row
+              icon="briefcase-outline"
+              iconColor="#FF9800"
+              label="BD"
+              onPress={() => router.push("../bd")}
+            />
+          )}
+
+          {joinedAgency && !hasAgency && (
+            <Row
+              icon="people-outline"
+              iconColor="#00E5FF"
+              label="User Agency"
+              onPress={() => router.push("../useragency")}
+            />
+          )}
+
+          <Row
+            icon="business-outline"
+            label="Agency Request"
+            onPress={openAgencyRequest}
+          />
+
+          <Row
+            icon="ban-outline"
+            iconColor="#ff4444"
+            label="Block"
+            onPress={() => router.push("/block")}
+          />
+
+          <Row
+            icon="log-out-outline"
+            color="#FF3B30"
+            label="Logout"
+            onPress={handleLogout}
+          />
 
         </View>
 
-      </View>
+      </ScrollView>
 
     </SafeAreaView>
   );

@@ -16,7 +16,7 @@ import {
    BackHandler,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { Audio } from "expo-av";
+import { Audio } from "../utils/audio";
 import {
   collection,
   query,
@@ -186,13 +186,17 @@ useEffect(() => {
 
     try {
 
-      const q = query(
-
-        collection(db, "all_videos"),
-
-        where("audioUrl", "==", audioUrl)
-
-      );
+      // Same sound ki saari reels: musicId se (naye reels), warna
+      // audioUrl se (purane reels jinme musicId nahi hai).
+      const q = selectedMusicId
+        ? query(
+            collection(db, "all_videos"),
+            where("musicId", "==", selectedMusicId)
+          )
+        : query(
+            collection(db, "all_videos"),
+            where("audioUrl", "==", audioUrl)
+          );
 
       const snap = await getDocs(q);
 
@@ -226,7 +230,7 @@ useEffect(() => {
 
   }
 
-}, [audioUrl]);
+}, [audioUrl, selectedMusicId]);
 
 
 

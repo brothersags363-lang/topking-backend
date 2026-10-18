@@ -1,10 +1,11 @@
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useIsFocused } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
+import { Image as ExpoImage } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, usePathname, useRouter } from 'expo-router';
 import { VideoView, useVideoPlayer } from 'expo-video';
-import React, { useEffect, useState } from 'react';
+import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -29,19 +30,274 @@ import {
 import TopKingLogo from "../../assets/images/topking-logo.png";
 // FIREBASE CONFIG
 import { auth, db } from '../firebaseConfig';
+import { profileLink } from '../../utils/shareLinks';
 
 
 
-import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { collection, deleteDoc, doc, getCountFromServer, getDoc, getDocs, onSnapshot, query, setDoc, where } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
+import { collection, collectionGroup, deleteDoc, doc, documentId, getCountFromServer, getDoc, getDocs, limit, onSnapshot, query, setDoc, where, writeBatch } from 'firebase/firestore';
 
-import { GoogleSignin } from '@react-native-google-signin/google-signin';
 
 
 const { width } = Dimensions.get('window');
 const ITEM_SIZE = (width - 30) / 3;
 
+const AVATAR_FALLBACK = 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png';
+const FOLLOW_LIST_LIMIT = 200;
+const FOLLOW_ROW_HEIGHT = 66;
 
+// ---- Bio: Instagram jaisa FIXED size (max 4 lines, 150 chars) ----
+const BIO_MAX_LINES = 4;
+const BIO_MAX_CHARS = 150;
+
+const cleanBio = (text) => {
+  const t = (text || '').trim();
+  return t === 'bio.........' ? '' : t;   // purana placeholder hata do
+};
+
+const clampBio = (text) =>
+  (text || '')
+    .replace(/\r/g, '')
+    .split('\n')
+    .slice(0, BIO_MAX_LINES)
+    .join('\n')
+    .slice(0, BIO_MAX_CHARS);
+
+// ---- Username: koi bhi simple naam (Instagram rules) ----
+const sanitizeUsername = (text) =>
+  (text || '')
+    .replace(/^@+/, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9._]/g, '')
+    .slice(0, 30);
+
+const validateUsername = (u) => {
+  if (u.length < 3) return 'Username kam se kam 3 characters ka hona chahiye.';
+  if (u.startsWith('.') || u.endsWith('.')) return 'Username . se start ya end nahi ho sakta.';
+  if (u.includes('..')) return 'Username me lagatar do . nahi ho sakte.';
+  return null;
+};
+
+const formatCount = (value) => {
+  const n = Number(value || 0);
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, '') + 'M';
+  if (n >= 1e4) return (n / 1e3).toFixed(n >= 1e5 ? 0 : 1).replace(/\.0$/, '') + 'K';
+  return String(n);
+};
+
+const chunkArr = (arr, n = 30) => {
+  const out = [];
+  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
+};
+
+// 30 ids per query (1 round-trip) instead of 1 read per user
+const fetchDocsByIds = async (colName, ids) => {
+  const unique = [...new Set(ids.filter(Boolean))];
+  const map = new Map();
+
+  await Promise.all(
+    chunkArr(unique).map(async (part) => {
+      try {
+        const snap = await getDocs(
+          query(collection(db, colName), where(documentId(), 'in', part))
+        );
+        snap.forEach((d) => map.set(d.id, d));
+      } catch (e) {
+        const snaps = await Promise.all(
+          part.map((id) => getDoc(doc(db, colName, id)).catch(() => null))
+        );
+        snaps.forEach((d) => d && d.exists() && map.set(d.id, d));
+      }
+    })
+  );
+
+  return map;
+};
+
+const followKeyExtractor = (item) => item.id;
+const followItemLayout = (_data, index) => ({
+  length: FOLLOW_ROW_HEIGHT,
+  offset: FOLLOW_ROW_HEIGHT * index,
+  index,
+});
+
+const LEVEL_THEMES = {
+  t50: { bg: '#7B1FFF', border: '#FFD700', text: '#fff', icon: '#FFD700' },
+  t40: { bg: '#00BFFF', border: '#9EF8FF', text: '#fff', icon: '#fff' },
+  t30: { bg: '#FF0066', border: '#FFB6C1', text: '#fff', icon: '#fff' },
+  t20: { bg: '#FFC107', border: '#FFE082', text: '#000', icon: '#fff' },
+  t10: { bg: '#BDBDBD', border: '#fff', text: '#fff', icon: '#fff' },
+  t0:  { bg: '#222',    border: '#555',    text: '#FFD700', icon: '#00E5FF' },
+};
+// Angels: kitne top gifters dikhane hain (rank 1,2,3...) - yahan se number badlo
+const ANGEL_SHOW = 3;
+const ANGEL_RANK_COLORS = {
+  1: { bg: '#FFD700', text: '#000' },
+  2: { bg: '#C0C0C0', text: '#000' },
+  3: { bg: '#CD7F32', text: '#fff' },
+};
+const getAngelRankColors = (rank) =>
+  ANGEL_RANK_COLORS[rank] || { bg: '#444', text: '#fff' };
+
+const levelThemeFor = (level) => {
+  if (level >= 50) return LEVEL_THEMES.t50;
+  if (level >= 40) return LEVEL_THEMES.t40;
+  if (level >= 30) return LEVEL_THEMES.t30;
+  if (level >= 20) return LEVEL_THEMES.t20;
+  if (level >= 10) return LEVEL_THEMES.t10;
+  return LEVEL_THEMES.t0;
+};
+
+
+// Instagram jaisa bio: 3 line dikhti hai, lambi ho to "more" dabane par khulti hai
+const BIO_COLLAPSED_LINES = 3;
+const BioText = memo(function BioText({ text, style, moreStyle }) {
+  const [expanded, setExpanded] = useState(false);
+  const longBio =
+    text.split('\n').length > BIO_COLLAPSED_LINES || text.length > 110;
+
+  return (
+    <Text
+      style={style}
+      numberOfLines={expanded || !longBio ? undefined : BIO_COLLAPSED_LINES}
+      ellipsizeMode="tail"
+      onPress={longBio ? () => setExpanded((v) => !v) : undefined}
+    >
+      {text}
+      {longBio && (
+        <Text style={moreStyle}>{expanded ? "  less" : "  more"}</Text>
+      )}
+    </Text>
+  );
+});
+
+// Cached image: memory + disk cache, soft fade (no hard pop-in)
+const FastImage = memo(function FastImage({ style, uri, fallback, contentFit = 'cover' }) {
+  const src = uri || fallback;
+  return (
+    <ExpoImage
+      source={src}
+      style={style}
+      contentFit={contentFit}
+      cachePolicy="memory-disk"
+      transition={150}
+      recyclingKey={src}
+    />
+  );
+});
+
+// One grid cell. memo => only changed cells re-render
+const VideoItem = memo(function VideoItem({ item, onPress }) {
+  return (
+    <TouchableOpacity style={styles.videoCard} activeOpacity={0.85} onPress={() => onPress(item)}>
+      <FastImage uri={item.thumbnail} fallback={AVATAR_FALLBACK} style={styles.video} />
+
+      <View style={styles.videoOverlayViews}>
+        <Ionicons name="eye-outline" size={12} color="#fff" />
+        <Text style={styles.viewCountText}>{item.views || '0'}</Text>
+      </View>
+
+      <View style={styles.videoTitleRow}>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <MaterialCommunityIcons name="play" size={16} color="#FFD700" />
+          <Text style={styles.videoItemTitle} numberOfLines={1}>{item.title || 'video'}</Text>
+        </View>
+        <MaterialCommunityIcons name="dots-vertical" size={16} color="#fff" />
+      </View>
+    </TouchableOpacity>
+  );
+});
+
+// One row in the followers / following popup
+const FollowRow = memo(function FollowRow({
+  item,
+  iFollow,
+  followsMe,
+  onOpenProfile,
+  onMessage,
+  onToggle,
+}) {
+  const theme = levelThemeFor(item.level || 1);
+
+  let button;
+  if (iFollow && followsMe) {
+    button = (
+      <TouchableOpacity style={[styles.rowBtn, styles.rowBtnDark]} activeOpacity={0.8} onPress={() => onMessage(item)}>
+        <Text style={styles.rowBtnTextLight}>Message</Text>
+      </TouchableOpacity>
+    );
+  } else if (followsMe) {
+    button = (
+      <TouchableOpacity style={[styles.rowBtn, styles.rowBtnYellow]} activeOpacity={0.8} onPress={() => onToggle(item)}>
+        <Text style={styles.rowBtnTextDark}>Follow Back</Text>
+      </TouchableOpacity>
+    );
+  } else if (iFollow) {
+    button = (
+      <TouchableOpacity style={[styles.rowBtn, styles.rowBtnDark]} activeOpacity={0.8} onPress={() => onToggle(item)}>
+        <Text style={styles.rowBtnTextLight}>Following</Text>
+      </TouchableOpacity>
+    );
+  } else {
+    button = (
+      <TouchableOpacity style={[styles.rowBtn, styles.rowBtnYellow]} activeOpacity={0.8} onPress={() => onToggle(item)}>
+        <Text style={styles.rowBtnTextDark}>Follow</Text>
+      </TouchableOpacity>
+    );
+  }
+
+  return (
+    <View style={styles.followRow}>
+      <TouchableOpacity
+        style={styles.followUserTap}
+        activeOpacity={0.8}
+        onPress={() => onOpenProfile(item.id)}
+      >
+        <FastImage uri={item.profileImg} fallback={AVATAR_FALLBACK} style={styles.followAvatar} />
+
+        <View style={styles.followNameCol}>
+          <View style={styles.followNameLine}>
+            <Text style={styles.followUsername} numberOfLines={1}>{item.username}</Text>
+
+            {item.verified && (
+              <MaterialCommunityIcons
+                name="check-decagram"
+                size={15}
+                color={item.verifiedColor === 'yellow' ? '#FFD700' : '#ffffff'}
+                style={{ marginLeft: 4 }}
+              />
+            )}
+
+            <View style={[styles.levelBadge, { backgroundColor: theme.bg, borderColor: theme.border }]}>
+              <MaterialCommunityIcons name="diamond-stone" size={9} color={theme.icon} />
+              <Text style={[styles.levelBadgeText, { color: theme.text }]}>LV {item.level || 1}</Text>
+            </View>
+          </View>
+
+          {!!item.name && (
+            <Text style={styles.followRealName} numberOfLines={1}>{item.name}</Text>
+          )}
+        </View>
+      </TouchableOpacity>
+
+      {button}
+    </View>
+  );
+});
+
+
+
+// One row of the side menu
+const MenuRow = memo(function MenuRow({ icon, label, onPress, iconColor = '#fff' }) {
+  return (
+    <TouchableOpacity style={styles.menuItem} activeOpacity={0.7} onPress={onPress}>
+      <Ionicons name={icon} size={24} color={iconColor} />
+      <Text style={styles.menuItemText}>{label}</Text>
+      <Ionicons name="chevron-forward" size={20} color="#8a8a8a" />
+    </TouchableOpacity>
+  );
+});
 
 export default function ProfileScreen() {
 
@@ -76,12 +332,14 @@ const [followingList, setFollowingList] =
 
 
 const [followingIds, setFollowingIds] = useState(new Set());
+const [followerIds, setFollowerIds] = useState(new Set());
+const followingIdsRef = useRef(new Set());
+const followLoadedRef = useRef(false);
 
 const [activeFollowTab, setActiveFollowTab] =
   useState("followers");
 
-const [followersLoading, setFollowersLoading] = useState(false);
-const [followingLoading, setFollowingLoading] = useState(false);
+const [followLoading, setFollowLoading] = useState(false);
 
   
 
@@ -102,6 +360,7 @@ const [giftUserCount, setGiftUserCount] = useState(0);
 const [refreshing, setRefreshing] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [hasAgency, setHasAgency] = useState(false);
+  const [isBD, setIsBD] = useState(false);
   const [playModalVisible, setPlayModalVisible] = useState(false);
 const [commentMenuVisible, setCommentMenuVisible] =
 useState(false);
@@ -134,7 +393,7 @@ useEffect(() => {
     
   name: 'User',
   username: 'user',
-    bioText: 'bio.........',
+    bioText: '',
     category: 'Video Creator',
     gender: 'Male', 
    followers: '0',
@@ -247,12 +506,13 @@ useEffect(() => {
       const userSnap = await getDoc(userRef);
 
       let core = null;
+      let videosPromise = null;
 
       if (!userSnap.exists()) {
         const newUserData = {
           name: user.displayName || 'User',
           username: user.email?.split('@')[0].toLowerCase().trim() || 'user',
-          bioText: 'bio.........',
+          bioText: '',
           category: 'Video Creator',
           gender: 'Male',
           followers: '0',
@@ -270,6 +530,7 @@ useEffect(() => {
         // Fast path: just the fields the header needs (name/username/photo/
         // bio + level), fetched in parallel. This is what lets the profile
         // info show up before the video thumbnails, instead of after.
+        videosPromise = loadVideos(user.uid); // parallel, header ke saath
         core = await fetchCoreProfile(user.uid, userSnap);
       }
 
@@ -278,7 +539,7 @@ useEffect(() => {
       setLoading(false);
 
       // Video thumbnails load right after the header.
-      const videoData = await loadVideos(user.uid);
+      const videoData = await (videosPromise || loadVideos(user.uid));
 
       // These reuse data we already fetched above instead of re-querying
       // all_videos / users again.
@@ -380,7 +641,7 @@ useEffect(() => {
 
 
           setTopGifters(
-            gifters.slice(0, 3)
+            gifters.slice(0, ANGEL_SHOW)
           );
 
           setGiftUserCount(
@@ -426,6 +687,8 @@ const handleShareProfile = async () => {
 
 ${profileData.bioText || ""}
 
+${auth.currentUser?.uid ? profileLink(auth.currentUser.uid) : ""}
+
 Join me on TopKing!`,
     });
 
@@ -433,55 +696,31 @@ Join me on TopKing!`,
   }
 };
 
-  // Logout Handler Function
-  const handleLogout = async () => {
+  // Menu: close it, then open a screen
+  const go = (path) => {
     setMenuVisible(false);
-    Alert.alert("Logout", "Do you want to log out??", [
-      { text: "no", style: "cancel" },
-      { 
-        text: "yes", 
-        onPress: async () => { 
-
-
-        try {
-
-  // Firebase logout
-  await signOut(auth);
-
-  // Google logout
-  try {
-
-    await GoogleSignin.signOut();
-
-  } catch (err) {
-
-
-  }
-
-  router.replace("/login");
-
-} catch (e) {
-
-
-  Alert.alert(
-    "Error",
-    "Logout nahi ho saka"
-  );
-
-}
-
-
-
-        } 
-      }
-    ]);
+    router.push(path);
   };
 
-
-
-
-
-
+  // Menu: Clean Storage (image cache)
+  const handleCleanStorage = () => {
+    setMenuVisible(false);
+    Alert.alert("Clean Storage", "Cached images clear ho jayengi. Continue?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Clean",
+        onPress: async () => {
+          try {
+            await ExpoImage.clearDiskCache();
+            await ExpoImage.clearMemoryCache();
+            Alert.alert("Done", "Storage clean ho gaya.");
+          } catch (e) {
+            Alert.alert("Error", "Storage clean nahi ho saka.");
+          }
+        },
+      },
+    ]);
+  };
 
 const checkVerifiedBadge = async (uid) => {
   try {
@@ -574,6 +813,7 @@ const checkVerifiedBadge = async (uid) => {
       const data = docSnap.data();
 
       setHasAgency(data.agencyApproved === true);
+      setIsBD(data.isBD === true);
 
       setProfileData((prev) => ({
         ...prev,
@@ -582,11 +822,12 @@ const checkVerifiedBadge = async (uid) => {
           data.username ||
           auth.currentUser?.email?.split('@')[0] ||
           'user',
-        bioText: data.bioText || 'bio.........',
+        bioText: cleanBio(data.bioText),
         category: data.category || 'Video Creator',
         gender: data.gender || 'Male',
         profileImg: data.profileImg || 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
         verified: data.verified || false,
+        faceVerified: data.faceStatus === 'submitted' || data.faceStatus === 'approved',
         level: userLevel,
         verifiedColor: data.verifiedColor || "white",
       }));
@@ -702,8 +943,12 @@ const onRefresh = async () => {
 
     if (!uid) return;
 
-    const core = await fetchCoreProfile(uid);
-    const videoData = await loadVideos(uid);
+    followLoadedRef.current = false;
+
+    const [core, videoData] = await Promise.all([
+      fetchCoreProfile(uid),
+      loadVideos(uid),
+    ]);
 
     setJoinedAgency(!!core?.userData?.agencyId);
     setLikedMeCount(videoData.totalLikes);
@@ -875,12 +1120,20 @@ const loadLikedVideos = async (uid) => {
     // Current data ko inputs me feed karein taaki edit ho sake
     setTempName(profileData.name);
     setTempUsername(profileData.username);
-    setTempBioText(profileData.bioText);
+    setTempBioText(cleanBio(profileData.bioText));
     setTempCategory(profileData.category);
     setTempGender(profileData.gender);
     setTempProfileImg(profileData.profileImg);
     setEditModalVisible(true);
   };
+
+  // Creator Verification se aaya ho (?edit=1) to Edit Profile popup seedha khol do
+  useEffect(() => {
+    if (!loading && params?.edit === '1') {
+      openEditModal();
+      router.setParams({ edit: '' });
+    }
+  }, [loading, params?.edit]);
 
   const pickImage = async () => {
     let result = await ImagePicker.launchImageLibraryAsync({
@@ -896,209 +1149,175 @@ const loadLikedVideos = async (uid) => {
 
 
 
-const openFollowers = async () => {
+// ==========================================================
+// FOLLOW LISTS  (Instagram style)
+//  - followers + following edges load IN PARALLEL
+//  - user docs are fetched in batches of 30 (not 1 read per person)
+//  - follow / unfollow is OPTIMISTIC: button changes instantly,
+//    Firestore write happens in background, rolls back on error
+//  - buttons:  follows me only  -> Follow Back
+//              I follow only    -> Following (tap = unfollow)
+//              both follow      -> Message
+//              nobody           -> Follow
+// ==========================================================
+const loadFollowData = useCallback(async (force = false) => {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return;
+  if (followLoadedRef.current && !force) return;
+
   try {
+    if (!followLoadedRef.current) setFollowLoading(true);
 
-    const uid = auth.currentUser?.uid;
+    const [followersSnap, followingSnap] = await Promise.all([
+      getDocs(query(collection(db, 'follows'), where('followingId', '==', uid), limit(FOLLOW_LIST_LIMIT))),
+      getDocs(query(collection(db, 'follows'), where('followerId', '==', uid), limit(FOLLOW_LIST_LIMIT))),
+    ]);
 
-    if (!uid) return;
+    const followerIdArr = followersSnap.docs.map((d) => d.data().followerId);
+    const followingIdArr = followingSnap.docs.map((d) => d.data().followingId);
 
-    setFollowersLoading(true);
+    const userMap = await fetchDocsByIds('users', [...followerIdArr, ...followingIdArr]);
 
-    const q = query(
-      collection(db, "follows"),
-      where("followingId", "==", uid)
-    );
-
-    const snap = await getDocs(q);
-
-    const arr = await Promise.all(
-
-      snap.docs.map(async (item) => {
-
-        const followerId =
-          item.data().followerId;
-
-        try {
-
-          const userSnap = await getDoc(
-            doc(db, "users", followerId)
-          );
-
-          if (!userSnap.exists()) {
-            return null;
-          }
-
-          const userData = userSnap.data();
-
-          /*
-           * Level users document se hi lo.
-           * Isse har follower ke liye wallet read nahi hoga.
-           */
-          const level =
-            userData.level || 1;
-
+    const build = (ids) =>
+      ids
+        .map((id) => {
+          const snap = userMap.get(id);
+          if (!snap) return null;
+          const d = snap.data();
           return {
-            id: followerId,
-            ...userData,
-            verified:
-              userData.verified || false,
-
-            verifiedColor:
-              userData.verifiedColor || "white",
-
-            level,
+            id,
+            ...d,
+            username: d.username || 'user',
+            verified: d.verified || false,
+            verifiedColor: d.verifiedColor || 'white',
+            level: d.level || 1,
           };
+        })
+        .filter(Boolean);
 
-        } catch (error) {
+    setFollowersList(build(followerIdArr));
+    setFollowingList(build(followingIdArr));
+    setFollowerIds(new Set(followerIdArr));
+    setFollowingIds(new Set(followingIdArr));
 
-
-          return null;
-        }
-
-      })
-
-    );
-
-    setFollowersList(
-      arr.filter(Boolean)
-    );
-
+    followLoadedRef.current = true;
   } catch (error) {
-
-
+    if (__DEV__) console.log('FOLLOW LOAD ERROR =', error);
   } finally {
-
-    setFollowersLoading(false);
-
+    setFollowLoading(false);
   }
-};
+}, []);
 
+const openFollowModal = useCallback((tab) => {
+  setActiveFollowTab(tab);
+  setFollowersModalVisible(true); // popup turant khulta hai
+  loadFollowData();               // data background me aata hai
+}, [loadFollowData]);
 
+const toggleFollow = useCallback(async (target) => {
+  const myId = auth.currentUser?.uid;
+  if (!myId || !target?.id || myId === target.id) return;
 
+  const wasFollowing = followingIdsRef.current.has(target.id);
+  const edgeRef = doc(db, 'follows', `${myId}_${target.id}`);
 
-const loadFollowing = async () => {
-  try {
-
-    const uid = auth.currentUser?.uid;
-
-    if (!uid) return;
-
-    setFollowingLoading(true);
-
-    const q = query(
-      collection(db, "follows"),
-      where("followerId", "==", uid)
-    );
-
-    const snap = await getDocs(q);
-
-    const arr = await Promise.all(
-
-      snap.docs.map(async (item) => {
-
-        const followingId =
-          item.data().followingId;
-
-        try {
-
-          const userSnap = await getDoc(
-            doc(db, "users", followingId)
-          );
-
-          if (!userSnap.exists()) {
-            return null;
-          }
-
-          const userData =
-            userSnap.data();
-
-          const level =
-            userData.level || 1;
-
-          return {
-            id: followingId,
-            ...userData,
-
-            verified:
-              userData.verified || false,
-
-            verifiedColor:
-              userData.verifiedColor || "white",
-
-            level,
-          };
-
-        } catch (error) {
-
-
-          return null;
-        }
-
-      })
-
-    );
-
-    setFollowingList(
-      arr.filter(Boolean)
-    );
-
-  } catch (error) {
-
-
-  } finally {
-
-    setFollowingLoading(false);
-
-  }
-};
-
-
-const handleFollowUser = async (userData) => {
-  try {
-    const myId = auth.currentUser?.uid;
-    if (!myId || !userData?.id || myId === userData.id) return;
-
-    const followId = `${myId}_${userData.id}`;
-    await setDoc(doc(db, "follows", followId), {
-      followerId: myId,
-      followingId: userData.id,
-      createdAt: Date.now(),
+  const applyLocal = (nowFollowing) => {
+    setFollowingIds((prev) => {
+      const next = new Set(prev);
+      if (nowFollowing) next.add(target.id);
+      else next.delete(target.id);
+      return next;
     });
 
-    await loadFollowing();
-    Alert.alert("Success", "Follow ho gaya");
-  } catch (error) {
-    Alert.alert("Error", "Follow nahi ho saka");
-  }
-};
+    setProfileData((prev) => ({
+      ...prev,
+      following: String(
+        Math.max(0, Number(prev.following || 0) + (nowFollowing ? 1 : -1))
+      ),
+    }));
+  };
 
+  // 1) UI turant badlo
+  applyLocal(!wasFollowing);
 
-const handleFollowBack = async (userData) => {
+  // 2) Firestore background me
   try {
-    const myId = auth.currentUser.uid;
-
-    const followId = `${myId}_${userData.id}`;
-
-    await setDoc(
-      doc(db, "follows", followId),
-      {
+    if (wasFollowing) {
+      await deleteDoc(edgeRef);
+    } else {
+      await setDoc(edgeRef, {
         followerId: myId,
-        followingId: userData.id,
+        followingId: target.id,
         createdAt: Date.now(),
-      }
-    );
-
-    await loadFollowing();
-
-    Alert.alert(
-      "Success",
-      "Follow Back Done"
-    );
-
+      });
+    }
   } catch (error) {
+    // 3) fail hua to wapas purani state
+    applyLocal(wasFollowing);
+    Alert.alert('Error', 'Kuch gadbad hui, dobara try karo.');
   }
-};
+}, []);
+
+const confirmToggleFollow = useCallback((target) => {
+  if (followingIdsRef.current.has(target.id)) {
+    Alert.alert(`Unfollow @${target.username}?`, '', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Unfollow', style: 'destructive', onPress: () => toggleFollow(target) },
+    ]);
+  } else {
+    toggleFollow(target);
+  }
+}, [toggleFollow]);
+
+const openFollowUserProfile = useCallback((userId) => {
+  setFollowersModalVisible(false);
+  router.push({ pathname: '/userProfile', params: { userId } });
+}, [router]);
+
+const openFollowChat = useCallback((item) => {
+  setFollowersModalVisible(false);
+  router.push({
+    pathname: '/chat',
+    params: {
+      userId: item.id,
+      username: item.username,
+      profileImg: item.profileImg,
+    },
+  });
+}, [router]);
+
+const renderFollowRow = useCallback(({ item }) => (
+  <FollowRow
+    item={item}
+    iFollow={followingIds.has(item.id)}
+    followsMe={followerIds.has(item.id)}
+    onOpenProfile={openFollowUserProfile}
+    onMessage={openFollowChat}
+    onToggle={confirmToggleFollow}
+  />
+), [followingIds, followerIds, openFollowUserProfile, openFollowChat, confirmToggleFollow]);
+
+// ==========================================================
+// VIDEO GRID  (memoized cell => scroll / tab change smooth)
+// ==========================================================
+const onVideoPress = useCallback((item) => {
+  const currentVideos = activeTab === 'Videos' ? videos : likedVideos;
+  const currentIndex = currentVideos.findIndex((v) => v.id === item.id);
+
+  router.push({
+    pathname: activeTab === 'Videos' ? '/videoedite' : '/allvideo',
+    params: {
+      videos: JSON.stringify(currentVideos),
+      index: currentIndex,
+      userId: auth.currentUser?.uid,
+    },
+  });
+}, [activeTab, videos, likedVideos, router]);
+
+const renderVideoItem = useCallback(
+  ({ item }) => <VideoItem item={item} onPress={onVideoPress} />,
+  [onVideoPress]
+);
 
   // PROFILE SAVE AND FORCE RE-RENDER FIXED LOGIC
 const uploadProfileImage = async (imageUri) => {
@@ -1133,7 +1352,7 @@ const uploadProfileImage = async (imageUri) => {
     const result = await response.json();
 
 
-    return result.secure_url;
+    return result.secure_url || profileData.profileImg;
 
   } catch (error) {
 
@@ -1153,103 +1372,106 @@ const uploadProfileImage = async (imageUri) => {
 
 
 
-  const handleSaveProfile = async () => {
-    setSaving(true);
-    
-
-
-
-const imageUrl =
-  await uploadProfileImage(tempProfileImg);
-
-
-const cleanUsername = tempUsername
-  .trim()
-  .replace(/\s+/g, "_")
-  .toLowerCase();
-
-if (cleanUsername.length < 4) {
-
-  Alert.alert(
-    "Username Error",
-    "Username minimum 4 letters ka hona chahiye."
-  );
-
-  setSaving(false);
-
-  return;
-
-}
-
-if (!/^[a-z0-9_]+$/.test(cleanUsername)) {
-
-  Alert.alert(
-    "Username Error",
-    "Sirf letters, numbers aur _ use kar sakte ho."
-  );
-
-  setSaving(false);
-
-  return;
-
-}
-
-
-
-
-
-    const updatedData = {
-      ...profileData, // purane followers/likes details hold rakhne ke liye
-      name: tempName,
-      username: cleanUsername,
-      bioText: tempBioText,
-      category: tempCategory,
-      gender: tempGender,
-     profileImg: imageUrl,
-     level: profileData.level || 1,
+  // all_videos / comments / replies me jo username + dp save hai use naya karo
+  const syncMyIdentity = async (uid, username, photo) => {
+    const commit = async (docs, buildData) => {
+      for (let i = 0; i < docs.length; i += 400) {
+        const batch = writeBatch(db);
+        docs.slice(i, i + 400).forEach((d) => batch.update(d.ref, buildData));
+        await batch.commit();
+      }
     };
 
+    // 1) Mere videos (feed / explore / profile sab yahi fields padhte hain)
     try {
-      const user = auth.currentUser;
+      const vSnap = await getDocs(query(collection(db, 'all_videos'), where('userId', '==', uid)));
+      await commit(vSnap.docs, { username, profile: photo });
+    } catch (e) {
+      if (__DEV__) console.log('SYNC VIDEOS ERROR =', e);
+    }
 
-      // Username unique check
-const usernameQuery = query(
-  collection(db, "users"),
-  where("username", "==", cleanUsername)
-);
+    // 2) Mere comments + replies (collection-group; index na ho to ye skip ho jata hai,
+    //    feed me phir bhi live naya naam dikhta hai)
+    try {
+      const cSnap = await getDocs(query(collectionGroup(db, 'comments'), where('userId', '==', uid)));
+      await commit(cSnap.docs, { username, profilePic: photo });
+    } catch (e) {
+      if (__DEV__) console.log('SYNC COMMENTS ERROR =', e);
+    }
+    try {
+      const rSnap = await getDocs(query(collectionGroup(db, 'replies'), where('userId', '==', uid)));
+      await commit(rSnap.docs, { username, profilePic: photo });
+    } catch (e) {
+      if (__DEV__) console.log('SYNC REPLIES ERROR =', e);
+    }
+  };
 
-const usernameSnapshot = await getDocs(usernameQuery);
+  const handleSaveProfile = async () => {
+    if (saving) return;
 
-let usernameTaken = false;
+    const user = auth.currentUser;
+    if (!user) return;
 
-usernameSnapshot.forEach((docSnap) => {
-  if (docSnap.id !== user.uid) {
-    usernameTaken = true;
-  }
-});
+    // ---- 1. Validate FIRST (no point uploading an image if this fails) ----
+    const cleanUsername = sanitizeUsername(tempUsername);
 
-if (usernameTaken) {
-  Alert.alert(
-    "Username Already Taken",
-    "Ye username kisi aur user ne use kiya hua hai."
-  );
-  setSaving(false);
-  return;
-}
-      
-      // Agar Firebase active hai to remote db par overwrite karo
-      if (user) {
-        await setDoc(doc(db, "users", user.uid), updatedData, { merge: true });
+    const usernameError = validateUsername(cleanUsername);
+    if (usernameError) {
+      Alert.alert('Username Error', usernameError);
+      return;
+    }
+
+    setSaving(true);
+
+    try {
+      // ---- 2. Image upload + username-unique check run IN PARALLEL ----
+      const usernameChanged = cleanUsername !== profileData.username;
+
+      const [imageUrl, usernameTaken] = await Promise.all([
+        uploadProfileImage(tempProfileImg),
+        usernameChanged
+          ? getDocs(
+              query(
+                collection(db, 'users'),
+                where('username', '==', cleanUsername),
+                limit(2)
+              )
+            ).then((snap) => snap.docs.some((d) => d.id !== user.uid))
+          : Promise.resolve(false),
+      ]);
+
+      if (usernameTaken) {
+        Alert.alert(
+          'Username Already Taken',
+          'Ye username kisi aur user ne use kiya hua hai.'
+        );
+        return;
       }
-      
-      // Screen ke data ko force fully update karein
-      setProfileData(updatedData);
+
+      // ---- 3. Only write the fields that were edited ----
+      // (old code spread the whole profileData, which re-wrote stale
+      // followers / following / likes strings back into Firestore)
+      const payload = {
+        name: tempName.trim(),
+        username: cleanUsername,
+        bioText: clampBio(tempBioText).trim(),
+        category: tempCategory,
+        gender: tempGender,
+        profileImg: imageUrl,
+      };
+
+      await setDoc(doc(db, 'users', user.uid), payload, { merge: true });
+
+      setProfileData((prev) => ({ ...prev, ...payload }));
       setEditModalVisible(false);
-      Alert.alert("Success", "Profile successfully update ho gayi hai!");
+
+      // Naam / dp badla hai to mere SAARE videos + comments me bhi naya dikhe
+      // (background me, UI ko wait nahi karna padta)
+      syncMyIdentity(user.uid, cleanUsername, imageUrl);
     } catch (error) {
-      Alert.alert("Error", "Profile save nahi ho saki.");
-    } finally { 
-      setSaving(false); 
+      Alert.alert('Error', 'Profile save nahi ho saki.');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -1338,6 +1560,13 @@ const getLevelTheme = (level) => {
 const levelTheme =
 getLevelTheme(profileData.level || 1);
 
+  followingIdsRef.current = followingIds;
+
+  const bioClean = cleanBio(profileData.bioText);
+  const showName =
+    !!profileData.name?.trim() &&
+    profileData.name.trim().toLowerCase() !== (profileData.username || '').toLowerCase();
+
   if (loading) return <View style={styles.loaderBox}><ActivityIndicator size="large" color="#FFD700" /></View>;
 
   return (
@@ -1395,269 +1624,86 @@ getLevelTheme(profileData.level || 1);
 </View>
 
 
-      {/* Dropdown Menu Overlay */}
-
-
+      {/* Side Menu (Tiki style) */}
 {menuVisible && (
   <>
-    {/* Background */}
     <Pressable
       style={styles.menuOverlay}
       onPress={() => setMenuVisible(false)}
     />
 
-    {/* Popup */}
     <View style={styles.menuDropdown}>
 
-      <View style={styles.menuBox}>
+      <ScrollView
+        style={styles.menuScroll}
+        showsVerticalScrollIndicator={false}
+      >
+        <MenuRow
+          icon="share-social-outline"
+          label="Share Profile"
+          onPress={() => { setMenuVisible(false); handleShareProfile(); }}
+        />
+        <MenuRow
+          icon="wallet-outline"
+          label="Wallet"
+          onPress={() => go("/wallet")}
+        />
+        <MenuRow
+          icon="trash-bin-outline"
+          label="Clean Storage"
+          onPress={handleCleanStorage}
+        />
+        <MenuRow
+          icon="videocam-outline"
+          label="Quality"
+          onPress={() => go("../hdvideo")}
+        />
+        <MenuRow
+          icon="shield-checkmark-outline"
+          label="Creator Verification"
+          onPress={() => go("../creator")}
+        />
+        <MenuRow
+          icon="document-text-outline"
+          label="Community Guidelines"
+          onPress={() => go("../guidelines")}
+        />
+        <MenuRow
+          icon="language-outline"
+          label="Language"
+          onPress={() => go("../language")}
+        />
+        <MenuRow
+          icon="help-circle-outline"
+          label="Feedback"
+          onPress={() => go("../Feedback")}
+        />
 
-        
-
-        <TouchableOpacity
-  style={styles.menuItem}
-  onPress={() => {
-    setMenuVisible(false);
-    handleShareProfile();
-  }}
->
-  <Ionicons
-    name="share-social-outline"
-    size={22}
-    color="#fff"
-  />
-
-  <Text style={styles.menuItemText}>
-    Share Profile
-  </Text>
-</TouchableOpacity>
-
-
-{hasAgency && (
-
-<TouchableOpacity
-  style={styles.menuItem}
-  onPress={() => {
-    setMenuVisible(false);
-    router.push("../agency");
-  }}
->
-
-  <Ionicons
-    name="business-outline"
-    size={22}
-    color="#FFD700"
-  />
-
-  <Text style={styles.menuItemText}>
-    Agency
-  </Text>
-
-</TouchableOpacity>
-
-)}
-
-
-
-
-
-{joinedAgency && !hasAgency && (
-  <TouchableOpacity
-    style={styles.menuItem}
-    onPress={() => {
-      setMenuVisible(false);
-      router.push("../useragency");
-    }}
-  >
-    <Ionicons
-      name="people-outline"
-      size={22}
-      color="#00E5FF"
-    />
-
-    <Text style={styles.menuItemText}>
-      User Agency
-    </Text>
-  </TouchableOpacity>
-)}
-
-
-
-
-        <TouchableOpacity
-  style={styles.menuItem}
-  onPress={() => {
-    setMenuVisible(false);
-    router.push("../creator");
-  }}
->
-  <Ionicons
-    name="person-circle-outline"
-    size={22}
-    color="#fff"
-  />
-  <Text style={styles.menuItemText}>
-    Creator Verified
-  </Text>
-</TouchableOpacity>
-
-        
-<TouchableOpacity
-  style={styles.menuItem}
-  onPress={() => {
-    setMenuVisible(false);
-    router.push("../hdvideo");
-  }}
->
-  <Ionicons
-    name="videocam-outline"
-    size={22}
-    color="#fff"
-  />
-
-  <Text style={styles.menuItemText}>
-    Video Quality
-  </Text>
-</TouchableOpacity>
-
-
-
-        <TouchableOpacity
-  style={styles.menuItem}
-  onPress={() => {
-    setMenuVisible(false);
-    router.push("../language");
-  }}
->
-  <Ionicons
-    name="language-outline"
-    size={22}
-    color="#fff"
-  />
-
-  <Text style={styles.menuItemText}>
-    Language
-  </Text>
-</TouchableOpacity>
-
-       <TouchableOpacity
-  style={styles.menuItem}
-  onPress={() => {
-    setMenuVisible(false);
-    router.push("/block");
-  }}
->
-  <Ionicons
-    name="ban-outline"
-    size={22}
-    color="#ff4444"
-  />
-  <Text style={styles.menuItemText}>
-    Block
-  </Text>
-</TouchableOpacity>
-
-        <TouchableOpacity
-  style={[styles.menuItem, { borderBottomWidth: 0 }]}
-  onPress={() => {
-    setMenuVisible(false);
-    router.push("../Feedback");
-  }}
->
-  <Ionicons
-    name="chatbox-ellipses-outline"
-    size={22}
-    color="#fff"
-  />
-  <Text style={styles.menuItemText}>
-    Feedback
-  </Text>
-</TouchableOpacity>
-
-      </View>
-
-      <View style={{height:12}} />
-
-      <View style={styles.menuBox}>
-
-
-
-
-<TouchableOpacity
-  style={styles.menuItem}
-  onPress={() => {
-    setMenuVisible(false);
-    router.push("../reward");
-  }}
->
-  <Ionicons
-    name="gift-outline"
-    size={22}
-    color="#FFD700"
-  />
-
-  <Text style={styles.menuItemText}>
-    Rewards
-  </Text>
-</TouchableOpacity>
-
-
-
-        <TouchableOpacity
-  style={styles.menuItem}
-  onPress={() => {
-    setMenuVisible(false);
-    router.push("/settings");
-  }}
->
-  <Ionicons
-    name="settings-outline"
-    size={22}
-    color="#fff"
-  />
-
-  <Text style={styles.menuItemText}>
-    Settings
-  </Text>
-</TouchableOpacity>
-
-        {isAdmin && (
-          <TouchableOpacity
-            style={styles.menuItem}
-            onPress={()=>{
-              setMenuVisible(false);
-              router.push("../adminPanel");
-            }}
-          >
-            <Ionicons
-              name="shield-checkmark"
-              size={22}
-              color="#FFD700"
-            />
-            <Text style={styles.menuItemText}>
-              Admin Panel
-            </Text>
-          </TouchableOpacity>
+        {hasAgency && (
+          <MenuRow
+            icon="business-outline"
+            label="Agency"
+            iconColor="#FFD700"
+            onPress={() => go("../agency")}
+          />
         )}
 
-        <TouchableOpacity
-          style={[styles.menuItem,{borderBottomWidth:0}]}
-          onPress={handleLogout}
-        >
-          <Ionicons
-            name="log-out-outline"
-            size={22}
-            color="#FF3B30"
+        {isAdmin && (
+          <MenuRow
+            icon="shield-checkmark"
+            label="Admin Panel"
+            iconColor="#FFD700"
+            onPress={() => go("../adminPanel")}
           />
-          <Text
-            style={[
-              styles.menuItemText,
-              {color:"#FF3B30"}
-            ]}
-          >
-            Logout
-          </Text>
-        </TouchableOpacity>
+        )}
+      </ScrollView>
 
+      <View style={styles.menuBottom}>
+        <MenuRow
+          icon="settings-outline"
+          label="Settings"
+          onPress={() => go("/settings")}
+        />
       </View>
 
     </View>
@@ -1702,157 +1748,90 @@ refreshControl={
             {/* Profile Info Section */}
             <View style={styles.mainInfoSection}>
               <View style={styles.avatarContainer}>
-                <Image source={{ uri: profileData.profileImg }} style={styles.avatar} />
+                <FastImage
+                  uri={profileData.profileImg}
+                  fallback={AVATAR_FALLBACK}
+                  style={styles.avatar}
+                />
+                {profileData.faceVerified && (
+                  <View style={styles.faceBadge} pointerEvents="none">
+                    <Image source={TopKingLogo} style={styles.faceBadgeLogo} />
+                  </View>
+                )}
               </View>
-              
-              <View style={styles.profileMetaContainer}>
 
-                <View style={styles.usernameRow}>
+              <View style={styles.statsRow}>
+                <TouchableOpacity
+                  style={styles.statBox}
+                  activeOpacity={0.7}
+                  onPress={() => openFollowModal('followers')}
+                >
+                  <Text style={styles.statNum}>{formatCount(profileData.followers)}</Text>
+                  <Text style={styles.statLab}>Followers</Text>
+                </TouchableOpacity>
 
-  <Text
-  numberOfLines={1}
-  ellipsizeMode="tail"
-  style={styles.profileUserName}
->
-  @{profileData.username || "user"}
-</Text>
-
-  {/* Verified Badge */}
-
-{profileData.verified && (
-  <MaterialCommunityIcons
-    name="check-decagram"
-    size={22}
-    color={
-      profileData.verifiedColor === "yellow"
-        ? "#FFD700"
-        : "#ffffff"
-    }
-    style={{ marginLeft: 5 }}
-  />
-)}
-
-
-<View
-  style={[
-    styles.levelBadge,
-    {
-      backgroundColor: levelTheme.bg,
-      borderColor: levelTheme.border,
-    },
-  ]}
->
-  <MaterialCommunityIcons
-    name="diamond-stone"
-    size={10}
-    color={levelTheme.icon}
-  />
-
-  <Text
-    style={[
-      styles.levelBadgeText,
-      {
-        color: levelTheme.text,
-      },
-    ]}
-  >
-    LV {profileData.level}
-  </Text>
-</View>
-
-
-
-</View>
-
-
-               <Text style={styles.categoryText}>
-  {profileData.category}
-</Text>
-
-                <View style={styles.statsRow}>
-
-
-<TouchableOpacity
-style={styles.statBox}
- 
-
-    onPress={async () => {
-
-  setActiveFollowTab("followers");
-  setFollowersModalVisible(true);
-
-  await Promise.all([
-    openFollowers(),
-    loadFollowing(),
-  ]);
-
-}}
-
-
->
-
-
-  <Text style={styles.statNum}>
-    {profileData.followers}
-  </Text>
-
-  <Text style={styles.statLab}>
-    Followers
-  </Text>
-</TouchableOpacity>
-
-
-
-
-<TouchableOpacity
-style={styles.statBox}
-onPress={() => {
-
-    // 1. Following tab
-    setActiveFollowTab("following");
-
-    // 2. Popup immediately
-    setFollowersModalVisible(true);
-
-    // 3. Data background mein load
-    loadFollowing();
-
-}}
->
-
-
-  <Text style={styles.statNum}>
-    {profileData.following}
-  </Text>
-
-  <Text style={styles.statLab}>
-    Following
-  </Text>
-</TouchableOpacity>
-
-                    
-
+                <TouchableOpacity
+                  style={styles.statBox}
+                  activeOpacity={0.7}
+                  onPress={() => openFollowModal('following')}
+                >
+                  <Text style={styles.statNum}>{formatCount(profileData.following)}</Text>
+                  <Text style={styles.statLab}>Following</Text>
+                </TouchableOpacity>
 
                 <View style={styles.statBox}>
-
-<Text style={styles.statNum}>
-{likedMeCount}
-</Text>
-
-<Text style={styles.statLab}>
-Likes
-</Text>
-
-</View>
-
+                  <Text style={styles.statNum}>{formatCount(likedMeCount)}</Text>
+                  <Text style={styles.statLab}>Likes</Text>
                 </View>
               </View>
             </View>
 
-            {/* Bio Block */}
-            <View style={styles.bioSection}>
-              <Text style={styles.bioLabel}>Bio</Text>
-              <Text style={styles.bioText}>{profileData.bioText || 'bio.........'}</Text>
+            {/* Identity block: name, @username, category, bio (fixed lines) */}
+            <View style={styles.identityBlock}>
+              <View style={styles.usernameRow}>
+                <Text numberOfLines={1} ellipsizeMode="tail" style={styles.profileName}>
+                  {showName ? profileData.name : `@${profileData.username || 'user'}`}
+                </Text>
+
+                {profileData.verified && (
+                  <MaterialCommunityIcons
+                    name="check-decagram"
+                    size={18}
+                    color={profileData.verifiedColor === 'yellow' ? '#FFD700' : '#ffffff'}
+                    style={{ marginLeft: 5 }}
+                  />
+                )}
+
+                <View
+                  style={[
+                    styles.levelBadge,
+                    { backgroundColor: levelTheme.bg, borderColor: levelTheme.border },
+                  ]}
+                >
+                  <MaterialCommunityIcons name="diamond-stone" size={10} color={levelTheme.icon} />
+                  <Text style={[styles.levelBadgeText, { color: levelTheme.text }]}>
+                    LV {profileData.level || 1}
+                  </Text>
+                </View>
+              </View>
+
+              {showName && (
+                <Text style={styles.profileHandle} numberOfLines={1}>
+                  @{profileData.username || 'user'}
+                </Text>
+              )}
+
+              <Text style={styles.categoryText}>{profileData.category}</Text>
+
+              {!!bioClean && (
+                <View style={styles.bioSection}>
+                  <BioText
+                    text={bioClean}
+                    style={styles.bioText}
+                    moreStyle={styles.bioMore}
+                  />
+                </View>
+              )}
             </View>
 
             {/* Action Row */}
@@ -1960,7 +1939,7 @@ Likes
     {/* Top Gifter Photos */}
     <View style={styles.memberRow}>
 
-  {topGifters.slice(0, 3).map((item, index) => {
+  {topGifters.slice(0, ANGEL_SHOW).map((item, index) => {
 
     const imageUri =
       item.photo ||
@@ -1970,27 +1949,19 @@ Likes
       item.avatar ||
       "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 
-    return (
-      <Image
-        key={
-          item.uid ||
-          item.userId ||
-          `gifter-${index}`
-        }
-        source={{
-          uri: imageUri,
-        }}
-        style={[
-          styles.memberImg,
-          {
-            marginLeft:
-              index === 0 ? 0 : -12,
+    const rank = index + 1;
+    const rc = getAngelRankColors(rank);
 
-            zIndex:
-              3 - index,
-          },
-        ]}
-      />
+    return (
+      <View
+        key={item.uid || item.userId || `gifter-${index}`}
+        style={[styles.angelWrap, { marginLeft: index === 0 ? 0 : 10 }]}
+      >
+        <Image source={{ uri: imageUri }} style={styles.angelImg} />
+        <View style={[styles.angelBadge, { backgroundColor: rc.bg }]}>
+          <Text style={[styles.angelBadgeText, { color: rc.text }]}>{rank}</Text>
+        </View>
+      </View>
     );
 
   })}
@@ -2095,75 +2066,7 @@ Like ({likedVideos.length})
 
           </View>
         }
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.videoCard}
-
-onPress={() => {
-
-  const currentVideos =
-    activeTab === "Videos"
-      ? videos
-      : likedVideos;
-
-  const currentIndex =
-    currentVideos.findIndex(v => v.id === item.id);
-
-  if (activeTab === "Videos") {
-
-    router.push({
-      pathname: "/videoedite",
-      params: {
-        videos: JSON.stringify(currentVideos),
-        index: currentIndex,
-        userId: auth.currentUser?.uid,
-      },
-    });
-
-  } else {
-
-    router.push({
-      pathname: "/allvideo",
-      params: {
-        videos: JSON.stringify(currentVideos),
-        index: currentIndex,
-        userId: auth.currentUser?.uid,
-      },
-    });
-
-  }
-
-}}
-
-
-
-          >
-            {isFocused && (
-              <View style={{ flex: 1 }}>
-
-<Image
- source={{
- uri:item.thumbnail
- }}
- style={styles.video}
- fadeDuration={0}
-/>
-                
-                <View style={styles.videoOverlayViews}>
-                  <Ionicons name="eye-outline" size={12} color="#fff" />
-                  <Text style={styles.viewCountText}>{item.views || '0'}</Text>
-                </View>
-                <View style={styles.videoTitleRow}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <MaterialCommunityIcons name="play" size={16} color="#FFD700" />
-                    <Text style={styles.videoItemTitle} numberOfLines={1}>{item.title || 'video'}</Text>
-                  </View>
-                  <MaterialCommunityIcons name="dots-vertical" size={16} color="#fff" />
-                </View>
-              </View>
-            )}
-          </TouchableOpacity>
-        )}
+        renderItem={renderVideoItem}
       />
 
       {/* Global Tab Navigation Footer */}
@@ -2356,13 +2259,36 @@ onPress={() => {
             {/* Username Input */}
             <View style={styles.inputBox}>
               <Text style={styles.label}>Username</Text>
-              <TextInput style={styles.textInput} value={tempUsername} onChangeText={(text) => setTempUsername(text)} autoCapitalize="none" />
+              <TextInput
+                style={styles.textInput}
+                value={tempUsername}
+                onChangeText={(text) => setTempUsername(sanitizeUsername(text))}
+                autoCapitalize="none"
+                autoCorrect={false}
+                maxLength={30}
+                placeholder="simple name, jaise: rahul ya rahul.k"
+                placeholderTextColor="#555"
+              />
+              <Text style={styles.helperText}>
+                Letters, numbers, . aur _ use kar sakte ho (kam se kam 3)
+              </Text>
             </View>
-            
+
             {/* Bio Input */}
             <View style={styles.inputBox}>
               <Text style={styles.label}>Bio</Text>
-              <TextInput style={[styles.textInput, { height: 60 }]} value={tempBioText} onChangeText={(text) => setTempBioText(text)} multiline />
+              <TextInput
+                style={[styles.textInput, { height: 90, textAlignVertical: 'top' }]}
+                value={tempBioText}
+                onChangeText={(text) => setTempBioText(clampBio(text))}
+                multiline
+                maxLength={BIO_MAX_CHARS}
+                placeholder="Apne baare me likho..."
+                placeholderTextColor="#555"
+              />
+              <Text style={styles.helperText}>
+                {tempBioText.length}/{BIO_MAX_CHARS} • max {BIO_MAX_LINES} lines
+              </Text>
             </View>
 
             {/* Category Input */}
@@ -2518,392 +2444,74 @@ onPress={() => {
 <Modal
   visible={followersModalVisible}
   animationType="slide"
-  onRequestClose={() => {
-    setFollowersModalVisible(false);
-  }}
+  transparent
+  statusBarTranslucent
+  onRequestClose={() => setFollowersModalVisible(false)}
 >
-  <SafeAreaView
-    style={{
-      flex: 1,
-      backgroundColor: "#000",
-    }}
-  >
-    <TouchableOpacity
-      onPress={() =>
-        setFollowersModalVisible(false)
-      }
-      style={{
-        padding: 15,
-      }}
-    >
-      <Text
-        style={{
-          color: "#FFD700",
-          fontSize: 18,
-        }}
-      >
-        Close
+  <View style={styles.fmOverlay}>
+    <Pressable
+      style={styles.fmBackdrop}
+      onPress={() => setFollowersModalVisible(false)}
+    />
+
+    <View style={styles.fmSheet}>
+      <View style={styles.fmHandle} />
+
+      <Text style={styles.fmTitle} numberOfLines={1}>
+        @{profileData.username}
       </Text>
-    </TouchableOpacity>
 
+      <View style={styles.fmTabs}>
+        <TouchableOpacity
+          style={styles.fmTab}
+          activeOpacity={0.8}
+          onPress={() => setActiveFollowTab('followers')}
+        >
+          <Text style={[styles.fmTabText, activeFollowTab === 'followers' && styles.fmTabTextOn]}>
+            {formatCount(profileData.followers)} Followers
+          </Text>
+          <View style={[styles.fmTabLine, activeFollowTab === 'followers' && styles.fmTabLineOn]} />
+        </TouchableOpacity>
 
+        <TouchableOpacity
+          style={styles.fmTab}
+          activeOpacity={0.8}
+          onPress={() => setActiveFollowTab('following')}
+        >
+          <Text style={[styles.fmTabText, activeFollowTab === 'following' && styles.fmTabTextOn]}>
+            {formatCount(profileData.following)} Following
+          </Text>
+          <View style={[styles.fmTabLine, activeFollowTab === 'following' && styles.fmTabLineOn]} />
+        </TouchableOpacity>
+      </View>
 
-<View
-  style={{
-    flexDirection: "row",
-    justifyContent: "center",
-    marginBottom: 15,
-  }}
->
-
- <TouchableOpacity
-  onPress={() => {
-
-    setActiveFollowTab("followers");
-
-    if (followersList.length === 0) {
-      openFollowers();
-    }
-
-  }}
-
-    style={{
-      backgroundColor:
-        activeFollowTab === "followers"
-          ? "#FFD700"
-          : "#222",
-
-      paddingHorizontal: 20,
-      paddingVertical: 10,
-      borderRadius: 25,
-      marginRight: 10,
-    }}
-  >
-    <Text
-      style={{
-        color:
-          activeFollowTab === "followers"
-            ? "#000"
-            : "#fff",
-        fontWeight: "bold",
-      }}
-    >
-      Followers
-    </Text>
-  </TouchableOpacity>
-
-  <TouchableOpacity
-  onPress={() => {
-
-    setActiveFollowTab("following");
-
-    if (followingList.length === 0) {
-      loadFollowing();
-    }
-
-  }}
-    style={{
-      backgroundColor:
-        activeFollowTab === "following"
-          ? "#FFD700"
-          : "#222",
-
-      paddingHorizontal: 20,
-      paddingVertical: 10,
-      borderRadius: 25,
-    }}
-  >
-    <Text
-      style={{
-        color:
-          activeFollowTab === "following"
-            ? "#000"
-            : "#fff",
-        fontWeight: "bold",
-      }}
-    >
-      Following
-    </Text>
-  </TouchableOpacity>
-
-</View>
-
-
-
-
-
-
-{(
-  activeFollowTab === "followers"
-    ? followersLoading
-    : followingLoading
-) ? (
-
-  <View
-    style={{
-      flex: 1,
-      justifyContent: "center",
-      alignItems: "center",
-      paddingTop: 60,
-    }}
-  >
-
-    <ActivityIndicator
-      size="large"
-      color="#FFD700"
-    />
-
-    <Text
-      style={{
-        color: "#888",
-        marginTop: 12,
-        fontSize: 14,
-      }}
-    >
-      Loading...
-    </Text>
-
-  </View>
-
-) : (
-
-  <FlatList
-    data={
-      activeFollowTab === "followers"
-        ? followersList
-        : followingList
-    }
-
-    initialNumToRender={9}
-    maxToRenderPerBatch={6}
-    windowSize={5}
-    removeClippedSubviews={true}
-    keyExtractor={(item) => item.id}
-
-renderItem={({ item }) => {
-
-  // Kya main is user ko follow karta hoon?
-  const isFollowing = followingList.some(
-    (u) => u.id === item.id
-  );
-
-  // Kya ye user mujhe follow karta hai?
-  const followsMe = followersList.some(
-    (u) => u.id === item.id
-  );
-
-  // Dono ek-dusre ko follow karte hain = Friend / Mutual
-  const isFriend = isFollowing && followsMe;
-
-  return (
-
-
-
-<View
-  style={{
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    width: "100%",
-  }}
->
-
-   <TouchableOpacity
-  activeOpacity={0.8}
-  onPress={() => {
-
-    setFollowersModalVisible(false);
-
-    router.push({
-      pathname: "/userProfile",
-      params: {
-        userId: item.id,
-      },
-    });
-
-  }}
-  style={{
-    flexDirection: "row",
-    alignItems: "center",
-    flex: 1,
-  }}
->
-      <Image
-        source={{
-          uri: item.profileImg,
-        }}
-        style={{
-          width: 42,
-          height: 42,
-          borderRadius: 21,
-        }}
-      />
-      
-
- 
-
-<View
-  style={{
-    flexDirection: "row",
-    alignItems: "center",
-    marginLeft: 8,
-    flexShrink: 1,
-    maxWidth: 150,
-  }}
->
-
-
-  <Text
-  numberOfLines={1}
-  ellipsizeMode="tail"
-  style={{
-    color: "#fff",
-    fontSize: 14,
-    fontWeight: "bold",
-    maxWidth: 90,
-  }}
->
-  @{item.username}
-</Text>
-
-  {/* Verified Badge */}
-  {item.verified && (
-    <View
-      style={{
-        marginLeft: 5,
-        width: 20,
-        height: 20,
-        justifyContent: "center",
-        alignItems: "center",
-      }}
-    >
-      <MaterialCommunityIcons
-  name="check-decagram"
-  size={20}
-  color={
-    item.verifiedColor === "yellow"
-      ? "#FFD700"
-      : "#ffffff"
-  }
-/>
-
-  
+      {followLoading ? (
+        <View style={styles.fmLoading}>
+          <ActivityIndicator size="large" color="#FFD700" />
+        </View>
+      ) : (
+        <FlatList
+          data={activeFollowTab === 'followers' ? followersList : followingList}
+          keyExtractor={followKeyExtractor}
+          renderItem={renderFollowRow}
+          getItemLayout={followItemLayout}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={7}
+          removeClippedSubviews
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ paddingBottom: 30 }}
+          ListEmptyComponent={
+            <Text style={styles.fmEmpty}>
+              {activeFollowTab === 'followers'
+                ? 'Abhi koi follower nahi hai'
+                : 'Aapne abhi kisi ko follow nahi kiya'}
+            </Text>
+          }
+        />
+      )}
     </View>
-  )}
-
-  {/* Level Badge */}
-  <View
-  style={[
-    styles.levelBadge,
-    {
-      marginLeft: 4,
-      transform: [{ scale: 0.85 }],
-        backgroundColor: getLevelTheme(item.level || 1).bg,
-        borderColor: getLevelTheme(item.level || 1).border,
-      },
-    ]}
-  >
-    <MaterialCommunityIcons
-      name="diamond-stone"
-      size={14}
-      color={getLevelTheme(item.level || 1).icon}
-    />
-
-    <Text
-      style={[
-        styles.levelBadgeText,
-        {
-          color: getLevelTheme(item.level || 1).text,
-        },
-      ]}
-    >
-      LV {item.level || 1}
-    </Text>
   </View>
-</View>
-
-
-
-    </TouchableOpacity>
-
-
-
-  {isFriend ? (
-    <TouchableOpacity
-      style={{
-        backgroundColor: "#222",
-        width: 100,
-        paddingVertical: 8,
-        borderRadius: 20,
-        alignItems: "center",
-      }}
-      onPress={() =>
-        router.push({
-          pathname: "/chat",
-          params: {
-            userId: item.id,
-            username: item.username,
-            profileImg: item.profileImg,
-          },
-        })
-      }
-    >
-      <Text style={{ color: "#fff", fontWeight: "bold" }}>Message</Text>
-    </TouchableOpacity>
-  ) : followsMe ? (
-    <TouchableOpacity
-      style={{
-        backgroundColor: "#FFD700",
-        width: 100,
-        paddingVertical: 8,
-        borderRadius: 20,
-        alignItems: "center",
-      }}
-      onPress={() => handleFollowBack(item)}
-    >
-      <Text style={{ color: "#000", fontWeight: "bold" }}>Follow Back</Text>
-    </TouchableOpacity>
-  ) : isFollowing ? (
-    <TouchableOpacity
-      disabled
-      style={{
-        backgroundColor: "#333",
-        width: 100,
-        paddingVertical: 8,
-        borderRadius: 20,
-        alignItems: "center",
-        opacity: 0.85,
-      }}
-    >
-      <Text style={{ color: "#fff", fontWeight: "bold" }}>Following</Text>
-    </TouchableOpacity>
-  ) : (
-    <TouchableOpacity
-      style={{
-        backgroundColor: "#FF5E00",
-        width: 100,
-        paddingVertical: 8,
-        borderRadius: 20,
-        alignItems: "center",
-      }}
-      onPress={() => handleFollowUser(item)}
-    >
-      <Text style={{ color: "#fff", fontWeight: "bold" }}>Follow</Text>
-    </TouchableOpacity>
-  )}
-
-  </View>
-);
-
-
-}}
-/>
-)}
-
-
-</SafeAreaView>
 </Modal>
 
 
@@ -2932,40 +2540,22 @@ const styles = StyleSheet.create({
   mainInfoSection: { flexDirection: 'row', alignItems: 'center', marginTop: 10 },
   avatarContainer: { width: 90, height: 90, borderRadius: 50, borderWidth: 2, borderColor: '#FFD700', justifyContent: 'center', alignItems: 'center', shadowColor: '#FFD700', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.6, shadowRadius: 8, elevation: 5 },
   avatar: { width: 88, height: 88, borderRadius: 45, backgroundColor: '#222' },
+  // Face-verified user ka logo: photo ke side (neeche-right) me chipka hua
+  faceBadge: { position: 'absolute', right: -8, bottom: -4, width: 30, height: 30, borderRadius: 15, backgroundColor: '#000', borderWidth: 2, borderColor: '#FFD700', justifyContent: 'center', alignItems: 'center' },
+  faceBadgeLogo: { width: 20, height: 20, resizeMode: 'contain' },
   profileMetaContainer: { flex: 1, marginLeft: 15 },
-  usernameRow: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  flexWrap: 'nowrap',
-  width: '100%',
-},
-  
-profileUserName: {
-  fontSize: 16,
-  fontWeight: 'bold',
-  color: '#fff',
-  maxWidth: 100,
-},
-
-  categoryText: { color: '#FFD700', fontSize: 12, marginTop: 2, fontWeight: '500' },
-
-statsRow: {
-  flexDirection: "row",
-  justifyContent: "flex-start",
-  alignItems: "center",
-  marginTop: 20,
-},
-
-statBox: {
-  alignItems: "center",
-  marginRight: 34, // gap adjust kar sakte ho
-},
-
-  statNum: { fontSize: 15, fontWeight: 'bold', color: '#fff' },
-  statLab: { fontSize: 13.5, color: '#888', marginTop: 3 },
-  bioSection: { marginTop: 15 },
-  bioLabel: { color: '#888', fontSize: 13, fontWeight: '500' },
-  bioText: { fontSize: 16, marginTop: 2, color: '#fff', fontWeight: 'bold' },
+  identityBlock: { marginTop: 12 },
+  usernameRow: { flexDirection: 'row', alignItems: 'center' },
+  profileName: { fontSize: 16, fontWeight: 'bold', color: '#fff', flexShrink: 1 },
+  profileHandle: { color: '#9a9a9a', fontSize: 13, marginTop: 2 },
+  categoryText: { color: '#FFD700', fontSize: 12, marginTop: 3, fontWeight: '500' },
+  statsRow: { flex: 1, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', marginLeft: 10 },
+  statBox: { alignItems: 'center', paddingHorizontal: 6, paddingVertical: 4, minWidth: 64 },
+  statNum: { fontSize: 17, fontWeight: 'bold', color: '#fff' },
+  statLab: { fontSize: 12.5, color: '#888', marginTop: 2 },
+  bioSection: { marginTop: 8 },
+  bioText: { fontSize: 14, lineHeight: 19, color: '#fff', marginTop: 6 },
+  bioMore: { color: '#8e8e8e', fontWeight: '600' },
   buttonRow: { flexDirection: 'row', marginTop: 20, gap: 12 },
   editBtn: { flex: 1, backgroundColor: '#FFD700', paddingVertical: 12, borderRadius: 16, alignItems: 'center', justifyContent: 'center', flexDirection: 'row' }, 
   editBtnText: { fontWeight: 'bold', color: '#000', fontSize: 15 },
@@ -3103,49 +2693,43 @@ menuOverlay: {
 },
 
 
- menuDropdown: {
+menuDropdown: {
   position: "absolute",
-
-  top: Platform.OS === "ios" ? 40 : 40,
-  right: 5,
-
-  width: 185,
-
-  backgroundColor: "#000000",
-
-  borderRadius: 14,
-
-  overflow: "hidden",
-
+  top: 0,
+  bottom: 25,
+  right: 0,
+  width: "78%",
+  backgroundColor: "#121212",
+  paddingTop: Platform.OS === "ios" ? 60 : 55,
+  paddingBottom: Platform.OS === "ios" ? 30 : 20,
   zIndex: 9999,
   elevation: 20,
-
-  shadowColor: "#000000",
-  shadowOpacity: 0.4,
-  shadowRadius: 10,
+  shadowColor: "#000",
+  shadowOpacity: 0.5,
+  shadowRadius: 12,
 },
+
+menuScroll: { flex: 1 },
 
 menuItem: {
   flexDirection: "row",
   alignItems: "center",
-
-  paddingVertical: 13,
-  paddingHorizontal: 14,
-
-  borderBottomWidth: 0.5,
-  borderBottomColor: "#000000",
-
-  minHeight: 60,
+  paddingVertical: 16,
+  paddingHorizontal: 20,
+  minHeight: 58,
 },
 
 menuItemText: {
+  flex: 1,
   color: "#fff",
+  fontSize: 16,
+  marginLeft: 16,
+  fontWeight: "500",
+},
 
-  fontSize: 15,
-
-  marginLeft: 18,
-
-  fontWeight: "600",
+menuBottom: {
+  borderTopWidth: 0.5,
+  borderTopColor: "#262626",
 },
   
 
@@ -3362,4 +2946,70 @@ memberImg:{
     borderColor:"#181818",
 },
 
-}); 
+angelWrap: {
+    width: 28,
+    height: 28,
+  },
+
+  angelImg: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: "#181818",
+  },
+
+  angelBadge: {
+    position: "absolute",
+    right: -5,
+    bottom: -5,
+    minWidth: 14,
+    height: 14,
+    paddingHorizontal: 2,
+    borderRadius: 7,
+    borderWidth: 1.5,
+    borderColor: "#181818",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  angelBadgeText: {
+    fontSize: 9,
+    fontWeight: "900",
+    lineHeight: 11,
+  },
+
+  // ---- followers / following popup ----
+  fmOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.55)' },
+  fmBackdrop: { ...StyleSheet.absoluteFillObject },
+  fmSheet: {
+    height: '82%',
+    backgroundColor: '#121212',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    overflow: 'hidden',
+  },
+  fmHandle: { alignSelf: 'center', width: 42, height: 4, borderRadius: 2, backgroundColor: '#444', marginTop: 8 },
+  fmTitle: { color: '#fff', fontSize: 16, fontWeight: '700', textAlign: 'center', marginTop: 12, marginBottom: 8, paddingHorizontal: 50 },
+  fmTabs: { flexDirection: 'row', borderBottomWidth: 0.5, borderBottomColor: '#2a2a2a' },
+  fmTab: { flex: 1, alignItems: 'center', paddingTop: 10 },
+  fmTabText: { color: '#888', fontSize: 14, fontWeight: '600', paddingBottom: 10 },
+  fmTabTextOn: { color: '#fff' },
+  fmTabLine: { height: 2, alignSelf: 'stretch', backgroundColor: 'transparent' },
+  fmTabLineOn: { backgroundColor: '#FFD700' },
+  fmLoading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  fmEmpty: { color: '#777', textAlign: 'center', marginTop: 60, fontSize: 14 },
+
+  followRow: { flexDirection: 'row', alignItems: 'center', height: FOLLOW_ROW_HEIGHT, paddingHorizontal: 14 },
+  followUserTap: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  followAvatar: { width: 46, height: 46, borderRadius: 23, backgroundColor: '#222' },
+  followNameCol: { flex: 1, marginLeft: 10, marginRight: 8 },
+  followNameLine: { flexDirection: 'row', alignItems: 'center' },
+  followUsername: { color: '#fff', fontSize: 14, fontWeight: 'bold', flexShrink: 1 },
+  followRealName: { color: '#8e8e8e', fontSize: 12.5, marginTop: 2 },
+  rowBtn: { width: 98, height: 34, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
+  rowBtnYellow: { backgroundColor: '#FFD700' },
+  rowBtnDark: { backgroundColor: '#262626' },
+  rowBtnTextDark: { color: '#000', fontWeight: 'bold', fontSize: 13 },
+  rowBtnTextLight: { color: '#fff', fontWeight: 'bold', fontSize: 13 },
+});

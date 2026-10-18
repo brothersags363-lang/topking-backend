@@ -12,7 +12,15 @@ import {
 } from "firebase/firestore";
 import { getStorage } from 'firebase/storage';
 
-import messaging from '@react-native-firebase/messaging';
+import { getApp as getNativeApp } from '@react-native-firebase/app';
+import {
+  getMessaging,
+  getToken,
+  onTokenRefresh,
+  requestPermission,
+} from '@react-native-firebase/messaging';
+
+const messagingInstance = getMessaging(getNativeApp());
 
 
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
@@ -51,9 +59,9 @@ export const storage = getStorage(app);
 
 export const getFCMToken = async () => {
   try {
-    await messaging().requestPermission();
+    await requestPermission(messagingInstance);
 
-    const token = await messaging().getToken();
+    const token = await getToken(messagingInstance);
 
     console.log("FCM TOKEN =", token);
 
@@ -65,7 +73,7 @@ export const getFCMToken = async () => {
 };
 
 
-messaging().onTokenRefresh(async (token) => {
+onTokenRefresh(messagingInstance, async (token) => {
 
   console.log("NEW FCM TOKEN =", token);
 

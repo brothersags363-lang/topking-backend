@@ -75,8 +75,11 @@ const HEARTBEAT_CHECK_INTERVAL = 30 * 1000;
 
 const TRENDING_BANNERS_DATA = [
   require('../assets/images/banner1.jpeg'),
-  require('../assets/images/banner2.jpeg'),
+  require('../assets/images/banner2.png'),
   require('../assets/images/banner3.jpeg'),
+  require('../assets/images/banner4.png'),
+  require('../assets/images/banner5.png'),
+  require('../assets/images/banner6.png'),
 ];
 
 // ------------------------------------
