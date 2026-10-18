@@ -829,6 +829,29 @@ app.get(
       }
 
 
+      // ---- LIVE BAN CHECK (Official ne ban lagaya ho to token nahi milega) ----
+      // Host = room ka hostId; baaki sab (viewer / speaker) = entry.
+      try {
+        const banState = await getLiveBanState(req.user.uid);
+        if (banState.entry || banState.live) {
+          const roomSnap = await db.collection("rooms").doc(channelName).get();
+          const isRoomHost = roomSnap.exists && roomSnap.data().hostId === req.user.uid;
+          const until = isRoomHost ? banState.live : banState.entry;
+          if (until) {
+            return res.status(403).json({
+              success: false,
+              banned: true,
+              until,
+              error: isRoomHost
+                ? `Aapka live chalana ${formatUntilIST(until)} tak band hai`
+                : `Aapki live room entry ${formatUntilIST(until)} tak band hai`,
+            });
+          }
+        }
+      } catch (e) {
+        console.error("LIVE BAN CHECK ERROR:", e.message);
+      }
+
       // Generate a deterministic numeric Agora UID
       // from authenticated Firebase UID.
 
@@ -3115,6 +3138,420 @@ app.post("/admin/list-bds", generalLimiter, verifyUser, requireAdminDoc, async (
     return res.json({ success: true, bds });
   } catch (e) {
     console.error("ADMIN LIST BDS ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// =====================================================
+// OFFICIAL SYSTEM
+// - Admin kisi bhi user ko "Official" bana sakta hai (officials/{uid} + users/{uid}.isOfficial)
+// - Official: BD add, agency de, ID ban/unban, live entry ban, live start ban (1/3/7/15/30 din)
+// - Saari checks server par hoti hain. Client ke isOfficial flag par bharosa nahi.
+// - Official kisi Admin ya dusre Official par action nahi kar sakta.
+// - Live ban liveBans/{uid} me rehta hai (sirf server likhta hai, Firestore rules me client write band rakho)
+// =====================================================
+
+const LIVE_BAN_DAYS = [1, 3, 7, 15, 30];
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+async function isOfficialUser(uid) {
+  try {
+    const snap = await db.collection("officials").doc(uid).get();
+    return snap.exists && snap.data().active !== false;
+  } catch (_) {
+    return false;
+  }
+}
+
+// Admin ya Official dono chalte hain. req.actorIsAdmin set hota hai.
+async function requireOfficial(req, res, next) {
+  try {
+    if (await isAdminUser(req.user)) {
+      req.actorIsAdmin = true;
+      return next();
+    }
+    if (await isOfficialUser(req.user.uid)) {
+      req.actorIsAdmin = false;
+      return next();
+    }
+  } catch (_) {}
+  return res.status(403).json({ success: false, error: "Official access required" });
+}
+
+// Target par action allowed hai ya nahi. Error text return karta hai, ok ho to null.
+async function officialTargetError(req, uid) {
+  if (!isValidUid(uid)) return "Invalid user";
+  if (uid === req.user.uid) return "Apne aap par ye action nahi kar sakte";
+  const adminDoc = await db.collection("admins").doc(uid).get();
+  if (adminDoc.exists) return "Admin par ye action nahi ho sakta";
+  try {
+    const rec = await admin.auth().getUser(uid);
+    if (rec.customClaims && rec.customClaims.admin === true) {
+      return "Admin par ye action nahi ho sakta";
+    }
+  } catch (_) {}
+  if (!req.actorIsAdmin && (await isOfficialUser(uid))) {
+    return "Official par ye action nahi ho sakta";
+  }
+  return null;
+}
+
+function formatUntilIST(ms) {
+  try {
+    return new Date(ms).toLocaleString("en-IN", {
+      timeZone: "Asia/Kolkata",
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch (_) {
+    return new Date(ms).toISOString();
+  }
+}
+
+// { entry: untilMs ya 0, live: untilMs ya 0 }  (sirf abhi active wale)
+async function getLiveBanState(uid) {
+  const snap = await db.collection("liveBans").doc(uid).get();
+  if (!snap.exists) return { entry: 0, live: 0 };
+  const d = snap.data() || {};
+  const now = Date.now();
+  const e = Number(d.entryBanUntil) || 0;
+  const l = Number(d.liveBanUntil) || 0;
+  return { entry: e > now ? e : 0, live: l > now ? l : 0 };
+}
+
+// ---------- ADMIN: Official manage ----------
+
+// body: { username }
+app.post("/admin/add-official", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const username = cleanText(req.body && req.body.username, 80);
+    if (!username) {
+      return res.status(400).json({ success: false, error: "Username daalo" });
+    }
+    const q = await db.collection("users").where("username", "==", username).limit(1).get();
+    if (q.empty) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+    const userDoc = q.docs[0];
+    const u = userDoc.data();
+    const uid = userDoc.id;
+
+    const existing = await db.collection("officials").doc(uid).get();
+    if (existing.exists && existing.data().active !== false) {
+      return res.status(400).json({ success: false, error: "Ye user pehle se Official hai" });
+    }
+
+    await db.collection("officials").doc(uid).set(
+      {
+        uid,
+        username: u.username || username,
+        profileImg: u.profileImg || "",
+        active: true,
+        addedBy: req.user.uid,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    await db.collection("users").doc(uid).set({ isOfficial: true }, { merge: true });
+    console.log(`ADMIN ADD OFFICIAL: admin=${req.user.uid} official=${uid}`);
+    return res.json({ success: true, uid });
+  } catch (e) {
+    console.error("ADMIN ADD OFFICIAL ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// body: { uid }
+app.post("/admin/remove-official", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const uid = String((req.body && req.body.uid) || "");
+    if (!isValidUid(uid)) {
+      return res.status(400).json({ success: false, error: "Invalid user" });
+    }
+    await db.collection("officials").doc(uid).delete();
+    await db.collection("users").doc(uid).set({ isOfficial: false }, { merge: true });
+    console.log(`ADMIN REMOVE OFFICIAL: admin=${req.user.uid} official=${uid}`);
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("ADMIN REMOVE OFFICIAL ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+app.post("/admin/list-officials", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const snap = await db.collection("officials").get();
+    const officials = snap.docs
+      .filter((d) => d.data().active !== false)
+      .map((d) => {
+        const x = d.data();
+        return { uid: d.id, username: x.username || "", profileImg: x.profileImg || "" };
+      });
+    officials.sort((a, b) => a.username.localeCompare(b.username));
+    return res.json({ success: true, officials });
+  } catch (e) {
+    console.error("ADMIN LIST OFFICIALS ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// ---------- OFFICIAL: user search ----------
+// body: { q } -> username prefix (max 15), saath me ban / BD / agency / live-ban status
+app.post("/official/search-users", generalLimiter, verifyUser, requireOfficial, async (req, res) => {
+  try {
+    const q = cleanText(req.body && req.body.q, 40).toLowerCase().replace(/^@/, "");
+    if (q.length < 1) return res.json({ success: true, users: [] });
+    const snap = await db
+      .collection("users")
+      .where("username", ">=", q)
+      .where("username", "<=", q + "\uf8ff")
+      .orderBy("username")
+      .limit(15)
+      .get();
+    const banRefs = snap.docs.map((d) => db.collection("liveBans").doc(d.id));
+    const banSnaps = banRefs.length ? await db.getAll(...banRefs) : [];
+    const now = Date.now();
+    const users = snap.docs.map((d, i) => {
+      const u = d.data();
+      const b = banSnaps[i] && banSnaps[i].exists ? banSnaps[i].data() : {};
+      const e = Number(b.entryBanUntil) || 0;
+      const l = Number(b.liveBanUntil) || 0;
+      return {
+        uid: d.id,
+        username: u.username || "",
+        name: u.name || u.realName || "",
+        profileImg: u.profileImg || "",
+        level: u.level || 1,
+        banned: u.banned === true,
+        isBD: u.isBD === true,
+        agencyName: u.agencyName || "",
+        entryBanUntil: e > now ? e : 0,
+        liveBanUntil: l > now ? l : 0,
+      };
+    });
+    return res.json({ success: true, users });
+  } catch (e) {
+    console.error("OFFICIAL SEARCH ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// ---------- OFFICIAL: BD add ----------
+// body: { uid }
+app.post("/official/add-bd", generalLimiter, verifyUser, requireOfficial, async (req, res) => {
+  try {
+    const uid = String((req.body && req.body.uid) || "");
+    const err = await officialTargetError(req, uid);
+    if (err) return res.status(400).json({ success: false, error: err });
+
+    const userSnap = await db.collection("users").doc(uid).get();
+    if (!userSnap.exists) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+    const u = userSnap.data();
+    const existing = await db.collection("bds").doc(uid).get();
+    if (existing.exists && existing.data().active !== false) {
+      return res.status(400).json({ success: false, error: "Ye user pehle se BD hai" });
+    }
+    await db.collection("bds").doc(uid).set(
+      {
+        uid,
+        username: u.username || "",
+        profileImg: u.profileImg || "",
+        active: true,
+        addedBy: req.user.uid,
+        addedByOfficial: !req.actorIsAdmin,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    await db.collection("users").doc(uid).set({ isBD: true }, { merge: true });
+    console.log(`OFFICIAL ADD BD: by=${req.user.uid} bd=${uid}`);
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("OFFICIAL ADD BD ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// ---------- OFFICIAL: agency do ----------
+// body: { uid (owner), agencyName, ownerName (optional), logo (https, optional) }
+app.post("/official/create-agency", generalLimiter, verifyUser, requireOfficial, async (req, res) => {
+  try {
+    const uid = String((req.body && req.body.uid) || "");
+    const agencyName = cleanText(req.body && req.body.agencyName, 80);
+    const logo = cleanLogo(req.body && req.body.logo);
+    if (!agencyName) {
+      return res.status(400).json({ success: false, error: "Agency name daalo" });
+    }
+    if (logo === null) {
+      return res.status(400).json({ success: false, error: "Invalid logo" });
+    }
+    const err = await officialTargetError(req, uid);
+    if (err) return res.status(400).json({ success: false, error: err });
+
+    const ownerSnap = await db.collection("users").doc(uid).get();
+    if (!ownerSnap.exists) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+    const owner = ownerSnap.data();
+    if (owner.agencyId) {
+      return res.status(400).json({ success: false, error: "Ye user pehle se kisi agency me hai" });
+    }
+    const ownerName =
+      cleanText(req.body && req.body.ownerName, 80) || owner.name || owner.username || "";
+
+    const agencyRef = db.collection("agencies").doc();
+    const batch = db.batch();
+    batch.set(agencyRef, {
+      agencyName,
+      ownerName,
+      ownerUsername: owner.username || "",
+      ownerUserId: uid,
+      logo,
+      totalMembers: 0,
+      totalStars: 0,
+      status: "active",
+      createdByOfficial: req.user.uid,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    batch.set(
+      db.collection("users").doc(uid),
+      { agencyId: agencyRef.id, agencyName, isAgencyOwner: true, agencyApproved: true },
+      { merge: true }
+    );
+    await batch.commit();
+    console.log(`OFFICIAL CREATE AGENCY: by=${req.user.uid} agency=${agencyRef.id} owner=${uid}`);
+    return res.json({ success: true, agencyId: agencyRef.id });
+  } catch (e) {
+    console.error("OFFICIAL CREATE AGENCY ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// ---------- OFFICIAL: ID ban / unban ----------
+// body: { uid }
+app.post("/official/ban-user", generalLimiter, verifyUser, requireOfficial, async (req, res) => {
+  const uid = String((req.body && req.body.uid) || "");
+  const err = await officialTargetError(req, uid);
+  if (err) return res.status(400).json({ success: false, error: err });
+  console.log(`OFFICIAL BAN: by=${req.user.uid} user=${uid}`);
+  return setUserBan(req, res, true);
+});
+
+app.post("/official/unban-user", generalLimiter, verifyUser, requireOfficial, async (req, res) => {
+  const uid = String((req.body && req.body.uid) || "");
+  if (!isValidUid(uid)) {
+    return res.status(400).json({ success: false, error: "Invalid user" });
+  }
+  console.log(`OFFICIAL UNBAN: by=${req.user.uid} user=${uid}`);
+  return setUserBan(req, res, false);
+});
+
+// ---------- OFFICIAL: live entry ban / live start ban ----------
+// body: { uid, entryDays, liveDays }
+//   days: 1 | 3 | 7 | 15 | 30  -> utne din ka ban
+//         0                    -> ban hatao
+//         (na bhejo)           -> wo wala ban jaisa hai waisa rahe
+app.post("/official/live-restrict", generalLimiter, verifyUser, requireOfficial, async (req, res) => {
+  try {
+    const uid = String((req.body && req.body.uid) || "");
+    const err = await officialTargetError(req, uid);
+    if (err) return res.status(400).json({ success: false, error: err });
+
+    const parseDays = (v) => {
+      if (v === undefined || v === null || v === "") return undefined;
+      const n = Number(v);
+      if (n === 0) return 0;
+      if (LIVE_BAN_DAYS.includes(n)) return n;
+      return null; // invalid
+    };
+    const entryDays = parseDays(req.body && req.body.entryDays);
+    const liveDays = parseDays(req.body && req.body.liveDays);
+    if (entryDays === null || liveDays === null) {
+      return res.status(400).json({ success: false, error: "Din sirf 1, 3, 7, 15 ya 30 ho sakte hain" });
+    }
+    if (entryDays === undefined && liveDays === undefined) {
+      return res.status(400).json({ success: false, error: "Koi ban select karo" });
+    }
+
+    const userSnap = await db.collection("users").doc(uid).get();
+    if (!userSnap.exists) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+    const u = userSnap.data();
+    const now = Date.now();
+    const update = {
+      uid,
+      username: u.username || "",
+      profileImg: u.profileImg || "",
+      updatedBy: req.user.uid,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    if (entryDays !== undefined) {
+      update.entryBanUntil = entryDays === 0 ? 0 : now + entryDays * DAY_MS;
+      update.entryBanDays = entryDays;
+    }
+    if (liveDays !== undefined) {
+      update.liveBanUntil = liveDays === 0 ? 0 : now + liveDays * DAY_MS;
+      update.liveBanDays = liveDays;
+    }
+    await db.collection("liveBans").doc(uid).set(update, { merge: true });
+
+    // Live ban laga to abhi chal rahi live turant band
+    if (liveDays !== undefined && liveDays > 0) {
+      try {
+        const rooms = await db.collection("rooms").where("hostId", "==", uid).get();
+        for (const r of rooms.docs) {
+          if (r.data().status === "ended") continue;
+          await db.recursiveDelete(r.ref).catch(async () => {
+            await r.ref.delete().catch(() => {});
+          });
+        }
+      } catch (e) {
+        console.error("OFFICIAL LIVE BAN END ROOM ERROR:", e.message);
+      }
+    }
+
+    const state = await getLiveBanState(uid);
+    console.log(
+      `OFFICIAL LIVE RESTRICT: by=${req.user.uid} user=${uid} entryDays=${entryDays} liveDays=${liveDays}`
+    );
+    return res.json({ success: true, entryBanUntil: state.entry, liveBanUntil: state.live });
+  } catch (e) {
+    console.error("OFFICIAL LIVE RESTRICT ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// abhi active live bans (entry ya live)
+app.post("/official/list-live-bans", generalLimiter, verifyUser, requireOfficial, async (req, res) => {
+  try {
+    const now = Date.now();
+    const [a, b] = await Promise.all([
+      db.collection("liveBans").where("entryBanUntil", ">", now).limit(100).get(),
+      db.collection("liveBans").where("liveBanUntil", ">", now).limit(100).get(),
+    ]);
+    const map = {};
+    [...a.docs, ...b.docs].forEach((d) => {
+      const x = d.data();
+      const e = Number(x.entryBanUntil) || 0;
+      const l = Number(x.liveBanUntil) || 0;
+      map[d.id] = {
+        uid: d.id,
+        username: x.username || "",
+        profileImg: x.profileImg || "",
+        entryBanUntil: e > now ? e : 0,
+        liveBanUntil: l > now ? l : 0,
+      };
+    });
+    const bans = Object.values(map).sort((p, q) => p.username.localeCompare(q.username));
+    return res.json({ success: true, bans });
+  } catch (e) {
+    console.error("OFFICIAL LIST LIVE BANS ERROR:", e);
     return res.status(500).json({ success: false, error: "Server error" });
   }
 });
