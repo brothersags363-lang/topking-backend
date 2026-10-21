@@ -1,3 +1,4 @@
+import { notifyLiveStarted } from "../utils/pushNotify";
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
@@ -13,12 +14,15 @@ import {
   Dimensions,
   Platform,
   ActivityIndicator,
-  BackHandler
+  BackHandler,
+  Modal
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useLiveBanGuard } from '../utils/liveBan';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 let db = null;
 let auth = null;
@@ -36,14 +40,36 @@ import { doc, setDoc, getDoc, collection, getDocs, writeBatch } from 'firebase/f
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 const { width } = Dimensions.get('window');
+// Video (camera) live start screen ka route. Agar file ka naam alag ho to sirf yahan badlo.
+const VIDEO_LIVE_ROUTE = '/livevideostart';
 const DEFAULT_AVATAR = 'https://avatar.iran.liara.run/public/65';
 
 // Fixed room notice (TopKing rules). Hosts cannot edit or replace it.
 const ROOM_NOTICE =
   "Welcome to TopKing! Please keep this room safe and respectful. As per TopKing app rules, abusive language, bad talk or any inappropriate behavior is strictly prohibited. Anyone who breaks these rules will have their live shut down.";
 
+// Room layouts. 'chat' = purana audio chat room (8 seats).
+// 'multiguest' = screenshot jaisa grid room: host + 8 guests, sab baith ke baat kar sakte hain.
+const ROOM_LAYOUTS = [
+  {
+    key: 'chat',
+    title: 'Chat Room',
+    desc: 'Normal audio room with seats',
+    icon: 'chatbubbles-outline',
+    seats: 8,
+  },
+  {
+    key: 'multiguest',
+    title: 'Multi-Guest Room',
+    desc: 'Grid room: host + 8 guests, sab baith ke baat kar sakein',
+    icon: 'grid-outline',
+    seats: 9,
+  },
+];
+
 export default function LiveStart() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   useLiveBanGuard(true);
 
   const [roomPhoto, setRoomPhoto] = useState(null);
@@ -51,6 +77,9 @@ export default function LiveStart() {
   const [roomDescription, setRoomDescription] = useState('');
   const [isUploading, setIsUploading] = useState(false); 
 const [loadingButton, setLoadingButton] = useState(null);
+  const [isPrivate, setIsPrivate] = useState(false);
+  const [roomLayout, setRoomLayout] = useState('chat');
+  const [showTypeModal, setShowTypeModal] = useState(false);
   const startingRef = useRef(false);   // double-tap guard (state async hota hai)
 
   // FIXED & ADDED: MOBILE HARDWARE BACK BUTTON LOGIC WITH MODERN CRASH PROTECTION
@@ -169,14 +198,17 @@ const [loadingButton, setLoadingButton] = useState(null);
 
       let finalCover = cloudUrl || hostAvatar;
 
+      const isMultiGuest = roomLayout === 'multiguest';
+      // Multi-guest: sirf 9 seats (host + 8 guests), sab khali -> koi bhi baith sakta hai.
+      const totalSeats = isMultiGuest ? 9 : 14;
       const initialSeatsObject = {};
-      for (let i = 1; i <= 14; i++) {
+      for (let i = 1; i <= totalSeats; i++) {
         initialSeatsObject[`seat_${i}`] = {
           userId: i === 1 ? currentUid : null,
           userName: i === 1 ? hostName : null,
           userImg: i === 1 ? hostAvatar : null,
           isMuted: false,
-          roleTag: i === 1 ? 'HOST' : i === 2 ? 'CO-HOST' : 'SPEAKER'
+          roleTag: i === 1 ? 'HOST' : isMultiGuest ? 'GUEST' : i === 2 ? 'CO-HOST' : 'SPEAKER'
         };
       }
 
@@ -195,7 +227,12 @@ const [loadingButton, setLoadingButton] = useState(null);
         // fields on this document — keeps this doc small and cheap to
         // sync at 200-300 concurrent viewers. See LiveRoom.js.
         invitationIncoming: null, 
-        seatCount: 8,
+        seatCount: isMultiGuest ? 9 : 8,
+        // Room layout: 'chat' | 'multiguest'. LiveRoom + all-live isi field se grid dikhate hain.
+        roomLayout: roomLayout,
+        // Multi-guest: koi bhi khali seat par baith ke bol sakta hai (host approval nahi).
+        freeSeat: isMultiGuest,
+        openMic: isMultiGuest,
         seatsData: initialSeatsObject, 
         roomCover: finalCover, 
         createdAt: Date.now()
@@ -204,6 +241,7 @@ const [loadingButton, setLoadingButton] = useState(null);
 
       if (db) {
         await setDoc(doc(db, 'rooms', roomUniqueId), newRoomPayload);
+        notifyLiveStarted(roomUniqueId); // followers ko push
       }
 
       setIsUploading(false);
@@ -211,7 +249,15 @@ const [loadingButton, setLoadingButton] = useState(null);
       // Wapas aane par button par spinner atka na rahe
       setTimeout(() => setLoadingButton(null), 600);
 
-if (roomType === "private") {
+if (roomLayout === "multiguest") {
+
+  // Multi-guest room alag screen (MultiGuestRoom.js) me chalta hai
+  router.push({
+    pathname: "/MultiGuestRoom",
+    params: { id: roomUniqueId },
+  });
+
+} else if (roomType === "private") {
 
   router.push({
     pathname: "/LivePrivate",
@@ -219,6 +265,7 @@ if (roomType === "private") {
       id: roomUniqueId,
       hostName: hostName,
       hostProfilePic: hostAvatar,
+      layout: roomLayout,
     },
   });
 
@@ -230,6 +277,7 @@ if (roomType === "private") {
       id: roomUniqueId,
       hostName: hostName,
       hostProfilePic: hostAvatar,
+      layout: roomLayout,
     },
   });
 
@@ -243,232 +291,300 @@ if (roomType === "private") {
     }
   };
 
-  return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar backgroundColor="#08080a" barStyle="light-content" translucent={false} />
-      
-      {/* HEADER BAR (FIXED: Back chevron icon button safely removed) */}
-      <View style={styles.headerBarContainer}>
-        <View style={{ width: 38 }} /> 
-        <Text style={styles.headerTitleText}>Setup Audio Stream</Text>
-        <View style={{ width: 38 }} />
-      </View>
+  const busy = isUploading || loadingButton !== null;
 
-      <ScrollView contentContainerStyle={styles.scrollCanvasContainer} showsVerticalScrollIndicator={false}>
-        
-        {/* ROOM BANNER IMAGE PICKER FRAME */}
-        <View style={styles.avatarMasterFrame}>
-          <Text style={styles.avatarHeadingLabel}>ROOM COVER BANNER</Text>
-          <TouchableOpacity style={styles.avatarCircleTrigger} onPress={pickImage} activeOpacity={0.85}>
-            {roomPhoto ? (
-              <View style={styles.imagePresenterContainer}>
-                <Image source={{ uri: roomPhoto }} style={styles.insertedImageContent} resizeMode="cover" />
-                <View style={styles.imageEditBadge}>
-                  <Ionicons name="pencil" size={12} color="#000000" />
-                </View>
-              </View>
-            ) : (
-              <View style={styles.avatarPlaceholderSubbed}>
-                <View style={styles.iconCircleWrapper}>
-                  <Ionicons name="cloud-upload-outline" size={28} color="#ebd500" />
-                </View>
-                <Text style={styles.avatarLabelText}>Upload High-Res Cover</Text>
-                <Text style={styles.avatarSubLabelText}>Supports JPG, PNG square formats</Text>
-              </View>
-            )}
+  const openVideoCamera = () => {
+    if (busy) return;
+    try {
+      router.push(VIDEO_LIVE_ROUTE);
+    } catch (e) {
+      Alert.alert('Video', 'Camera page open nahi ho paya.');
+    }
+  };
+
+  const closeScreen = () => {
+    try {
+      if (router.canGoBack()) router.back();
+      else router.replace('/');
+    } catch (e) {
+      router.replace('/');
+    }
+  };
+
+  const startLabel = isPrivate
+    ? 'START (Private Room)'
+    : roomLayout === 'multiguest'
+      ? 'START (Multi-Guest Room)'
+      : 'START (chet Room)';
+
+  return (
+    <View style={styles.container}>
+      <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
+
+      {/* Background: dark purple night gradient (screenshot jaisa) */}
+      <LinearGradient
+        colors={['#1a0b2e', '#2a0f3d', '#4a1747', '#6b2438']}
+        locations={[0, 0.4, 0.75, 1]}
+        style={StyleSheet.absoluteFill}
+      />
+
+      <SafeAreaView style={{ flex: 1 }}>
+        {/* ===== TOP: close + Video/Audio tabs ===== */}
+        <View style={styles.topRow}>
+          <TouchableOpacity onPress={closeScreen} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <Ionicons name="close" size={30} color="#fff" />
           </TouchableOpacity>
+
+          <View style={styles.modeTabs}>
+            {/* Video tab: video live start screen par le jata hai.
+                Agar aapka route naam alag ho to yahan badal dena. */}
+            <TouchableOpacity onPress={openVideoCamera}>
+              <Text style={styles.modeTabInactive}>Video</Text>
+            </TouchableOpacity>
+            <View style={{ alignItems: 'center', marginLeft: 26 }}>
+              <Text style={styles.modeTabActive}>Audio</Text>
+              <View style={styles.modeTabUnderline} />
+            </View>
+          </View>
+
+          <View style={{ width: 30 }} />
         </View>
 
-        {/* INPUT DECK CARD */}
-        <View style={styles.formInputCardDeck}>
-          <View style={styles.individualFieldRow}>
-            <View style={styles.labelIndicatorRow}>
-              <View style={styles.yellowIndicatorDot} />
-              <Text style={styles.formSectionLabel}>Stream Topic / Title</Text>
-            </View>
-            <View style={styles.glassmorphicTextContainer}>
+        <ScrollView
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ flexGrow: 1 }}
+        >
+          {/* ===== Cover + Title ===== */}
+          <View style={styles.coverTitleRow}>
+            <TouchableOpacity style={styles.coverBox} onPress={pickImage} activeOpacity={0.85}>
+              {roomPhoto ? (
+                <Image source={{ uri: roomPhoto }} style={styles.coverImg} resizeMode="cover" />
+              ) : null}
+              <View style={styles.coverLabelBar}>
+                <Text style={styles.coverLabelText}>Change cover</Text>
+              </View>
+            </TouchableOpacity>
+
+            <View style={styles.titleWrap}>
               <TextInput
-                style={styles.primaryTextInputElement}
-                placeholder="What are we talking about tonight?"
-                placeholderTextColor="rgba(255,255,255,0.25)"
+                style={styles.titleInput}
+                placeholder="Enter the title get more viewers"
+                placeholderTextColor="rgba(255,255,255,0.85)"
                 value={roomTitle}
                 onChangeText={setRoomTitle}
                 maxLength={60}
               />
+              <View style={styles.titleUnderline} />
             </View>
           </View>
 
-          <View style={[styles.individualFieldRow, { marginTop: 14 }]}>
-            <View style={styles.labelIndicatorRow}>
-              <View style={styles.yellowIndicatorDot} />
-              <Text style={styles.formSectionLabel}>Room notice (fixed)</Text>
-            </View>
-            <View style={[styles.glassmorphicTextContainer, { paddingVertical: 10 }]}>
-              <Text style={[styles.primaryTextInputElement, { fontSize: 12, lineHeight: 17 }]}>
-                {ROOM_NOTICE}
-              </Text>
-            </View>
-          </View>
+          {/* ===== Floating brush button (left) ===== */}
+          <TouchableOpacity style={styles.brushBtn} activeOpacity={0.85} onPress={pickImage}>
+            <Ionicons name="brush" size={18} color="#fff" />
+          </TouchableOpacity>
+
+        </ScrollView>
+
+        {/* ===== Room Type / Privacy ===== */}
+        <View style={styles.optionsRow}>
+          <TouchableOpacity
+            style={styles.optionItem}
+            activeOpacity={0.8}
+            onPress={() => setShowTypeModal(true)}
+          >
+            <Ionicons name={roomLayout === 'multiguest' ? 'grid' : 'grid-outline'} size={22} color={roomLayout === 'multiguest' ? YELLOW : '#fff'} />
+            <Text style={styles.optionText}>{roomLayout === 'multiguest' ? 'Multi-Guest' : 'Room Type'}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.optionItem, { marginLeft: 36 }]}
+            activeOpacity={0.8}
+            onPress={() => setIsPrivate((p) => !p)}
+          >
+            <Ionicons name={isPrivate ? 'lock-closed' : 'lock-open-outline'} size={22} color="#fff" />
+            <Text style={styles.optionText}>Privacy</Text>
+          </TouchableOpacity>
         </View>
 
-        {/* SUBMIT LAUNCH ACTION BUTTON */}
-        
-<View style={styles.roomButtonsContainer}>
+        {/* ===== START button ===== */}
+        <TouchableOpacity
+          style={[styles.startBtn, !roomTitle.trim() && styles.startBtnDim]}
+          activeOpacity={0.85}
+          disabled={busy}
+          onPress={() => handleStartLive(isPrivate ? 'private' : 'public')}
+        >
+          {busy ? (
+            <ActivityIndicator size="small" color="#000" />
+          ) : (
+            <Text style={styles.startBtnText}>{startLabel}</Text>
+          )}
+        </TouchableOpacity>
 
-  {/* PUBLIC */}
+        {/* ===== Bottom tabs: VIDEO / LIVE / CHAT ===== */}
+        <View style={[styles.bottomTabs, { paddingBottom: Math.max(insets.bottom, 16) + 28 }]}>
+          <TouchableOpacity onPress={openVideoCamera}>
+            <Text style={styles.bottomTabInactive}>VIDEO</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={{ marginHorizontal: 34 }} onPress={openVideoCamera}>
+            <Text style={styles.bottomTabInactive}>LIVE</Text>
+          </TouchableOpacity>
+          <View style={{ alignItems: 'center' }}>
+            <Text style={styles.bottomTabActive}>CHAT</Text>
+            <View style={styles.bottomTabDot} />
+          </View>
+        </View>
+      </SafeAreaView>
 
-  <TouchableOpacity
-    style={[
-      styles.primaryLaunchActionButton,
-      !roomTitle.trim() && styles.buttonDisabledState
-    ]}
-    activeOpacity={0.85}
-    disabled={isUploading}
-    onPress={() => handleStartLive("public")}
-  >
-
-    {loadingButton === "public" ? (
-
-      <ActivityIndicator
-        size="small"
-        color="#000"
-      />
-
-    ) : (
-
-      <View style={styles.buttonTextWrapper}>
-
-        <Ionicons
-          name="globe-outline"
-          size={20}
-          color="#000"
-          style={{ marginRight: 8 }}
-        />
-
-        <Text style={styles.launchButtonLabelText}>
-          Audio Public Room
-        </Text>
-
-      </View>
-
-    )}
-
-  </TouchableOpacity>
-
-  {/* PRIVATE */}
-
-  <TouchableOpacity
-    style={[
-      styles.privateRoomButton,
-      !roomTitle.trim() && styles.buttonDisabledState
-    ]}
-    activeOpacity={0.85}
-    disabled={isUploading}
-    onPress={() => handleStartLive("private")}
-  >
-
-    {loadingButton === "private" ? (
-
-      <ActivityIndicator
-        size="small"
-        color="#fff"
-      />
-
-    ) : (
-
-      <View style={styles.buttonTextWrapper}>
-
-        <Ionicons
-          name="lock-closed"
-          size={20}
-          color="#fff"
-          style={{ marginRight: 8 }}
-        />
-
-        <Text style={styles.privateRoomText}>
-          Audio Private Room
-        </Text>
-
-      </View>
-
-    )}
-
-  </TouchableOpacity>
-
-</View>
-
-      </ScrollView>
-    </SafeAreaView>
+      {/* ===== Room Type picker ===== */}
+      <Modal
+        visible={showTypeModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowTypeModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalBackdrop}
+          activeOpacity={1}
+          onPress={() => setShowTypeModal(false)}
+        >
+          <View style={styles.modalSheet} onStartShouldSetResponder={() => true}>
+            <Text style={styles.modalTitle}>Room Type</Text>
+            {ROOM_LAYOUTS.map((l) => {
+              const active = roomLayout === l.key;
+              return (
+                <TouchableOpacity
+                  key={l.key}
+                  style={[styles.typeRow, active && styles.typeRowActive]}
+                  activeOpacity={0.85}
+                  onPress={() => {
+                    setRoomLayout(l.key);
+                    setShowTypeModal(false);
+                  }}
+                >
+                  <View style={styles.typeIconWrap}>
+                    <Ionicons name={l.icon} size={22} color="#fff" />
+                  </View>
+                  <View style={{ flex: 1, marginLeft: 12 }}>
+                    <Text style={styles.typeTitle}>{l.title}</Text>
+                    <Text style={styles.typeDesc}>{l.desc}</Text>
+                  </View>
+                  {active && <Ionicons name="checkmark-circle" size={22} color={YELLOW} />}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </TouchableOpacity>
+      </Modal>
+    </View>
   );
 }
 
+const YELLOW = '#fff200';
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#08080a' },
-  headerBarContainer: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    justifyContent: 'space-between', 
-    paddingHorizontal: 16, 
-    height: Platform.OS === 'android' ? 75 : 65, 
-    paddingTop: Platform.OS === 'android' ? 10 : 0,
-    backgroundColor: '#08080a',
-    borderBottomWidth: 1, 
-    borderColor: 'rgba(255,255,255,0.04)' 
+  container: { flex: 1, backgroundColor: '#1a0b2e' },
+
+  topRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 6 : 8,
   },
-  headerTitleText: { fontSize: 16, fontWeight: '800', color: '#ffffff', letterSpacing: 0.3, textAlign: 'center', flex: 1 },
-  scrollCanvasContainer: { alignItems: 'center', paddingVertical: 24, width: '100%' },
-  avatarMasterFrame: { marginBottom: 28, width: width - 32, alignItems: 'center' },
-  avatarHeadingLabel: { fontSize: 11, fontWeight: '900', color: 'rgba(255,255,255,0.3)', letterSpacing: 1, marginBottom: 12, alignSelf: 'flex-start', paddingLeft: 6 },
-  avatarCircleTrigger: { 
-    width: '100%', 
-    height: 170, 
-    borderRadius: 20, 
-    backgroundColor: '#11121a', 
-    borderWidth: 1.5, 
-    borderColor: 'rgba(235,213,0,0.15)', 
-    borderStyle: 'dashed',
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    overflow: 'hidden' 
+  modeTabs: { flexDirection: 'row', alignItems: 'flex-start' },
+  modeTabInactive: { color: 'rgba(255,255,255,0.65)', fontSize: 16, fontWeight: '600' },
+  modeTabActive: { color: '#fff', fontSize: 16, fontWeight: '800' },
+  modeTabUnderline: { width: 26, height: 3, borderRadius: 2, backgroundColor: '#fff', marginTop: 5 },
+
+  coverTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingHorizontal: 16,
+    marginTop: 22,
   },
-  imagePresenterContainer: { width: '100%', height: '100%', position: 'relative' },
-  insertedImageContent: { width: '100%', height: '100%' },
-  imageEditBadge: { position: 'absolute', right: 12, bottom: 12, backgroundColor: '#ebd500', width: 26, height: 26, borderRadius: 13, justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.4, shadowRadius: 4 },
-  avatarPlaceholderSubbed: { justifyContent: 'center', alignItems: 'center', padding: 20 },
-  iconCircleWrapper: { width: 54, height: 54, borderRadius: 27, backgroundColor: 'rgba(235,213,0,0.06)', justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
-  avatarLabelText: { fontSize: 14, fontWeight: '800', color: '#ffffff', letterSpacing: 0.2 },
-  avatarSubLabelText: { fontSize: 11, fontWeight: '500', color: 'rgba(255,255,255,0.3)', marginTop: 4 },
-  formInputCardDeck: { width: width - 32, backgroundColor: '#11121a', borderRadius: 20, padding: 16, marginBottom: 28, borderWidth: 1, borderColor: 'rgba(255,255,255,0.03)' },
-  individualFieldRow: { marginBottom: 4 },
-  labelIndicatorRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-  yellowIndicatorDot: { width: 5, height: 5, borderRadius: 2.5, backgroundColor: '#ebd500', marginRight: 8 },
-  formSectionLabel: { fontSize: 12, fontWeight: '800', color: 'rgba(255,255,255,0.5)', textTransform: 'uppercase', letterSpacing: 0.5 },
-  glassmorphicTextContainer: { width: '100%', height: 50, backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: 12, paddingHorizontal: 14, justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.04)' },
-  primaryTextInputElement: { color: '#ffffff', fontSize: 14, fontWeight: '600' },
-  primaryLaunchActionButton: { width: width - 32, height: 52, backgroundColor: '#ebd500', borderRadius: 16, justifyContent: 'center', alignItems: 'center', shadowColor: '#ebd500', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.2, shadowRadius: 10, elevation: 3 },
-  buttonDisabledState: { opacity: 0.9 },
-  buttonTextWrapper: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
-  launchButtonLabelText: { fontSize: 15, fontWeight: '900', color: '#000000', letterSpacing: 0.3 },
+  coverBox: {
+    width: 68,
+    height: 82,
+    borderRadius: 8,
+    backgroundColor: '#8a8a8a',
+    overflow: 'hidden',
+    justifyContent: 'flex-end',
+  },
+  coverImg: { ...StyleSheet.absoluteFillObject },
+  coverLabelBar: { backgroundColor: 'rgba(0,0,0,0.45)', paddingVertical: 3, alignItems: 'center' },
+  coverLabelText: { color: '#fff', fontSize: 9, fontWeight: '600' },
 
-roomButtonsContainer: {
-  marginTop: 20,
-},
+  titleWrap: { flex: 1, marginLeft: 14, marginTop: 8 },
+  titleInput: { color: '#fff', fontSize: 16, fontWeight: '700', paddingVertical: 6, paddingHorizontal: 0 },
+  titleUnderline: { height: 1, backgroundColor: 'rgba(255,255,255,0.35)', marginTop: 4 },
 
-privateRoomButton: {
-  backgroundColor: "#1f1f1f",
-  height: 56,
-  borderRadius: 15,
-  justifyContent: "center",
-  alignItems: "center",
-  marginTop: 15,
-  borderWidth: 1,
-  borderColor: "#FFD700",
-},
+  brushBtn: {
+    position: 'absolute',
+    left: 0,
+    top: 200,
+    width: 34,
+    height: 34,
+    borderTopRightRadius: 17,
+    borderBottomRightRadius: 17,
+    backgroundColor: '#f2832b',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
 
-privateRoomText: {
-  color: "#fff",
-  fontSize: 16,
-  fontWeight: "700",
-},
+  optionsRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 14 },
+  optionItem: { alignItems: 'center' },
+  optionText: { color: '#fff', fontSize: 11, fontWeight: '600', marginTop: 5 },
 
+  startBtn: {
+    alignSelf: 'center',
+    width: width - 80,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: YELLOW,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  startBtnDim: { opacity: 0.92 },
+  startBtnText: { color: '#000', fontSize: 15, fontWeight: '800' },
+
+  bottomTabs: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+    paddingTop: 18,
+  },
+  bottomTabInactive: { color: 'rgba(255,255,255,0.7)', fontSize: 13, fontWeight: '700' },
+  bottomTabActive: { color: '#fff', fontSize: 14, fontWeight: '900' },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  modalSheet: {
+    backgroundColor: '#24102f',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    padding: 18,
+    paddingBottom: 34,
+  },
+  modalTitle: { color: '#fff', fontSize: 17, fontWeight: '800', marginBottom: 14, textAlign: 'center' },
+  typeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  typeRowActive: { borderColor: YELLOW },
+  typeIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  typeTitle: { color: '#fff', fontSize: 15, fontWeight: '800' },
+  typeDesc: { color: 'rgba(255,255,255,0.65)', fontSize: 12, marginTop: 2 },
+  bottomTabDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: YELLOW, marginTop: 4 },
 });

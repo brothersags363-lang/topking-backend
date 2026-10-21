@@ -1,3 +1,4 @@
+import { notifyVideoLike } from "../utils/pushNotify";
 import React, { useEffect, useRef, useState } from 'react';
 
 import {
@@ -608,6 +609,11 @@ export default function App() {
         await setDoc(likeRef, { userId: user.uid, createdAt: serverTimestamp() });
         await updateDoc(videoRef, { likes: increment(1) });
       }
+      if (!liked) {
+        getDoc(videoRef)
+          .then((sn) => sn.exists() && notifyVideoLike(videoId, sn.data().likes))
+          .catch(() => {});
+      }
     } catch (e) {
       // Error aaye to UI rollback
       setLocalLikes((prev) => ({ ...prev, [videoId]: liked }));
@@ -1051,7 +1057,7 @@ export default function App() {
         initialNumToRender={2}
         maxToRenderPerBatch={2}
         windowSize={3}
-        removeClippedSubviews={true}
+        removeClippedSubviews={false}
         updateCellsBatchingPeriod={16}
         decelerationRate="fast"
         snapToAlignment="start"

@@ -140,7 +140,7 @@ export default function CommentsScreen() {
           initialNumToRender={12}
           maxToRenderPerBatch={10}
           windowSize={7}
-          removeClippedSubviews={Platform.OS === 'android'}
+          removeClippedSubviews={false}
         />
       )}
 

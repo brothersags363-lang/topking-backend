@@ -1,3 +1,4 @@
+import { notifyVideoLike } from "../../utils/pushNotify";
 import React, {
   useCallback,
   useEffect,
@@ -247,7 +248,7 @@ const PlayerView = React.memo(
       try {
         p.bufferOptions = {
           preferredForwardBufferDuration: 10,
-          maxBufferBytes: 30 * 1024 * 1024,
+          maxBufferBytes: 16 * 1024 * 1024,
           minBufferForPlayback: 0.5,
           prioritizeTimeOverSizeThreshold: true,
         };
@@ -1142,6 +1143,9 @@ export default function App() {
           }),
           updateDoc(videoRef, { likes: increment(1) }),
         ]);
+        getDoc(videoRef)
+          .then((sn) => sn.exists() && notifyVideoLike(videoId, sn.data().likes))
+          .catch(() => {});
       }
     } catch (e) {
       // Error aaye to UI rollback

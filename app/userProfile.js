@@ -1,3 +1,4 @@
+import { notifyNewFollower } from "../utils/pushNotify";
 import React, {
   useEffect,
   useState,
@@ -873,6 +874,7 @@ export default function UserProfile() {
         });
 
         sendFollowNotification(); // background, not awaited
+        notifyNewFollower(userId); // push (app band ho tab bhi)
       }
     } catch (error) {
       // roll back the optimistic update
@@ -907,6 +909,7 @@ export default function UserProfile() {
           followerId: myId,
           followingId: target.id,
         });
+        notifyNewFollower(target.id);
       } catch (error) {
         setFollowersList(mark(false));
         setFollowingList(mark(false));
@@ -1170,7 +1173,7 @@ export default function UserProfile() {
             />
             {faceVerified && (
               <View style={styles.faceBadge} pointerEvents="none">
-                <Image source={TopKingLogo} style={styles.faceBadgeLogo} />
+                <Ionicons name="person" size={16} color="#fff" />
               </View>
             )}
             {liveRoom && (
@@ -1499,7 +1502,7 @@ export default function UserProfile() {
           />
         }
         showsVerticalScrollIndicator={false}
-        removeClippedSubviews
+        removeClippedSubviews={false}
         initialNumToRender={12}
         maxToRenderPerBatch={9}
         windowSize={5}
@@ -1653,7 +1656,7 @@ export default function UserProfile() {
               initialNumToRender={10}
               maxToRenderPerBatch={8}
               windowSize={7}
-              removeClippedSubviews
+              removeClippedSubviews={false}
             />
           )}
         </SafeAreaView>
@@ -1731,18 +1734,12 @@ const styles = StyleSheet.create({
     bottom: 28,
     width: 28,
     height: 28,
-    borderRadius: 14,
-    backgroundColor: "#000",
+    borderRadius: 8,
+    backgroundColor: "#3a3a40",
     borderWidth: 2,
-    borderColor: "#FFD700",
+    borderColor: "#000",
     justifyContent: "center",
     alignItems: "center",
-  },
-
-  faceBadgeLogo: {
-    width: 18,
-    height: 18,
-    resizeMode: "contain",
   },
 
   profileImageLive: {

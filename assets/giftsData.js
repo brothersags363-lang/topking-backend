@@ -1,5 +1,15 @@
 export const gifts = [
 
+{
+id:"morningrose",
+name:"Good Morning Rose",
+price:149,
+duration:11000,
+icon: require("./gifts/morningrose.png"),
+animation: "web:morningrose",
+},
+
+
 
 {
 id:"hammer",
@@ -35,7 +45,7 @@ animation: require("./gifts/Sending-Heart.json"),
 {
 id:"lovehearts",
 name:"Love Hearts",
-price:299,
+price:85,
 duration:5000,
 icon: require("./gifts/lovehearts.png"),
 animation: require("./gifts/lovehearts.json"),
@@ -47,62 +57,22 @@ animation: require("./gifts/lovehearts.json"),
 {
 id:"Rose",
 name:"Rose",
-price:599,
+price:259,
 duration:5000,
 icon: require("./gifts/Rose.png"),
 animation: require("./gifts/Rose.json"),
 
 },
 
-{
-id:"LoveRose",
-name:"Love Rose",
-price:1999,
-duration:7000,
-icon: require("./gifts/LoveRose.png"),
-animation: require("./gifts/LoveRose.json"),
 
-},
-
-
-{
-id:"mylove",
-name:"My Love",
-price:2999,
-duration:5000,
-icon: require("./gifts/mylove.png"),
-animation: require("./gifts/mylove.json"),
-
-},
 
 {
 id:"Bomb",
 name:"Bomb",
-price:29,
+price:19,
 duration:8500,
 icon: require("./gifts/Bomb.png"),
 animation: require("./gifts/Bomb.json"),
-
-},
-
-{
-id:"Love",
-name:"Love",
-price:899,
-duration:4000,
-icon: require("./gifts/Love.png"),
-animation: require("./gifts/Love.json"),
-
-},
-
-
-{
-id:"Celebration",
-name:"Celebration",
-price:399,
-duration:4500,
-icon: require("./gifts/Celebration.png"),
-animation: require("./gifts/Celebration.json"),
 
 },
 
@@ -110,7 +80,7 @@ animation: require("./gifts/Celebration.json"),
 {
 id:"love kiss",
 name:"kiss",
-price:459,
+price:379,
 duration:3000,
 icon: require("./gifts/love kiss.png"),
 animation: require("./gifts/love kiss.json"),
@@ -228,7 +198,7 @@ animation: "web:missyou",
 {
 id:"rainylove",
 name:"Rainy Love",
-price:4799,
+price:3799,
 duration:6500,
 icon: require("./gifts/rainylove.png"),
 animation: "web:rainy",
@@ -241,6 +211,51 @@ price:2399,
 duration:6000,
 icon: require("./gifts/proposal.png"),
 animation: "web:proposal-ring",
+},
+
+{
+id:"choco",
+name:"TopKing Chocolate",
+price:199,
+duration:6000,
+icon: require("./gifts/choco.png"),
+animation: "web:choco",
+},
+
+{
+id:"chocobouquet",
+name:"Choco Bouquet",
+price:499,
+duration:7000,
+icon: require("./gifts/chocobouquet.png"),
+animation: "web:chocobq",
+},
+
+{
+id:"taj3d",
+name:"Taj Mahal",
+price:6799,
+duration:9000,
+icon: require("./gifts/taj3d.png"),
+animation: "web:taj",
+},
+
+{
+id:"rosering",
+name:"Golden Rose Ring",
+price:8999,
+duration:10000,
+icon: require("./gifts/rosering.png"),
+animation: "web:rosering",
+},
+
+{
+id:"jaan",
+name:"My Jaan",
+price:3999,
+duration:12000,
+icon: require("./gifts/jaan.png"),
+animation: "web:jaan",
 },
 
 ];

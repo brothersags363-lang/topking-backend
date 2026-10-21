@@ -11,6 +11,7 @@
   Dimensions,
   TextInput,
   Modal,
+  InteractionManager,
   Platform,
   StatusBar,
   BackHandler,
@@ -26,9 +27,13 @@
 } from "react-native";
 
 
+import { notifyNewFollower } from "../utils/pushNotify";
 import ReAnimated,{
   useSharedValue,
   useAnimatedStyle,
+  useAnimatedKeyboard,
+  interpolate,
+  Extrapolation,
   withRepeat,
   withTiming,
   Easing,
@@ -58,6 +63,7 @@ import {
   getCountFromServer,
 serverTimestamp,
   writeBatch,
+  runTransaction,
 } from 'firebase/firestore';
 
 import {
@@ -71,6 +77,8 @@ import {
 } from "react-native-agora";
 
 import { gifts } from "../assets/giftsData";
+import { isGifReaction, gifSource } from '../assets/emojiGifs';
+import { Image as ExpoImage } from 'expo-image';
 import LevelFrame, { getSpecialKey } from '../components/LevelFrame';
 import { useAdminFrame } from '../components/adminFrames';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
@@ -86,20 +94,37 @@ import LottieView from "lottie-react-native";
 import { WebView } from "react-native-webview";
 import { giftHtml } from "../assets/giftWeb";
 
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets, SafeAreaProvider } from 'react-native-safe-area-context';
 import { callApi } from '../utils/api';
 import { useLiveBanGuard } from '../utils/liveBan';
+import { useBlockedIds } from '../utils/useBlockedIds';
 
 // import LottieView from "lottie-react-native";
 // import { gifts } from "../assets/giftsData";
 
 const { width, height } = Dimensions.get('window');
+// ===== HAR MOBILE PE SAME LOOK =====
+// Design 360dp width par bana hai. Sab size sirf WIDTH se scale hote hain (height se nahi),
+// isliye lambi/chhoti screen par seats/header/bottom bar ka size same rehta hai.
+// Bachi hui height chat ko milti hai (flex), isliye upar-niche shift nahi hota.
+const BASE_W = 360;
+// Phones ki width sirf 360-412dp hoti hai -> CONSTANT scale = har phone par bilkul same size.
+// Aur chhota/bada karna ho to sirf ye number badlo (0.88 = pehle se ~12% chhota).
+const UI_SCALE = 0.88;
+const sc = (n) => Math.round(n * UI_SCALE);
+// Phone ki system font-size setting se layout na bigde
+if (Text.defaultProps == null) Text.defaultProps = {};
+Text.defaultProps.allowFontScaling = false;
+if (TextInput.defaultProps == null) TextInput.defaultProps = {};
+TextInput.defaultProps.allowFontScaling = false;
+// Bottom bar ki fixed unchai (input/buttons) - har phone par same
+const BOTTOM_BAR_H = 60;
 // Join animation: 'auto' (level se) | 'slide' | 'lv10' | 'lv20' | 'lv30' | 'lv40' | 'lv50'
 const JOIN_ANIM_VARIANT = 'auto';
 const log = __DEV__ ? console.log.bind(console) : () => {};
 const STABLE_AVATAR = 'https://avatar.iran.liara.run/public/65';
-const SEAT_KEYS = Array.from({ length: 15 }, (_, i) => `seat_${i + 1}`);
-const SEAT_OPTIONS = [5, 10, 15];
+const SEAT_KEYS = Array.from({ length: 9 }, (_, i) => `seat_${i + 1}`);
+const SEAT_OPTIONS = [9]; // fixed: host + 8 seats, koi badha nahi sakta
 const EMPTY_SEAT = {};
 const _uidHashCache = new Map();
 
@@ -294,7 +319,70 @@ return null;
 // re-render of the big room screen doesn't re-render / restart them.
 // ============================================================
 
-const SPEAK_HOLD_MS = 650;
+const SPEAK_HOLD_MS = 550;
+// Seat ka size yahin se badlo: photo, seat aur frame sab isi se chalte hain
+// Chhoti screen (kam height) wale phones par seats apne-aap thodi chhoti ho jati hain taaki chat dikhe
+const SEAT_SCALE = UI_SCALE;
+const SEAT_SIZE = Math.round(60 * SEAT_SCALE);
+const SEAT_RADIUS = Math.round(21 * SEAT_SCALE);
+// 3 seats per row HAMESHA: integer width => decimal rounding se 2-column wrap nahi hoga
+const SEAT_CELL_W = Math.floor(Math.min(width, 480) / 3);
+// false = seat me gol level-ring nahi dikhegi, photo seat ki rounded-square shape me poori fit hogi
+// true  = pehle jaisi ring wapas aa jayegi
+const SHOW_SEAT_FRAME = true;
+// frame ka size = seat x scale (photo frame ke andar fit rahe). Frame bada/chhota karna ho to ye badlo
+// NOTE: frame art ka andar ka khaali gola frame ke size ka sirf ~40-55% hota hai, isliye
+// photo dikhane ke liye frame ko photo se kaafi bada rakhna padta hai (1.7x). Chhota dikhe to ise badhao.
+const SEAT_FRAME_SCALE = 1.7;
+const SEAT_FRAME_SIZE = Math.round(SEAT_SIZE * SEAT_FRAME_SCALE);
+const SEAT_FRAME_OFFSET = -(SEAT_FRAME_SIZE - SEAT_SIZE) / 2;
+
+// ===== EK HI FRAME FORMULA (seat, chat, listener list, gift chip, host pill, popup sab jagah) =====
+// Frame ka size = photo x FRAME_SCALE, aur photo ke THEEK BEECH me (top/left = -(frame-photo)/2).
+// Frame bada/chhota karna ho to sirf SEAT_FRAME_SCALE badlo, sab jagah ek saath badlega.
+const FRAME_SCALE = SEAT_FRAME_SCALE;
+const frameBox = (photoSize, container = photoSize) => {
+  const size = Math.round(photoSize * FRAME_SCALE);
+  const off = (container - size) / 2;
+  return { position: 'absolute', width: size, height: size, top: off, left: off, zIndex: 10 };
+};
+const FRAME_CHAT22 = frameBox(22);
+const FRAME_CHAT36 = frameBox(36, 42);
+const FRAME_LIST40 = frameBox(40);
+const FRAME_GIFT44 = frameBox(44);
+const FRAME_HOST38 = frameBox(38);
+
+// ===== NAVIGATION BAR GAP: har bottom popup is gap se upar rahega =====
+// Kuch mobiles me Modal ke andar insets.bottom 0 aata hai (3-button nav bar) -> popup bar ke neeche chhup jata tha.
+// Isliye Android par kam se kam 28px (aur gesture-bar wale phone par insets.bottom) hamesha chhodte hain.
+const navBarGap = (insetsBottom = 0) => {
+  if (Platform.OS !== 'android') return Math.max(insetsBottom, 14);
+  // insets mil gaye (gesture bar / edge-to-edge) -> wahi + thoda extra.
+  // insets 0 aaye (3-button bar, Modal me insets nahi milte) -> bar ki asli unchai ~48dp chhodo.
+  return insetsBottom > 0 ? insetsBottom + 14 : 52;
+};
+
+// ===== SafeModal: LIVEROOM KA HAR POPUP IS SE KHULTA HAI =====
+// Modal Android par alag window hota hai -> navigation bar ke neeche chala jata tha aur insets 0 aate the.
+// Yaha Modal ke andar apna SafeAreaProvider + neeche navigation-bar jitni jagah chhodi gayi hai,
+// isliye sheet / dialog sab nigetiv bar ke UPAR dikhte hain. Neeche ki patti bhi halki dim hoti hai.
+const ModalSafeBody = ({ children }) => {
+  const insets = useSafeAreaInsets();
+  const gap = navBarGap(insets.bottom);
+  return (
+    <View style={{ flex: 1, paddingBottom: gap }}>
+      {children}
+      <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: gap, backgroundColor: 'rgba(0,0,0,0.5)' }} />
+    </View>
+  );
+};
+const SafeModal = ({ children, ...props }) => (
+  <Modal {...props}>
+    <SafeAreaProvider>
+      <ModalSafeBody>{children}</ModalSafeBody>
+    </SafeAreaProvider>
+  </Modal>
+);
 
 const speakingStore = {
   map: {},
@@ -339,6 +427,19 @@ const speakingStore = {
     }
     return false;
   },
+  // Mute hote hi us user ka glow turant band (hold time ka wait nahi)
+  clear(uid) {
+    if (!uid) return;
+    let hit = false;
+    if (this.map[uid]) {
+      const next = { ...this.map };
+      delete next[uid];
+      this.map = next;
+      hit = true;
+    }
+    if (this.last[uid]) delete this.last[uid];
+    if (hit) this.emit();
+  },
   reset() {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
@@ -348,21 +449,139 @@ const speakingStore = {
   },
 };
 
+// Bolne par seat ke charo taraf glow. Frame (zIndex 10) ke UPAR aur bahar dikhta hai.
+// Rang/size yahin se badlo. Frame gol nahi hai to GLOW_RADIUS chhota karo (jaise SEAT_RADIUS + 8).
+const GLOW_COLOR = '#2EE6A6';
+// Glow photo se kitna bahar tak jaye. Chhota chahiye to 24 ghatao (jaise 16), bada chahiye to badhao.
+const GLOW_EXTRA = 24;
+const GLOW_SIZE = SEAT_SIZE + GLOW_EXTRA;
+const GLOW_RADIUS = GLOW_SIZE / 2;
+const GLOW_OFFSET = -(GLOW_SIZE - SEAT_SIZE) / 2;
+const SpeakGlow = memo(() => {
+  const p = useSharedValue(0);
+  useEffect(() => {
+    p.value = withRepeat(withTiming(1, { duration: 900, easing: Easing.out(Easing.quad) }), -1, false);
+    return () => { p.value = 0; };
+  }, [p]);
+  const pulse = useAnimatedStyle(() => ({
+    opacity: 0.85 * (1 - p.value),
+    transform: [{ scale: 1 + p.value * 0.3 }],
+  }));
+  return (
+    <>
+      <View pointerEvents="none" style={styles.speakGlowSolid} />
+      <ReAnimated.View pointerEvents="none" renderToHardwareTextureAndroid style={[styles.speakGlowPulse, pulse]} />
+    </>
+  );
+});
+
+// PERF: room doc har update par naye seat objects banata hai -> pehle 9 seats + frames
+// har baar re-render hote the. Ab sirf tab jab seat ki value sach me badli ho.
+const seatEqual = (a, b) => {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  for (let i = 0; i < ka.length; i++) {
+    const k = ka[i];
+    const x = a[k], y = b[k];
+    if (x === y) continue;
+    if (x && y && typeof x === 'object' && typeof y === 'object') {
+      try { if (JSON.stringify(x) === JSON.stringify(y)) continue; } catch (_) {}
+    }
+    return false;
+  }
+  return true;
+};
+
+// Screenshot-style seat: rounded translucent square, "+" when empty, NO.x label.
+const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress }) => {
+  const isHostSeat = index === 1;
+  // MUTE FIX: mute user par kabhi glow nahi
+  const glowOn = !!isSpeaking && !seat.isMuted;
+  const occupied = !!seat.userId;
+  // Host ka frame laga hai ya nahi (admin/special frame ya level>=10). Frame ho tabhi "Host" label dikhega
+  const hostAdminKey = useAdminFrame(isHostSeat && occupied ? seat.userId : undefined);
+  const hostHasFrame = isHostSeat && occupied && !!(hostAdminKey || seat.special || seat.level >= 10);
+  const emoji = typeof seat.reaction === 'string' ? seat.reaction : seat.reaction?.e;
+  return (
+    <TouchableOpacity
+      activeOpacity={0.8}
+      style={[styles.seatCell, emoji ? { zIndex: 50, elevation: 50 } : null]}
+      onPress={() => onPress && onPress(seatKey, seat)}
+    >
+      <View style={[styles.seatSquare, occupied ? styles.seatSquareOccupied : (glowOn && styles.seatSquareSpeaking)]}>
+        {occupied ? (
+          <>
+            <ExpoImage source={{ uri: seat.userImg || STABLE_AVATAR }} style={styles.seatAvatarImg} contentFit="cover" cachePolicy="memory-disk" transition={0} recyclingKey={seat.userId} />
+            {glowOn ? <SpeakGlow /> : null}
+            {SHOW_SEAT_FRAME && (seat.level >= 10 || !!seat.userId) && (
+              <LevelFrame
+                level={seat.level}
+                uid={seat.userId}
+                animated={false}
+                pointerEvents="none"
+                style={{ position: 'absolute', width: SEAT_FRAME_SIZE, height: SEAT_FRAME_SIZE, top: SEAT_FRAME_OFFSET, left: SEAT_FRAME_OFFSET, zIndex: 10 }}
+              />
+            )}
+            {seat.isMuted ? (
+              <View style={styles.seatMuteBadge}>
+                <Ionicons name="mic-off" size={10} color="#fff" />
+              </View>
+            ) : null}
+            {emoji && !isGifReaction(emoji) ? <Text style={styles.seatEmoji}>{emoji}</Text> : null}
+          </>
+        ) : (
+          <Ionicons name="add" size={26} color="rgba(255,255,255,0.9)" />
+        )}
+        {hostHasFrame ? (
+          <View pointerEvents="none" style={styles.seatHostPill}>
+            <Text style={styles.seatHostPillTxt}>Host</Text>
+          </View>
+        ) : null}
+      </View>
+      <Text numberOfLines={1} allowFontScaling={false} style={styles.seatLabel}>
+        {occupied ? (seat.userName || 'User') : `NO.${index - 1}`}
+      </Text>
+      {occupied ? (
+        <View style={styles.seatCoinRow}>
+          <Ionicons name="star" size={11} color="#f5c518" />
+          <Text allowFontScaling={false} style={styles.seatCoinTxt}>{fmtCount(stars || 0)}</Text>
+        </View>
+      ) : null}
+      {emoji && isGifReaction(emoji) ? (
+        <View
+          pointerEvents="none"
+          style={{ position: 'absolute', top: SEAT_FRAME_OFFSET, left: (SEAT_CELL_W - SEAT_FRAME_SIZE) / 2, width: SEAT_FRAME_SIZE, height: SEAT_FRAME_SIZE, zIndex: 999, elevation: 999 }}
+        >
+          <ExpoImage source={gifSource(emoji)} contentFit="contain" autoplay style={{ width: '100%', height: '100%' }} />
+        </View>
+      ) : null}
+    </TouchableOpacity>
+  );
+}, (p, n) =>
+  p.seatKey === n.seatKey && p.index === n.index && p.stars === n.stars &&
+  p.isSpeaking === n.isSpeaking && p.onPress === n.onPress && seatEqual(p.seat, n.seat)
+);
+
 const SpeakingSeat = memo(({ seatKey, index, seat, stars, onPress }) => {
   const uid = seat.userId ? uidToNum(seat.userId) : 0;
-  const [speaking, setSpeaking] = useState(!!(uid && speakingStore.map[uid]));
+  const muted = !!seat.isMuted;
+  const [speaking, setSpeaking] = useState(!!(uid && !muted && speakingStore.map[uid]));
 
   useEffect(() => {
-    const check = () => setSpeaking(!!(uid && speakingStore.map[uid]));
+    // muted => speaking hamesha false (store me purani entry ho tab bhi)
+    const check = () => setSpeaking(!!(uid && !muted && speakingStore.map[uid]));
     check();
+    if (muted) speakingStore.clear(uid);
     speakingStore.subs.add(check);
     return () => {
       speakingStore.subs.delete(check);
     };
-  }, [uid]);
+  }, [uid, muted]);
 
   return (
-    <SeatItem
+    <SeatCell
       seatKey={seatKey}
       index={index}
       seat={seat}
@@ -371,7 +590,10 @@ const SpeakingSeat = memo(({ seatKey, index, seat, stars, onPress }) => {
       onPress={onPress}
     />
   );
-});
+}, (p, n) =>
+  p.seatKey === n.seatKey && p.index === n.index && p.stars === n.stars &&
+  p.onPress === n.onPress && seatEqual(p.seat, n.seat)
+);
 
 const LiveTimer = memo(({ startTime }) => {
   const [label, setLabel] = useState("00:00:00");
@@ -466,8 +688,16 @@ const GiftLayer = memo(forwardRef(function GiftLayer(_props, ref) {
   }, []);
 
   // banner pop-in animation (all native driver)
+  const comboShownRef = useRef(false);
   useEffect(() => {
-    if (!combo) return;
+    if (!combo) { comboShownRef.current = false; return; }
+    if (comboShownRef.current) {
+      // banner pehle se dikh raha hai (rapid tap x2, x3...) -> slide-in dobara nahi, bas chhota pop
+      scale.setValue(1.12);
+      Animated.spring(scale, { toValue: 1, speed: 30, bounciness: 8, useNativeDriver: true }).start();
+      return;
+    }
+    comboShownRef.current = true;
     tx.setValue(-80);
     scale.setValue(0.8);
     shake.setValue(-1);
@@ -635,12 +865,17 @@ const GiftLayer = memo(forwardRef(function GiftLayer(_props, ref) {
 // One chat row. Previously this was a ~340-line inline renderItem, so every
 // re-render of LiveRoom re-rendered every visible row. As a memo component it
 // only re-renders when that specific message object changes.
+// Tap on a chat user (avatar / name) -> same profile popup as seat tap.
+// Module-level ref => ChatItem stays memoized, no extra re-renders.
+const chatUserPressRef = { current: null };
+const pressChatUser = (chat) => { if (chatUserPressRef.current) chatUserPressRef.current(chat); };
+
 const ChatItem = memo(({ chat }) => {
 
         if (chat.type === "join") {
 
             return (
-                <View
+                <TouchableOpacity activeOpacity={0.7} onPress={() => pressChatUser(chat)}
                     style={{
                         flexDirection: "row",
                         alignItems: "center",
@@ -651,7 +886,7 @@ const ChatItem = memo(({ chat }) => {
 
                     <View>
 
-                        <Image
+                        <ExpoImage cachePolicy="memory-disk" transition={0}
                             source={{
                                 uri:chat.userImg || STABLE_AVATAR
                             }}
@@ -667,13 +902,7 @@ const ChatItem = memo(({ chat }) => {
                             (chat.level>=10 || !!chat.senderId) && (
 
                                 <LevelFrame level={chat.level} uid={chat.senderId} animated={false}
-                                    style={{
-                                        position:"absolute",
-                                        width:30,
-                                        height:30,
-                                        top:-4,
-                                        left:-4
-                                    }}
+                                    style={FRAME_CHAT22}
                                 />
 
                             )
@@ -768,14 +997,14 @@ const ChatItem = memo(({ chat }) => {
 
                     </View>
 
-                </View>
+                </TouchableOpacity>
             );
         }
 
         if (chat.type === "gift") {
             const gd = gifts.find(g => String(g.id) === String(chat.giftId));
             return (
-                <View
+                <TouchableOpacity activeOpacity={0.7} onPress={() => pressChatUser(chat)}
                     style={{
                         flexDirection: "row",
                         alignItems: "center",
@@ -784,10 +1013,16 @@ const ChatItem = memo(({ chat }) => {
                         paddingVertical: 6,
                     }}
                 >
-                    <Image
-                        source={{ uri: chat.userImg || STABLE_AVATAR }}
-                        style={{ width:22, height:22, borderRadius:11, backgroundColor:'#2a2b38' }}
-                    />
+                    <View>
+                        <ExpoImage cachePolicy="memory-disk" transition={0}
+                            source={{ uri: chat.userImg || STABLE_AVATAR }}
+                            style={{ width:22, height:22, borderRadius:11, backgroundColor:'#2a2b38' }}
+                        />
+                        {(chat.level >= 10 || !!chat.senderId) && (
+                            <LevelFrame level={chat.level} uid={chat.senderId} animated={false}
+                                style={FRAME_CHAT22} />
+                        )}
+                    </View>
                     <Text style={{ color:"#d0d0d0", fontSize:13, fontWeight:"600", marginLeft:6 }}>
                         {chat.senderName}
                     </Text>
@@ -820,7 +1055,7 @@ const ChatItem = memo(({ chat }) => {
                             x{chat.comboCount}
                         </Text>
                     )}
-                </View>
+                </TouchableOpacity>
             );
         }
 
@@ -828,7 +1063,7 @@ const ChatItem = memo(({ chat }) => {
 
             <View style={styles.chatRow}>
 
-                <View
+                <TouchableOpacity activeOpacity={0.7} onPress={() => pressChatUser(chat)}
                     style={{
                         width:42,
                         height:42,
@@ -837,7 +1072,7 @@ const ChatItem = memo(({ chat }) => {
                     }}
                 >
 
-                    <Image
+                    <ExpoImage cachePolicy="memory-disk" transition={0}
                         source={{
                             uri:chat.userImg || STABLE_AVATAR
                         }}
@@ -848,13 +1083,13 @@ const ChatItem = memo(({ chat }) => {
                         (chat.level>=10 || !!chat.senderId) && (
 
                             <LevelFrame level={chat.level} uid={chat.senderId} animated={false}
-                                style={styles.chatFrame}
+                                style={FRAME_CHAT36}
                             />
 
                         )
                     }
 
-                </View>
+                </TouchableOpacity>
 
                 <View style={styles.chatContent}>
 
@@ -866,7 +1101,7 @@ const ChatItem = memo(({ chat }) => {
                         }}
                     >
 
-                        <Text style={styles.chatUser}>
+                        <Text style={styles.chatUser} onPress={() => pressChatUser(chat)}>
                             {chat.senderName}
                         </Text>
 
@@ -965,7 +1200,7 @@ const chatKeyExtractor = (item, index) => item.id || String(index);
 // SPEED FIX (chat lag): typed text ab is chhote component ke andar rehta hai.
 // Pehle `chatMessage` poori LiveRoom screen ka state tha, isliye har akshar
 // likhne par 6000 line ki screen dobara render hoti thi -> keyboard lagta tha.
-const ChatTextInput = memo(({ onSend, locked = false }) => {
+const ChatTextInput = memo(({ onSend, locked = false, onFocus, onBlur }) => {
   const [text, setText] = useState('');
   const submit = useCallback(() => {
     const t = text.trim();
@@ -977,10 +1212,12 @@ const ChatTextInput = memo(({ onSend, locked = false }) => {
     <TextInput
       style={[styles.inputStyle, locked && { opacity: 0.6 }]}
       placeholder={locked ? "🔒 Chat locked by host" : "Chat"}
-      placeholderTextColor="#666"
+      placeholderTextColor="rgba(255,255,255,0.85)"
       value={locked ? '' : text}
       onChangeText={setText}
       onSubmitEditing={submit}
+      onFocus={onFocus}
+      onBlur={onBlur}
       editable={!locked}
       maxLength={200}
       returnKeyType="send"
@@ -993,13 +1230,20 @@ const ChatTextInput = memo(({ onSend, locked = false }) => {
 // HOST PANEL: chat lock / clear all chat + audience list with
 // "Invite to seat" and "Kick". Memo + FlatList => room ko re-render nahi karta.
 // ============================================================
-const HostRow = memo(({ user, invited, onInvite, onKick }) => (
+const HostRow = memo(({ user, invited, onInvite, onKick, onUserPress }) => (
   <View style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 8 }}>
-    <Image
-      source={{ uri: user.img || STABLE_AVATAR }}
-      style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#2a2b38' }}
-    />
-    <View style={{ flex: 1, marginLeft: 10 }}>
+    <TouchableOpacity activeOpacity={0.7} onPress={() => onUserPress && onUserPress(user)} style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+    <View style={{ marginLeft: 8 }}>
+      <ExpoImage cachePolicy="memory-disk" transition={0}
+        source={{ uri: user.img || STABLE_AVATAR }}
+        style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#2a2b38' }}
+      />
+      {(user.level >= 10 || !!user.uid) && (
+        <LevelFrame level={user.level} uid={user.uid} animated={false} pointerEvents="none"
+          style={FRAME_LIST40} />
+      )}
+    </View>
+    <View style={{ flex: 1, marginLeft: 14 }}>
       <Text numberOfLines={1} style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>
         {user.name || user.username || 'User'}
       </Text>
@@ -1007,6 +1251,7 @@ const HostRow = memo(({ user, invited, onInvite, onKick }) => (
         @{user.username || 'user'}  •  LV {user.level || 1}
       </Text>
     </View>
+    </TouchableOpacity>
     <TouchableOpacity
       disabled={invited}
       onPress={() => onInvite(user)}
@@ -1029,7 +1274,8 @@ const HostRow = memo(({ user, invited, onInvite, onKick }) => (
 ));
 
 const HostPanelSheet = memo(
-  ({ visible, onClose, users, invites, chatLocked, onToggleChatLock, onClearChat, onInvite, onKick, seatCount, onChangeSeats }) => {
+  ({ visible, onClose, users, invites, chatLocked, onToggleChatLock, onClearChat, onInvite, onKick, seatCount, onChangeSeats, onUserPress }) => {
+    const navGap = 10;
     const renderRow = useCallback(
       ({ item }) => (
         <HostRow
@@ -1037,12 +1283,13 @@ const HostPanelSheet = memo(
           invited={!!invites[item.uid]}
           onInvite={onInvite}
           onKick={onKick}
+          onUserPress={onUserPress}
         />
       ),
-      [invites, onInvite, onKick]
+      [invites, onInvite, onKick, onUserPress]
     );
     return (
-      <Modal
+      <SafeModal
         visible={visible}
         transparent
         animationType="slide"
@@ -1059,6 +1306,7 @@ const HostPanelSheet = memo(
               borderTopLeftRadius: 26,
               borderTopRightRadius: 26,
               padding: 18,
+              paddingBottom: navGap,
             }}
           >
             <Text style={{ color: '#fff', fontSize: 20, fontWeight: 'bold', marginBottom: 14 }}>
@@ -1091,23 +1339,6 @@ const HostPanelSheet = memo(
               </TouchableOpacity>
             </View>
 
-            <Text style={{ color: '#bbb', fontSize: 13, marginBottom: 6 }}>🪑 Seats</Text>
-            <View style={{ flexDirection: 'row', marginBottom: 14 }}>
-              {SEAT_OPTIONS.map((n) => (
-                <TouchableOpacity
-                  key={n}
-                  onPress={() => onChangeSeats(n)}
-                  style={{
-                    flex: 1, marginRight: n === 15 ? 0 : 8, paddingVertical: 10,
-                    borderRadius: 14, alignItems: 'center',
-                    backgroundColor: seatCount === n ? '#f71084' : 'rgba(255,255,255,0.10)',
-                  }}
-                >
-                  <Text style={{ color: '#fff', fontWeight: 'bold' }}>{n}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
             <Text style={{ color: '#bbb', fontSize: 13, marginBottom: 6 }}>
               👥 Listeners ({users.length})
             </Text>
@@ -1128,7 +1359,7 @@ const HostPanelSheet = memo(
             />
           </View>
         </View>
-      </Modal>
+      </SafeModal>
     );
   }
 );
@@ -1143,7 +1374,7 @@ const AvatarWithFrame = ({ uri, level, size = 70 }) => {
         alignItems: "center",
       }}
     >
-      <Image
+      <ExpoImage cachePolicy="memory-disk" transition={0}
         source={{ uri: uri || STABLE_AVATAR }}
         style={{
           width: size,
@@ -1190,11 +1421,11 @@ const LOW_LEVEL_RING_COLORS = [
   "#FFB300", // lv9
 ];
 
-const ProfileFrame = memo(({ level = 1, avatarSize = 100, frameSize, uid }) => {
+const ProfileFrame = memo(({ level = 1, avatarSize = 100, frameSize, uid, containerSize, animated = true }) => {
   const adminKey = useAdminFrame(uid);
   const lv = Math.max(1, Math.floor(Number(level) || 1));
-  const outer = frameSize || avatarSize + 20;
-  const offset = -(outer - avatarSize) / 2;
+  const outer = frameSize || Math.round(avatarSize * FRAME_SCALE);
+  const offset = ((containerSize || avatarSize) - outer) / 2;
 
   const pulse = useRef(new Animated.Value(0)).current;
 
@@ -1239,7 +1470,7 @@ const ProfileFrame = memo(({ level = 1, avatarSize = 100, frameSize, uid }) => {
           key={`lf-${lv}-${adminKey || ''}`}
           level={lv}
           special={adminKey}
-          animated={true}
+          animated={animated}
           style={{ width: outer, height: outer, resizeMode: "contain" }}
         />
       </View>
@@ -1289,6 +1520,30 @@ const ProfileFrame = memo(({ level = 1, avatarSize = 100, frameSize, uid }) => {
 });
 
 
+// ProfileAvatar: popup ki photo + frame EK saath. Wrapper fixed size, photo aur frame
+// dono flex se THEEK BEECH -> upar/niche khisakta nahi. Frame animation popup slide
+// khatam hone ke baad chalu hota hai -> popup smooth khulta hai.
+const ProfileAvatar = memo(({ uri, uid, level, size = 100, style }) => {
+  const outer = Math.round(size * FRAME_SCALE);
+  const reserve = Math.round((outer - size) / 4);   // frame ka aadha extra hissa layout me, baaki transparent bahar
+  const box = size + reserve * 2;
+  const [animReady, setAnimReady] = useState(false);
+  useEffect(() => {
+    const h = InteractionManager.runAfterInteractions(() => setAnimReady(true));
+    return () => h.cancel();
+  }, []);
+  return (
+    <View style={[{ width: box, height: box, alignItems: 'center', justifyContent: 'center' }, style]}>
+      <ExpoImage cachePolicy="memory-disk" transition={0}
+        source={{ uri: uri || STABLE_AVATAR }}
+
+        style={{ width: size, height: size, borderRadius: size / 2 }}
+      />
+      <ProfileFrame uid={uid} level={level} avatarSize={size} frameSize={outer} containerSize={box} animated={animReady} />
+    </View>
+  );
+});
+
 // ============================================================
 // GIFT SHEET (PERF)
 // Pehle ye poora popup LiveRoom ke andar tha -> room me har snapshot /
@@ -1297,8 +1552,10 @@ const ProfileFrame = memo(({ level = 1, avatarSize = 100, frameSize, uid }) => {
 // Ab: memo component + FlatList (sirf paas ke pages render hote hain)
 // + memo GiftCard + native-driver animation.
 // ============================================================
+const GIFT_GOLD = '#F5C451';   // premium gold accent
 const GIFTS_PER_PAGE = 8;   // 4 columns x 2 rows (pehle 3x2 bade cards)
 const GIFT_PAGE_W = width - 24;
+const SHEET_OFFSET = 420;
 const GIFT_PAGES = (() => {
   const pages = [];
   for (let i = 0; i < gifts.length; i += GIFTS_PER_PAGE) {
@@ -1310,7 +1567,8 @@ const GIFT_PAGES = (() => {
 const GiftCard = memo(({ item, onSend }) => (
   <TouchableOpacity
     style={styles.giftCard}
-    activeOpacity={0.7}
+    activeOpacity={0.6}
+    delayPressIn={0}
     onPress={() => onSend(item)}
   >
     <Image
@@ -1319,7 +1577,7 @@ const GiftCard = memo(({ item, onSend }) => (
       resizeMode="contain"
       fadeDuration={0}
     />
-    <Text style={styles.giftName}>{item.name}</Text>
+    <Text style={styles.giftName} numberOfLines={1}>{item.name}</Text>
     <Text style={styles.giftCoin}>{item.price}</Text>
   </TouchableOpacity>
 ));
@@ -1345,16 +1603,22 @@ const GiftUserChip = memo(({ user, selected, onSelect }) => (
     onPress={() => onSelect(user.uid)}
     style={{ alignItems: 'center', marginRight: 10 }}
   >
-    <Image
-      source={{ uri: user.img || STABLE_AVATAR }}
-      style={{
-        width: 44,
-        height: 44,
-        borderRadius: 22,
-        borderWidth: selected ? 3 : 1,
-        borderColor: selected ? '#ff1493' : '#555',
-      }}
-    />
+    <View>
+      <ExpoImage cachePolicy="memory-disk" transition={0}
+        source={{ uri: user.img || STABLE_AVATAR }}
+        style={{
+          width: 44,
+          height: 44,
+          borderRadius: 22,
+          borderWidth: selected ? 3 : 1,
+          borderColor: selected ? GIFT_GOLD : 'rgba(255,255,255,0.25)',
+        }}
+      />
+      {(user.level >= 10 || !!user.uid) && (
+        <LevelFrame level={user.level} uid={user.uid} animated={false} pointerEvents="none"
+          style={FRAME_GIFT44} />
+      )}
+    </View>
     <Text
       style={{ color: '#fff', fontSize: 9, width: 52, textAlign: 'center', marginTop: 2 }}
       numberOfLines={1}
@@ -1374,12 +1638,12 @@ const GiftAllChip = memo(({ selected, onPress }) => (
         borderRadius: 22,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: selected ? '#ff1493' : '#2a2a2a',
+        backgroundColor: selected ? GIFT_GOLD : 'rgba(255,255,255,0.08)',
         borderWidth: selected ? 3 : 1,
-        borderColor: selected ? '#ff69b4' : '#555',
+        borderColor: selected ? '#FFE08A' : 'rgba(255,255,255,0.25)',
       }}
     >
-      <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 12 }}>ALL</Text>
+      <Text style={{ color: selected ? '#2b1055' : '#fff', fontWeight: 'bold', fontSize: 12 }}>ALL</Text>
     </View>
     <Text style={{ color: '#fff', fontSize: 9, width: 52, textAlign: 'center', marginTop: 2 }}>
       All
@@ -1395,12 +1659,14 @@ const GiftSheet = memo(
   forwardRef(({ stars, giftUsers, selectedGiftUser, onSelectUser, onSendGift }, ref) => {
     const insets = useSafeAreaInsets();
     // Phone ke navigation bar (neeche wali bar) ke UPAR dikhane ke liye bottom gap
-    const bottomGap = Math.max(insets.bottom, Platform.OS === 'android' ? 28 : 14) + 10;
+    const bottomGap = 10;
     const [visible, setVisible] = useState(false);
     const anim = useRef(new Animated.Value(400)).current;
     const fade = useRef(new Animated.Value(0)).current;
     const closingRef = useRef(false);
     const [pageIdx, setPageIdx] = useState(0);
+    // pending spend yahin rakha -> sirf ye chhota sheet re-render hota hai, room nahi
+    const [pending, setPending] = useState(0);
 
     // Swipe khatam hone par hi page dot update (per-frame setState nahi -> smooth)
     const onPageEnd = useCallback((e) => {
@@ -1411,7 +1677,7 @@ const GiftSheet = memo(
 
     const open = useCallback(() => {
       closingRef.current = false;
-      anim.setValue(400);
+      anim.setValue(SHEET_OFFSET);
       fade.setValue(0);
       setPageIdx(0);
       setVisible(true);
@@ -1421,21 +1687,22 @@ const GiftSheet = memo(
       if (closingRef.current) return;
       closingRef.current = true;
       Animated.parallel([
-        Animated.timing(anim, { toValue: 400, duration: 170, easing: RNEasing.in(RNEasing.cubic), useNativeDriver: true }),
-        Animated.timing(fade, { toValue: 0, duration: 170, useNativeDriver: true }),
+        Animated.timing(anim, { toValue: SHEET_OFFSET, duration: 140, easing: RNEasing.in(RNEasing.quad), useNativeDriver: true }),
+        Animated.timing(fade, { toValue: 0, duration: 140, useNativeDriver: true }),
       ]).start(() => {
         closingRef.current = false;
         setVisible(false);
       });
     }, [anim, fade]);
 
-    useImperativeHandle(ref, () => ({ open, close: onClose }), [open, onClose]);
+    useImperativeHandle(ref, () => ({ open, close: onClose, setPending }), [open, onClose]);
 
     useEffect(() => {
       if (!visible) return;
       Animated.parallel([
-        Animated.timing(anim, { toValue: 0, duration: 230, easing: RNEasing.out(RNEasing.cubic), useNativeDriver: true }),
-        Animated.timing(fade, { toValue: 1, duration: 230, useNativeDriver: true }),
+        // spring = natural + fast; native driver -> JS thread busy ho tab bhi smooth
+        Animated.spring(anim, { toValue: 0, damping: 22, stiffness: 260, mass: 0.8, overshootClamping: true, useNativeDriver: true }),
+        Animated.timing(fade, { toValue: 1, duration: 160, useNativeDriver: true }),
       ]).start();
     }, [visible, anim, fade]);
 
@@ -1449,7 +1716,7 @@ const GiftSheet = memo(
     );
 
     return (
-      <Modal
+      <SafeModal
         visible={visible}
         transparent
         animationType="none"
@@ -1460,11 +1727,23 @@ const GiftSheet = memo(
         <View style={[styles.giftOverlay, { backgroundColor: 'transparent' }]}>
           <Animated.View
             pointerEvents="none"
-            style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.4)', opacity: fade }]}
+            style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(5,0,15,0.55)', opacity: fade }]}
           />
           <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onClose} />
 
-          <Animated.View style={[styles.giftSheet, { paddingBottom: bottomGap, transform: [{ translateY: anim }] }]}>
+          <Animated.View
+            renderToHardwareTextureAndroid
+            style={[styles.giftSheet, { paddingBottom: bottomGap, transform: [{ translateY: anim }] }]}
+          >
+            <LinearGradient
+              pointerEvents="none"
+              colors={['#2b1055', '#1a0b38', '#0d0618']}
+              locations={[0, 0.5, 1]}
+              start={{ x: 0.2, y: 0 }}
+              end={{ x: 0.8, y: 1 }}
+              style={StyleSheet.absoluteFill}
+            />
+            <View style={styles.giftGoldLine} pointerEvents="none" />
             <View
               style={{
                 flexDirection: 'row',
@@ -1476,8 +1755,8 @@ const GiftSheet = memo(
               <Text style={styles.giftTitle}>🎁 Send Gifts</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                 <Text style={{ fontSize: 16 }}>⭐</Text>
-                <Text style={{ color: '#fff', fontSize: 15, fontWeight: 'bold', marginLeft: 4 }}>
-                  {stars}
+                <Text style={{ color: GIFT_GOLD, fontSize: 15, fontWeight: 'bold', marginLeft: 4 }}>
+                  {Math.max(0, stars - pending)}
                 </Text>
               </View>
             </View>
@@ -1522,7 +1801,8 @@ const GiftSheet = memo(
               // aas-paas ke pages pehle se render -> swipe pe blank/flicker nahi
               initialNumToRender={2}
               maxToRenderPerBatch={2}
-              windowSize={5}
+              updateCellsBatchingPeriod={16}
+              windowSize={3}
               // Android pe ye gift icons ko gayab kar deta tha
               removeClippedSubviews={false}
               bounces={Platform.OS === 'ios'}
@@ -1542,7 +1822,7 @@ const GiftSheet = memo(
                       height: 6,
                       borderRadius: 3,
                       marginHorizontal: 3,
-                      backgroundColor: i === pageIdx ? '#ff1493' : 'rgba(255,255,255,0.3)',
+                      backgroundColor: i === pageIdx ? GIFT_GOLD : 'rgba(255,255,255,0.25)',
                     }}
                   />
                 ))}
@@ -1550,7 +1830,7 @@ const GiftSheet = memo(
             )}
           </Animated.View>
         </View>
-      </Modal>
+      </SafeModal>
     );
   }),
   (a, b) =>
@@ -1564,6 +1844,7 @@ const GiftSheet = memo(
 
 export default function LiveRoom() {
 const insets = useSafeAreaInsets();
+const navGap = 0;
 
 const {
   startLive,
@@ -1646,7 +1927,8 @@ const giftFlushTimerRef = useRef(null);
 const flushGiftBatchRef = useRef(null);
 const pendingSpendRef = useRef(0);   // taps jo abhi write nahi hue
 const inflightSpendRef = useRef(0);  // write ho gaye, wallet snapshot abhi nahi aaya
-const [pendingSpend, setPendingSpend] = useState(0);
+// pendingSpend ab sheet ke andar hai (ref.setPending) -> har gift tap pe poori room re-render nahi hoti
+const setPendingSpend = useCallback((v) => { if (giftSheetRef.current) giftSheetRef.current.setPending(v); }, []);
 const onSendGiftStable = useCallback((item) => {
   if (handleSendGiftRef.current) handleSendGiftRef.current(item);
 }, []);
@@ -1663,6 +1945,7 @@ const [selectedSpeaker, setSelectedSpeaker] = useState(null);
 const [selfSeatModalVisible, setSelfSeatModalVisible] = useState(false);
 
 const [selfMuted, setSelfMuted] = useState(false);
+const selfMutedRef = useRef(false);   // volume callback ke liye (state purani na pade)
 
 const [profileVisible, setProfileVisible] = useState(false);
 
@@ -1728,6 +2011,7 @@ const oldJoinIdsRef = useRef(new Set());
 const oldMsgIdsRef = useRef(new Set());
 
 const showJoinBanner = (data) => {
+  if (data?.senderId && blockedRef.current.has(data.senderId)) return;
   // _k: har naye join par animation restart ho (JoinEntry isi key se reset hota hai)
   setJoinBanner({ ...cleanVerified(data), _k: Date.now() + Math.random() });
 };
@@ -1745,6 +2029,22 @@ const [myStars,setMyStars] = useState(0);
 
 
 const [keyboardHeight, setKeyboardHeight] = useState(0);
+// SMOOTH KEYBOARD: focus hote hi buttons hide (keyboard ka wait nahi), height UI-thread se animate hoti hai
+const [inputFocused, setInputFocused] = useState(false);
+const onChatFocus = useCallback(() => setInputFocused(true), []);
+const onChatBlur = useCallback(() => setInputFocused(false), []);
+const animKb = useAnimatedKeyboard();
+
+// Keyboard ke saath frame-by-frame chalne wali style (JS re-render nahi, isliye smooth + fast)
+const closedPad = Math.max(insets.bottom, 10) + 6;
+const bottomNavKbStyle = useAnimatedStyle(() => ({
+  marginBottom: animKb.height.value,
+  paddingBottom: interpolate(animKb.height.value, [0, 80], [closedPad, 6], Extrapolation.CLAMP),
+}), [closedPad]);
+const emojiKbStyle = useAnimatedStyle(() => ({
+  transform: [{ translateY: -animKb.height.value }],
+}));
+const keyboardOpen = keyboardHeight > 0 || inputFocused; // keyboard khula ho to mic/gift/heart buttons chhupa do
 
 const [roomStartTime, setRoomStartTime] = useState(null);
 
@@ -1753,6 +2053,18 @@ const agoraInitPromiseRef = useRef(null);
 const agoraJoinStartedRef = useRef(false);
 
 const agoraEngineRef = useRef(null);
+
+// ===== AGORA MINUTES SAVER =====
+// Agora har user ke channel me rehne ke har minute ka bill/free-quota kaatta hai
+// (background, screen idle, kuch bhi ho). Isliye LISTENER ko in cases me channel se
+// hata dete hain aur wapas aate hi (app open / screen touch) auto-rejoin:
+//  - app background me VOICE_BG_LEAVE_MS se zyada raha
+//  - VOICE_IDLE_LEAVE_MS tak screen touch nahi hui (phone rakh ke bhool gaye)
+// Speaker / host ko kabhi nahi hatate. Idle band karna ho to VOICE_IDLE_LEAVE_MS = 0.
+const VOICE_BG_LEAVE_MS = 45 * 1000;
+const VOICE_IDLE_LEAVE_MS = 30 * 60 * 1000;
+const voiceSleepRef = useRef(false);
+const lastTouchRef = useRef(Date.now());
 
 // ===== ROOM MUSIC (Agora audio mixing) =====
 const music = useRoomMusic(agoraEngineRef);
@@ -1823,13 +2135,22 @@ const [myAgoraUid, setMyAgoraUid] = useState(null);
 const voiceDiagnosticRef = useRef({ agora: "Starting...", mic: false, remote: false, remoteCount: 0 });
 
 const currentUid = auth?.currentUser?.uid;
+// (yahan upar isliye: neeche ke useCallback deps me ye pehle use hote hain, baad me declare karne par undefined milta tha)
+const [currentName, setCurrentName] = useState("User");
+const [currentAvatar, setCurrentAvatar] = useState(STABLE_AVATAR);
+const [currentRealName, setCurrentRealName] = useState("User");
 
 // SCALE FIX: chat + audience no longer live inside the room doc.
 // They are separate Firestore subcollections so a chat message or a
 // viewer joining/leaving does NOT re-broadcast the entire room state
 // (seats, host info, etc.) to every connected client.
-const [chatMessages, setChatMessages] = useState([]);
-const [audienceMap, setAudienceMap] = useState({});
+const { blocked: blockedIds, ref: blockedRef } = useBlockedIds();
+const [rawChatMessages, setChatMessages] = useState([]);
+const [rawAudienceMap, setAudienceMap] = useState({});
+// BLOCK: blocked (dono taraf) users ke msgs / viewers hide
+const chatMessages = React.useMemo(() => rawChatMessages.filter(m => !(m && m.senderId && blockedIds.has(m.senderId))), [rawChatMessages, blockedIds]);
+const audienceMap = React.useMemo(() => { const o = {}; for (const k in rawAudienceMap) { if (!blockedIds.has(k)) o[k] = rawAudienceMap[k]; } return o; }, [rawAudienceMap, blockedIds]);
+
 const audiencePayloadRef = useRef(null);   // meri audience doc (heartbeat ke liye)
 const audSeenRef = useRef({});             // uid -> { v: lastSeen, at: LOCAL time jab value badli }
 
@@ -1855,7 +2176,11 @@ const stableSeatPress = useCallback((k, s) => {
 const iAmMuted = !!Object.values(roomData?.seatsData || {}).find(
   (s) => s && s.userId === currentUid
 )?.isMuted;
-useEffect(() => { setSelfMuted(iAmMuted); }, [iAmMuted]);
+useEffect(() => {
+  setSelfMuted(iAmMuted);
+  selfMutedRef.current = iAmMuted;
+  if (iAmMuted) speakingStore.clear(uidToNum(currentUid));
+}, [iAmMuted]);
 
 // FRAME FIX: seat par baithe user ka level kabhi seat doc me 1/missing reh jata
 // tha (raise-hand request me level nahi jata tha) -> listener me frame dikhta tha,
@@ -1889,11 +2214,25 @@ useEffect(() => () => {
   for (const u in t) clearTimeout(t[u]);
 }, []);
 
+
+// BLOCK: host se block-relation ho to room me rehne hi mat do
+useEffect(() => {
+  const hid = roomData?.hostId;
+  if (hid && hid !== currentUid && blockedIds.has(hid)) {
+    try { alert("Ye live aapke liye available nahi hai"); } catch (_) {}
+    router.back();
+  }
+}, [roomData?.hostId, blockedIds]);
+
 const resolvedSeats = useMemo(() => {
   const src = roomData?.seatsData || {};
   const out = {};
   for (const k in src) {
     const st = src[k];
+    if (st && st.userId && st.userId !== currentUid && st.userId !== roomData?.hostId && blockedIds.has(st.userId)) {
+      out[k] = EMPTY_SEAT; // BLOCK: blocked user ki seat khali dikhe
+      continue;
+    }
     if (st && st.userId) {
       const aud = audienceMap[st.userId];
       const lvl = Math.max(
@@ -1911,7 +2250,7 @@ const resolvedSeats = useMemo(() => {
     }
   }
   return out;
-}, [roomData?.seatsData, audienceMap, currentUid, hostLevel, seatReactions]);
+}, [roomData?.seatsData, audienceMap, currentUid, hostLevel, seatReactions, blockedIds]);
 
 // Hearts: tap par turant local animation; server par har 4s me ek hi chhota write
 // (apne audience doc me). Doc exist na kare to updateDoc chup-chaap fail hota hai.
@@ -2008,9 +2347,7 @@ const stableEmojiPick = useCallback((e) => { if (onPickEmojiRef.current) onPickE
 
 // ===== HOST TOOLS: chat lock / clear chat / invite to seat / kick =====
 const isHost = currentUserRole === 'host';
-const seatCount = SEAT_OPTIONS.includes(Number(roomData?.seatCount))
-  ? Number(roomData.seatCount)
-  : 10;
+const seatCount = 9;
 
 const changeSeatCount = useCallback(async (n) => {
   if (!db || !roomId || !isHost || !SEAT_OPTIONS.includes(n)) return;
@@ -2030,6 +2367,54 @@ const chatLocked = !!roomData?.chatLocked;
 const [hostPanelVisible, setHostPanelVisible] = useState(false);
 const [inviteBusy, setInviteBusy] = useState(false);
 const requestSendingRef = useRef(false);   // seat request double-tap guard
+
+// ===== INSTANT FEEDBACK: toast + optimistic UI state =====
+const [toastMsg, setToastMsg] = useState(null);
+const toastAnim = useRef(new Animated.Value(0)).current;
+const toastTimerRef = useRef(null);
+const showToast = useCallback((msg) => {
+  setToastMsg(msg);
+  toastAnim.stopAnimation();
+  toastAnim.setValue(0);
+  Animated.timing(toastAnim, { toValue: 1, duration: 140, useNativeDriver: true }).start();
+  if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+  toastTimerRef.current = setTimeout(() => {
+    Animated.timing(toastAnim, { toValue: 0, duration: 220, useNativeDriver: true })
+      .start(() => setToastMsg(null));
+  }, 2200);
+}, [toastAnim]);
+useEffect(() => () => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current); }, []);
+
+const [hiddenReqUids, setHiddenReqUids] = useState({}); // host: approve/reject par row turant hide
+const [myReqSent, setMyReqSent] = useState(false);       // listener: request turant "sent" dikhe
+const myReqSentRef = useRef(false);
+const myReqSeenRef = useRef(false);
+const [sentFriendIds, setSentFriendIds] = useState({});  // friend share: "✓ Sent" badge
+const [shareDone, setShareDone] = useState(false);       // system share: "✓ Shared"
+
+// host: jab request doc se sach me hat jaye tabhi local "hidden" flag hatao (flash/duplicate nahi)
+useEffect(() => {
+  setHiddenReqUids((prev) => {
+    const keys = Object.keys(prev);
+    if (!keys.length) return prev;
+    const reqs = roomData?.speakerRequests || {};
+    const next = {};
+    let changed = false;
+    keys.forEach((k) => { if (reqs[k]) next[k] = true; else changed = true; });
+    return changed ? next : prev;
+  });
+}, [roomData?.speakerRequests]);
+
+// listener: meri request host ne approve/reject kar di (doc se hat gayi) -> dobara bhej sakte hain
+useEffect(() => {
+  const present = !!roomData?.speakerRequests?.[currentUid];
+  if (present) { myReqSeenRef.current = true; return; }
+  if (myReqSentRef.current && myReqSeenRef.current) {
+    myReqSentRef.current = false;
+    myReqSeenRef.current = false;
+    setMyReqSent(false);
+  }
+}, [roomData?.speakerRequests, currentUid]);
 const lastChatAtRef = useRef(0);           // chat spam guard
 const SEAT_REQUEST_TTL_MS = 2 * 60 * 1000; // purani/atki request ko "pending" nahi maante
 const SEAT_INVITE_TTL_MS = 60 * 1000;      // invite 60s me expire
@@ -2177,9 +2562,6 @@ const acceptInvite = useCallback(async () => {
 
 
 
-const [currentName, setCurrentName] = useState("User");
-const [currentAvatar, setCurrentAvatar] = useState(STABLE_AVATAR);
-const [currentRealName, setCurrentRealName] = useState("User");
 
 useEffect(() => {
 
@@ -2338,16 +2720,17 @@ loadUser();
 useEffect(() => {
 
   const show = Keyboard.addListener(
-    "keyboardDidShow",
+    Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
     (e) => {
       setKeyboardHeight(e.endCoordinates.height);
     }
   );
 
   const hide = Keyboard.addListener(
-    "keyboardDidHide",
+    Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide",
     () => {
       setKeyboardHeight(0);
+      setInputFocused(false);
     }
   );
 
@@ -2552,6 +2935,7 @@ const handlePreviewFollow = async (targetSpeaker) => {
         followerId: currentUid,
         followingId: targetUserId,
       });
+      notifyNewFollower(targetUserId);
 
       const currentUserSnap = await getDoc(
         doc(db, "users", currentUid)
@@ -3238,11 +3622,40 @@ useEffect(() => {
   let chatFlushTimer = null;
   let chatLatest = [];
   let chatLastSig = '';
+  const chatMap = new Map();
+  let chatOrder = [];
 
   const unsubChats = onSnapshot(chatsQuery, { includeMetadataChanges: false }, (snap) => {
-    let msgs = snap.docs
-      .map(d => ({ id: d.id, ...d.data() }))
-      .reverse();
+    // ORDER FIX: pehle createdAt (har phone ki apni clock, Date.now()) se sort hota tha,
+    // isliye jis phone ki clock peeche ho uska message purane messages ke UPAR chala jata tha.
+    // Ab pehli baar history createdAt se, uske baad jo bhi naya message aaye wo hamesha
+    // list ke END (screen par sabse NEECHE) me judta hai.
+    const msOf = (v) => (typeof v === 'number' ? v : (v?.toMillis ? v.toMillis() : (v?.seconds ? v.seconds * 1000 : Number.MAX_SAFE_INTEGER)));
+    if (!chatsReadyRef.current) {
+      chatMap.clear();
+      chatOrder = snap.docs.map(d => d.id).reverse();
+      snap.docs.forEach(d => chatMap.set(d.id, { id: d.id, ...d.data() }));
+    } else {
+      const added = [];
+      snap.docChanges().forEach((ch) => {
+        const id = ch.doc.id;
+        if (ch.type === 'removed') {
+          chatMap.delete(id);
+          chatOrder = chatOrder.filter(x => x !== id);
+        } else {
+          const data = { id, ...ch.doc.data() };
+          chatMap.set(id, data);
+          if (ch.type === 'added' && !chatOrder.includes(id)) added.push(data);
+        }
+      });
+      added.sort((a, b) => msOf(a.createdAt) - msOf(b.createdAt));
+      added.forEach(m => chatOrder.push(m.id));
+      if (chatOrder.length > 80) {
+        chatOrder.slice(0, chatOrder.length - 80).forEach(id => chatMap.delete(id));
+        chatOrder = chatOrder.slice(-80);
+      }
+    }
+    let msgs = chatOrder.map(id => chatMap.get(id)).filter(Boolean);
 
     // First load = PURANI history. Uski har message id yaad rakho aur hide karo,
     // taaki naya aane wala user sirf apne aane ke BAAD ke messages dekhe.
@@ -3373,6 +3786,7 @@ useEffect(() => {
   // handler). Replaying it from the Firestore echo made the banner + animation
   // restart a moment later — that was the visible "double / late gift" glitch.
   if (gift.senderId === currentUid) return;
+  if (blockedRef.current.has(gift.senderId)) return; // BLOCK
 
   lastGiftRef.current = {
     senderId: gift.senderId,
@@ -3558,6 +3972,57 @@ scheduleAgoraReconnectRef.current = () => {
 };
 useEffect(() => () => { if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current); }, []);
 
+// ---- AGORA MINUTES SAVER: sleep / wake ----
+const sleepVoice = () => {
+  if (exitingRef.current || roomEndedRef.current) return;
+  if (currentUserRoleRef.current !== "listener") return;   // speaker/host kabhi nahi
+  if (!agoraEngineRef.current) return;
+  voiceSleepRef.current = true;
+  releaseAgora();
+  isJoinedRef.current = false;
+  setJoined(false);
+};
+const wakeVoice = () => {
+  lastTouchRef.current = Date.now();
+  if (!voiceSleepRef.current) return;
+  voiceSleepRef.current = false;
+  if (exitingRef.current || roomEndedRef.current) return;
+  agoraRetryCountRef.current = 0;
+  scheduleAgoraReconnectRef.current && scheduleAgoraReconnectRef.current();
+};
+const sleepVoiceRef = useRef(null);
+const wakeVoiceRef = useRef(null);
+sleepVoiceRef.current = sleepVoice;
+wakeVoiceRef.current = wakeVoice;
+
+useEffect(() => {
+  let bgTimer = null;
+  const sub = AppState.addEventListener("change", (st) => {
+    if (st === "active") {
+      if (bgTimer) { clearTimeout(bgTimer); bgTimer = null; }
+      wakeVoiceRef.current && wakeVoiceRef.current();
+      return;
+    }
+    if (bgTimer) return;
+    bgTimer = setTimeout(() => {
+      bgTimer = null;
+      if (AppState.currentState !== "active") sleepVoiceRef.current && sleepVoiceRef.current();
+    }, VOICE_BG_LEAVE_MS);
+  });
+  // screen touch na hone par (phone rakh diya) listener ko channel se hatao
+  const idleTimer = VOICE_IDLE_LEAVE_MS > 0 ? setInterval(() => {
+    if (AppState.currentState !== "active") return;
+    if (Date.now() - lastTouchRef.current > VOICE_IDLE_LEAVE_MS) {
+      sleepVoiceRef.current && sleepVoiceRef.current();
+    }
+  }, 60000) : null;
+  return () => {
+    sub.remove();
+    if (bgTimer) clearTimeout(bgTimer);
+    if (idleTimer) clearInterval(idleTimer);
+  };
+}, []);
+
 // ---- SCREEN BLACK / LOCK FIX: live me screen band na ho ----
 // Pehle sirf ek baar mount par activate hota tha -> modal/background/focus change
 // ke baad Android screen band kar deta tha. Ab: screen focus par activate,
@@ -3699,67 +4164,58 @@ useEffect(() => {
 // Request already pending (host ne abhi tak approve/reject nahi ki)?
 // approve/reject par speakerRequests.<uid> hat jata hai -> tab dobara bhej sakte hain.
 const hasPendingSeatRequest = () => {
+  if (myReqSentRef.current) return true;
   const r = roomData?.speakerRequests?.[currentUid];
   return !!r && Date.now() - (r.requestedAt || 0) < SEAT_REQUEST_TTL_MS;
 };
 
-const sendSeatRequest = async (seatKey) => {
+// INSTANT: pehle UI/ref lock + toast, phir write background me (await ka wait nahi).
+// Double request ka reason: guard sirf network khatam hone ke baad hat'ta tha / alert block karta tha.
+const submitSeatRequest = (seatKey, okText) => {
+  if (!db || !roomId || !currentUid) return;
+  if (requestSendingRef.current || hasPendingSeatRequest()) {
+    showToast("⏳ Request pehle hi bhej di hai");
+    return;
+  }
+  requestSendingRef.current = true;
+  myReqSentRef.current = true;
+  myReqSeenRef.current = false;
+  setMyReqSent(true);
+  showToast(okText);
 
-if (requestSendingRef.current) return;
-if (hasPendingSeatRequest()) {
-  alert("Request pehle hi bhej di hai ⏳ Host ke jawab ka wait karo");
-  return;
-}
-requestSendingRef.current = true;
+  updateDoc(doc(db, "rooms", roomId), {
+    [`speakerRequests.${currentUid}`]: {
+      uid: currentUid,
+      name: currentName,
+      realName: currentRealName,
+      img: currentAvatar,
+      verified: hostVerified === true,
+      verifiedColor: hostVerifiedColor,
+      level: hostLevel,
+      seatKey: seatKey || null,
+      status: "pending",
+      requestedAt: Date.now(),
+    },
+  })
+    .catch((e) => {
+      log(e);
+      myReqSentRef.current = false;
+      myReqSeenRef.current = false;
+      setMyReqSent(false);
+      showToast("❌ Request nahi gayi, dobara try karo");
+    })
+    .finally(() => { requestSendingRef.current = false; });
 
-try {
-
-const roomRef = doc(db,"rooms",roomId);
-
-await updateDoc(roomRef,{
-
-[`speakerRequests.${currentUid}`]:{
-
-uid:currentUid,
-
-name:currentName,
-
-realName:currentRealName,
-
-img:currentAvatar,
-
-verified: hostVerified === true,
-verifiedColor:
-hostVerifiedColor,
-
-level: hostLevel,
-
-seatKey:seatKey,
-
-status:"pending",
-
-requestedAt:Date.now()
-
-}
-
-});
-
-alert("Request Sent ✅");
-
-}catch(e){
-
-log(e);
-
-}finally{
-
-requestSendingRef.current = false;
-
-}
-
+  // safety: kabhi doc me dikhi hi nahi (offline) to 2 min baad lock khol do
+  setTimeout(() => {
+    if (myReqSentRef.current && !myReqSeenRef.current) {
+      myReqSentRef.current = false;
+      setMyReqSent(false);
+    }
+  }, SEAT_REQUEST_TTL_MS);
 };
 
-
-
+const sendSeatRequest = (seatKey) => submitSeatRequest(seatKey, "Request Sent ✅");
 
   const handleSeatJoin = async (seatKey) => {
   try {
@@ -3788,43 +4244,7 @@ setCurrentUserRole("speaker");
 
 
 
-const handleRaiseHand = async () => {
-  if (requestSendingRef.current || raiseHandLoading) return;
-  if (hasPendingSeatRequest()) {
-    alert('Request pehle hi bhej di hai ⏳ Host ke jawab ka wait karo');
-    return;
-  }
-  requestSendingRef.current = true;
-  try {
-
-    setRaiseHandLoading(true);
-
-    const roomRef = doc(db, 'rooms', roomId);
-
-   await updateDoc(roomRef, {
-  [`speakerRequests.${currentUid}`]: {
-    uid: currentUid,
-    name: currentName,
-    realName: currentRealName,
-    img: currentAvatar,
-    seatKey: null,
-    verified: hostVerified === true,
-    verifiedColor: hostVerifiedColor,
-    level: hostLevel,
-    status: "pending",
-    requestedAt: Date.now()
-  }
-});
-
-    alert('Request Sent To Host ✅');
-
-  } catch (e) {
-    log(e);
-  }
-
-  requestSendingRef.current = false;
-  setRaiseHandLoading(false);
-};
+const handleRaiseHand = () => submitSeatRequest(null, "Request Sent To Host ✅");
 
 
 
@@ -3870,6 +4290,12 @@ const initAgora = async (userRole) => {
   if (!roomId || !currentUid) return;
   if (exitingRef.current || roomEndedRef.current) return;
   if (agoraEngineRef.current || agoraInitPromiseRef.current || agoraJoinStartedRef.current) return;
+
+  // voice sleep me sirf listener ko join se roko; seat mil gayi (speaker/host) to jaag jao
+  if (voiceSleepRef.current) {
+    if (userRole === "listener") return;
+    voiceSleepRef.current = false;
+  }
 
   agoraJoinStartedRef.current = true;
 
@@ -3971,7 +4397,7 @@ const initAgora = async (userRole) => {
         }));
       } else {
         await engine.setAudioProfile(
-          AudioProfileType.AudioProfileSpeechStandard,
+          AudioProfileType.AudioProfileMusicStandard,
           AudioScenarioType.AudioScenarioChatroom
         );
         await engine.setParameters(JSON.stringify({
@@ -4020,7 +4446,25 @@ const initAgora = async (userRole) => {
         onAudioVolumeIndication: (connection, speakers) => {
           const map = {};
           let remoteVoice = false;
-          (speakers || []).forEach(item => { if (item.volume > 25) { const isLocal = Number(item.uid) === 0 || Number(item.uid) === Number(backendUid); map[isLocal ? backendUid : item.uid] = true; if (!isLocal) remoteVoice = true; } });
+          // MUTE FIX: mic mute hone par bhi Agora local/remote volume bhej sakta hai
+          // (capture chalu rehta hai / network delay). Seat par mute wale ko glow list me nahi lete.
+          const mutedNums = new Set();
+          const seatsNow = roomDataRef.current?.seatsData;
+          if (seatsNow) {
+            for (const k in seatsNow) {
+              const st = seatsNow[k];
+              if (st?.userId && st.isMuted) mutedNums.add(uidToNum(st.userId));
+            }
+          }
+          (speakers || []).forEach(item => {
+            if (item.volume > 15) {
+              const isLocal = Number(item.uid) === 0 || Number(item.uid) === Number(backendUid);
+              const key = isLocal ? backendUid : item.uid;
+              if (isLocal ? (selfMutedRef.current || mutedNums.has(Number(backendUid))) : mutedNums.has(Number(item.uid))) return;
+              map[key] = true;
+              if (!isLocal) remoteVoice = true;
+            }
+          });
           if (remoteVoice) voiceDiagnosticRef.current = { ...voiceDiagnosticRef.current, remote: true };
           speakingStore.update(map);
         },
@@ -4054,7 +4498,7 @@ const initAgora = async (userRole) => {
       await engine.enableAudio();
       await engine.setEnableSpeakerphone(true);
       await engine.setClientRole(role);
-      engine.enableAudioVolumeIndication(500, 3, false);
+      engine.enableAudioVolumeIndication(300, 3, false);
 
       if (role === ClientRoleType.ClientRoleBroadcaster) {
         await engine.enableLocalAudio(true);
@@ -4170,7 +4614,7 @@ const sendQuickChat = async (text) => {
 const onPickEmoji = (e) => {
   if (!e) return;
   const onSeat = Object.values(roomData?.seatsData || {}).some((s) => s && s.userId === currentUid);
-  if (!onSeat) { sendQuickChat(e); return; }
+  if (!onSeat) { if (isGifReaction(e)) return; sendQuickChat(e); return; }
   if (!db || !roomId || !currentUid) return;
 
   const now = Date.now();
@@ -4187,22 +4631,19 @@ onPickEmojiRef.current = onPickEmoji;
 
 const handleShare = async () => {
   try {
-
     const shareLink = `https://topking.app/live/${roomId}`;
-
-    await Share.share({
+    const res = await Share.share({
       message: `🎙 Join my Live Room\n${shareLink}`,
     });
-
-setShareModalVisible(false);
-
+    if (res?.action === Share.dismissedAction) return;   // user ne cancel kiya -> "shared" mat dikhao
+    setShareDone(true);
+    showToast("✅ Link share ho gaya");
+    setTimeout(() => setShareDone(false), 2500);
   } catch (e) {
     log(e);
+    showToast("❌ Share nahi hua");
   }
 };
-
-
-
 
 const toggleFriend=(id)=>{
 
@@ -4230,201 +4671,174 @@ id
 
 
 
-const sendInvite = async () => {
-  try {
+// ek friend ko invite: 4 writes ek saath (pehle ek-ek karke await hote the -> slow)
+const sendOneInvite = (uid) => {
+  const chatId = currentUid < uid ? `${currentUid}_${uid}` : `${uid}_${currentUid}`;
+  return Promise.all([
+    addDoc(collection(db, "chats", chatId, "messages"), {
+      type: "liveInvite",
+      senderId: currentUid,
+      receiverId: uid,
+      roomId: roomId,
+      roomLink: `https://topking.app/live/${roomId}`,
+      text: `${currentName} invited you to join live`,
+      createdAt: serverTimestamp(),
+    }),
+    setDoc(doc(db, "userChats", uid, "friends", currentUid), {
+      userId: currentUid,
+      username: currentName,
+      lastMessage: "🎙 Live Invite",
+      hasNewMessage: true,
+      unreadCount: increment(1),
+      updatedAt: serverTimestamp(),
+    }, { merge: true }),
+    setDoc(doc(db, "userChats", currentUid, "friends", uid), {
+      userId: uid,
+      lastMessage: "🎙 Live Invite",
+      updatedAt: serverTimestamp(),
+    }, { merge: true }),
+    setDoc(doc(db, "notifications", Date.now().toString() + uid), {
+      to: uid,
+      senderId: currentUid,
+      roomId: roomId,
+      type: "liveInvite",
+      createdAt: Date.now(),
+    }),
+  ]);
+};
 
-    for (const uid of selectedFriends) {
-
-      const chatId =
-        currentUid < uid
-          ? `${currentUid}_${uid}`
-          : `${uid}_${currentUid}`;
-
-      // Chat message
-      await addDoc(
-        collection(
-          db,
-          "chats",
-          chatId,
-          "messages"
-        ),
-        {
-          type: "liveInvite",
-
-          senderId: currentUid,
-          receiverId: uid,
-
-          roomId: roomId,
-
-          roomLink:
-            `https://topking.app/live/${roomId}`,
-
-          text:
-            `${currentName} invited you to join live`,
-
-          createdAt: serverTimestamp(),
-        }
-      );
-
-await setDoc(
-  doc(
-    db,
-    "userChats",
-    uid,
-    "friends",
-    currentUid
-  ),
-  {
-    userId: currentUid,
-
-    username: currentName,
-
-    lastMessage: "🎙 Live Invite",
-
-    hasNewMessage: true,
-
-    unreadCount: increment(1),
-
-    updatedAt: serverTimestamp(),
-  },
-  { merge: true }
-);
-
-
-await setDoc(
-  doc(
-    db,
-    "userChats",
-    currentUid,
-    "friends",
-    uid
-  ),
-  {
-    userId: uid,
-
-    lastMessage: "🎙 Live Invite",
-
-    updatedAt: serverTimestamp(),
-  },
-  { merge: true }
-);
-
-
-
-      log("LIVE INVITE SAVED =", uid);
-
-      // Notification
-      await setDoc(
-        doc(
-          db,
-          "notifications",
-          Date.now().toString() + uid
-        ),
-        {
-          to: uid,
-          senderId: currentUid,
-          roomId: roomId,
-          type: "liveInvite",
-          createdAt: Date.now(),
-        }
-      );
-
-    }
-
-    alert("Invite Sent");
-
-    setSelectedFriends([]);
-    setFriendShareVisible(false);
-
-  } catch (e) {
-
-    log(
-      "INVITE ERROR =",
-      e
-    );
-
+// INSTANT: tap par turant "✓ Sent" + toast; writes background me parallel chalte hain.
+const sendInvite = () => {
+  const targets = selectedFriends.filter((uid) => !sentFriendIds[uid]);
+  if (!targets.length) {
+    showToast(selectedFriends.length ? "Ye friends ko invite pehle hi ja chuka hai ✓" : "Pehle friend select karo");
+    return;
   }
+  setSentFriendIds((prev) => { const n = { ...prev }; targets.forEach((u) => { n[u] = true; }); return n; });
+  setSelectedFriends([]);
+  showToast(`✅ Invite ${targets.length} friend ko bhej diya`);
+
+  Promise.all(
+    targets.map((uid) =>
+      sendOneInvite(uid).then(() => true).catch((e) => {
+        log("INVITE ERROR =", e);
+        setSentFriendIds((prev) => { const n = { ...prev }; delete n[uid]; return n; });
+        return false;
+      })
+    )
+  ).then((res) => {
+    const failed = res.filter((ok) => !ok).length;
+    if (failed) showToast(`❌ ${failed} invite nahi gaye, dobara try karo`);
+  });
 };
 
 
 
+// ===== SEAT APPROVE FIX =====
+// Pehle: purane roomData se seat check hota tha aur updateDoc seat ko seedha
+// overwrite kar deta tha -> 4-5 request ek saath approve karne par ek hat jata tha.
+// Ab: (1) approvals line (queue) me ek-ek karke chalte hain, (2) Firestore transaction
+// se TAAZA seat dekhte hain: seat khali ho to hi baithate hain, bhari ho to kisi ko
+// hataate nahi.
+const approveQueueRef = useRef(Promise.resolve());
+const approvingUidsRef = useRef(new Set());
 
+const approveRequest = (user) => {
+  if (!user?.uid) return Promise.resolve();
+  // double tap / ek hi user ki request dobara -> ignore
+  if (approvingUidsRef.current.has(user.uid)) return Promise.resolve();
+  approvingUidsRef.current.add(user.uid);
+  // INSTANT: row turant list se hat jaye (snapshot aane tak wait nahi)
+  setHiddenReqUids((h) => ({ ...h, [user.uid]: true }));
+  showToast(`✅ ${user.name || "User"} approve ho gaya`);
 
+  const job = approveQueueRef.current.then(async () => {
+    try {
+      const roomRef = doc(db, "rooms", roomId);
 
-const approveRequest = async (user)=>{
+      // user ka asli level (wallet) - transaction ke bahar, taaki transaction tez rahe
+      let approvedLevel = Math.max(
+        Number(user.level) || 1,
+        Number(audienceMap[user.uid]?.level) || 1
+      );
+      // wallet level: max 350ms wait (pehle poora network wait hota tha -> approve slow lagta tha)
+      try {
+        const w = await Promise.race([
+          getDoc(doc(db, "wallets", user.uid)),
+          new Promise((res) => setTimeout(() => res(null), 350)),
+        ]);
+        if (w && w.exists()) approvedLevel = Math.max(approvedLevel, Number(w.data()?.level) || 1);
+      } catch (_) {}
 
+      const result = await runTransaction(db, async (tx) => {
+        const snap = await tx.get(roomRef);
+        if (!snap.exists()) return { status: "noroom" };
+        const data = snap.data() || {};
+        const seats = data.seatsData || {};
+        const maxSeats = 9;
 
+        // request ab bhi maujood hai? (user ne cancel ya host ne reject kar diya ho to skip)
+        if (!data.speakerRequests?.[user.uid]) return { status: "gone" };
 
-try{
+        // user pehle se kisi seat par baitha hai -> bas request hata do
+        const alreadySeated = Object.values(seats).some((s) => s?.userId === user.uid);
+        if (alreadySeated) {
+          tx.update(roomRef, { [`speakerRequests.${user.uid}`]: deleteField() });
+          return { status: "already" };
+        }
 
-const roomRef = doc(db,"rooms",roomId);
+        const isFree = (k) => !seats?.[k]?.userId;
+        let targetSeat = user.seatKey;
 
-let targetSeat = user.seatKey;
+        if (targetSeat) {
+          // user ne jo seat maangi wo khali nahi -> kisi ko hatana nahi, baithana nahi
+          if (!isFree(targetSeat)) return { status: "taken", seat: targetSeat };
+        } else {
+          // seat nahi maangi thi -> pehli khali seat (seat_1 host ki hai)
+          for (let i = 2; i <= maxSeats; i++) {
+            const k = `seat_${i}`;
+            if (isFree(k)) { targetSeat = k; break; }
+          }
+          if (!targetSeat) return { status: "full" };
+        }
 
-// FRAME FIX: seat par jaane se pehle user ka asli level (wallet) lo
-let approvedLevel = Math.max(
-  Number(user.level) || 1,
-  Number(audienceMap[user.uid]?.level) || 1
-);
-try {
-  const w = await getDoc(doc(db, "wallets", user.uid));
-  if (w.exists()) approvedLevel = Math.max(approvedLevel, Number(w.data()?.level) || 1);
-} catch (_) {}
+        tx.update(roomRef, {
+          [`seatsData.${targetSeat}`]: {
+            userId: user.uid,
+            userName: user.name,
+            realName: user.realName,
+            userImg: user.img,
+            verified: isVerified(user.verified),
+            verifiedColor: normTickColor(user.verifiedColor),
+            level: approvedLevel,
+            isMuted: false,
+            roleTag: "SPEAKER",
+          },
+          [`speakerRequests.${user.uid}`]: deleteField(),
+        });
+        return { status: "ok", seat: targetSeat };
+      });
 
-if (!targetSeat) {
-
-  for (let i = 2; i <= seatCount; i++) {
-
-    const key = `seat_${i}`;
-
-    if (!roomData?.seatsData?.[key]?.userId) {
-
-      targetSeat = key;
-
-      break;
-
+      if (result && result.status !== "ok" && result.status !== "already" && result.status !== "gone") {
+        // approve nahi hua -> row wapas dikhao taaki host reject kar sake
+        setHiddenReqUids((h) => { const n = { ...h }; delete n[user.uid]; return n; });
+      }
+      if (result?.status === "taken") {
+        alert(`${(result.seat || "").replace("_", " ")} pe pehle se koi baitha hai ❌ (use hataya nahi). Reject karo ya wo seat khali hone ka wait karo.`);
+      } else if (result?.status === "full") {
+        alert("No Empty Seat Available");
+      }
+    } catch (e) {
+      log("approveRequest error", e);
+      setHiddenReqUids((h) => { const n = { ...h }; delete n[user.uid]; return n; });
+      showToast("❌ Approve nahi hua, dobara try karo");
+    } finally {
+      approvingUidsRef.current.delete(user.uid);
     }
+  });
 
-  }
-
-}
-
-
-if (!targetSeat) {
-
-  alert("No Empty Seat Available");
-
-  return;
-
-}
-
-
-await updateDoc(roomRef,{
-
-
-[`seatsData.${targetSeat}`]: {
-  userId: user.uid,
-  userName: user.name,
-  realName: user.realName,
-  userImg: user.img,
-  verified: isVerified(user.verified),
-  verifiedColor:
-normTickColor(user.verifiedColor),
-  level: approvedLevel,
-  isMuted: false,
-  roleTag: "SPEAKER"
-},
-
-[`speakerRequests.${user.uid}`]:null
-
-});
-
-}catch(e){
-
-log(e);
-
-}
-
+  approveQueueRef.current = job.catch(() => {});
+  return job;
 };
 
 
@@ -4516,6 +4930,8 @@ if(mySeatData?.mutedByHost){
     const newValue = !selfMuted;
 
     setSelfMuted(newValue);
+    selfMutedRef.current = newValue;
+    if (newValue) speakingStore.clear(uidToNum(currentUid));
 
     if (agoraEngineRef.current) {
 
@@ -4972,9 +5388,26 @@ Object.values(roomData?.seatsData || {}).forEach((seat) => {
 
 
 
+const toastEl = toastMsg ? (
+  <Animated.View
+    pointerEvents="none"
+    style={[
+      styles.toastBox,
+      {
+        opacity: toastAnim,
+        transform: [{ translateY: toastAnim.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) }],
+      },
+    ]}
+  >
+    <Text style={styles.toastText}>{toastMsg}</Text>
+  </Animated.View>
+) : null;
+
 const requestsArray =
 roomData?.speakerRequests
-? Object.values(roomData.speakerRequests).filter(Boolean)
+? Object.values(roomData.speakerRequests)
+    .filter((r) => r && r.uid && !hiddenReqUids[r.uid])
+    .sort((x, y) => (x.requestedAt || 0) - (y.requestedAt || 0))
 : [];
 
 
@@ -5007,220 +5440,167 @@ const handleSeatPress = (key) => {
 };
 seatPressRef.current = handleSeatPress;
 
+// Listener list + chat user tap -> same profile popup (follow / like / open profile)
+// as a seat tap. Uses the already-loaded seat-style object, so it opens instantly.
+const openUserPopup = (u) => {
+  const uid = u?.userId || u?.senderId || u?.uid;
+  if (!uid) return;
+  Keyboard.dismiss();
+  setSelectedSpeaker({
+    userId: uid,
+    userImg: u.userImg || u.img || "",
+    userName: u.userName || u.username || u.senderName || u.name || "user",
+    verified: u.verified,
+    verifiedColor: u.verifiedColor,
+    level: u.level || 1,
+  });
+  // sheets band karo taaki popup upar saaf khule
+  const sheetOpen = viewersVisible || hostPanelVisible;
+  if (viewersVisible) setViewersVisible(false);
+  if (hostPanelVisible) setHostPanelVisible(false);
+  if (sheetOpen && Platform.OS === "ios") {
+    setTimeout(() => setProfileVisible(true), 350);
+  } else {
+    setProfileVisible(true);
+  }
+};
+chatUserPressRef.current = openUserPopup;
+
+// ===== FIXED LAYOUT NUMBERS (har phone par same formula) =====
+// top: status bar / notch ki asli unchai + 8
+const topInset = insets.top > 0 ? insets.top : (Platform.OS === 'android' ? (StatusBar.currentHeight || 24) : 0);
+// bottom: gesture/nav bar ki asli unchai (kam se kam 10) - keyboard khula ho to sirf 6
+const bottomGap = keyboardOpen ? 6 : Math.max(insets.bottom, 10) + 6;
+const bottomBarTotal = BOTTOM_BAR_H + bottomGap;
+
 return (
-  <View style={styles.mainContainer}>
+  <View
+    style={styles.mainContainer}
+    onTouchStartCapture={() => {
+      // sirf timestamp (no re-render); sote hue voice ko jagao
+      lastTouchRef.current = Date.now();
+      if (voiceSleepRef.current) wakeVoiceRef.current && wakeVoiceRef.current();
+    }}
+  >
 
     {/* host ka swipe-back band: live sirf "End live" se band hoga */}
     <Stack.Screen options={{ gestureEnabled: false }} />
 
     <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
-    <LinearGradient pointerEvents="none" colors={T.bgGradient} style={StyleSheet.absoluteFill} />
+    <LinearGradient pointerEvents="none" colors={['#0b3b42', '#14465f', '#4a3a86', '#9b57a6']} locations={[0, 0.35, 0.7, 1]} style={StyleSheet.absoluteFill} />
 
     {/* ================= TOP HEADER ================= */}
-    <SafeAreaView style={styles.topHeader}>
-      <View style={styles.hostBadge}>
+    <View style={[styles.topHeader, { paddingTop: topInset + 8 }]}>
+      {/* left: host pill */}
+      <View style={styles.hostPillWrap}>
+        <View style={styles.hostAvatarContainer}>
+          <ExpoImage cachePolicy="memory-disk" transition={0}
+            source={{ uri: roomData?.seatsData?.seat_1?.userImg || STABLE_AVATAR }}
+            style={styles.topHostImg}
+          />
+          {(roomData?.seatsData?.seat_1?.level >= 10 || !!roomData?.seatsData?.seat_1?.userId) && (
+            <LevelFrame
+              level={roomData?.seatsData?.seat_1?.level}
+              uid={roomData?.seatsData?.seat_1?.userId}
+              style={FRAME_HOST38}
+            />
+          )}
+        </View>
 
-
-
-        <View
-style={styles.hostAvatarContainer}
->
-
-<Image
-source={{
-uri:
-roomData?.seatsData?.seat_1?.userImg
-}}
-style={styles.topHostImg}
-/>
-
-{
-(roomData?.seatsData?.seat_1?.level>=10 || !!roomData?.seatsData?.seat_1?.userId) && (
-
-<LevelFrame level={roomData?.seatsData?.seat_1?.level} uid={roomData?.seatsData?.seat_1?.userId} style={styles.hostLevelFrame} />
-
-)
-}
-
-</View>
-
-        <View>
-
-
-
-
-<View
-  style={{
-    flexDirection:"row",
-    alignItems:"center",
-    marginLeft:10,
-  }}
->
-
-  <Text style={styles.roomNameText}>
-    {roomData?.seatsData?.seat_1?.userName || "Live Room"}
-  </Text>
-
-  {isVerified(roomData?.seatsData?.seat_1?.verified) && (
-  <View style={styles.verifiedBadge}>
-    <MaterialCommunityIcons
-    name="check-decagram"
-    size={17}
-    color={
-roomData?.seatsData?.seat_1?.verifiedColor
-=== "yellow"
-? "#FFD700"
-: "#ffffff"
-}
-  />
-  </View>
-)}
-
-  <View
-    style={[
-      styles.levelBadge,
-      {
-        backgroundColor:getLevelTheme(
-          roomData?.seatsData?.seat_1?.level || 1
-        ).bg,
-
-        borderColor:getLevelTheme(
-          roomData?.seatsData?.seat_1?.level || 1
-        ).border,
-      }
-    ]}
-  >
-
-    <MaterialCommunityIcons
-      name="diamond-stone"
-      size={10}
-      color={
-        getLevelTheme(
-          roomData?.seatsData?.seat_1?.level || 1
-        ).icon
-      }
-    />
-
-    <Text
-      style={{
-        color:getLevelTheme(
-          roomData?.seatsData?.seat_1?.level || 1
-        ).text,
-        fontSize:9,
-        fontWeight:"bold",
-        marginLeft:2,
-      }}
-    >
-      LV {roomData?.seatsData?.seat_1?.level || 1}
-    </Text>
-
-  </View>
-
-</View>
-
-          
-
-          <View style={styles.viewRow}>
-            <MaterialCommunityIcons name="waveform" size={14} color="#f1c40f" />
-            <Text style={styles.onlineText}>
-  {totalViewers} views
-</Text>
-
-            <View style={styles.liveTag}>
-<LiveTimer startTime={roomStartTime} />
-</View>
-
-
-
-
+        <View style={{ marginLeft: 8, maxWidth: width * 0.26 }}>
+          <Text allowFontScaling={false} numberOfLines={1} style={styles.roomNameText}>
+            {roomData?.seatsData?.seat_1?.userName || "Live Room"}
+          </Text>
+          <View style={styles.coinRow}>
+            <Ionicons name="star" size={12} color="#f5c518" />
+            <Text allowFontScaling={false} style={styles.coinTxt}>
+              {fmtCount((roomData?.seatsData?.seat_1?.userId && roomData?.seatStars?.[roomData.seatsData.seat_1.userId]) || 0)}
+            </Text>
           </View>
         </View>
+
+        {!isHost && (
+          <TouchableOpacity
+            style={styles.plusBtn}
+            activeOpacity={0.8}
+            onPress={() => {
+              setSelectedSpeaker(roomData?.seatsData?.seat_1 || {});
+              setProfileVisible(true);
+            }}
+          >
+            <Ionicons name="add" size={18} color="#000" />
+          </TouchableOpacity>
+        )}
       </View>
 
+      {/* right: viewers + count + close */}
+      <View style={styles.headerRight}>
+        <TouchableOpacity activeOpacity={0.8} onPress={() => setViewersVisible(true)} style={styles.viewerContainer}>
+          {topUsers.map((user, index) => (
+            <View key={user.uid} style={{ marginLeft: index === 0 ? 0 : 8 }}>
+              <ExpoImage cachePolicy="memory-disk" transition={0}
+                source={{ uri: user.img || STABLE_AVATAR }}
+                style={styles.viewerAvatar}
+              />
+              {(user.level >= 10 || !!user.uid) && (
+                <LevelFrame level={user.level} uid={user.uid} animated={false} pointerEvents="none"
+                  style={{ position: 'absolute', width: 40, height: 40, top: -5, left: -5 }} />
+              )}
+            </View>
+          ))}
+          <View style={styles.viewerCount}>
+            <Text allowFontScaling={false} style={styles.viewerCountText}>{totalViewers}</Text>
+          </View>
+        </TouchableOpacity>
 
-<TouchableOpacity activeOpacity={0.8} onPress={() => setViewersVisible(true)} style={styles.viewerContainer}>
-
-{topUsers.map((user,index)=>(
-
-<View
-    key={user.uid}
-    style={{
-        marginLeft:index===0 ? 0 : -10
-    }}
->
-
-<Image
-    source={{
-        uri:user.img || STABLE_AVATAR
-    }}
-    style={styles.viewerAvatar}
-/>
-
-{
-((user.level || 0) >= 10 || !!user.uid) && (
-
-<LevelFrame level={user.level} uid={user.uid}
-    style={{
-        position:"absolute",
-        width:50,
-        height:50,
-        top:-8,
-        left:-8,
-        zIndex:10
-    }}
-/>
-
-)
-}
-
-</View>
-
-))}
-
-<View style={styles.viewerCount}>
-
-<Text style={styles.viewerCountText}>
-{totalViewers}
-</Text>
-
-</View>
-
-</TouchableOpacity>
-
-
-
-    </SafeAreaView>
+        <TouchableOpacity
+          style={styles.closeBtn}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          onPress={() => setControlModalVisible(true)}
+        >
+          <Ionicons name="close" size={24} color="#fff" />
+        </TouchableOpacity>
+      </View>
+    </View>
 
     {/* ================= QUICK TOOLBAR ================= */}
     <View style={styles.toolbar}>
+      <View style={styles.monthlyChip}>
+        <Ionicons name="stats-chart" size={11} color="#f1c40f" style={{ flexShrink: 0 }} />
+        <Text allowFontScaling={false} style={styles.monthlyTxt} numberOfLines={1}>Monthly Host</Text>
+      </View>
       {isHost && (
         <TouchableOpacity
           style={[styles.chip, chatLocked && { backgroundColor: 'rgba(241,196,15,0.25)' }]}
           onPress={() => setHostPanelVisible(true)}
         >
-          <Ionicons name={chatLocked ? "lock-closed" : "construct"} size={13} color={chatLocked ? "#f1c40f" : "#fff"} />
-          <Text style={styles.chipTxt}>Host</Text>
+          <Ionicons name={chatLocked ? "lock-closed" : "construct"} size={12} color={chatLocked ? "#f1c40f" : "#fff"} />
+          <Text allowFontScaling={false} style={styles.chipTxt} numberOfLines={1}>Host</Text>
         </TouchableOpacity>
       )}
       <View style={styles.chip}>
-        <Ionicons name="heart" size={13} color={T.pink} />
-        <Text style={styles.chipTxt}>{fmtCount(heartTotal)}</Text>
+        <Ionicons name="heart" size={12} color={T.pink} />
+        <Text allowFontScaling={false} style={styles.chipTxt} numberOfLines={1}>{fmtCount(heartTotal)}</Text>
       </View>
       <TouchableOpacity style={styles.chip} onPress={() => setGiftersVisible(true)}>
-        <MaterialCommunityIcons name="trophy" size={13} color={T.gold} />
-        <Text style={styles.chipTxt}>Top</Text>
+        <MaterialCommunityIcons name="trophy" size={12} color={T.gold} />
+        <Text allowFontScaling={false} style={styles.chipTxt} numberOfLines={1}>Top</Text>
       </TouchableOpacity>
       <TouchableOpacity style={styles.chip} onPress={() => setFriendShareVisible(true)}>
-        <Ionicons name="share-social" size={13} color="#fff" />
-        <Text style={styles.chipTxt}>Share</Text>
+        <Ionicons name="share-social" size={12} color="#fff" />
+        <Text allowFontScaling={false} style={styles.chipTxt} numberOfLines={1}>Share</Text>
       </TouchableOpacity>
-      <TouchableOpacity style={[styles.chip, { paddingHorizontal: 9 }]} onPress={() => setMenuVisible(true)}>
+      <TouchableOpacity style={[styles.chip, { paddingHorizontal: 8, flexShrink: 0 }]} onPress={() => setMenuVisible(true)}>
         <Ionicons name="ellipsis-horizontal" size={16} color="#fff" />
       </TouchableOpacity>
     </View>
 
     {/* ================= MAIN CONTENT ================= */}
- <View style={{flex:1}}>
+ <View style={{
+      flex: 1,
+      overflow: 'hidden',
+      minHeight: 0,
+    }}>
 
       {/* SEATS */}
       <View style={styles.micGrid}>
@@ -5242,7 +5622,7 @@ roomData?.seatsData?.seat_1?.verifiedColor
       {!!roomData?.description && (
         <View style={styles.pinned}>
           <Ionicons name="megaphone" size={13} color={T.gold} />
-          <Text numberOfLines={4} ellipsizeMode="tail" style={styles.pinnedTxt}>{roomData.description}</Text>
+          <Text numberOfLines={2} ellipsizeMode="tail" style={styles.pinnedTxt}>{roomData.description}</Text>
         </View>
       )}
 
@@ -5254,14 +5634,16 @@ roomData?.seatsData?.seat_1?.verifiedColor
     style={styles.chatArea}
     keyboardShouldPersistTaps="handled"
     contentContainerStyle={{
-        paddingTop:120
+        paddingTop: 6,
+        paddingBottom: 4,
     }}
     showsVerticalScrollIndicator={false}
-    initialNumToRender={10}
-    maxToRenderPerBatch={6}
-    windowSize={5}
+    initialNumToRender={12}
+    maxToRenderPerBatch={8}
+    windowSize={7}
     removeClippedSubviews={false}
-    updateCellsBatchingPeriod={40}
+    updateCellsBatchingPeriod={50}
+    overScrollMode="never"
     keyExtractor={chatKeyExtractor}
    
 
@@ -5294,25 +5676,26 @@ roomData?.seatsData?.seat_1?.verifiedColor
     <FloatingHearts ref={heartsRef} />
 
     {emojiOpen && (
-      <View
+      <ReAnimated.View
         style={[
           styles.emojiBar,
-          { bottom: keyboardHeight + 76 + (Platform.OS === "android" ? insets.bottom + 8 : insets.bottom) },
+          { bottom: bottomBarTotal + 8 },
+          emojiKbStyle,
         ]}
       >
         <EmojiStrip onPick={stableEmojiPick} />
-      </View>
+      </ReAnimated.View>
     )}
 
     {/* ================= BOTTOM BAR ================= */}
 {/* ===== SONG BUTTON (gift button ke upar) - sirf host/speaker ===== */}
-{currentUserRole !== 'listener' && (
+{currentUserRole !== 'listener' && !keyboardOpen && (
   <MusicFab
     playing={music.playing}
     onPress={() => setMusicSheetVisible(true)}
     style={{
       right: 12,
-      bottom: keyboardHeight + (Platform.OS === "android" ? insets.bottom + 8 : insets.bottom) + 84,
+      bottom: keyboardHeight + bottomBarTotal + 24,
     }}
   />
 )}
@@ -5325,35 +5708,28 @@ roomData?.seatsData?.seat_1?.verifiedColor
   onToggleMic={muteSelf}
 />
 
- <KeyboardAvoidingView
-  behavior={Platform.OS === "ios" ? "padding" : undefined}
-  keyboardVerticalOffset={Platform.OS === "ios" ? 80 : 0}
+ <ReAnimated.View
   style={[
     styles.bottomNav,
-    {
-      bottom: keyboardHeight,
-      paddingBottom:
-        Platform.OS === "android"
-          ? insets.bottom + 8
-          : insets.bottom
-    }
+    bottomNavKbStyle,
   ]}
 >
 
-      <View style={styles.inputBox}>
-        <ChatTextInput onSend={stableSendChat} locked={chatLocked && !isHost} />
+      <View style={[styles.inputBox, keyboardOpen && { marginRight: 0 }]}>
+        <ChatTextInput onSend={stableSendChat} locked={chatLocked && !isHost} onFocus={onChatFocus} onBlur={onChatBlur} />
         <TouchableOpacity onPress={() => setEmojiOpen(v => !v)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Ionicons name={emojiOpen ? "happy" : "happy-outline"} size={22} color={T.sub} />
         </TouchableOpacity>
       </View>
 
 
-{currentUserRole !== 'listener' && (
+{currentUserRole !== 'listener' && !keyboardOpen && (
   <TouchableOpacity style={styles.actionCircle} onPress={muteSelf} activeOpacity={0.7}>
     <Ionicons name={iAmMuted ? "mic-off" : "mic"} size={22} color={iAmMuted ? T.live : "#fff"} />
   </TouchableOpacity>
 )}
 
+{!keyboardOpen && (
 <TouchableOpacity
   style={[styles.actionCircle, { backgroundColor: 'rgba(255,77,141,0.18)' }]}
   onPress={sendHeart}
@@ -5361,15 +5737,16 @@ roomData?.seatsData?.seat_1?.verifiedColor
 >
   <Ionicons name="heart" size={24} color={T.pink} />
 </TouchableOpacity>
+)}
 
 
-      {currentUserRole === 'listener' && (
-        <TouchableOpacity style={styles.raiseHandBtn} onPress={handleRaiseHand}>
-          <Text style={styles.raiseHandText}>✋</Text>
+      {currentUserRole === 'listener' && !keyboardOpen && (
+        <TouchableOpacity style={[styles.raiseHandBtn, myReqSent && { opacity: 0.55 }]} onPress={handleRaiseHand}>
+          <Text style={styles.raiseHandText}>{myReqSent ? '⏳' : '✋'}</Text>
         </TouchableOpacity>
       )}
 
-      {currentUserRole === 'host' && (
+      {currentUserRole === 'host' && !keyboardOpen && (
 
 
        <TouchableOpacity
@@ -5401,6 +5778,7 @@ roomData?.seatsData?.seat_1?.verifiedColor
       )}
 
      
+{!keyboardOpen && (
      <TouchableOpacity
   style={styles.giftCircle}
   onPress={() => {
@@ -5422,11 +5800,12 @@ roomData?.seatsData?.seat_1?.verifiedColor
 />
 
 </TouchableOpacity>
+)}
 
-    </KeyboardAvoidingView>
+    </ReAnimated.View>
 
     {/* ================= EXIT MODAL ================= */}
-    <Modal
+    <SafeModal
       transparent
       visible={controlModalVisible}
       animationType="fade"
@@ -5465,10 +5844,10 @@ roomData?.seatsData?.seat_1?.verifiedColor
           </View>
         </TouchableOpacity>
       </TouchableOpacity>
-    </Modal>
+    </SafeModal>
 
     {/* ================= SPEAKER REQUEST MODAL ================= */}
-    <Modal
+    <SafeModal
 visible={requestModalVisible}
 transparent
 animationType="slide"
@@ -5480,7 +5859,7 @@ onRequestClose={() => setRequestModalVisible(false)}
 
       <View style={styles.bottomSheetOverlay}>
         <TouchableOpacity style={{flex:1}} activeOpacity={1} onPress={() => setRequestModalVisible(false)} />
-        <View style={styles.requestSheet}>
+        <View style={[styles.requestSheet, { paddingBottom: navGap + 10 }]}>
 
           <Text style={{color:'#fff', fontSize:20, fontWeight:'bold', marginBottom:20}}>
             🔊 Speaker Requests
@@ -5488,8 +5867,8 @@ onRequestClose={() => setRequestModalVisible(false)}
 
           <ScrollView>
 
-            {requestsArray.map((user,index)=>(
-              <View key={index} style={{
+            {requestsArray.map((user)=>(
+              <View key={user.uid} style={{
                 backgroundColor:'#2B2D42',
                 padding:12,
                 borderRadius:12,
@@ -5525,7 +5904,12 @@ user?.seatKey
                     style={{marginRight:16}}
                     onPress={() => {
                       if (db && roomId && user?.uid) {
-                        updateDoc(doc(db,"rooms",roomId),{ [`speakerRequests.${user.uid}`]: deleteField() }).catch(()=>{});
+                        setHiddenReqUids((h) => ({ ...h, [user.uid]: true }));   // turant hatao
+                        showToast("Request reject ki ❌");
+                        updateDoc(doc(db,"rooms",roomId),{ [`speakerRequests.${user.uid}`]: deleteField() })
+                          .catch(()=>{
+                            setHiddenReqUids((h) => { const n = { ...h }; delete n[user.uid]; return n; });
+                          });
                       }
                     }}
                   >
@@ -5575,15 +5959,18 @@ user?.seatKey
           </TouchableOpacity>
 
         </View>
+        {toastEl}
       </View>
-    </Modal>
+    </SafeModal>
 
 
 
+
+{!requestModalVisible && !friendShareVisible && toastEl}
 
 <GiftSheet
   ref={giftSheetRef}
-  stars={Math.max(0, stars - pendingSpend)}
+  stars={stars}
   giftUsers={giftUsers}
   selectedGiftUser={selectedGiftUser}
   onSelectUser={setSelectedGiftUser}
@@ -5593,7 +5980,7 @@ user?.seatKey
 
 
 
-<Modal
+<SafeModal
 visible={speakerModalVisible}
 transparent
 animationType="slide"
@@ -5616,7 +6003,7 @@ height:height*0.55,
 borderTopLeftRadius:30,
 borderTopRightRadius:30,
 alignItems:'center',
-paddingBottom: insets.bottom + 20,
+paddingBottom: navGap + 10,
 }}>
 
 <View style={{
@@ -5684,21 +6071,7 @@ router.push({
 }}
 >
 
-<View>
-
-<Image
-source={{
-uri:selectedSpeaker?.userImg
-}}
-style={{
-width:100,
-height:100,
-borderRadius:50
-}}
-/>
-<ProfileFrame uid={selectedSpeaker?.userId} level={profileLevel} avatarSize={100} frameSize={120} />
-
-</View>
+<ProfileAvatar uri={selectedSpeaker?.userImg} uid={selectedSpeaker?.userId} level={profileLevel} size={100} />
 
 </TouchableOpacity>
 
@@ -5892,11 +6265,11 @@ selectedSpeaker?.verifiedColor
 
 </View>
 
-</Modal>
+</SafeModal>
 
 
 
-<Modal
+<SafeModal
 visible={profileVisible}
 transparent
 animationType="slide"
@@ -5923,7 +6296,7 @@ borderTopLeftRadius:30,
 borderTopRightRadius:30,
 alignItems:"center",
 paddingTop:5,
-paddingBottom: insets.bottom + 15,
+paddingBottom: navGap + 10,
 }}
 >
 
@@ -5947,23 +6320,7 @@ roomId:roomId
 }}
 >
 
-<View>
-
-<Image
-source={{
-uri:selectedSpeaker?.userImg
-}}
-style={{
-width:100,
-height:100,
-borderRadius:50
-}}
-/>
-
-
-<ProfileFrame uid={selectedSpeaker?.userId} level={profileLevel} avatarSize={100} frameSize={120} />
-
-</View>
+<ProfileAvatar uri={selectedSpeaker?.userImg} uid={selectedSpeaker?.userId} level={profileLevel} size={100} style={{ marginTop: 10 }} />
 
 </TouchableOpacity>
 
@@ -6171,7 +6528,7 @@ borderRadius:50
 
 </View>
 
-</Modal>
+</SafeModal>
 
 
 
@@ -6182,7 +6539,7 @@ borderRadius:50
 
 
 
-<Modal
+<SafeModal
 visible={selfSeatModalVisible}
 transparent
 animationType="slide"
@@ -6206,7 +6563,8 @@ style={{
 backgroundColor:"#111",
 borderTopLeftRadius:25,
 borderTopRightRadius:25,
-padding:25
+padding:25,
+paddingBottom: navGap + 15
 }}
 >
 
@@ -6219,23 +6577,7 @@ marginBottom:25
 }}
 >
 
-<View>
-
-<Image
-source={{
-uri:selectedSpeaker?.userImg || STABLE_AVATAR
-}}
-style={{
-width:90,
-height:90,
-borderRadius:45,
-marginBottom:12
-}}
-/>
-
-<ProfileFrame uid={selectedSpeaker?.userId} level={profileLevel} avatarSize={90} frameSize={120} />
-
-</View>
+<ProfileAvatar uri={selectedSpeaker?.userImg || STABLE_AVATAR} uid={selectedSpeaker?.userId} level={profileLevel} size={90} style={{ marginBottom: 12 }} />
 
 <Text
 style={{
@@ -6339,7 +6681,7 @@ borderColor:"#333"
 
 </View>
 
-</Modal>
+</SafeModal>
 
 
 
@@ -6349,7 +6691,7 @@ borderColor:"#333"
 
 
 
-<Modal
+<SafeModal
 visible={friendShareVisible}
 transparent
 animationType="slide"
@@ -6371,7 +6713,7 @@ backgroundColor:"rgba(0,0,0,0.5)"
 <TouchableOpacity style={{flex:1}} activeOpacity={1} onPress={() => setFriendShareVisible(false)} />
 
 <View
-style={styles.friendSheet}
+style={[styles.friendSheet, { paddingBottom: navGap + 10 }]}
 >
 
 <Text
@@ -6384,7 +6726,7 @@ Friend Share
 
 <FlatList
 data={friends}
-extraData={selectedFriends}
+extraData={{ selectedFriends, sentFriendIds }}
 keyExtractor={(f)=>f.id}
 initialNumToRender={8}
 maxToRenderPerBatch={8}
@@ -6396,18 +6738,20 @@ renderItem={({item})=>(
 
 style={styles.friendRow}
 
-onPress={()=>
+onPress={()=>{
 
-toggleFriend(item.id)
+if (sentFriendIds[item.id]) return;
 
-}
+toggleFriend(item.id);
+
+}}
 
 >
 
 
 <View>
 
-<Image
+<ExpoImage cachePolicy="memory-disk" transition={0}
 source={{
 uri:
 item.profileImg||
@@ -6501,6 +6845,14 @@ left:-17
 </View>
 
 
+{sentFriendIds[item.id] ? (
+
+<View style={styles.sentBadge}>
+<Text style={styles.sentBadgeText}>✓ Sent</Text>
+</View>
+
+) : (
+
 <View
 
 style={[
@@ -6517,6 +6869,8 @@ styles.radioSelected
 
 />
 
+)}
+
 </TouchableOpacity>
 
 )}
@@ -6524,7 +6878,7 @@ styles.radioSelected
 
 <TouchableOpacity
 
-style={styles.shareBtn}
+style={[styles.shareBtn, shareDone && { backgroundColor:"#128C4A" }]}
 
 onPress={handleShare}
 
@@ -6532,7 +6886,7 @@ onPress={handleShare}
 
 <Text style={styles.shareText}>
 
-Share on WhatsApp & More
+{shareDone ? "✓ Shared" : "Share on WhatsApp & More"}
 
 </Text>
 
@@ -6548,7 +6902,7 @@ onPress={sendInvite}
 
 <Text style={styles.sendText}>
 
-Send Invite
+{selectedFriends.length ? `Send Invite (${selectedFriends.length})` : "Send Invite"}
 
 </Text>
 
@@ -6556,9 +6910,11 @@ Send Invite
 
 </View>
 
+{toastEl}
+
 </View>
 
-</Modal>
+</SafeModal>
 
 
 
@@ -6566,6 +6922,7 @@ Send Invite
     {isHost && (
       <HostPanelSheet
         visible={hostPanelVisible}
+        onUserPress={openUserPopup}
         onClose={() => setHostPanelVisible(false)}
         users={hostPanelUsers}
         invites={activeInvites}
@@ -6580,7 +6937,7 @@ Send Invite
     )}
 
     {/* Host ne seat par bulaya -> listener ko popup */}
-    <Modal
+    <SafeModal
       visible={myInviteValid}
       transparent
       animationType="fade"
@@ -6608,12 +6965,13 @@ Send Invite
           </View>
         </View>
       </View>
-    </Modal>
+    </SafeModal>
 
     <ViewersSheet
       visible={viewersVisible}
       onClose={() => setViewersVisible(false)}
       users={audienceArray}
+      onUserPress={openUserPopup}
       isHost={currentUserRole === 'host'}
       onKick={kickUser}
     />
@@ -6638,21 +6996,27 @@ Send Invite
 }
 
 const styles = StyleSheet.create({
-  mainContainer: { flex: 1, backgroundColor: '#0B0A1A' },
+  mainContainer: { flex: 1, backgroundColor: '#14465f' },
 
-  toolbar: { flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 14, marginTop: 6 },
+  toolbar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', paddingHorizontal: 8, marginTop: 6 },
+  monthlyChip: {
+    flexDirection: 'row', alignItems: 'center', marginLeft: 4,
+    paddingHorizontal: 7, height: 26, borderRadius: 13, flexShrink: 1,
+    backgroundColor: 'rgba(241,196,15,0.14)', borderWidth: 0.5, borderColor: 'rgba(241,196,15,0.35)',
+  },
+  monthlyTxt: { color: '#fff', fontSize: 10, fontWeight: '700', marginLeft: 3, flexShrink: 1 },
   chip: {
-    flexDirection: 'row', alignItems: 'center', marginLeft: 8,
-    paddingHorizontal: 11, height: 30, borderRadius: 15,
+    flexDirection: 'row', alignItems: 'center', marginLeft: 4,
+    paddingHorizontal: 8, height: 26, borderRadius: 13, flexShrink: 1,
     backgroundColor: 'rgba(255,255,255,0.09)', borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.12)',
   },
-  chipTxt: { color: '#fff', fontSize: 12, fontWeight: '700', marginLeft: 5 },
+  chipTxt: { color: '#fff', fontSize: 11, fontWeight: '700', marginLeft: 3, flexShrink: 1 },
   pinned: {
     flexDirection: 'row', alignItems: 'flex-start', alignSelf: 'flex-start',
     marginHorizontal: 14, marginTop: 2, paddingHorizontal: 12, paddingVertical: 8,
-    borderRadius: 14, backgroundColor: 'rgba(245,196,81,0.10)', maxWidth: '94%',
+    borderRadius: 12, backgroundColor: 'rgba(0,0,0,0.28)', maxWidth: '94%',
   },
-  pinnedTxt: { color: '#F5C451', fontSize: 13, lineHeight: 18, marginLeft: 7, flexShrink: 1 },
+  pinnedTxt: { color: '#fff', fontSize: 13, lineHeight: 18, marginLeft: 7, flexShrink: 1 },
   emojiBar: {
     position: 'absolute', left: 12, right: 12, borderRadius: 22, zIndex: 50,
     backgroundColor: 'rgba(20,16,48,0.96)', borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.12)',
@@ -6660,19 +7024,26 @@ const styles = StyleSheet.create({
   loader: { flex: 1, backgroundColor: '#0A0B14', justifyContent: 'center', alignItems: 'center' },
 
   topHeader:{
-  flexDirection:"row",
-  justifyContent:"space-between",
-  alignItems:"center",
-
-  paddingHorizontal:15,
-  paddingTop:15,
-
-  marginTop:35
-},
-
+    flexDirection:"row",
+    justifyContent:"space-between",
+    alignItems:"center",
+    paddingHorizontal:12,
+    paddingTop:10,
+  },
+  hostPillWrap: {
+    flexDirection:'row', alignItems:'center',
+    backgroundColor:'rgba(0,0,0,0.28)', borderRadius:26, flexShrink:1,
+    paddingLeft:4, paddingRight:6, paddingVertical:4,
+  },
+  topHostImg: { width: 38, height: 38, borderRadius: 19 },
+  roomNameText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  coinRow: { flexDirection:'row', alignItems:'center', marginTop:1 },
+  coinDot: { width:11, height:11, borderRadius:6, backgroundColor:'#f5c518', borderWidth:1, borderColor:'#c99a00' },
+  coinTxt: { color:'#fff', fontSize:11, marginLeft:4, fontWeight:'600' },
+  plusBtn: { width:30, height:30, borderRadius:15, backgroundColor:'#fff200', justifyContent:'center', alignItems:'center', marginLeft:8 },
+  headerRight: { flexDirection:'row', alignItems:'center', flexShrink:0, marginLeft:6 },
+  closeBtn: { marginLeft:10 },
   hostBadge: { flexDirection: 'row', alignItems: 'center' },
-  topHostImg: { width: 44, height: 44, borderRadius: 22, borderWidth: 2, borderColor: '#f1c40f' },
-  roomNameText: { color: '#fff', fontSize: 15, fontWeight: 'bold', marginLeft: 10 },
   viewRow: { flexDirection: 'row', alignItems: 'center', marginLeft: 10, marginTop: 2 },
   onlineText: { color: '#bdc3c7', fontSize: 11, marginLeft: 4 },
   liveTag: { backgroundColor: '#FF3B5C', paddingHorizontal: 7, paddingVertical: 1, borderRadius: 8, marginLeft: 8 },
@@ -6682,7 +7053,35 @@ const styles = StyleSheet.create({
   moreCount: { width: 30, height: 30, borderRadius: 15, backgroundColor: '#1C1E2E', justifyContent: 'center', alignItems: 'center', marginLeft: -12, borderWidth: 1.5, borderColor: '#0A0B14' },
   moreText: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
 
-  micGrid: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 0, paddingTop: 6, marginTop: 4 },
+  micGrid: { flexDirection: 'row', flexWrap: 'wrap', width: SEAT_CELL_W * 3, alignSelf: 'center', paddingTop: 14, marginTop: 4 },
+  seatCell: { width: SEAT_CELL_W, alignItems: 'center', marginBottom: 8 },
+  seatSquare: {
+    width: SEAT_SIZE, height: SEAT_SIZE, borderRadius: SEAT_RADIUS, justifyContent: 'center', alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.16)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)',
+  },
+  seatSquareSpeaking: { borderColor: '#fff200', borderWidth: 2 },
+  seatSquareOccupied: { borderWidth: 0, backgroundColor: 'transparent' },
+  // profile photo = seat ka exact size aur exact shape
+  seatAvatarImg: { width: SEAT_SIZE, height: SEAT_SIZE, borderRadius: SEAT_RADIUS, backgroundColor: '#2a2b38' },
+  speakGlowSolid: {
+    position: 'absolute', top: GLOW_OFFSET, left: GLOW_OFFSET, width: GLOW_SIZE, height: GLOW_SIZE,
+    borderRadius: GLOW_RADIUS, borderWidth: 3, borderColor: GLOW_COLOR, zIndex: 15, elevation: 15,
+    shadowColor: GLOW_COLOR, shadowOpacity: 1, shadowRadius: 10, shadowOffset: { width: 0, height: 0 },
+  },
+  speakGlowPulse: {
+    position: 'absolute', top: GLOW_OFFSET, left: GLOW_OFFSET, width: GLOW_SIZE, height: GLOW_SIZE,
+    borderRadius: GLOW_RADIUS, backgroundColor: 'rgba(46,230,166,0.35)', zIndex: 14, elevation: 14,
+  },
+  seatSpeakRing: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: SEAT_RADIUS, borderWidth: 2, borderColor: '#fff200' },
+  // zIndex/elevation frame (zIndex 10) se zyada -> mute logo frame ke UPAR dikhega
+  seatMuteBadge: { position: 'absolute', right: 2, bottom: 2, width: 18, height: 18, borderRadius: 9, backgroundColor: '#e74c3c', justifyContent: 'center', alignItems: 'center', zIndex: 20, elevation: 20 },
+  seatEmoji: { position: 'absolute', top: -6, right: -6, fontSize: 22 },
+  seatHostPill: { position: 'absolute', bottom: SEAT_FRAME_OFFSET - 4, zIndex: 30, elevation: 30, backgroundColor: '#2f7bf5', borderRadius: 9, paddingHorizontal: 8, paddingVertical: 1 },
+  seatHostPillTxt: { color: '#fff', fontSize: 9, fontWeight: '800' },
+  seatLabel: { color: '#fff', fontSize: 10, fontWeight: '600', marginTop: -SEAT_FRAME_OFFSET + 3, maxWidth: SEAT_CELL_W - 16 },
+  seatCoinRow: { flexDirection: 'row', alignItems: 'center', marginTop: 3 },
+  seatCoinDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#f5c518' },
+  seatCoinTxt: { color: '#fff', fontSize: 9, marginLeft: 4 },
 
   seatItem: { width:width*0.20, alignItems: 'center', marginBottom: 15 },
   avatarBox: { width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', backgroundColor: '#151728' },
@@ -6698,35 +7097,28 @@ const styles = StyleSheet.create({
   sysMessage: { backgroundColor: 'rgba(241, 196, 15, 0.08)', borderLeftWidth: 3, borderLeftColor: '#f1c40f', margin: 15, padding: 12, borderRadius: 10, flexDirection: 'row', alignItems: 'center' },
   sysText: { color: '#f1c40f', fontSize: 11, flex: 1, marginHorizontal: 10 },
 
-chatArea:{
-
-    position:"absolute",
-
-    left:0,
-
-    right:0,
-
-    bottom:100,
-
-    maxHeight:height*0.45,
-
-    paddingHorizontal:10
-
-},  
+chatArea: {
+    // seats + pinned notice ke neeche, bottom bar ke upar - bachi hui poori jagah (har mobile par same)
+    flex: 1,
+    minHeight: 0,
+    marginTop: 6,
+    paddingHorizontal: 10,
+  },  
 
   chatRow: { flexDirection: 'row', marginBottom: 15, alignItems: 'flex-start' },
   chatAva: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#2a2b38' },
   chatContent: { flex: 1, marginLeft: 10 },
   chatHeaderInline: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
   chatUser: { color: '#fff', fontWeight: 'bold', fontSize: 13 },
-  bubble: { backgroundColor: 'rgba(255,255,255,0.10)', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, borderTopLeftRadius: 4, alignSelf: 'flex-start' },
+  bubble: { backgroundColor: 'rgba(0,0,0,0.28)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, alignSelf: 'flex-start' },
   chatMsg: { color: '#eee', fontSize: 13 },
   bottomNav: {
-  position: 'absolute',
-  bottom: 0, left: 0, right: 0, flexDirection: 'row', padding: 15, backgroundColor: 'rgba(11,10,26,0.94)', alignItems: 'center', borderTopWidth: 0.5, borderColor: 'rgba(255,255,255,0.10)' },
-  inputBox: { flex: 1, height: 44, backgroundColor: 'rgba(255,255,255,0.09)', borderRadius: 22, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, marginRight: 10 },
+  // in-flow (absolute nahi): content ke neeche hamesha fixed jagah, har phone par same
+  flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, paddingTop: 10,
+  minHeight: BOTTOM_BAR_H, backgroundColor: 'transparent' },
+  inputBox: { flex: 1, height: 40, backgroundColor: 'rgba(0,0,0,0.30)', borderRadius: 22, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, marginRight: 10 },
   inputStyle: { color: '#fff', fontSize: 14, flex: 1 },
-  actionCircle: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.09)', justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
+  actionCircle: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.30)', justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center' },
   exitBox: { width: '80%', backgroundColor: '#1C1E2E', padding: 25, borderRadius: 20, alignItems: 'center' },
   exitTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
@@ -6786,20 +7178,35 @@ backgroundColor:'rgba(0,0,0,0.4)'
 },
 
 giftSheet:{
-backgroundColor:'#111827',
+backgroundColor:'#12071f',
+overflow:'hidden',
+borderTopWidth:1,
+borderLeftWidth:StyleSheet.hairlineWidth,
+borderRightWidth:StyleSheet.hairlineWidth,
+borderColor:'rgba(245,196,81,0.35)',
 
 maxHeight:height*0.52,
 
-borderTopLeftRadius:20,
-borderTopRightRadius:20,
+borderTopLeftRadius:22,
+borderTopRightRadius:22,
 
 paddingTop:16,
 paddingHorizontal:12,
 paddingBottom:14
 },
 
+giftGoldLine:{
+position:'absolute',
+top:0,
+left:'25%',
+right:'25%',
+height:2,
+borderRadius:2,
+backgroundColor:'rgba(245,196,81,0.9)'
+},
+
 giftTitle:{
-color:'#fff',
+color:'#FFE9A8',
 fontSize:17,
 fontWeight:'bold',
 marginBottom:0
@@ -6815,8 +7222,10 @@ paddingHorizontal:0
 giftCard:{
 width:'22.5%',
 marginRight:'2%',
-backgroundColor:'#1C1E2E',
-borderRadius:10,
+backgroundColor:'rgba(255,255,255,0.07)',
+borderWidth:StyleSheet.hairlineWidth,
+borderColor:'rgba(245,196,81,0.28)',
+borderRadius:12,
 padding:5,
 marginBottom:10,
 alignItems:'center'
@@ -6833,7 +7242,8 @@ marginTop:0
 },
 
 giftCoin:{
-color:'#999',
+color:'#F5C451',
+fontWeight:'700',
 fontSize:12,
 marginTop:2
 },
@@ -6992,6 +7402,41 @@ fontSize:16,
 fontWeight:"700",
 },
 
+toastBox:{
+position:"absolute",
+alignSelf:"center",
+bottom:120,
+backgroundColor:"rgba(20,22,34,0.96)",
+paddingVertical:10,
+paddingHorizontal:18,
+borderRadius:22,
+borderWidth:1,
+borderColor:"rgba(0,255,136,0.45)",
+zIndex:9999,
+elevation:30,
+},
+
+toastText:{
+color:"#fff",
+fontWeight:"700",
+fontSize:13,
+},
+
+sentBadge:{
+backgroundColor:"rgba(0,255,136,0.15)",
+borderColor:"#00ff88",
+borderWidth:1,
+paddingHorizontal:10,
+paddingVertical:4,
+borderRadius:12,
+},
+
+sentBadgeText:{
+color:"#00ff88",
+fontWeight:"bold",
+fontSize:12,
+},
+
 radio:{
 width:25,
 height:25,
@@ -7040,28 +7485,21 @@ viewerContainer:{
 },
 
 viewerAvatar:{
-    width:34,
-    height:34,
-    borderRadius:17,
-
-    borderWidth:2,
-    borderColor:"#fff",
-
-    backgroundColor:"#333",
+    width:30,
+    height:30,
+    borderRadius:15,
+    backgroundColor:"rgba(255,255,255,0.25)",
 },
 
 viewerCount:{
-    width:36,
-    height:36,
-
-    borderRadius:18,
-
-    backgroundColor:"rgba(255,255,255,0.25)",
-
+    minWidth:36,
+    height:26,
+    paddingHorizontal:8,
+    borderRadius:13,
+    backgroundColor:"rgba(0,0,0,0.35)",
     justifyContent:"center",
     alignItems:"center",
-
-    marginLeft:-10,
+    marginLeft:6,
 },
 
 viewerCountText:{

@@ -1,3 +1,4 @@
+import { notifyNewFollower } from "../../utils/pushNotify";
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useIsFocused } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
@@ -1250,6 +1251,7 @@ const toggleFollow = useCallback(async (target) => {
         followingId: target.id,
         createdAt: Date.now(),
       });
+      notifyNewFollower(target.id);
     }
   } catch (error) {
     // 3) fail hua to wapas purani state
@@ -1737,7 +1739,7 @@ refreshControl={
         style={styles.videoList}
         contentContainerStyle={{ paddingBottom: 140 }} 
         showsVerticalScrollIndicator={false}
-        removeClippedSubviews={true}
+        removeClippedSubviews={false}
         initialNumToRender={12}
         maxToRenderPerBatch={12}
         windowSize={7}
@@ -1755,7 +1757,7 @@ refreshControl={
                 />
                 {profileData.faceVerified && (
                   <View style={styles.faceBadge} pointerEvents="none">
-                    <Image source={TopKingLogo} style={styles.faceBadgeLogo} />
+                    <Ionicons name="person" size={17} color="#fff" />
                   </View>
                 )}
               </View>
@@ -2498,7 +2500,7 @@ Like ({likedVideos.length})
           initialNumToRender={10}
           maxToRenderPerBatch={10}
           windowSize={7}
-          removeClippedSubviews
+          removeClippedSubviews={false}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={{ paddingBottom: 30 }}
           ListEmptyComponent={
@@ -2541,8 +2543,7 @@ const styles = StyleSheet.create({
   avatarContainer: { width: 90, height: 90, borderRadius: 50, borderWidth: 2, borderColor: '#FFD700', justifyContent: 'center', alignItems: 'center', shadowColor: '#FFD700', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.6, shadowRadius: 8, elevation: 5 },
   avatar: { width: 88, height: 88, borderRadius: 45, backgroundColor: '#222' },
   // Face-verified user ka logo: photo ke side (neeche-right) me chipka hua
-  faceBadge: { position: 'absolute', right: -8, bottom: -4, width: 30, height: 30, borderRadius: 15, backgroundColor: '#000', borderWidth: 2, borderColor: '#FFD700', justifyContent: 'center', alignItems: 'center' },
-  faceBadgeLogo: { width: 20, height: 20, resizeMode: 'contain' },
+  faceBadge: { position: 'absolute', right: -8, bottom: -4, width: 30, height: 30, borderRadius: 9, backgroundColor: '#3a3a40', borderWidth: 2, borderColor: '#000', justifyContent: 'center', alignItems: 'center' },
   profileMetaContainer: { flex: 1, marginLeft: 15 },
   identityBlock: { marginTop: 12 },
   usernameRow: { flexDirection: 'row', alignItems: 'center' },

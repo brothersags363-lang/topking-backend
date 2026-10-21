@@ -1,6 +1,6 @@
 import { Stack, useRouter, usePathname, useGlobalSearchParams } from 'expo-router';
 import { useEffect, useRef } from 'react';
-import { AppState, Platform } from 'react-native';
+import { AppState, Platform, View, Text, TouchableOpacity } from 'react-native';
 
 import { getApp } from '@react-native-firebase/app';
 import {
@@ -25,6 +25,16 @@ import { auth, db, getFCMToken } from './firebaseConfig';
 // SPEED: release build me console.log band (JS thread free rahta hai)
 // ---------------------------------------------------------------
 if (!__DEV__) {
+  // Non-fatal JS errors poori app crash na karein (Play Console: ExceptionsManager JavaScriptException).
+  try {
+    const EU = (global as any).ErrorUtils;
+    const prev = EU && EU.getGlobalHandler && EU.getGlobalHandler();
+    if (EU && prev) {
+      EU.setGlobalHandler((err: any, isFatal?: boolean) => {
+        if (isFatal) prev(err, isFatal);
+      });
+    }
+  } catch (e) {}
   console.log = () => {};
   console.info = () => {};
   console.debug = () => {};
@@ -37,12 +47,17 @@ if (!__DEV__) {
 
 // Android: "messages" channel = sound + popup (heads-up) wala notification
 if (Platform.OS === 'android') {
-  Notifications.setNotificationChannelAsync('messages', {
-    name: 'Messages',
-    importance: Notifications.AndroidImportance.MAX,
-    vibrationPattern: [0, 250, 250, 250],
-    lockscreenVisibility: Notifications.AndroidNotificationVisibility.PRIVATE,
-  }).catch(() => {});
+  const makeChannel = (id: string, name: string) =>
+    Notifications.setNotificationChannelAsync(id, {
+      name,
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PRIVATE,
+    }).catch(() => {});
+
+  makeChannel('messages', 'Messages'); // chat
+  makeChannel('live', 'Live');         // followed user live aaya
+  makeChannel('activity', 'Activity'); // likes milestone, new follower
 }
 
 // App khula ho tab (foreground) local banner dikhane ke liye
@@ -70,11 +85,12 @@ export default function RootLayout() {
   const params = useGlobalSearchParams();
 
   // Abhi kaunsi chat khuli hai - usi ka banner nahi dikhana
-  const currentRef = useRef({ pathname: '', userId: '' });
+  const currentRef = useRef({ pathname: '', userId: '', id: '' });
 
   useEffect(() => {
     const u = Array.isArray(params.userId) ? params.userId[0] : params.userId;
-    currentRef.current = { pathname, userId: u || '' };
+    const idp = Array.isArray(params.id) ? params.id[0] : params.id;
+    currentRef.current = { pathname, userId: u || '', id: idp || '' };
   }, [pathname, params.userId]);
 
 
@@ -85,10 +101,21 @@ export default function RootLayout() {
 
   // Notification dabane par Messages screen (messages.tsx) khule
   const openFromData = (data: any) => {
-    if (!data || data.type !== 'chat') return;
+    if (!data || !data.type) return;
 
     setTimeout(() => {
-      router.replace('/messages');
+      try {
+        if (data.type === 'chat') {
+          router.replace('/messages');
+        } else if (data.type === 'live' && data.roomId) {
+          // live room kholo (openLive.js khud check karta hai ki live chal rahi hai ya nahi)
+          router.push({ pathname: '/openLive', params: { id: String(data.roomId) } } as any);
+        } else if (data.type === 'video_like' && data.videoId) {
+          router.push({ pathname: '/openVideo', params: { id: String(data.videoId) } } as any);
+        } else if (data.type === 'follow' && data.senderUid) {
+          router.push({ pathname: '/userProfile', params: { userId: String(data.senderUid) } } as any);
+        }
+      } catch (e) {}
     }, 400);
   };
 
@@ -101,20 +128,25 @@ export default function RootLayout() {
     const unsubForeground = onMessage(messaging, async (remoteMessage: any) => {
 
       const data = remoteMessage?.data || {};
-      if (data.type !== 'chat') return;
+      if (!['chat', 'live', 'video_like', 'follow'].includes(data.type)) return;
 
       const cur = currentRef.current;
-      if (cur.pathname === '/chat' && cur.userId === data.senderUid) return;
+      // jis chat/live me pehle se ho uska banner nahi
+      if (data.type === 'chat' && cur.pathname === '/chat' && cur.userId === data.senderUid) return;
+      if (data.type === 'live' && cur.id && cur.id === data.roomId) return;
 
       try {
         await Notifications.scheduleNotificationAsync({
           content: {
-            title: remoteMessage?.notification?.title || 'New message',
+            title: remoteMessage?.notification?.title || (data.type === 'chat' ? 'New message' : 'TopKing'),
             body: remoteMessage?.notification?.body || '',
             data,
             sound: true,
           },
-          trigger: Platform.OS === 'android' ? ({ channelId: 'messages' } as any) : null,
+          trigger:
+            Platform.OS === 'android'
+              ? ({ channelId: data.type === 'chat' ? 'messages' : data.type === 'live' ? 'live' : 'activity' } as any)
+              : null,
         });
       } catch (e) {}
     });
@@ -198,4 +230,22 @@ export default function RootLayout() {
 
   );
 
+}
+
+
+// Kisi screen ke render me error aaye to poori app band nahi hogi,
+// sirf ye screen dikhegi aur "Try again" se wapas chalegi.
+export function ErrorBoundary({ retry }: { error: Error; retry: () => Promise<void> }) {
+  return (
+    <View style={{ flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700', marginBottom: 8 }}>Something went wrong</Text>
+      <Text style={{ color: '#aaa', fontSize: 14, textAlign: 'center', marginBottom: 20 }}>Please try again.</Text>
+      <TouchableOpacity
+        onPress={() => retry()}
+        style={{ backgroundColor: '#f1c40f', paddingHorizontal: 28, paddingVertical: 12, borderRadius: 24 }}
+      >
+        <Text style={{ color: '#000', fontWeight: '700' }}>Try again</Text>
+      </TouchableOpacity>
+    </View>
+  );
 }

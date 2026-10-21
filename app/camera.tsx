@@ -18,7 +18,10 @@ import {
   Animated,
 } from 'react-native';
 
-import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
 
 import * as ImagePicker from 'expo-image-picker';
 import { Audio } from '../utils/audio';
@@ -67,6 +70,33 @@ import { db } from './firebaseConfig';
 // Chhota number = zoom tez, bada number = zoom dheere.
 const PINCH_RANGE = 450;
 
+// ==================================================
+// TIKI THEME + LABELS
+// --------------------------------------------------
+// Labels English me hain. Hindi chahiye to bas yahan text badal do.
+// ==================================================
+
+const YELLOW = '#FFD60A';
+
+const LABELS = {
+  addMusic: 'Add Music',
+  flip: 'Flip',
+  timer: 'Timer',
+  speed: 'Speed',
+  beauty: 'Beauty',
+  flash: 'Flash',
+  sticker: 'Stickers',
+};
+
+// Zoom presets (expo-camera zoom 0 -> 1 hota hai, device ke hisaab
+// se 1.0X = 0). 0.3X / 0.5X ultra-wide lens maangte hain, jo
+// expo-camera ke zoom prop se possible nahi hai.
+const ZOOM_PRESETS = [
+  { label: '1.0X', value: 0 },
+  { label: '2.0X', value: 0.12 },
+  { label: '3.0X', value: 0.25 },
+];
+
 const getDistance = (touches: any[]) => {
   const dx = touches[0].pageX - touches[1].pageX;
   const dy = touches[0].pageY - touches[1].pageY;
@@ -75,7 +105,7 @@ const getDistance = (touches: any[]) => {
 
 const ZoomableCamera = React.memo(
   React.forwardRef<any, any>(
-    ({ facing, onCameraReady, onMountError }, ref) => {
+    ({ facing, enableTorch, pillsBottom, onCameraReady, onMountError }, ref) => {
 
       const [zoom, setZoom] = useState(0);
       const [showIndicator, setShowIndicator] = useState(false);
@@ -127,6 +157,16 @@ const ZoomableCamera = React.memo(
           setShowIndicator(false);
         }, 900);
       };
+
+
+      const selectPreset = (value: number) => {
+        zoomRef.current = value;
+        setZoom(value);
+      };
+
+      const activePreset = ZOOM_PRESETS.findIndex(
+        (p) => Math.abs(p.value - zoom) < 0.03
+      );
 
 
       const panResponder = useRef(
@@ -190,6 +230,7 @@ const ZoomableCamera = React.memo(
             mode="video"
             facing={facing}
             zoom={zoom}
+            enableTorch={enableTorch}
             onCameraReady={onCameraReady}
             onMountError={onMountError}
           />
@@ -202,7 +243,10 @@ const ZoomableCamera = React.memo(
 
           {/* Zoom indicator */}
           {showIndicator && (
-            <View style={zoomStyles.indicator} pointerEvents="none">
+            <View
+              style={[zoomStyles.indicator, { bottom: pillsBottom + 56 }]}
+              pointerEvents="none"
+            >
               <Ionicons name="search" size={16} color="#fff" />
               <View style={zoomStyles.track}>
                 <View
@@ -217,6 +261,32 @@ const ZoomableCamera = React.memo(
               </Text>
             </View>
           )}
+
+          {/* Zoom presets (1.0X / 2.0X / 3.0X) */}
+          <View
+            style={[zoomStyles.pills, { bottom: pillsBottom }]}
+          >
+            {ZOOM_PRESETS.map((p, i) => (
+              <TouchableOpacity
+                key={p.label}
+                activeOpacity={0.8}
+                onPress={() => selectPreset(p.value)}
+                style={[
+                  zoomStyles.pill,
+                  i === activePreset && zoomStyles.pillActive,
+                ]}
+              >
+                <Text
+                  style={[
+                    zoomStyles.pillText,
+                    i === activePreset && zoomStyles.pillTextActive,
+                  ]}
+                >
+                  {p.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
         </>
       );
     }
@@ -268,6 +338,41 @@ const CountdownOverlay = ({ value }: { value: number }) => {
 
 
 const zoomStyles = StyleSheet.create({
+
+  pills: {
+    position: 'absolute',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    borderRadius: 22,
+    padding: 4,
+    zIndex: 10,
+  },
+
+  pill: {
+    minWidth: 46,
+    height: 34,
+    paddingHorizontal: 8,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  pillActive: {
+    backgroundColor: 'rgba(0,0,0,0.65)',
+  },
+
+  pillText: {
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+
+  pillTextActive: {
+    color: '#fff',
+    fontWeight: 'bold',
+  },
 
   indicator: {
     position: 'absolute',
@@ -1231,6 +1336,32 @@ export default function CameraPage() {
   // UI
   // --------------------------------------------------
 
+  const insets = useSafeAreaInsets();
+
+  const [torchOn, setTorchOn] = useState(false);
+
+  const handleClose = useCallback(() => {
+
+    if (countdownTimeoutRef.current) {
+      cancelCountdown();
+      return;
+    }
+
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/(tabs)');
+    }
+
+  }, [router, cancelCountdown]);
+
+  const busy = isRecording || countdown !== null;
+
+  // Bottom layout (Live/Video/Audio bar ho to controls thode upar)
+  const controlsBottom = insets.bottom + (canGoLive ? 64 : 28);
+  const pillsBottom = controlsBottom + 84 + 18;
+
+
   return (
 
     <SafeAreaView
@@ -1242,6 +1373,8 @@ export default function CameraPage() {
       <ZoomableCamera
         ref={cameraRef}
         facing={facing}
+        enableTorch={torchOn && facing === 'back'}
+        pillsBottom={pillsBottom}
         onCameraReady={handleCameraReady}
         onMountError={handleCameraMountError}
       />
@@ -1254,13 +1387,57 @@ export default function CameraPage() {
       )}
 
 
+      {/* TOP BAR : close + music */}
+
+      <View
+        style={[styles.topBar, { top: insets.top + 8 }]}
+        pointerEvents="box-none"
+      >
+
+        <TouchableOpacity
+          style={styles.closeBtn}
+          activeOpacity={0.8}
+          onPress={handleClose}
+          disabled={isRecording}
+        >
+          <Ionicons name="close" size={30} color="#fff" />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.topMusicBtn}
+          activeOpacity={0.8}
+          disabled={busy}
+          onPress={() =>
+            router.push({
+              pathname: '/MusicSelect',
+              params: { returnTo: '/camera' },
+            })
+          }
+        >
+          <Ionicons name="musical-notes" size={16} color="#fff" />
+          <Text
+            style={styles.topMusic}
+            numberOfLines={1}
+          >
+            {musicName ? String(musicName) : LABELS.addMusic}
+          </Text>
+        </TouchableOpacity>
+
+        {/* spacer: music pill ko center rakhne ke liye */}
+        <View style={styles.closeBtn} />
+
+      </View>
+
+
       {/* TIMER OPTIONS (Off / 3s / 5s / 10s) */}
 
       {showTimerOptions &&
         !isRecording &&
         countdown === null && (
 
-        <View style={styles.timerOptions}>
+        <View
+          style={[styles.timerOptions, { top: insets.top + 64 }]}
+        >
 
           {TIMER_OPTIONS.map((value) => (
 
@@ -1302,7 +1479,7 @@ export default function CameraPage() {
       {isRecording && (
 
         <View
-          style={styles.timerBadge}
+          style={[styles.timerBadge, { top: insets.top + 64 }]}
         >
 
           <View
@@ -1320,60 +1497,22 @@ export default function CameraPage() {
       )}
 
 
-      {/* MUSIC */}
-
-      <TouchableOpacity
-        style={styles.topMusicBtn}
-        activeOpacity={0.8}
-        disabled={isRecording || countdown !== null}
-        onPress={() =>
-          router.push({
-            pathname: '/MusicSelect',
-            params: { returnTo: '/camera' },
-          })
-        }
-      >
-        <Text
-          style={styles.topMusic}
-          numberOfLines={1}
-        >
-          🎵 {musicName ? String(musicName) : 'Select Music'}
-        </Text>
-      </TouchableOpacity>
-
-
       {/* SIDE ICONS */}
 
       <View
-        style={styles.sideIcons}
+        style={[styles.sideIcons, { top: insets.top + 64 }]}
       >
 
         {/* SWITCH CAMERA */}
 
         <TouchableOpacity
           style={styles.icnGrp}
-          onPress={
-            toggleCameraFacing
-          }
-          disabled={
-            isRecording ||
-            countdown !== null
-          }
+          onPress={toggleCameraFacing}
+          disabled={busy}
           activeOpacity={0.8}
         >
-
-          <Ionicons
-            name="camera-reverse-outline"
-            size={30}
-            color="#fff"
-          />
-
-          <Text
-            style={styles.fTxt}
-          >
-            Switch
-          </Text>
-
+          <Ionicons name="camera-reverse-outline" size={26} color="#fff" />
+          <Text style={styles.fTxt}>{LABELS.flip}</Text>
         </TouchableOpacity>
 
 
@@ -1382,83 +1521,65 @@ export default function CameraPage() {
         <TouchableOpacity
           style={styles.icnGrp}
           activeOpacity={0.8}
-          disabled={
-            isRecording ||
-            countdown !== null
-          }
+          disabled={busy}
           onPress={() =>
-            setShowTimerOptions(
-              (current) => !current
-            )
+            setShowTimerOptions((current) => !current)
           }
         >
-
           <Ionicons
             name="timer-outline"
-            size={30}
-            color={
-              timerDelay > 0
-                ? '#ffd400'
-                : '#fff'
-            }
+            size={26}
+            color={timerDelay > 0 ? YELLOW : '#fff'}
           />
-
           <Text
             style={[
               styles.fTxt,
-              timerDelay > 0 && {
-                color: '#ffd400',
-              },
+              timerDelay > 0 && { color: YELLOW },
             ]}
           >
-            {timerDelay > 0
-              ? `${timerDelay}s`
-              : 'Timer'}
+            {timerDelay > 0 ? `${timerDelay}s` : LABELS.timer}
           </Text>
-
         </TouchableOpacity>
 
 
         {/* SPEED */}
 
-        <View
-          style={styles.icnGrp}
-        >
-
-          <Ionicons
-            name="speedometer-outline"
-            size={30}
-            color="#fff"
-          />
-
-          <Text
-            style={styles.fTxt}
-          >
-            Speed
-          </Text>
-
+        <View style={styles.icnGrp}>
+          <Ionicons name="speedometer-outline" size={26} color="#fff" />
+          <Text style={styles.fTxt}>{LABELS.speed}</Text>
         </View>
 
 
         {/* BEAUTY */}
 
-        <View
-          style={styles.icnGrp}
-        >
-
-          <Ionicons
-            name="sparkles-outline"
-            size={30}
-            color="#fff"
-          />
-
-          <Text
-            style={styles.fTxt}
-          >
-            Beauty
-          </Text>
-
+        <View style={styles.icnGrp}>
+          <Ionicons name="sparkles-outline" size={26} color="#fff" />
+          <Text style={styles.fTxt}>{LABELS.beauty}</Text>
         </View>
+
+
+        {/* FLASH (back camera) */}
+
+        <TouchableOpacity
+          style={styles.icnGrp}
+          activeOpacity={0.8}
+          disabled={facing !== 'back'}
+          onPress={() => setTorchOn((current) => !current)}
+        >
+          <Ionicons
+            name={torchOn ? 'flash' : 'flash-outline'}
+            size={26}
+            color={torchOn ? YELLOW : '#fff'}
+          />
+          <Text
+            style={[
+              styles.fTxt,
+              torchOn && { color: YELLOW },
+            ]}
+          >
+            {LABELS.flash}
+          </Text>
+        </TouchableOpacity>
 
       </View>
 
@@ -1466,69 +1587,37 @@ export default function CameraPage() {
       {/* BOTTOM CONTROLS */}
 
       <View
-        style={styles.bottomControls}
+        style={[styles.bottomControls, { bottom: controlsBottom }]}
       >
 
-        {/* STICKERS */}
+        {/* STICKERS (left) */}
 
-        <TouchableOpacity
-          style={styles.sideBtn}
-          onPress={() =>
-            setShowStickers(true)
-          }
-          activeOpacity={0.8}
-        >
-
-          <View
-            style={[
-              styles.boxFrame,
-              {
-                borderColor: 'red',
-              },
-            ]}
-          />
-
-          <Text
-            style={styles.stickerLbl}
+        <View style={styles.leftZone}>
+          <TouchableOpacity
+            style={styles.stickerBtn}
+            onPress={() => setShowStickers(true)}
+            activeOpacity={0.8}
           >
-            Stickers
-          </Text>
+            <Text style={styles.stickerEmoji}>😊</Text>
+            <Text style={styles.stickerLbl}>{LABELS.sticker}</Text>
+          </TouchableOpacity>
+        </View>
 
-        </TouchableOpacity>
 
-
-        {/* RECORD BUTTON */}
+        {/* RECORD BUTTON (center) */}
 
         <TouchableOpacity
           onPress={handleRecord}
           activeOpacity={0.8}
-          disabled={
-            !isCameraReady &&
-            !isRecording
-          }
+          disabled={!isCameraReady && !isRecording}
         >
 
-          <View
-            style={[
-              styles.mainRecOuter,
-
-              (isRecording ||
-                countdown !== null) && {
-                borderColor: 'red',
-              },
-
-            ]}
-          >
+          <View style={styles.mainRecOuter}>
 
             <View
               style={[
                 styles.mainRecInner,
-
-                (isRecording ||
-                  countdown !== null) && {
-                  borderRadius: 10,
-                },
-
+                busy && styles.mainRecInnerActive,
               ]}
             />
 
@@ -1537,58 +1626,41 @@ export default function CameraPage() {
         </TouchableOpacity>
 
 
-        {/* UPLOAD */}
+        {/* UPLOAD + DONE (right) */}
 
-        <TouchableOpacity
-          style={styles.sideBtn}
-          onPress={pickVideo}
-          activeOpacity={0.8}
-          disabled={isRecording}
-        >
+        <View style={styles.rightZone}>
 
-          <View
-            style={[
-              styles.boxFrame,
-              {
-                borderColor: '#fff',
-                overflow: 'hidden',
-              },
-            ]}
+          {/* UPLOAD (gallery) */}
+
+          <TouchableOpacity
+            onPress={pickVideo}
+            activeOpacity={0.8}
+            disabled={isRecording}
+            style={[styles.uploadBtn, isRecording && { opacity: 0.4 }]}
           >
-
             {thumbnail ? (
-
               <Image
-                source={{
-                  uri: thumbnail,
-                }}
-                style={{
-                  width: '100%',
-                  height: '100%',
-                }}
+                source={{ uri: thumbnail }}
+                style={styles.uploadImg}
               />
-
             ) : (
-
-              <View
-                style={{
-                  backgroundColor: '#eee',
-                  flex: 1,
-                }}
-              />
-
+              <Ionicons name="images-outline" size={20} color="#fff" />
             )}
+          </TouchableOpacity>
 
-          </View>
 
+          {/* DONE (recording rok kar edit par jao) */}
 
-          <Text
-            style={styles.uploadLbl}
+          <TouchableOpacity
+            onPress={stopRecording}
+            activeOpacity={0.8}
+            disabled={!isRecording}
+            style={[styles.doneBtn, !isRecording && { opacity: 0.45 }]}
           >
-            Upload
-          </Text>
+            <Ionicons name="checkmark" size={26} color="#000" />
+          </TouchableOpacity>
 
-        </TouchableOpacity>
+        </View>
 
       </View>
 
@@ -1598,39 +1670,22 @@ export default function CameraPage() {
       {canGoLive && (
 
         <View
-          style={styles.modeBar}
+          style={[styles.modeBar, { bottom: insets.bottom + 16 }]}
         >
 
           {/* LIVE */}
 
           <TouchableOpacity
             activeOpacity={0.8}
-            onPress={() =>
-              router.push(
-                '/livevideostart'
-              )
-            }
+            onPress={() => router.push('/livevideostart')}
           >
-
-            <Text
-              style={styles.mTxt}
-            >
-              Live
-            </Text>
-
+            <Text style={styles.mTxt}>Live</Text>
           </TouchableOpacity>
 
 
           {/* VIDEO */}
 
-          <Text
-            style={[
-              styles.mTxt,
-              {
-                color: '#0056D2',
-              },
-            ]}
-          >
+          <Text style={[styles.mTxt, { color: YELLOW }]}>
             Video
           </Text>
 
@@ -1639,19 +1694,9 @@ export default function CameraPage() {
 
           <TouchableOpacity
             activeOpacity={0.8}
-            onPress={() =>
-              router.push(
-                '/LiveStart'
-              )
-            }
+            onPress={() => router.push('/LiveStart')}
           >
-
-            <Text
-              style={styles.mTxt}
-            >
-              Audio
-            </Text>
-
+            <Text style={styles.mTxt}>Audio</Text>
           </TouchableOpacity>
 
         </View>
@@ -1669,39 +1714,29 @@ export default function CameraPage() {
 
           <TouchableOpacity
             style={styles.closeStk}
-            onPress={() =>
-              setShowStickers(false)
-            }
+            onPress={() => setShowStickers(false)}
           >
-
-            <Text>
-              ✕
-            </Text>
-
+            <Text>✕</Text>
           </TouchableOpacity>
 
 
           <ScrollView
-            contentContainerStyle={
-              styles.stkGrid
-            }
+            contentContainerStyle={styles.stkGrid}
           >
 
-            {stickers.map(
-              (sticker, index) => (
+            {stickers.map((sticker, index) => (
 
-                <Text
-                  key={index}
-                  style={{
-                    fontSize: 45,
-                    margin: 10,
-                  }}
-                >
-                  {sticker}
-                </Text>
+              <Text
+                key={index}
+                style={{
+                  fontSize: 45,
+                  margin: 10,
+                }}
+              >
+                {sticker}
+              </Text>
 
-              )
-            )}
+            ))}
 
           </ScrollView>
 
@@ -1729,19 +1764,57 @@ const styles = StyleSheet.create({
   },
 
 
-  timerBadge: {
+  // ---------- top bar ----------
+
+  topBar: {
     position: 'absolute',
-    top: 50,
+    left: 0,
+    right: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor:
-      'rgba(0,0,0,0.6)',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    zIndex: 10,
+  },
+
+  closeBtn: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  topMusicBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    maxWidth: '60%',
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+
+  topMusic: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#fff',
+    flexShrink: 1,
+  },
+
+
+  // ---------- recording badge ----------
+
+  timerBadge: {
+    position: 'absolute',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.6)',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 20,
     zIndex: 30,
   },
-
 
   redDot: {
     width: 10,
@@ -1751,7 +1824,6 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
 
-
   timerText: {
     color: '#fff',
     fontSize: 18,
@@ -1759,42 +1831,35 @@ const styles = StyleSheet.create({
   },
 
 
-  topMusicBtn: {
-    marginTop: 10,
-    maxWidth: '70%',
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: 20,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-    zIndex: 10,
-  },
-
-
-  topMusic: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#fff',
-    zIndex: 10,
-  },
-
+  // ---------- right side icons ----------
 
   sideIcons: {
     position: 'absolute',
-    right: 20,
-    top: 140,
-    gap: 20,
+    right: 14,
+    gap: 18,
     zIndex: 10,
   },
 
-
   icnGrp: {
     alignItems: 'center',
+    width: 52,
+  },
+
+  fTxt: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#fff',
+    marginTop: 2,
+    textShadowColor: 'rgba(0,0,0,0.6)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
 
 
+  // ---------- timer options ----------
+
   timerOptions: {
     position: 'absolute',
-    top: 100,
     left: 0,
     right: 0,
     flexDirection: 'row',
@@ -1802,7 +1867,6 @@ const styles = StyleSheet.create({
     gap: 10,
     zIndex: 15,
   },
-
 
   timerChip: {
     minWidth: 54,
@@ -1813,11 +1877,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
 
-
   timerChipActive: {
-    backgroundColor: '#ffd400',
+    backgroundColor: YELLOW,
   },
-
 
   timerChipText: {
     color: '#fff',
@@ -1825,64 +1887,109 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
 
-
   timerChipTextActive: {
     color: '#000',
   },
 
 
-  fTxt: {
-    fontSize: 12,
-    fontWeight: 'bold',
-    color: '#fff',
-  },
-
+  // ---------- bottom controls ----------
 
   bottomControls: {
     position: 'absolute',
-    bottom: 110,
     flexDirection: 'row',
     width: '100%',
-    justifyContent: 'space-evenly',
+    justifyContent: 'space-between',
     alignItems: 'center',
+    paddingHorizontal: 16,
     zIndex: 10,
   },
 
-
-  boxFrame: {
-    width: 65,
-    height: 65,
-    borderWidth: 2,
-    borderRadius: 18,
-    backgroundColor:
-      'rgba(255,255,255,0.15)',
+  leftZone: {
+    width: 116,
+    alignItems: 'flex-start',
+    paddingLeft: 10,
   },
 
+  rightZone: {
+    width: 116,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 12,
+  },
+
+  stickerBtn: {
+    alignItems: 'center',
+  },
+
+  stickerEmoji: {
+    fontSize: 34,
+  },
+
+  stickerLbl: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '600',
+    marginTop: 2,
+    textShadowColor: 'rgba(0,0,0,0.6)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
 
   mainRecOuter: {
-    width: 92,
-    height: 92,
-    borderRadius: 46,
+    width: 84,
+    height: 84,
+    borderRadius: 42,
     borderWidth: 4,
     borderColor: '#fff',
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor:
-      'rgba(255,255,255,0.15)',
   },
-
 
   mainRecInner: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: '#ee1e44',
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    backgroundColor: YELLOW,
   },
 
+  mainRecInnerActive: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+  },
+
+  uploadBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: '#fff',
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+
+  uploadImg: {
+    width: '100%',
+    height: '100%',
+  },
+
+  doneBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: YELLOW,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+
+  // ---------- mode bar ----------
 
   modeBar: {
     position: 'absolute',
-    bottom: 60,
     left: 0,
     right: 0,
     flexDirection: 'row',
@@ -1891,14 +1998,15 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
 
-
   mTxt: {
-    fontSize: 20,
+    fontSize: 16,
     fontWeight: 'bold',
     color: '#fff',
     textAlign: 'center',
   },
 
+
+  // ---------- stickers ----------
 
   stickerPanel: {
     position: 'absolute',
@@ -1912,37 +2020,15 @@ const styles = StyleSheet.create({
     zIndex: 20,
   },
 
-
   stkGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'center',
   },
 
-
   closeStk: {
     alignSelf: 'flex-end',
     padding: 10,
-  },
-
-
-  uploadLbl: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
-    marginTop: 3,
-    position: 'relative',
-    left: 12,
-  },
-
-
-  stickerLbl: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
-    marginTop: 3,
-    position: 'relative',
-    right: -7,
   },
 
 });

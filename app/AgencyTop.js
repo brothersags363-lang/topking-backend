@@ -409,7 +409,7 @@ export default function AgencyTop({ navigation, router }) {
             initialNumToRender={10}
             maxToRenderPerBatch={10}
             windowSize={7}
-            removeClippedSubviews
+            removeClippedSubviews={false}
             ListHeaderComponent={
               <>
                 <View style={styles.hero}>

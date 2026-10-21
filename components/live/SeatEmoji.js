@@ -1,5 +1,6 @@
 import React, { memo, useEffect, useRef } from 'react';
-import { Animated, Easing, StyleSheet, Text } from 'react-native';
+import { Animated, Easing, Image, StyleSheet, Text } from 'react-native';
+import { isGifReaction, gifSource } from '../../assets/emojiGifs';
 
 // ============================================================
 // SeatEmoji: seat ke avatar ke upar 3 second ke liye emoji reaction.
@@ -68,6 +69,13 @@ const SeatEmoji = memo(({ reaction, size = 40 }) => {
   }, [key, e, pop, loop]);
 
   if (!key) return null;
+  if (isGifReaction(e)) {
+    return (
+      <Animated.View pointerEvents="none" style={[styles.wrap, { opacity: pop, transform: [{ scale: pop.interpolate({ inputRange: [0, 1], outputRange: [0.2, 1.25] }) }] }]}>
+        <Image source={gifSource(e)} style={{ width: size * 1.9, height: size * 1.9 }} resizeMode="contain" />
+      </Animated.View>
+    );
+  }
 
   const kind = kindOf(e);
 

@@ -12,6 +12,7 @@
 import { useCallback, useSyncExternalStore } from 'react';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../app/firebaseConfig';
+import { useBlockedIds } from '../utils/useBlockedIds';
 
 const HEARTBEAT_TIMEOUT = 10 * 60 * 1000;
 const RECHECK_INTERVAL = 30 * 1000;
@@ -143,9 +144,10 @@ const subscribe = (cb) => {
 };
 
 export function useLiveHost(hostId) {
+  const { blocked } = useBlockedIds(); // BLOCK: blocked host ka live/ring nahi dikhe
   const getSnapshot = useCallback(
-    () => (hostId ? liveByHost[hostId] || null : null),
-    [hostId]
+    () => (hostId && !blocked.has(hostId) ? liveByHost[hostId] || null : null),
+    [hostId, blocked]
   );
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }

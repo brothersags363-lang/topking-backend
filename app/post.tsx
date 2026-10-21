@@ -576,7 +576,7 @@ onPress={() => {
                     initialNumToRender={14}
                     maxToRenderPerBatch={14}
                     windowSize={7}
-                    removeClippedSubviews
+                    removeClippedSubviews={false}
                     ListEmptyComponent={
                       !canCreate ? <Text style={styles.emptyHash}>No hashtags yet.</Text> : null
                     }

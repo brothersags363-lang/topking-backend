@@ -16,6 +16,7 @@ import {
   Dimensions,
   Alert,
   ActivityIndicator,
+  BackHandler,
 } from 'react-native';
 
 import { Ionicons } from '@expo/vector-icons';
@@ -42,6 +43,8 @@ import {
 import {
   useLocalSearchParams,
   useRouter,
+  useNavigation,
+  useFocusEffect,
 } from 'expo-router';
 
 const { width } = Dimensions.get('window');
@@ -96,6 +99,28 @@ const FriendRow = memo(
 export default function ShareVideo() {
 
   const router = useRouter();
+  const navigation = useNavigation();
+
+  const goToIndex = useCallback(() => {
+    router.replace('/');
+  }, [router]);
+
+  // Android back button: app band karne ke bajaye index.js kholo.
+  // useFocusEffect: handler sirf tab active rahega jab ye screen upar ho.
+  useFocusEffect(
+    useCallback(() => {
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        goToIndex();
+        return true; // default back (app exit) rok do
+      });
+      return () => sub.remove();
+    }, [goToIndex])
+  );
+
+  // iOS swipe-back gesture band (warna ye index par nahi le jayega)
+  useEffect(() => {
+    navigation.setOptions({ gestureEnabled: false });
+  }, [navigation]);
 
   const {
     type,
@@ -321,7 +346,7 @@ export default function ShareVideo() {
 
       Alert.alert("Success", "Video Sent");
 
-      router.back();
+      goToIndex();
 
     } catch (e) {
 
@@ -392,7 +417,7 @@ export default function ShareVideo() {
           data={filtered}
           renderItem={renderItem}
           keyExtractor={keyExtractor}
-          removeClippedSubviews={true}
+          removeClippedSubviews={false}
           initialNumToRender={12}
           maxToRenderPerBatch={12}
           windowSize={7}

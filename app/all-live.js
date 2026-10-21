@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
+import { useBlockedIds } from '../utils/useBlockedIds';
 
 import {
   ActivityIndicator,
@@ -144,8 +145,35 @@ const livePulse = new Animated.Value(1);
 // LIVE CARD
 // ------------------------------------
 
+// Video live: viewer count = jitne log abhi room ke andar hain (rooms/{id}/audience).
+// Viewer aaye -> +1, chala gaya -> -1, koi nahi -> 0. Sirf yahi card re-render hota hai.
+const useAudienceCount = (stream) => {
+  const [count, setCount] = useState(null);
+  const enabled = stream.type === 'video' && !!db;
+
+  useEffect(() => {
+    if (!enabled) return;
+    const unsub = onSnapshot(
+      collection(db, 'rooms', stream.id, 'audience'),
+      (snap) => {
+        let n = 0;
+        snap.forEach((d) => {
+          if (d.id !== stream.hostId) n++;
+        });
+        setCount(n);
+      },
+      () => {}
+    );
+    return () => unsub();
+  }, [enabled, stream.id, stream.hostId]);
+
+  return count;
+};
+
 const LiveCard = memo(function LiveCard({ stream, onPress }) {
   const handlePress = useCallback(() => onPress(stream), [onPress, stream]);
+  const audienceCount = useAudienceCount(stream);
+  const shownUsers = audienceCount === null ? stream.users : audienceCount;
 
   return (
     <TouchableOpacity
@@ -174,6 +202,24 @@ const LiveCard = memo(function LiveCard({ stream, onPress }) {
         pointerEvents="none"
       />
 
+      {/* Multi-guest: 3x3 mini grid of seats (screenshot jaisa) */}
+      {stream.layout === 'multiguest' && (
+        <View style={styles.seatGrid} pointerEvents="none">
+          {Array.from({ length: 9 }).map((_, i) => {
+            const st = stream.seats?.[i];
+            return (
+              <View key={i} style={[styles.seatCell, st?.taken && styles.seatCellTaken]}>
+                {st?.taken && st.img ? (
+                  <Image source={{ uri: st.img }} style={styles.seatImg} />
+                ) : (
+                  <Ionicons name="person" size={12} color="rgba(255,255,255,0.25)" />
+                )}
+              </View>
+            );
+          })}
+        </View>
+      )}
+
       {/* LIVE badge */}
       <View style={styles.liveBadge}>
         <Animated.View style={[styles.liveDot, { opacity: livePulse }]} />
@@ -183,7 +229,7 @@ const LiveCard = memo(function LiveCard({ stream, onPress }) {
       {/* Viewer count (real time, = people inside the room) */}
       <View style={styles.viewerPill}>
         <Ionicons name="people" size={12} color="#fff" />
-        <Text style={styles.viewerText}>{fmtCount(stream.users)}</Text>
+        <Text style={styles.viewerText}>{fmtCount(shownUsers)}</Text>
       </View>
 
       {/* Host info */}
@@ -203,7 +249,7 @@ const LiveCard = memo(function LiveCard({ stream, onPress }) {
 
         <View style={styles.typeBadge}>
           <Ionicons
-            name={stream.type === 'video' ? 'videocam' : 'mic'}
+            name={stream.layout === 'multiguest' ? 'grid' : stream.type === 'video' ? 'videocam' : 'mic'}
             size={14}
             color="#fff"
           />
@@ -308,6 +354,7 @@ const TabButton = memo(function TabButton({ label, icon, active, count, onPress 
 
 export default function AllLive() {
   const router = useRouter();
+  const { blocked: blockedIds } = useBlockedIds(); // BLOCK
 
   const [activeTab, setActiveTab] = useState('audio');
   const [liveStreams, setLiveStreams] = useState([]);
@@ -378,9 +425,14 @@ export default function AllLive() {
       return;
     }
 
+    if (stream.layout === 'multiguest') {
+      router.push({ pathname: '/MultiGuestRoom', params: { id: stream.id } });
+      return;
+    }
+
     router.push({
       pathname: '/LiveRoom',
-      params: { id: stream.id, from: 'alllive' },
+      params: { id: stream.id, from: 'alllive', layout: stream.layout },
     });
   }, [router]);
 
@@ -430,6 +482,7 @@ export default function AllLive() {
 
             streams.push({
               id: docItem.id,
+              hostId: rawData.hostId || rawData.seatsData?.seat_1?.userId || null,
               title: rawData.title || rawData.roomName || 'Live Broadcast',
               host: rawData.hostName || rawData.host || 'User',
               type: String(rawData.type || 'audio').toLowerCase(),
@@ -439,6 +492,15 @@ export default function AllLive() {
               roomCover: cover,
               hostImg: hostImg || STABLE_DEFAULT_AVATAR,
               createdAt: roomTime,
+              layout: String(rawData.roomLayout || 'chat').toLowerCase(),
+              // Multi-guest card ke liye 9 seats ka mini grid (host + guests)
+              seats: Object.keys(rawData.seatsData || {})
+                .sort((a, b) => Number(a.split('_')[1]) - Number(b.split('_')[1]))
+                .slice(0, 9)
+                .map((k) => {
+                  const st = rawData.seatsData[k] || {};
+                  return { img: validUrl(st.userImg), taken: !!st.userId, muted: !!st.isMuted };
+                }),
             });
           });
 
@@ -497,23 +559,29 @@ export default function AllLive() {
   // DERIVED DATA
   // ------------------------------------
 
-  const { filteredStreams, audioCount, videoCount } = useMemo(() => {
+  const { filteredStreams, audioCount, videoCount, multiCount } = useMemo(() => {
     const audio = [];
     const video = [];
+    const multi = [];
     liveStreams.forEach((s) => {
       if (!s) return;
-      if (s.type === 'video') video.push(s);
+      if (s.hostId && blockedIds.has(s.hostId)) return; // BLOCK
+      if (s.layout === 'multiguest') multi.push(s);
+      else if (s.type === 'video') video.push(s);
       else if (s.type === 'audio') audio.push(s);
     });
     return {
-      filteredStreams: activeTab === 'video' ? video : audio,
+      filteredStreams:
+        activeTab === 'video' ? video : activeTab === 'multi' ? multi : audio,
       audioCount: audio.length,
       videoCount: video.length,
+      multiCount: multi.length,
     };
-  }, [liveStreams, activeTab]);
+  }, [liveStreams, activeTab, blockedIds]);
 
   const setAudio = useCallback(() => setActiveTab('audio'), []);
   const setVideo = useCallback(() => setActiveTab('video'), []);
+  const setMulti = useCallback(() => setActiveTab('multi'), []);
 
   // ------------------------------------
   // LIST PARTS
@@ -546,10 +614,17 @@ export default function AllLive() {
             count={videoCount}
             onPress={setVideo}
           />
+          <TabButton
+            label="Multi Guest"
+            icon="grid-outline"
+            active={activeTab === 'multi'}
+            count={multiCount}
+            onPress={setMulti}
+          />
         </View>
       </View>
     ),
-    [activeTab, audioCount, videoCount, setAudio, setVideo]
+    [activeTab, audioCount, videoCount, multiCount, setAudio, setVideo, setMulti]
   );
 
   const emptyComponent = useMemo(() => {
@@ -564,12 +639,12 @@ export default function AllLive() {
     return (
       <View style={styles.centerBox}>
         <Ionicons
-          name={activeTab === 'audio' ? 'mic-off-outline' : 'videocam-off-outline'}
+          name={activeTab === 'audio' ? 'mic-off-outline' : activeTab === 'multi' ? 'grid-outline' : 'videocam-off-outline'}
           size={46}
           color="rgba(255,255,255,0.12)"
         />
         <Text style={styles.emptyText}>
-          No active {activeTab} rooms live right now
+          No active {activeTab === 'multi' ? 'multi-guest' : activeTab} rooms live right now
         </Text>
       </View>
     );
@@ -617,7 +692,7 @@ export default function AllLive() {
         initialNumToRender={6}
         maxToRenderPerBatch={6}
         windowSize={7}
-        removeClippedSubviews={Platform.OS === 'android'}
+        removeClippedSubviews={false}
       />
 
       <BottomNav />
@@ -737,7 +812,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'row',
   },
-  tabText: { fontSize: 14, fontWeight: '700', color: 'rgba(255,255,255,0.4)' },
+  tabText: { fontSize: 12, fontWeight: '700', color: 'rgba(255,255,255,0.4)' },
   tabTextActive: { color: '#ffffff', fontWeight: '800' },
   tabCount: {
     marginLeft: 6,
@@ -857,6 +932,27 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 1,
   },
+  seatGrid: {
+    position: 'absolute',
+    top: 38,
+    left: 10,
+    right: 10,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+  seatCell: {
+    width: (CARD_WIDTH - 20 - 12) / 3,
+    height: (CARD_WIDTH - 20 - 12) / 3,
+    marginBottom: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  seatCellTaken: { borderWidth: 1.5, borderColor: '#ebd500' },
+  seatImg: { width: '100%', height: '100%' },
   typeBadge: {
     width: 26,
     height: 26,

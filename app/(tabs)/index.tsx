@@ -1,6 +1,7 @@
 // ==========================
 // IMPORTS
 // ==========================
+import { notifyNewFollower, notifyVideoLike } from "../../utils/pushNotify";
 import React, { memo,  useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -25,6 +26,7 @@ import {
       Animated,
   Easing,
   AppState,
+  PanResponder,
 } from 'react-native';
 
 
@@ -423,15 +425,17 @@ const rankFeed = (
 // kam RAM wale phone atkenge. 10 ek saath safe nahi, isliye 1 peeche + 3 aage.)
 // SPEED: 1 peeche + 2 aage ke players ready -> fast swipe par bhi video turant chalta hai.
 const PRELOAD_BEHIND = 1;
-const PRELOAD_AHEAD = 2;
+const PRELOAD_AHEAD = 2; // SPEED: agle 2 videos ke player pehle se ready
 
 const ACTIVE_BUFFER = {
+  maxBufferBytes: 20 * 1024 * 1024,
   preferredForwardBufferDuration: 10,
-  minBufferForPlayback: 2,
+  minBufferForPlayback: 1, // SPEED: 2 -> 1, video jaldi shuru
   prioritizeTimeOverSizeThreshold: true,
 };
 // Agla video (index+1): itna buffer ki scroll karte hi turant chal pade
 const NEAR_BUFFER = {
+  maxBufferBytes: 8 * 1024 * 1024,
   preferredForwardBufferDuration: 8,
   minBufferForPlayback: 1,
   prioritizeTimeOverSizeThreshold: true,
@@ -439,10 +443,151 @@ const NEAR_BUFFER = {
 // Door ke videos (pichla / index+2, +3): shuru ke ~3 sec,
 // taaki active video ka bandwidth na khayein
 const PRELOAD_BUFFER = {
+  maxBufferBytes: 4 * 1024 * 1024,
   preferredForwardBufferDuration: 4,
   minBufferForPlayback: 1,
   prioritizeTimeOverSizeThreshold: true,
 };
+
+// ======================================================
+// SEEK BAR (niche menu se chipka PEELA line)
+// ======================================================
+// Active video ka player yahan register hota hai. VideoSeekBar (jo niche
+// menu me hai) isi ko sunta hai -> video ke hisaab se line chalti hai,
+// time (0:12 / 0:30) dikhta hai, aur ungli se aage-peeche kar sakte ho.
+let seekTarget: { player: any; videoId: string } | null = null;
+const seekListeners = new Set<() => void>();
+const setSeekTarget = (t: { player: any; videoId: string } | null) => {
+  seekTarget = t;
+  seekListeners.forEach((fn) => fn());
+};
+
+const fmtTime = (sec: number) => {
+  const t = Math.max(0, Math.floor(sec || 0));
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+};
+
+const VideoSeekBar = memo(function VideoSeekBar() {
+  const [target, setTarget] = useState(seekTarget);
+  const [pos, setPos] = useState(0);
+  const [dur, setDur] = useState(0);
+  const [dragging, setDragging] = useState(false);
+
+  const targetRef = useRef(seekTarget);
+  const durRef = useRef(0);
+  const draggingRef = useRef(false);
+  const wasPlayingRef = useRef(false);
+  const barWidthRef = useRef(width);
+  const lastSeekAtRef = useRef(0);
+
+  // Active video badalte hi naya player pakdo
+  useEffect(() => {
+    const fn = () => {
+      targetRef.current = seekTarget;
+      durRef.current = 0;
+      setTarget(seekTarget);
+      setPos(0);
+      setDur(0);
+    };
+    seekListeners.add(fn);
+    return () => {
+      seekListeners.delete(fn);
+    };
+  }, []);
+
+  // Video ke hisaab se line aage badhe (sirf ye chhota component re-render hota hai)
+  useEffect(() => {
+    if (!target) return;
+    const p = target.player;
+    const tick = () => {
+      try {
+        const d = p.duration || 0;
+        if (d !== durRef.current) {
+          durRef.current = d;
+          setDur(d);
+        }
+        if (!draggingRef.current) setPos(p.currentTime || 0);
+      } catch (e) {}
+    };
+    tick();
+    const t = setInterval(tick, 100);
+    return () => clearInterval(t);
+  }, [target]);
+
+  const seekTo = (x: number, force: boolean) => {
+    const d = durRef.current;
+    const p = targetRef.current?.player;
+    if (!d || !p) return;
+    const ratio = Math.min(1, Math.max(0, x / (barWidthRef.current || width)));
+    const t = ratio * d;
+    setPos(t);
+    const now = Date.now();
+    if (force || now - lastSeekAtRef.current > 80) {
+      lastSeekAtRef.current = now;
+      try { p.currentTime = t; } catch (e) {}
+    }
+  };
+
+  const finishDrag = (x: number) => {
+    seekTo(x, true);
+    draggingRef.current = false;
+    setDragging(false);
+    try {
+      if (wasPlayingRef.current) targetRef.current?.player.play();
+    } catch (e) {}
+  };
+
+  const pan = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => !!targetRef.current && durRef.current > 0,
+      onMoveShouldSetPanResponder: () => !!targetRef.current && durRef.current > 0,
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderGrant: (e) => {
+        draggingRef.current = true;
+        setDragging(true);
+        try {
+          const p = targetRef.current?.player;
+          wasPlayingRef.current = !!p?.playing;
+          p?.pause();
+        } catch (err) {}
+        seekTo(e.nativeEvent.pageX, true);
+      },
+      onPanResponderMove: (_, g) => seekTo(g.moveX, false),
+      onPanResponderRelease: (_, g) => finishDrag(g.moveX),
+      onPanResponderTerminate: (_, g) => finishDrag(g.moveX),
+    })
+  ).current;
+
+  const ratio = dur > 0 ? Math.min(1, pos / dur) : 0;
+
+  return (
+    <View
+      style={styles.seekWrap}
+      onLayout={(e) => { barWidthRef.current = e.nativeEvent.layout.width; }}
+      {...pan.panHandlers}
+    >
+      {/* time: sirf aage-peeche karte waqt dikhega */}
+      {dragging && dur > 0 ? (
+        <View style={styles.seekTimeBox} pointerEvents="none">
+          <Text style={styles.seekTimeBig}>
+            {fmtTime(pos)} / {fmtTime(dur)}
+          </Text>
+        </View>
+      ) : null}
+
+      {/* peela line: menu ke upar se chipka */}
+      <View style={[styles.seekTrack, dragging && styles.seekTrackActive]} pointerEvents="none">
+        <View style={[styles.seekFill, { width: `${ratio * 100}%` }]} />
+      </View>
+      {dragging ? (
+        <View
+          pointerEvents="none"
+          style={[styles.seekThumb, { left: `${ratio * 100}%` }]}
+        />
+      ) : null}
+    </View>
+  );
+});
 
 const FeedVideo = memo(
 function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
@@ -491,6 +636,15 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
     });
     return () => sub.remove();
   }, [player]);
+
+  // Niche wali seek bar ko batao ki abhi kaunsa video current hai
+  useEffect(() => {
+    if (!isCurrent) return;
+    setSeekTarget({ player, videoId });
+    return () => {
+      if (seekTarget && seekTarget.player === player) setSeekTarget(null);
+    };
+  }, [isCurrent, player, videoId]);
 
   // Chalte waqt har 1 sec me position yaad rakho (band/pause/screen change par bhi save)
   useEffect(() => {
@@ -542,15 +696,21 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
   }, [active, player]);
 
   // Video 0 par TABHI jaye jab user usse scroll karke aage/peeche nikal jaye
+  // SMOOTH: seek(0) swipe animation ke BEECH me nahi hota (decoder ka kaam
+  // scroll se ladta tha) -> swipe settle hone ke baad hota hai.
   const wasCurrentRef = useRef(false);
   useEffect(() => {
     if (isCurrent) {
       wasCurrentRef.current = true;
-    } else if (wasCurrentRef.current) {
-      wasCurrentRef.current = false;
-      delete videoPositions[videoId];
-      try { player.currentTime = 0; } catch (e) {}
+      return;
     }
+    if (!wasCurrentRef.current) return;
+    wasCurrentRef.current = false;
+    delete videoPositions[videoId];
+    const t = setTimeout(() => {
+      try { player.currentTime = 0; } catch (e) {}
+    }, 400);
+    return () => clearTimeout(t); // user turant wapas aaya to reset nahi
   }, [isCurrent, player, videoId]);
 
   // Buffering ho rahi ho to chhota spinner dikhao (frozen frame nahi lagega)
@@ -1850,8 +2010,14 @@ useEffect(() => {
       const [seenMap, blockedIds, lastTop, firstSnap, resume] = await Promise.all([
         loadSeenMap(),
         user
-          ? getDocs(collection(db, "users", user.uid, "blockedUsers"))
-              .then((s) => s.docs.map((d) => d.id))
+          ? Promise.all([
+              getDocs(query(collection(db, "blockedUsers"), where("blockerId", "==", user.uid))),
+              getDocs(query(collection(db, "blockedUsers"), where("blockedUserId", "==", user.uid))),
+            ])
+              .then(([a, b]) => [
+                ...a.docs.map((d) => d.data().blockedUserId),
+                ...b.docs.map((d) => d.data().blockerId),
+              ].filter(Boolean))
               .catch(() => [])
           : Promise.resolve([]),
         loadLastTop(),
@@ -2452,6 +2618,7 @@ useEffect(() => {
 
         if (videoSnap.exists()) {
           const videoData = videoSnap.data();
+          notifyVideoLike(videoId, videoData.likes); // milestone push
 
           const userLikeRef = doc(
             db,
@@ -2562,6 +2729,7 @@ const handleFollow = async (targetUserId) => {
         followingId: targetUserId,
         createdAt: Date.now(),
       });
+      notifyNewFollower(targetUserId);
     }
   } catch (e) {
     // fail hua to wapas purani state
@@ -3137,7 +3305,7 @@ const renderComment = useCallback(({ item: rawItem }) => {
     if (mountTimeoutRef.current) clearTimeout(mountTimeoutRef.current);
     mountTimeoutRef.current = setTimeout(() => {
       setMountIndex(index);
-    }, 250);
+    }, 120); // SPEED: 250 -> 120, agla video jaldi ready
 
     const currentItem = viewableItems[0].item;
 
@@ -3169,7 +3337,7 @@ const renderComment = useCallback(({ item: rawItem }) => {
 // Agle 10 videos ke thumbnails pehle se cache me -> swipe par black flash nahi
 useEffect(() => {
   const urls = videos
-    .slice(currentIndex + 1, currentIndex + 4)
+    .slice(currentIndex + 1, currentIndex + 7)
     .map((v) => v.thumbnail)
     .filter((t) => typeof t === 'string' && t.length > 0);
   if (urls.length) {
@@ -3188,7 +3356,7 @@ useEffect(() => {
 
   // Last 4 videos se pehle agle videos background me load
   if (
-    currentIndex >= videos.length - 4 &&
+    currentIndex >= videos.length - 6 &&
     hasMoreVideos &&
     !loadingMoreRef.current
   ) {
@@ -3236,8 +3404,9 @@ const renderItem = useCallback(({ item, index }) => {
   // Pichla 1 + agle 3 videos ke player pehle se ready rakho:
   // scroll karte hi video turant chalega (na ruka, na black screen).
   const shouldRenderVideo =
-    index === currentIndex ||
-    (index >= mountIndex - PRELOAD_BEHIND && index <= mountIndex + PRELOAD_AHEAD);
+    isFocused &&
+    (index === currentIndex ||
+      (index >= mountIndex - PRELOAD_BEHIND && index <= mountIndex + PRELOAD_AHEAD));
   const nearVideo = index === currentIndex + 1;
   const isCurrent = activeVideo === index;
 
@@ -3251,7 +3420,7 @@ const renderItem = useCallback(({ item, index }) => {
       isCurrent={isCurrent}
       showHeart={heartVideoId === item.id}
       showStar={starAnimationVideoId === item.id}
-      starCount={starAnimationCount}
+      starCount={starAnimationVideoId === item.id ? starAnimationCount : 0}
       isLiked={!!localLikes[item.id]}
       isFollowing={!!followingUsers[item.userId]}
       rotateAnim={rotateAnim}
@@ -3884,6 +4053,7 @@ translateY:Animated.multiply(keyboardHeight,-1)
 
 
       <View style={styles.bottomSection}>
+        <VideoSeekBar />
         <View style={styles.bottomNavContainer}>
           <View style={styles.bottomNav}>
             
@@ -3988,7 +4158,7 @@ const styles = StyleSheet.create({
 
   left: 12,
 
-  bottom: 110,      // niche se kitna upar
+  bottom: 120,      // niche se kitna upar
 
   width: width * 0.7,
 
@@ -4054,7 +4224,7 @@ backgroundColor:"#fff",
   rightIcons:  {
   position: 'absolute',
 
-  right: 3,
+  right: 1,
 
   bottom: 110,   // video ke niche se kitna upar
 
@@ -4120,6 +4290,15 @@ zIndex:9999,
   navItem: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   plusBtn: { backgroundColor: '#f1c40f', width: 48, height: 35, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
   plusText: { fontSize: 28, fontWeight: 'bold', color: '#000', marginTop: -4 },
+  // Seek bar (menu se chipka peela line)
+  seekWrap: { width: '100%', height: 10, justifyContent: 'flex-start' },
+  seekTrack: { position: 'absolute', top: 0, left: 0, right: 0, height: 3, backgroundColor: 'rgba(255,255,255,0.18)', overflow: 'hidden' },
+  seekTrackActive: { height: 6 },
+  seekFill: { height: '100%', backgroundColor: '#f1c40f' },
+  seekThumb: { position: 'absolute', top: -4, marginLeft: -7, width: 14, height: 14, borderRadius: 7, backgroundColor: '#f1c40f' },
+  seekTimeBox: { position: 'absolute', bottom: '100%', left: 0, right: 0, alignItems: 'flex-end', paddingRight: 10, paddingBottom: 4 },
+  seekTimeSmall: { color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: '600', textShadowColor: 'rgba(0,0,0,0.8)', textShadowRadius: 3 },
+  seekTimeBig: { color: '#fff', fontSize: 20, fontWeight: 'bold', textShadowColor: 'rgba(0,0,0,0.9)', textShadowRadius: 4, paddingBottom: 6 },
   bottomFill: { backgroundColor: '#000', width: '100%', height: Platform.OS === 'ios' ? 35 : 15 },
 
 commentsSheet:{

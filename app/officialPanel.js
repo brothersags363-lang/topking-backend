@@ -50,7 +50,7 @@ function useIsOfficial() {
   return isOfficial;
 }
 
-// Official panel: BD add, agency do, ID ban, live entry ban, live start ban.
+// Official panel: BD add/hatao, agency do/delete, ID ban, live entry ban, live start ban.
 // Asli permission server check karta hai. Ye screen sirf UI hai.
 export default function OfficialPanel() {
   const router = useRouter();
@@ -160,6 +160,18 @@ export default function OfficialPanel() {
   const makeBD = () =>
     confirm("BD banao?", `${selected.username} ko BD banana hai?`, () =>
       act("/official/add-bd", { uid: selected.uid }, "BD add ho gaya.")
+    );
+
+  const removeBD = () =>
+    confirm("BD hatao?", `${selected.username} ka BD access hat jayega.`, () =>
+      act("/official/remove-bd", { uid: selected.uid }, "BD hata diya.")
+    );
+
+  const deleteAgency = () =>
+    confirm(
+      "Agency delete karni hai?",
+      `${selected.agencyName || "Agency"} delete hogi. Owner access aur saare hosts agency se hat jayenge. Ye wapas nahi hoga.`,
+      () => act("/official/delete-agency", { uid: selected.uid }, "Agency delete ho gayi.")
     );
 
   const toggleBan = () => {
@@ -414,6 +426,16 @@ export default function OfficialPanel() {
                       {!selected.agencyName && (
                         <TouchableOpacity style={[styles.btn, styles.btnBlue]} disabled={busy} onPress={openAgencyForm}>
                           <Text style={styles.btnText}>Agency do</Text>
+                        </TouchableOpacity>
+                      )}
+                      {!!selected.isBD && (
+                        <TouchableOpacity style={[styles.btn, styles.btnRed]} disabled={busy} onPress={removeBD}>
+                          <Text style={styles.btnText}>BD hatao</Text>
+                        </TouchableOpacity>
+                      )}
+                      {!!selected.agencyName && (
+                        <TouchableOpacity style={[styles.btn, styles.btnRed]} disabled={busy} onPress={deleteAgency}>
+                          <Text style={styles.btnText}>Agency delete</Text>
                         </TouchableOpacity>
                       )}
                       <TouchableOpacity

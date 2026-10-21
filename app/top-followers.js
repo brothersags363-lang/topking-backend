@@ -504,7 +504,7 @@ export default function TopFollowersPage() {
             keyExtractor={keyExtractor}
             renderItem={renderLeaderRow}
             showsVerticalScrollIndicator={false}
-            removeClippedSubviews
+            removeClippedSubviews={false}
             initialNumToRender={8}
             maxToRenderPerBatch={8}
             windowSize={5}

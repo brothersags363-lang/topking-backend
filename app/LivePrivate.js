@@ -25,6 +25,7 @@
 } from "react-native";
 
 
+import { notifyNewFollower } from "../utils/pushNotify";
 import ReAnimated,{
   useSharedValue,
   useAnimatedStyle,
@@ -84,6 +85,7 @@ import { giftHtml } from "../assets/giftWeb";
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { callApi } from '../utils/api';
 import { useLiveBanGuard } from '../utils/liveBan';
+import { useBlockedIds } from '../utils/useBlockedIds';
 
 // import LottieView from "lottie-react-native";
 // import { gifts } from "../assets/giftsData";
@@ -1007,7 +1009,7 @@ const GiftSheet = memo(
               initialNumToRender={1}
               maxToRenderPerBatch={1}
               windowSize={3}
-              removeClippedSubviews
+              removeClippedSubviews={false}
               decelerationRate="fast"
               bounces={false}
               overScrollMode="never"
@@ -1220,6 +1222,7 @@ const chatsReadyRef = useRef(false);
 const oldJoinIdsRef = useRef(new Set());
 
 const showJoinBanner = (data) => {
+  if (data?.senderId && blockedRef.current.has(data.senderId)) return;
   // _k: har naye join par animation restart ho (JoinEntry isi key se reset hota hai)
   setJoinBanner({ ...data, _k: Date.now() + Math.random() });
 };
@@ -1318,8 +1321,22 @@ const currentUid = auth?.currentUser?.uid;
 // They are separate Firestore subcollections so a chat message or a
 // viewer joining/leaving does NOT re-broadcast the entire room state
 // (seats, host info, etc.) to every connected client.
-const [chatMessages, setChatMessages] = useState([]);
-const [audienceMap, setAudienceMap] = useState({});
+const { blocked: blockedIds, ref: blockedRef } = useBlockedIds();
+const [rawChatMessages, setChatMessages] = useState([]);
+const [rawAudienceMap, setAudienceMap] = useState({});
+// BLOCK: blocked (dono taraf) users ke msgs / viewers hide
+const chatMessages = React.useMemo(() => rawChatMessages.filter(m => !(m && m.senderId && blockedIds.has(m.senderId))), [rawChatMessages, blockedIds]);
+const audienceMap = React.useMemo(() => { const o = {}; for (const k in rawAudienceMap) { if (!blockedIds.has(k)) o[k] = rawAudienceMap[k]; } return o; }, [rawAudienceMap, blockedIds]);
+
+// BLOCK: host se block-relation ho to room me rehne hi mat do
+useEffect(() => {
+  const hid = roomData?.hostId;
+  if (hid && hid !== currentUid && blockedIds.has(hid)) {
+    try { alert("Ye live aapke liye available nahi hai"); } catch (_) {}
+    router.back();
+  }
+}, [roomData?.hostId, blockedIds]);
+
 
 
 
@@ -1786,6 +1803,7 @@ const handlePreviewFollow = async (targetSpeaker) => {
         followerId: currentUid,
         followingId: targetUserId,
       });
+      notifyNewFollower(targetUserId);
 
       const currentUserSnap = await getDoc(
         doc(db, "users", currentUid)
@@ -2685,6 +2703,7 @@ useEffect(() => {
   // handler). Replaying it from the Firestore echo made the banner + animation
   // restart a moment later — that was the visible "double / late gift" glitch.
   if (gift.senderId === currentUid) return;
+  if (blockedRef.current.has(gift.senderId)) return; // BLOCK
 
   const now = Date.now();
 

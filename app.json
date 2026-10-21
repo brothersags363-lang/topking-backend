@@ -1,4 +1,4 @@
-﻿{
+{
   "expo": {
     "name": "TopKing",
     "slug": "TopKingApp",
@@ -7,54 +7,33 @@
     "icon": "./assets/images/icon.png",
     "scheme": "topking",
     "userInterfaceStyle": "automatic",
-
     "splash": {
       "image": "./assets/images/splash-icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
-
     "ios": {
       "supportsTablet": true
     },
-
     "android": {
       "package": "com.gufran.topking",
       "googleServicesFile": "./google-services.json",
       "softwareKeyboardLayoutMode": "resize",
-
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-
       "predictiveBackGestureEnabled": false,
-
-      "intentFilters": [
-        {
-          "action": "VIEW",
-          "autoVerify": true,
-          "data": [
-            { "scheme": "https", "host": "topking.app", "pathPrefix": "/profile" },
-            { "scheme": "https", "host": "topking.app", "pathPrefix": "/video" },
-            { "scheme": "https", "host": "topking.app", "pathPrefix": "/live" }
-          ],
-          "category": ["BROWSABLE", "DEFAULT"]
-        }
-      ],
-
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS"
       ]
     },
-
     "web": {
       "bundler": "metro",
       "output": "static",
       "favicon": "./assets/images/favicon.png",
-
       "config": {
         "firebase": {
           "apiKey": "AIzaSyC-YNSr0thwC9_ZJ362sSF1xBFThUIESAo",
@@ -66,10 +45,8 @@
         }
       }
     },
-
     "plugins": [
       "expo-router",
-
       [
         "expo-camera",
         {
@@ -77,14 +54,12 @@
           "microphonePermission": "Allow Top King to access your microphone."
         }
       ],
-
       [
         "expo-image-picker",
         {
           "photosPermission": "Allow Top King to access your photos."
         }
       ],
-
       "expo-web-browser",
       "@react-native-google-signin/google-signin",
       [
@@ -93,26 +68,31 @@
           "microphonePermission": "Allow Top King to access your microphone."
         }
       ],
-
       "expo-video",
       "expo-asset",
       "expo-font",
       "@react-native-firebase/app",
-      "@react-native-firebase/messaging"
+      "@react-native-firebase/messaging",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "enableProguardInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true
+          }
+        }
+      ],
+      "./plugins/withLargeHeap"
     ],
-
     "experiments": {
       "typedRoutes": true
     },
-
     "extra": {
       "router": {},
       "eas": {
         "projectId": "52c2fdc6-d21d-4ed3-8b9b-61c4571c6459"
       }
     },
-
     "owner": "mdgufranmd"
   }
 }
-

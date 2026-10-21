@@ -1,3 +1,4 @@
+import { GIF_KEYS, gifSource } from '../../assets/emojiGifs';
 import React, { memo, useMemo } from 'react';
 import {
   View, Text, Image, Modal, FlatList, TouchableOpacity, Pressable, StyleSheet, ScrollView,
@@ -36,8 +37,8 @@ const Verified = ({ user }) =>
   ) : null;
 
 // ---------- viewers ----------
-const ViewerRow = memo(({ user, canKick, onKick }) => (
-  <View style={s.row}>
+const ViewerRow = memo(({ user, canKick, onKick, onPressUser }) => (
+  <TouchableOpacity style={s.row} activeOpacity={0.7} onPress={() => onPressUser && onPressUser(user)}>
     <View style={s.avaWrap}>
       <Image source={{ uri: user.img || user.userImg || AVATAR }} style={s.ava} />
       {((user.level || 0) >= 10 || !!(user.uid || user.userId)) && (
@@ -57,10 +58,10 @@ const ViewerRow = memo(({ user, canKick, onKick }) => (
         <Text style={s.kickTxt}>Remove</Text>
       </TouchableOpacity>
     )}
-  </View>
+  </TouchableOpacity>
 ));
 
-export const ViewersSheet = ({ visible, onClose, users, isHost, onKick }) => (
+export const ViewersSheet = ({ visible, onClose, users, isHost, onKick, onUserPress }) => (
   <Sheet visible={visible} onClose={onClose} title={`Viewers · ${users.length}`} tall>
     <FlatList
       data={users}
@@ -69,7 +70,7 @@ export const ViewersSheet = ({ visible, onClose, users, isHost, onKick }) => (
       windowSize={5}
       showsVerticalScrollIndicator={false}
       ListEmptyComponent={<Text style={s.empty}>Abhi koi viewer nahi hai</Text>}
-      renderItem={({ item }) => <ViewerRow user={item} canKick={isHost} onKick={onKick} />}
+      renderItem={({ item }) => <ViewerRow user={item} canKick={isHost} onKick={onKick} onPressUser={onUserPress} />}
     />
   </Sheet>
 );
@@ -149,6 +150,11 @@ export const RoomMenuSheet = ({ visible, onClose, isHost, locked, onToggleLock, 
 const EMOJIS = ['😂', '🔥', '👏', '😍', '🥳', '😮', '💯', '🙏'];
 export const EmojiStrip = memo(({ onPick }) => (
   <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.emojiRow} keyboardShouldPersistTaps="handled">
+    {GIF_KEYS.map((g) => (
+      <TouchableOpacity key={g} style={s.emojiBtn} onPress={() => onPick(g)}>
+        <Image source={gifSource(g)} style={{ width: 38, height: 38 }} resizeMode="contain" />
+      </TouchableOpacity>
+    ))}
     {EMOJIS.map((e) => (
       <TouchableOpacity key={e} style={s.emojiBtn} onPress={() => onPick(e)}>
         <Text style={{ fontSize: 22 }}>{e}</Text>

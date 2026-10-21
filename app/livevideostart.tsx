@@ -14,6 +14,7 @@
 //  • Flip camera button, bad-word clean title, safe-area aware layout.
 //  • Profile fallbacks (name / photoURL) so "Host" and empty avatars don't appear.
 
+import { notifyLiveStarted } from "../utils/pushNotify";
 import React, { useEffect, useState, useCallback } from "react";
 import {
   View,
@@ -202,6 +203,7 @@ export default function VideoLiveStart() {
       };
 
       await setDoc(doc(db, "rooms", roomId), liveData);
+      notifyLiveStarted(roomId); // followers ko push
 
       // release the camera BEFORE the live screen (Agora) takes it
       setCameraOn(false);

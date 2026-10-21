@@ -32,6 +32,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // FIREBASE IMPORT
 import { db, auth } from '../firebaseConfig';
 import LevelFrame from '../../components/LevelFrame';
+import { useBlockedIds } from '../../utils/useBlockedIds';
 
 import {
   collection,
@@ -1170,8 +1171,12 @@ export default function ExplorePage() {
   const pathname = usePathname();
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<any[]>([]);
-  const [videoResults, setVideoResults] = useState<any[]>([]);
+  const { blocked: blockedIds } = useBlockedIds();
+  const [rawSearchResults, setSearchResults] = useState<any[]>([]);
+  const [rawVideoResults, setVideoResults] = useState<any[]>([]);
+  // BLOCK: search me blocked users / unke videos nahi dikhenge
+  const searchResults = useMemo(() => rawSearchResults.filter((u: any) => !blockedIds.has(u.id)), [rawSearchResults, blockedIds]);
+  const videoResults = useMemo(() => rawVideoResults.filter((v: any) => !blockedIds.has(v.userId)), [rawVideoResults, blockedIds]);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'accounts' | 'videos'>('accounts');
 
@@ -1734,7 +1739,7 @@ export default function ExplorePage() {
                   initialNumToRender={10}
                   maxToRenderPerBatch={10}
                   windowSize={7}
-                  removeClippedSubviews
+                  removeClippedSubviews={false}
                   ListEmptyComponent={
                     !loading ? <Text style={styles.emptyText}>No accounts found</Text> : null
                   }
@@ -1755,7 +1760,7 @@ export default function ExplorePage() {
                   initialNumToRender={12}
                   maxToRenderPerBatch={9}
                   windowSize={5}
-                  removeClippedSubviews
+                  removeClippedSubviews={false}
                   ListEmptyComponent={
                     !loading ? <Text style={styles.emptyText}>No videos found</Text> : null
                   }

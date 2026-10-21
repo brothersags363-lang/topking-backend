@@ -277,7 +277,7 @@ export default function TopGifters() {
           keyExtractor={keyExtractor}
           showsVerticalScrollIndicator={true}
           nestedScrollEnabled={true}
-          removeClippedSubviews={true}
+          removeClippedSubviews={false}
           initialNumToRender={15}
           maxToRenderPerBatch={15}
           windowSize={7}
