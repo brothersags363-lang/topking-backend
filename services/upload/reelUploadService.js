@@ -14,6 +14,8 @@
 
 import axios from "axios";
 import { Platform } from "react-native";
+import * as FileSystem from "expo-file-system/legacy";
+import * as VideoThumbnails from "expo-video-thumbnails";
 import {
   collection,
   addDoc,
@@ -33,9 +35,11 @@ const API = "https://topking-backend.onrender.com";
 // overload tha). Aisi retryable errors par hum khud thodi der ruk kar
 // dobara try karte hain, taaki user ko manually dobara Share na dabana
 // pade.
-const RETRYABLE_STATUS = [502, 503, 504];
+const RETRYABLE_STATUS = [408, 502, 503, 504, 524];
 
 function isRetryableError(error) {
+  // Response hi nahi aaya (net toota / timeout) -> dobara try karo.
+  if (!error?.response) return true;
   const status = error?.response?.status;
   const retryableFlag = error?.response?.data?.retryable;
   return retryableFlag === true || RETRYABLE_STATUS.includes(status);
@@ -65,6 +69,108 @@ async function postWithRetry(url, formData, config, { maxRetries = 2, label = ""
       setUploadState({ retrying: false });
     }
   }
+}
+
+// ---------------------------------------------------------------
+// DIRECT UPLOAD (app -> Cloudflare R2, Render server beech me nahi)
+// Badi video 5-8 min le tab bhi chalta rehta hai; net toote to
+// khud dobara try karta hai (exponential backoff), user ko kuch
+// dobara nahi dabana padta.
+// ---------------------------------------------------------------
+async function ensureFileUri(uri) {
+  const u = String(uri);
+  if (u.startsWith("file://")) return u;
+  // content:// jaise uri ko cache me copy karo taaki native uploader padh sake
+  const dest = `${FileSystem.cacheDirectory}reel-${Date.now()}.mp4`;
+  await FileSystem.copyAsync({ from: u, to: dest });
+  return dest;
+}
+
+async function putFileWithRetry(uploadUrl, fileUri, contentType, onProgress, maxAttempts = 6) {
+  let lastErr = new Error("Upload failed");
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const task = FileSystem.createUploadTask(
+        uploadUrl,
+        fileUri,
+        {
+          httpMethod: "PUT",
+          uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+          headers: { "Content-Type": contentType },
+        },
+        (p) => {
+          if (onProgress && p?.totalBytesExpectedToSend) {
+            onProgress(p.totalBytesSent / p.totalBytesExpectedToSend);
+          }
+        }
+      );
+      const res = await task.uploadAsync();
+      if (res && res.status >= 200 && res.status < 300) return;
+
+      lastErr = new Error(`Upload failed (status ${res?.status})`);
+      // 4xx (jaise 403 = link expire/signature galat) dobara try karne se theek nahi hoga
+      if (res && res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429) {
+        lastErr.nonRetryable = true;
+        throw lastErr;
+      }
+    } catch (e) {
+      lastErr = e;
+      if (e?.nonRetryable) throw e;
+    }
+
+    if (attempt < maxAttempts) {
+      const waitMs = Math.min(30000, 2000 * 2 ** (attempt - 1));
+      console.log(`⏳ direct upload failed, retry ${attempt}/${maxAttempts - 1} in ${waitMs / 1000}s`);
+      setUploadState({ retrying: true, retryAttempt: attempt });
+      await sleep(waitMs);
+      setUploadState({ retrying: false });
+    }
+  }
+  throw lastErr;
+}
+
+async function uploadDirectToR2(videoUri, token) {
+  const urlRes = await postWithRetry(
+    `${API}/upload-url`,
+    {},
+    {
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      timeout: 60 * 1000,
+    },
+    { label: "upload url (/upload-url)" }
+  );
+  const urls = urlRes.data;
+  if (!urls?.success || !urls.videoUploadUrl || !urls.videoUrl) {
+    throw new Error(urls?.error || "Upload url missing");
+  }
+
+  const fileUri = await ensureFileUri(videoUri);
+
+  // Thumbnail pehle bana lo (fail ho to video ka url hi thumbnail ban jayega)
+  let thumbUri = null;
+  try {
+    const t = await VideoThumbnails.getThumbnailAsync(fileUri, { time: 1000, quality: 0.7 });
+    thumbUri = t?.uri || null;
+  } catch (e) {
+    console.log("thumbnail create failed:", e?.message);
+  }
+
+  setUploadState({ progress: 1 });
+  await putFileWithRetry(urls.videoUploadUrl, fileUri, "video/mp4", (frac) => {
+    setUploadState({ progress: Math.min(95, Math.max(1, Math.round(frac * 95))) });
+  });
+
+  let thumbnailUrl = "";
+  if (thumbUri && urls.thumbnailUploadUrl) {
+    try {
+      await putFileWithRetry(urls.thumbnailUploadUrl, thumbUri, "image/jpeg", null, 3);
+      thumbnailUrl = urls.thumbnailUrl || "";
+    } catch (e) {
+      console.log("thumbnail upload failed:", e?.message);
+    }
+  }
+
+  return { videoUrl: urls.videoUrl, thumbnailUrl };
 }
 
 /**
@@ -159,7 +265,7 @@ export async function startReelUpload(payload) {
             "Content-Type": "multipart/form-data",
             Authorization: `Bearer ${token}`,
           },
-          timeout: 5 * 60 * 1000,
+          timeout: 30 * 60 * 1000, // 30 min — dheemi net par bhi upload na toote
           onUploadProgress: (event) => {
             if (event.total && event.loaded) {
               const uploadedPercent = Math.round((event.loaded * 70) / event.total);
@@ -182,6 +288,19 @@ export async function startReelUpload(payload) {
     let uploadedVideo = finalVideo;
 
     if (!needsProcessing) {
+      // 1) Pehle seedha R2 par (tez + toot-ta nahi). 2) Agar server me
+      // /upload-url nahi hai ya fail ho jaye to purana /upload-video.
+      let direct = null;
+      try {
+        direct = await uploadDirectToR2(finalVideo, token);
+      } catch (e) {
+        console.log("Direct upload failed, purane route par fallback:", e?.message);
+      }
+
+      if (direct) {
+        uploadedVideo = direct.videoUrl;
+        thumbnailUrl = direct.thumbnailUrl || "";
+      } else {
       const formData = new FormData();
       formData.append("video", {
         uri: Platform.OS === "android" ? finalVideo : finalVideo.replace("file://", ""),
@@ -197,7 +316,7 @@ export async function startReelUpload(payload) {
             "Content-Type": "multipart/form-data",
             Authorization: `Bearer ${token}`,
           },
-          timeout: 5 * 60 * 1000,
+          timeout: 30 * 60 * 1000, // 30 min — dheemi net par bhi upload na toote
           onUploadProgress: (event) => {
             if (event.total && event.loaded) {
               setUploadState({ progress: Math.round((event.loaded * 100) / event.total) });
@@ -213,6 +332,7 @@ export async function startReelUpload(payload) {
 
       uploadedVideo = response.data.videoUrl;
       thumbnailUrl = response.data.thumbnailUrl || "";
+      }
     }
 
     setUploadState({ progress: 100 });

@@ -191,7 +191,7 @@ app.use(
 app.use((req, res, next) => {
 
   res.setTimeout(
-    10 * 60 * 1000,
+    30 * 60 * 1000,
     () => {
 
       if (!res.headersSent) {
@@ -1951,8 +1951,17 @@ app.post(
         userSnap.data();
 
 
+      // Lock tabhi maano jab wo taaza ho (30 min se kam purana).
+      // Pehle agar server upload ke beech crash/restart ho jaye to
+      // uploadStatus hamesha true reh jata tha aur har naya video
+      // "Another upload is already in progress" se fail hota tha.
+      const LOCK_TTL_MS = 30 * 60 * 1000;
+      const lockAge =
+        Date.now() - (Number(userData.uploadStartedAt) || 0);
+
       if (
-        userData.uploadStatus === true
+        userData.uploadStatus === true &&
+        lockAge < LOCK_TTL_MS
       ) {
 
         return res.status(409).json({
@@ -1983,6 +1992,8 @@ app.post(
       await userRef.update({
 
         uploadStatus: true,
+
+        uploadStartedAt: Date.now(),
 
       });
 
@@ -2203,6 +2214,94 @@ app.post(
 
 );
 
+
+// =====================================================
+// DIRECT UPLOAD URLS
+// App video ko seedha Cloudflare R2 par bhejta hai (Render server
+// beech me nahi aata). Isse upload tez hota hai, Render/Cloudflare
+// ke 100s timeout aur ffmpeg ki memory problem se bachta hai, aur
+// 5-8 min lage tab bhi toot-ta nahi.
+// Server sirf ek chhota signed URL deta hai (2 ghante valid).
+// =====================================================
+let getSignedUrl = null;
+try {
+  ({ getSignedUrl } = require("@aws-sdk/s3-request-presigner"));
+} catch (e) {
+  console.warn(
+    "s3-request-presigner not installed -> /upload-url disabled (app purane /upload-video par fallback karega)"
+  );
+}
+
+// Presign ke liye alag client: naye AWS SDK default me checksum
+// params URL me daal dete hain jo R2 reject kar deta hai.
+const r2Presign = new S3Client({
+  region: "auto",
+  endpoint: process.env.R2_ENDPOINT,
+  credentials: {
+    accessKeyId: process.env.R2_ACCESS_KEY_ID,
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+  },
+  requestChecksumCalculation: "WHEN_REQUIRED",
+  responseChecksumValidation: "WHEN_REQUIRED",
+});
+
+app.post(
+  "/upload-url",
+  uploadLimiter,
+  verifyUser,
+  async (req, res) => {
+    try {
+      if (!getSignedUrl) {
+        return res.status(501).json({
+          success: false,
+          error: "Direct upload not available",
+        });
+      }
+
+      const fileId = crypto.randomUUID();
+      const videoKey = `${fileId}.mp4`;
+      const thumbnailKey = `${fileId}.jpg`;
+      const expiresIn = 2 * 60 * 60;
+
+      const [videoUploadUrl, thumbnailUploadUrl] = await Promise.all([
+        getSignedUrl(
+          r2Presign,
+          new PutObjectCommand({
+            Bucket: process.env.R2_BUCKET,
+            Key: videoKey,
+            ContentType: "video/mp4",
+          }),
+          { expiresIn }
+        ),
+        getSignedUrl(
+          r2Presign,
+          new PutObjectCommand({
+            Bucket: process.env.R2_BUCKET,
+            Key: thumbnailKey,
+            ContentType: "image/jpeg",
+          }),
+          { expiresIn }
+        ),
+      ]);
+
+      const base = String(process.env.R2_PUBLIC_URL || "").replace(/\/+$/, "");
+
+      return res.json({
+        success: true,
+        videoUploadUrl,
+        thumbnailUploadUrl,
+        videoUrl: `${base}/${videoKey}`,
+        thumbnailUrl: `${base}/${thumbnailKey}`,
+      });
+    } catch (e) {
+      console.error("UPLOAD-URL ERROR:", e.message);
+      return res.status(500).json({
+        success: false,
+        error: "Could not create upload url",
+      });
+    }
+  }
+);
 
 // =====================================================
 // SEND MESSAGE NOTIFICATION
@@ -4154,6 +4253,24 @@ try {
   }
 }
 
+// Push notifications: live start, like milestones, new follower.
+// notifications.js optional hai: na mile to server phir bhi start hota hai.
+try {
+  require("./notifications")({
+    app,
+    db,
+    admin,
+    verifyUser,
+    rateLimit,
+  });
+} catch (e) {
+  if (e && e.code === "MODULE_NOT_FOUND" && String(e.message).includes("notifications")) {
+    console.warn("notifications.js not found - live/like/follow push disabled");
+  } else {
+    throw e;
+  }
+}
+
 // Unknown route -> JSON 404 (log ke saath)
 app.use((req, res) => {
   console.warn(`404 NOT FOUND: ${req.method} ${req.path}`);
@@ -4187,6 +4304,13 @@ const server =
 
   );
 
+
+// Node ka default requestTimeout 5 min hai — dheemi net par badi video
+// 5 min se zyada leti to server request kaat deta tha. Ab 30 min.
+server.requestTimeout = 30 * 60 * 1000;
+server.headersTimeout = 65 * 1000;
+server.keepAliveTimeout = 65 * 1000;
+server.timeout = 0;
 
 // =====================================================
 // KEEP WARM (Render free plan 15 min idle par so jata hai -> pehla
