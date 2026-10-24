@@ -1119,12 +1119,17 @@ function safeSizeRatio(value) {
   );
 }
 
+// Extra filters (Glossy, Sunset, Clarendon, ...) live in one shared file
+// that the app also uses, so names can never get out of sync.
+const FILTER_LIBRARY = require("./constants/filterLibrary");
+
 function safeVideoEffect(value) {
   const allowed = [
     "none",
     "vivid",
     "soft",
     "bw",
+    ...FILTER_LIBRARY.ids(),
   ];
 
   return allowed.includes(value)
@@ -1570,6 +1575,10 @@ app.post(
           visualFilters.push("eq=saturation=0.85:contrast=0.95:brightness=0.03");
         } else if (videoEffect === "bw") {
           visualFilters.push("hue=s=0");
+        } else if (FILTER_LIBRARY.get(videoEffect)) {
+          visualFilters.push(
+            ...FILTER_LIBRARY.toFfmpegChain(FILTER_LIBRARY.get(videoEffect))
+          );
         }
 
         if (hasSubtitle && subtitlePath) {
@@ -3503,6 +3512,240 @@ app.post("/official/delete-agency", generalLimiter, verifyUser, requireOfficialO
     return res.status(500).json({ success: false, error: "Server error" });
   }
 });
+
+// =====================================================================
+// OFFICIAL ROUTES (missing the wale) - server.js me
+// "/official/delete-agency" route ke BAAD paste karo
+// (requireOfficialOrAdmin, cleanText, isValidUid, userBrief, isAdminUser upar already hain)
+// =====================================================================
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// official panel ke liye user ka poora brief
+function officialUserBrief(id, d) {
+  return {
+    uid: id,
+    username: d.username || "",
+    name: d.name || d.realName || "",
+    profileImg: d.profileImg || "",
+    level: d.level || 1,
+    isBD: d.isBD === true,
+    isOfficial: d.isOfficial === true,
+    banned: d.banned === true,
+    agencyId: d.agencyId || "",
+    agencyName: d.agencyName || "",
+    isAgencyOwner: d.isAgencyOwner === true,
+    entryBanUntil: Number(d.entryBanUntil) > Date.now() ? Number(d.entryBanUntil) : 0,
+    liveBanUntil: Number(d.liveBanUntil) > Date.now() ? Number(d.liveBanUntil) : 0,
+  };
+}
+
+// body: { q } -> username prefix search (max 15)
+app.post("/official/search-users", generalLimiter, verifyUser, requireOfficialOrAdmin, async (req, res) => {
+  try {
+    const raw = cleanText(req.body && req.body.q, 40).replace(/^@/, "");
+    if (raw.length < 1) return res.json({ success: true, users: [] });
+
+    const variants = Array.from(new Set([raw.toLowerCase(), raw]));
+    const found = new Map();
+    for (const q of variants) {
+      const snap = await db
+        .collection("users")
+        .where("username", ">=", q)
+        .where("username", "<=", q + "\uf8ff")
+        .orderBy("username")
+        .limit(15)
+        .get();
+      snap.docs.forEach((d) => found.set(d.id, officialUserBrief(d.id, d.data())));
+    }
+    return res.json({ success: true, users: Array.from(found.values()).slice(0, 15) });
+  } catch (e) {
+    console.error("OFFICIAL SEARCH USERS ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// body: { uid } -> BD banao
+app.post("/official/add-bd", generalLimiter, verifyUser, requireOfficialOrAdmin, async (req, res) => {
+  try {
+    const uid = String((req.body && req.body.uid) || "");
+    if (!isValidUid(uid)) return res.status(400).json({ success: false, error: "Invalid user" });
+    const uSnap = await db.collection("users").doc(uid).get();
+    if (!uSnap.exists) return res.status(404).json({ success: false, error: "User not found" });
+
+    const existing = await db.collection("bds").doc(uid).get();
+    if (existing.exists && existing.data().active !== false) {
+      return res.status(400).json({ success: false, error: "Ye user pehle se BD hai" });
+    }
+    const u = uSnap.data();
+    await db.collection("bds").doc(uid).set(
+      {
+        uid,
+        username: u.username || "",
+        profileImg: u.profileImg || "",
+        active: true,
+        addedBy: req.user.uid,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    await db.collection("users").doc(uid).set({ isBD: true }, { merge: true });
+    console.log(`OFFICIAL ADD BD: by=${req.user.uid} bd=${uid}`);
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("OFFICIAL ADD BD ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// body: { uid, agencyName, ownerName } -> user ko agency do (owner bana do)
+app.post("/official/create-agency", generalLimiter, verifyUser, requireOfficialOrAdmin, async (req, res) => {
+  try {
+    const uid = String((req.body && req.body.uid) || "");
+    const agencyName = cleanText(req.body && req.body.agencyName, 80);
+    const ownerName = cleanText(req.body && req.body.ownerName, 80);
+    if (!isValidUid(uid)) return res.status(400).json({ success: false, error: "Invalid user" });
+    if (!agencyName) return res.status(400).json({ success: false, error: "Agency ka naam daalo" });
+
+    const uSnap = await db.collection("users").doc(uid).get();
+    if (!uSnap.exists) return res.status(404).json({ success: false, error: "User not found" });
+    const u = uSnap.data();
+    if (u.agencyId) {
+      return res.status(400).json({ success: false, error: "Ye user pehle se kisi agency me hai" });
+    }
+
+    const agencyRef = db.collection("agencies").doc();
+    const batch = db.batch();
+    batch.set(agencyRef, {
+      agencyName,
+      ownerName: ownerName || u.name || u.username || "",
+      ownerUsername: u.username || "",
+      ownerUserId: uid,
+      logo: "",
+      totalMembers: 0,
+      totalStars: 0,
+      status: "active",
+      createdByOfficial: req.user.uid,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    batch.set(
+      db.collection("users").doc(uid),
+      { agencyId: agencyRef.id, agencyName, isAgencyOwner: true, agencyApproved: true },
+      { merge: true }
+    );
+    await batch.commit();
+    console.log(`OFFICIAL CREATE AGENCY: by=${req.user.uid} owner=${uid} agency=${agencyRef.id}`);
+    return res.json({ success: true, agencyId: agencyRef.id });
+  } catch (e) {
+    console.error("OFFICIAL CREATE AGENCY ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// ID ban / unban (admin ko ya official ko ban nahi kar sakte)
+async function officialSetBan(req, res, ban) {
+  try {
+    const uid = String((req.body && req.body.uid) || "");
+    if (!isValidUid(uid)) return res.status(400).json({ success: false, error: "Invalid user" });
+    if (ban && uid === req.user.uid) {
+      return res.status(400).json({ success: false, error: "Apne aap ko ban nahi kar sakte" });
+    }
+    const uSnap = await db.collection("users").doc(uid).get();
+    if (!uSnap.exists) return res.status(404).json({ success: false, error: "User not found" });
+    if (ban && (uSnap.data().isOfficial === true || (await isAdminUser({ uid })))) {
+      return res.status(403).json({ success: false, error: "Admin / Official ko ban nahi kar sakte" });
+    }
+    await admin.auth().updateUser(uid, { disabled: ban });
+    if (ban) await admin.auth().revokeRefreshTokens(uid);
+    await db.collection("users").doc(uid).set({ banned: ban }, { merge: true });
+    console.log(`OFFICIAL ${ban ? "BAN" : "UNBAN"}: by=${req.user.uid} user=${uid}`);
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("OFFICIAL BAN ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+}
+app.post("/official/ban-user", generalLimiter, verifyUser, requireOfficialOrAdmin, (req, res) =>
+  officialSetBan(req, res, true)
+);
+app.post("/official/unban-user", generalLimiter, verifyUser, requireOfficialOrAdmin, (req, res) =>
+  officialSetBan(req, res, false)
+);
+
+// body: { uid, entryDays?, liveDays? }  days: 1/3/7/15/30, 0 = ban hatao
+// users/{uid}.entryBanUntil / liveBanUntil (firestore rules yahi padhte hain)
+// + liveBans/{uid} (app ka useLiveBanGuard yahi sunta hai)
+app.post("/official/live-restrict", generalLimiter, verifyUser, requireOfficialOrAdmin, async (req, res) => {
+  try {
+    const uid = String((req.body && req.body.uid) || "");
+    if (!isValidUid(uid)) return res.status(400).json({ success: false, error: "Invalid user" });
+    const hasEntry = req.body && req.body.entryDays !== undefined;
+    const hasLive = req.body && req.body.liveDays !== undefined;
+    if (!hasEntry && !hasLive) return res.status(400).json({ success: false, error: "Days daalo" });
+
+    const ALLOWED = [0, 1, 3, 7, 15, 30];
+    const userUpd = {};
+    const banUpd = { uid };
+    const del = admin.firestore.FieldValue.delete();
+
+    const apply = (field, days) => {
+      const d = Number(days);
+      if (!ALLOWED.includes(d)) throw Object.assign(new Error("Invalid days"), { code: 400 });
+      if (d === 0) {
+        userUpd[field] = del;
+        banUpd[field] = 0;
+      } else {
+        const until = Date.now() + d * DAY_MS;
+        userUpd[field] = until;
+        banUpd[field] = until;
+      }
+    };
+    if (hasEntry) apply("entryBanUntil", req.body.entryDays);
+    if (hasLive) apply("liveBanUntil", req.body.liveDays);
+
+    const uRef = db.collection("users").doc(uid);
+    const uSnap = await uRef.get();
+    if (!uSnap.exists) return res.status(404).json({ success: false, error: "User not found" });
+
+    banUpd.updatedBy = req.user.uid;
+    banUpd.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+    await uRef.set(userUpd, { merge: true });
+    await db.collection("liveBans").doc(uid).set(banUpd, { merge: true });
+    console.log(`OFFICIAL LIVE RESTRICT: by=${req.user.uid} user=${uid}`, JSON.stringify(req.body));
+    return res.json({ success: true });
+  } catch (e) {
+    if (e && e.code === 400) return res.status(400).json({ success: false, error: e.message });
+    console.error("OFFICIAL LIVE RESTRICT ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// jin users par abhi live ban hai
+app.post("/official/list-live-bans", generalLimiter, verifyUser, requireOfficialOrAdmin, async (req, res) => {
+  try {
+    const now = Date.now();
+    const [a, b] = await Promise.all([
+      db.collection("users").where("entryBanUntil", ">", now).limit(200).get(),
+      db.collection("users").where("liveBanUntil", ">", now).limit(200).get(),
+    ]);
+    const map = new Map();
+    [...a.docs, ...b.docs].forEach((d) => map.set(d.id, officialUserBrief(d.id, d.data())));
+    const bans = Array.from(map.values()).sort((x, y) => x.username.localeCompare(y.username));
+    return res.json({ success: true, bans });
+  } catch (e) {
+    console.error("OFFICIAL LIST BANS ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// =====================================================================
+// FIRESTORE RULES me add karo (app ka useLiveBanGuard liveBans/{uid} sunta hai):
+//
+//   match /liveBans/{uid} {
+//     allow read: if isOwner(uid) || isAdmin() || isOfficial();
+//     allow write: if false;
+//   }
+// =====================================================================
 
 // body: { agencyId } -> agency ke hosts (View ke liye)
 app.post("/bd/agency-hosts", generalLimiter, verifyUser, requireBD, async (req, res) => {
