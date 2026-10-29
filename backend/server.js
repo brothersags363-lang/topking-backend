@@ -159,6 +159,7 @@ app.use(
     allowedHeaders: [
       "Authorization",
       "Content-Type",
+      "x-device-id",
     ],
 
     credentials: false,
@@ -492,6 +493,42 @@ const r2 = new S3Client({
 
 
 // =====================================================
+// DEVICE BAN (helpers)
+// App har request me x-device-id bhejti hai. Raw ID kahin store nahi hoti,
+// sirf uska SHA-256 hash:
+//   devices/{hash}        -> { uids: [...], lastSeen }   (is device par kaun-kaun login hua)
+//   user_devices/{uid}    -> { hashes: [...] }           (user ke devices)
+//   banned_devices/{hash} -> ban record
+// Ye teeno collections sirf server (Admin SDK) se chalte hain.
+// =====================================================
+
+const deviceBanCache = new Map(); // hash -> { banned, exp }
+
+function deviceHash(raw) {
+  if (typeof raw !== "string") return null;
+  const id = raw.trim();
+  if (id.length < 8 || id.length > 200) return null;
+  return crypto.createHash("sha256").update(id).digest("hex");
+}
+
+async function isDeviceBanned(hash) {
+  if (!hash) return false;
+  const c = deviceBanCache.get(hash);
+  if (c && c.exp > Date.now()) return c.banned;
+  try {
+    const snap = await db.collection("banned_devices").doc(hash).get();
+    const banned = snap.exists;
+    if (deviceBanCache.size > 5000) deviceBanCache.clear();
+    deviceBanCache.set(hash, { banned, exp: Date.now() + 20000 });
+    return banned;
+  } catch (e) {
+    console.error("DEVICE BAN CHECK ERROR:", e.code || e.message);
+    return false; // Firestore down ho to sabko mat roko
+  }
+}
+
+
+// =====================================================
 // FIREBASE AUTH MIDDLEWARE
 // =====================================================
 
@@ -561,6 +598,16 @@ async function verifyUser(
 
 
     req.user = decodedToken;
+
+    // Banned device se koi bhi login-wali request nahi chalegi
+    req.deviceHash = deviceHash(req.headers["x-device-id"]);
+    if (req.deviceHash && (await isDeviceBanned(req.deviceHash))) {
+      return res.status(403).json({
+        success: false,
+        code: "DEVICE_BANNED",
+        error: "This device has been banned",
+      });
+    }
 
     next();
 
@@ -2989,6 +3036,160 @@ app.post("/admin/ban-user", generalLimiter, verifyUser, requireAdminDoc, (req, r
 );
 app.post("/admin/unban-user", generalLimiter, verifyUser, requireAdminDoc, (req, res) =>
   setUserBan(req, res, false)
+);
+
+// =====================================================
+// DEVICE BAN: register / check / admin ban + unban
+// =====================================================
+
+// App login ke baad is device ko user se jodti hai (har app launch par ek baar)
+app.post("/device/register", generalLimiter, verifyUser, async (req, res) => {
+  try {
+    const dh = req.deviceHash || deviceHash(req.body && req.body.deviceId);
+    if (!dh) {
+      return res.status(400).json({ success: false, error: "Invalid device" });
+    }
+    if (await isDeviceBanned(dh)) {
+      return res.status(403).json({
+        success: false,
+        code: "DEVICE_BANNED",
+        error: "This device has been banned",
+      });
+    }
+    const uid = req.user.uid;
+    const platform = String((req.body && req.body.platform) || "").slice(0, 20);
+    const FV = admin.firestore.FieldValue;
+    await Promise.all([
+      db.collection("devices").doc(dh).set(
+        { uids: FV.arrayUnion(uid), platform, lastSeen: FV.serverTimestamp() },
+        { merge: true }
+      ),
+      db.collection("user_devices").doc(uid).set(
+        { hashes: FV.arrayUnion(dh), updatedAt: FV.serverTimestamp() },
+        { merge: true }
+      ),
+      db.collection("users").doc(uid).set({ deviceRegistered: true }, { merge: true }),
+    ]);
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("DEVICE REGISTER ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// Login screen / app start (bina login) - kya ye device banned hai?
+app.post("/device/check", generalLimiter, async (req, res) => {
+  try {
+    const dh = deviceHash((req.body && req.body.deviceId) || req.headers["x-device-id"]);
+    if (!dh) return res.json({ success: true, banned: false });
+    return res.json({ success: true, banned: await isDeviceBanned(dh) });
+  } catch (e) {
+    return res.json({ success: true, banned: false });
+  }
+});
+
+async function setDeviceBan(req, res, ban) {
+  try {
+    const uid = String((req.body && req.body.uid) || "");
+    if (!isValidUid(uid)) {
+      return res.status(400).json({ success: false, error: "Invalid user" });
+    }
+    const reason = String((req.body && req.body.reason) || "").slice(0, 200);
+
+    const udSnap = await db.collection("user_devices").doc(uid).get();
+    const hashes =
+      udSnap.exists && Array.isArray(udSnap.data().hashes) ? udSnap.data().hashes : [];
+    if (!hashes.length) {
+      return res.status(404).json({
+        success: false,
+        error:
+          "Is user ka device abhi register nahi hai. User ko updated app ek baar kholni hogi.",
+      });
+    }
+
+    if (ban) {
+      if (uid === req.user.uid || (req.deviceHash && hashes.includes(req.deviceHash))) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Apna khud ka device ban nahi kar sakte" });
+      }
+    }
+
+    // Is device par jitne bhi accounts login hue
+    const linked = new Set([uid]);
+    const devSnaps = await Promise.all(
+      hashes.map((h) => db.collection("devices").doc(h).get())
+    );
+    devSnaps.forEach((d) => {
+      if (d.exists && Array.isArray(d.data().uids)) {
+        d.data().uids.forEach((u) => isValidUid(u) && linked.add(u));
+      }
+    });
+
+    const FV = admin.firestore.FieldValue;
+    for (const h of hashes) {
+      if (ban) {
+        await db.collection("banned_devices").doc(h).set({
+          uid,
+          reason,
+          bannedBy: req.user.uid,
+          createdAt: FV.serverTimestamp(),
+        });
+      } else {
+        await db.collection("banned_devices").doc(h).delete();
+      }
+      deviceBanCache.delete(h);
+    }
+
+    for (const u of linked) {
+      try {
+        if (await isAdminUser({ uid: u })) continue; // admin account kabhi band nahi
+        const uRef = db.collection("users").doc(u);
+        const uSnap = await uRef.get();
+        const ud = uSnap.exists ? uSnap.data() : {};
+
+        if (ban) {
+          if (ud.deviceBanned !== true) {
+            // pehle se normal-ban tha to unban par wapas chalu na ho
+            await admin.auth().updateUser(u, { disabled: true });
+            await admin.auth().revokeRefreshTokens(u);
+            if (uSnap.exists) {
+              await uRef.set(
+                { banned: true, deviceBanned: true, banBeforeDevice: ud.banned === true },
+                { merge: true }
+              );
+            }
+          }
+        } else if (ud.deviceBanned === true) {
+          const keepBanned = ud.banBeforeDevice === true;
+          if (!keepBanned) await admin.auth().updateUser(u, { disabled: false });
+          await uRef.set(
+            {
+              deviceBanned: false,
+              banned: keepBanned,
+              banBeforeDevice: FV.delete(),
+            },
+            { merge: true }
+          );
+        }
+      } catch (e) {
+        console.error("DEVICE BAN ACCOUNT ERROR:", u, e.code || e.message);
+      }
+    }
+
+    console.log(`ADMIN DEVICE ${ban ? "BAN" : "UNBAN"}: uid=${uid} devices=${hashes.length} accounts=${linked.size}`);
+    return res.json({ success: true, devices: hashes.length, accounts: linked.size });
+  } catch (e) {
+    console.error("ADMIN DEVICE BAN ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+}
+
+app.post("/admin/ban-device", generalLimiter, verifyUser, requireAdminDoc, (req, res) =>
+  setDeviceBan(req, res, true)
+);
+app.post("/admin/unban-device", generalLimiter, verifyUser, requireAdminDoc, (req, res) =>
+  setDeviceBan(req, res, false)
 );
 
 // =====================================================
