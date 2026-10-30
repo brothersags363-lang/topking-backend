@@ -75,6 +75,29 @@ export default function AdminUserProfile() {
     );
   };
 
+  const toggleDeviceBan = () => {
+    const ban = !user.deviceBanned;
+    Alert.alert(
+      ban ? "Device ban karna hai?" : "Device unban karna hai?",
+      ban
+        ? "Is user ka device ban ho jayega. Us device se ye user ya koi naya account kuch nahi kar payega, aur us device par login hue saare accounts band ho jayenge."
+        : "Device aur us par band hue accounts wapas chalu ho jayenge.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: ban ? "Ban Device" : "Unban Device",
+          style: ban ? "destructive" : "default",
+          onPress: () =>
+            run(
+              ban ? "/admin/ban-device" : "/admin/unban-device",
+              { uid: user.id },
+              ban ? "Device ban ho gaya" : "Device unban ho gaya"
+            ),
+        },
+      ]
+    );
+  };
+
   const deleteUser = () =>
     Alert.alert(
       "Delete ID?",
@@ -135,6 +158,8 @@ export default function AdminUserProfile() {
     ["User ID", user.id],
     ["Reports", user.reportCount || 0],
     ["Banned", user.banned ? "Yes" : "No"],
+    ["Device banned", user.deviceBanned ? "Yes" : "No"],
+    ["Device linked", user.deviceRegistered ? "Yes" : "No (user ne updated app abhi nahi kholi)"],
     ["Videos", videos.length],
   ];
 
@@ -156,6 +181,16 @@ export default function AdminUserProfile() {
         onPress={toggleBan}
       >
         <Text style={styles.actionText}>{user.banned ? "Unban User" : "Ban User"}</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        disabled={busy}
+        style={[styles.actionBtn, { backgroundColor: user.deviceBanned ? "#27ae60" : "#8e1b1b" }]}
+        onPress={toggleDeviceBan}
+      >
+        <Text style={styles.actionText}>
+          {user.deviceBanned ? "Unban Device" : "Ban Device"}
+        </Text>
       </TouchableOpacity>
 
       <TouchableOpacity

@@ -28,7 +28,9 @@ function notify(uid, frame) {
   if (set) set.forEach((fn) => fn(frame));
 }
 
-function fetchFrame(uid) {
+const MAX_RETRY = 3;
+
+function fetchFrame(uid, attempt = 0) {
   if (inflight.has(uid)) return inflight.get(uid);
   const p = getDoc(doc(db, 'users', uid))
     .then((snap) => {
@@ -39,8 +41,14 @@ function fetchFrame(uid) {
       return frame;
     })
     .catch(() => {
-      cache.set(uid, { frame: null, t: Date.now() - TTL_MS + 30000 }); // 30s baad dobara try
-      return null;
+      // FIX: fail hone par "frame nahi hai" cache NAHI karte (pehle null cache ho jata tha
+      // aur frame gayab rehta tha). Thodi der baad khud dobara try karte hain.
+      if (attempt < MAX_RETRY) {
+        setTimeout(() => {
+          if (listeners.has(uid)) fetchFrame(uid, attempt + 1);
+        }, 1500 * (attempt + 1));
+      }
+      return undefined;
     })
     .finally(() => inflight.delete(uid));
   inflight.set(uid, p);
@@ -62,7 +70,8 @@ export function useAdminFrame(uid) {
   useEffect(() => {
     if (!uid || typeof uid !== 'string') { setFrame(null); return undefined; }
     const c = cache.get(uid);
-    if (c) setFrame(c.frame);
+    // FIX: cache na ho to purane user ka frame mat rakho (seat par user badalne par galat frame dikhta tha)
+    setFrame(c ? c.frame : null);
     if (!c || Date.now() - c.t > TTL_MS) fetchFrame(uid);
     let set = listeners.get(uid);
     if (!set) { set = new Set(); listeners.set(uid, set); }

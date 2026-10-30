@@ -1,0 +1,7 @@
+{
+  "projects": {
+    "firebase deploy --only functions": "kingofftop-2af35"
+  },
+  "targets": {},
+  "etags": {}
+}

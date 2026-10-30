@@ -46,6 +46,7 @@ import {
   useNavigation,
   useFocusEffect,
 } from 'expo-router';
+import UserTick from "../components/UserTick";
 
 const { width } = Dimensions.get('window');
 
@@ -80,7 +81,10 @@ const FriendRow = memo(
           style={styles.profile}
         />
 
-        <Text style={styles.name}>@{item.username}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+          <Text style={[styles.name, { flexShrink: 1 }]}>@{item.username}</Text>
+          <UserTick uid={item.id || item.uid || item.userId} verified={!!item.verified} verifiedColor={item.verifiedColor} size={12} />
+        </View>
 
         <View
           style={[styles.circle, isSelected && styles.selected]}

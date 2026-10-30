@@ -78,6 +78,7 @@ import {
   runTransaction,
   writeBatch,
 } from "firebase/firestore";
+import UserTick, { isFaceVerified } from '../components/UserTick';
 
 // ==========================================
 // CONSTANTS
@@ -805,6 +806,7 @@ export default function ChatScreen() {
   const [userLevel, setUserLevel] = useState(1);
   const [verified, setVerified] = useState(false);
   const [verifiedColor, setVerifiedColor] = useState("white");
+  const [faceVerified, setFaceVerified] = useState(false);
   const [otherOnline, setOtherOnline] = useState(false);
   const [otherLastSeen, setOtherLastSeen] = useState<any>(null);
   const [otherTyping, setOtherTyping] = useState(false);
@@ -912,6 +914,7 @@ export default function ChatScreen() {
         const d: any = snap.data();
         setVerified(d.verified === true);
         setVerifiedColor(d.verifiedColor || "white");
+        setFaceVerified(isFaceVerified(d));
         setOtherOnline(d.online === true);
         setOtherLastSeen(d.lastSeen || null);
       },
@@ -2293,15 +2296,7 @@ export default function ChatScreen() {
                   {String(username)}
                 </Text>
 
-                {verified && (
-                  <View style={styles.verifiedWrap}>
-                    <MaterialCommunityIcons
-                      name="check-decagram"
-                      size={18}
-                      color={verifiedColor === "yellow" ? "#FFD700" : "#ffffff"}
-                    />
-                  </View>
-                )}
+                <UserTick verified={verified} verifiedColor={verifiedColor} faceVerified={faceVerified} size={18} />
 
                 <View
                   style={[

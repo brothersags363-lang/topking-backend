@@ -20,6 +20,7 @@ import { auth, db } from "./firebaseConfig";
 import { Ionicons } from "@expo/vector-icons";
 import { Image as ExpoImage } from "expo-image";
 import { useRouter } from "expo-router";
+import UserTick from "../components/UserTick";
 
 // Fast, cached avatar - memory-disk cache means an already-seen gifter's
 // photo shows up instantly instead of re-downloading, with a smooth
@@ -73,9 +74,12 @@ const GifterRow = memo(function GifterRow({ item, rank, onOpenProfile }) {
       </TouchableOpacity>
 
       {/* USERNAME */}
-      <Text numberOfLines={1} ellipsizeMode="tail" style={styles.gifterName}>
-        {item.username ? `@${item.username}` : item.name || "User"}
-      </Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+        <Text numberOfLines={1} ellipsizeMode="tail" style={[styles.gifterName, { flexShrink: 1 }]}>
+          {item.username ? `@${item.username}` : item.name || "User"}
+        </Text>
+        <UserTick uid={item.uid} verified={!!item.verified} verifiedColor={item.verifiedColor} size={13} />
+      </View>
 
       {/* GIFTING STARS */}
       <View style={styles.starRow}>

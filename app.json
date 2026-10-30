@@ -10,7 +10,7 @@
     "splash": {
       "image": "./assets/images/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#FDF003"
     },
     "ios": {
       "supportsTablet": true
@@ -21,7 +21,8 @@
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#FDF003",
+        "monochromeImage": "./assets/images/monochrome-icon.png"
       },
       "predictiveBackGestureEnabled": false,
       "permissions": [
@@ -50,14 +51,14 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Top King to access your camera.",
-          "microphonePermission": "Allow Top King to access your microphone."
+          "cameraPermission": "Allow Tiki Max to access your camera.",
+          "microphonePermission": "Allow Tiki Max to access your microphone."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Top King to access your photos."
+          "photosPermission": "Allow Tiki Max to access your photos."
         }
       ],
       "expo-web-browser",
@@ -65,7 +66,7 @@
       [
         "expo-audio",
         {
-          "microphonePermission": "Allow Top King to access your microphone."
+          "microphonePermission": "Allow Tiki Max to access your microphone."
         }
       ],
       "expo-video",
@@ -73,6 +74,12 @@
       "expo-font",
       "@react-native-firebase/app",
       "@react-native-firebase/messaging",
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-7990312046971352~3662551943"
+        }
+      ],
       [
         "expo-build-properties",
         {

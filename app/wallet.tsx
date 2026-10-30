@@ -788,6 +788,7 @@ const sendGift = async () => {
       // Sender se Stars kato
       t.update(senderRef, {
         stars: increment(-amount),
+        totalSpent: increment(amount),
       });
 
       // Receiver ko Gift Stars do (ye TK me withdraw ho sakte hai)

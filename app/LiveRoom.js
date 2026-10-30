@@ -89,6 +89,8 @@ import FloatingHearts from '../components/live/FloatingHearts';
 import { ViewersSheet, GiftersSheet, RoomMenuSheet, EmojiStrip } from '../components/live/RoomSheets';
 import { T } from '../components/live/liveTheme';
 import { useRoomMusic, MusicFab, MusicSheet } from '../components/live/RoomMusic';
+import TeenPattiGame from '../components/live/TeenPattiGame';
+import GreedyGame from '../components/live/GreedyGame';
 
 import LottieView from "lottie-react-native";
 import { WebView } from "react-native-webview";
@@ -98,6 +100,7 @@ import { useSafeAreaInsets, SafeAreaProvider } from 'react-native-safe-area-cont
 import { callApi } from '../utils/api';
 import { useLiveBanGuard } from '../utils/liveBan';
 import { useBlockedIds } from '../utils/useBlockedIds';
+import UserTick from '../components/UserTick';
 
 // import LottieView from "lottie-react-native";
 // import { gifts } from "../assets/giftsData";
@@ -123,8 +126,8 @@ const BOTTOM_BAR_H = 60;
 const JOIN_ANIM_VARIANT = 'auto';
 const log = __DEV__ ? console.log.bind(console) : () => {};
 const STABLE_AVATAR = 'https://avatar.iran.liara.run/public/65';
-const SEAT_KEYS = Array.from({ length: 9 }, (_, i) => `seat_${i + 1}`);
-const SEAT_OPTIONS = [9]; // fixed: host + 8 seats, koi badha nahi sakta
+const SEAT_KEYS = Array.from({ length: 12 }, (_, i) => `seat_${i + 1}`);
+const SEAT_OPTIONS = [9, 12]; // host 9 se 12 seat kar sakta hai (9 = 3-3-3, 12 = 4-4-4-4)
 const EMPTY_SEAT = {};
 const _uidHashCache = new Map();
 
@@ -226,64 +229,37 @@ try {
 }
 
 
+// PERF: har chat row me ye 3-4 baar call hota tha aur har baar naya object banta tha.
+// Ab 6 fixed objects hain -> koi allocation nahi, rows turant render.
+const LEVEL_THEMES = {
+  50: { bg: "#7B1FFF", border: "#FFD700", text: "#fff", icon: "#FFD700" },
+  40: { bg: "#00BFFF", border: "#9EF8FF", text: "#fff", icon: "#fff" },
+  30: { bg: "#FF0066", border: "#FFB6C1", text: "#fff", icon: "#fff" },
+  20: { bg: "#FFC107", border: "#FFE082", text: "#000", icon: "#fff" },
+  10: { bg: "#BDBDBD", border: "#fff", text: "#fff", icon: "#fff" },
+  1:  { bg: "#222", border: "#555", text: "#FFD700", icon: "#00E5FF" },
+};
 const getLevelTheme = (level = 1) => {
-
-  if(level>=50){
-    return{
-      bg:"#7B1FFF",
-      border:"#FFD700",
-      text:"#fff",
-      icon:"#FFD700"
-    };
-  }
-
-  if(level>=40){
-    return{
-      bg:"#00BFFF",
-      border:"#9EF8FF",
-      text:"#fff",
-      icon:"#fff"
-    };
-  }
-
-  if(level>=30){
-    return{
-      bg:"#FF0066",
-      border:"#FFB6C1",
-      text:"#fff",
-      icon:"#fff"
-    };
-  }
-
-  if(level>=20){
-    return{
-      bg:"#FFC107",
-      border:"#FFE082",
-      text:"#000",
-      icon:"#fff"
-    };
-  }
-
-  if(level>=10){
-    return{
-      bg:"#BDBDBD",
-      border:"#fff",
-      text:"#fff",
-      icon:"#fff"
-    };
-  }
-
-  return{
-    bg:"#222",
-    border:"#555",
-    text:"#FFD700",
-    icon:"#00E5FF"
-  };
-
+  if (level >= 50) return LEVEL_THEMES[50];
+  if (level >= 40) return LEVEL_THEMES[40];
+  if (level >= 30) return LEVEL_THEMES[30];
+  if (level >= 20) return LEVEL_THEMES[20];
+  if (level >= 10) return LEVEL_THEMES[10];
+  return LEVEL_THEMES[1];
 };
 
 
 
+
+// FRAME FIX: frame SIRF unhe dikhe jinke paas sach me frame hai (admin/special frame ya level >= 10).
+// Pehle `level>=10 || !!uid` ki wajah se bina level wale users ko bhi frame dikhta tha.
+// Ab har jagah (seat, chat, list, gift chip, header, popup) ye ek hi check chalta hai.
+const GuardedFrame = (props) => {
+  const adminKey = useAdminFrame(props.uid);
+  const lv = Number(props.level) || 1;
+  if (!adminKey && !props.special && lv < 10) return null;
+  return <LevelFrame {...props} />;
+};
 
 const getLevelFrame=(level=1)=>{
 
@@ -320,6 +296,10 @@ return null;
 // ============================================================
 
 const SPEAK_HOLD_MS = 550;
+// PERF: chat ki har row me 22-36px frame animate hota tha (40-80 rows = bahut load).
+// false = chat me frame static (smooth). Seat/profile ke frames animated hi rehte hain.
+// Pehle jaisa chahiye to true kar do.
+const CHAT_FRAME_ANIM = false;
 // Seat ka size yahin se badlo: photo, seat aur frame sab isi se chalte hain
 // Chhoti screen (kam height) wale phones par seats apne-aap thodi chhoti ho jati hain taaki chat dikhe
 const SEAT_SCALE = UI_SCALE;
@@ -327,6 +307,8 @@ const SEAT_SIZE = Math.round(60 * SEAT_SCALE);
 const SEAT_RADIUS = Math.round(21 * SEAT_SCALE);
 // 3 seats per row HAMESHA: integer width => decimal rounding se 2-column wrap nahi hoga
 const SEAT_CELL_W = Math.floor(Math.min(width, 480) / 3);
+// 12 seat hone par 4 per row
+const SEAT_CELL_W4 = Math.floor(Math.min(width, 480) / 4);
 // false = seat me gol level-ring nahi dikhegi, photo seat ki rounded-square shape me poori fit hogi
 // true  = pehle jaisi ring wapas aa jayegi
 const SHOW_SEAT_FRAME = true;
@@ -340,6 +322,9 @@ const SEAT_FRAME_OFFSET = -(SEAT_FRAME_SIZE - SEAT_SIZE) / 2;
 // ===== EK HI FRAME FORMULA (seat, chat, listener list, gift chip, host pill, popup sab jagah) =====
 // Frame ka size = photo x FRAME_SCALE, aur photo ke THEEK BEECH me (top/left = -(frame-photo)/2).
 // Frame bada/chhota karna ho to sirf SEAT_FRAME_SCALE badlo, sab jagah ek saath badlega.
+// Seat frame ka style EK baar bana kar rakha: bolne (speaking) par seat re-render hota hai,
+// naya style object banta to frame bhi re-render hota. Ab frame bina chhede chalta rehta hai.
+const SEAT_FRAME_STYLE = { position: 'absolute', width: SEAT_FRAME_SIZE, height: SEAT_FRAME_SIZE, top: SEAT_FRAME_OFFSET, left: SEAT_FRAME_OFFSET, zIndex: 10 };
 const FRAME_SCALE = SEAT_FRAME_SCALE;
 const frameBox = (photoSize, container = photoSize) => {
   const size = Math.round(photoSize * FRAME_SCALE);
@@ -495,7 +480,7 @@ const seatEqual = (a, b) => {
 };
 
 // Screenshot-style seat: rounded translucent square, "+" when empty, NO.x label.
-const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress }) => {
+const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress, cellW = SEAT_CELL_W }) => {
   const isHostSeat = index === 1;
   // MUTE FIX: mute user par kabhi glow nahi
   const glowOn = !!isSpeaking && !seat.isMuted;
@@ -507,7 +492,7 @@ const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress }) => 
   return (
     <TouchableOpacity
       activeOpacity={0.8}
-      style={[styles.seatCell, emoji ? { zIndex: 50, elevation: 50 } : null]}
+      style={[styles.seatCell, { width: cellW }, emoji ? { zIndex: 50, elevation: 50 } : null]}
       onPress={() => onPress && onPress(seatKey, seat)}
     >
       <View style={[styles.seatSquare, occupied ? styles.seatSquareOccupied : (glowOn && styles.seatSquareSpeaking)]}>
@@ -516,12 +501,13 @@ const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress }) => 
             <ExpoImage source={{ uri: seat.userImg || STABLE_AVATAR }} style={styles.seatAvatarImg} contentFit="cover" cachePolicy="memory-disk" transition={0} recyclingKey={seat.userId} />
             {glowOn ? <SpeakGlow /> : null}
             {SHOW_SEAT_FRAME && (seat.level >= 10 || !!seat.userId) && (
-              <LevelFrame
+              <GuardedFrame
                 level={seat.level}
+                special={seat.special}
                 uid={seat.userId}
-                animated={false}
+                animated
                 pointerEvents="none"
-                style={{ position: 'absolute', width: SEAT_FRAME_SIZE, height: SEAT_FRAME_SIZE, top: SEAT_FRAME_OFFSET, left: SEAT_FRAME_OFFSET, zIndex: 10 }}
+                style={SEAT_FRAME_STYLE}
               />
             )}
             {seat.isMuted ? (
@@ -540,9 +526,11 @@ const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress }) => 
           </View>
         ) : null}
       </View>
-      <Text numberOfLines={1} allowFontScaling={false} style={styles.seatLabel}>
-        {occupied ? (seat.userName || 'User') : `NO.${index - 1}`}
-      </Text>
+      <View style={styles.seatLabelPill}>
+        <Text numberOfLines={1} allowFontScaling={false} style={[styles.seatLabel, { maxWidth: cellW - 30 }]}>
+          {occupied ? (seat.userName || 'User') : `NO.${index - 1}`}
+        </Text>
+      </View>
       {occupied ? (
         <View style={styles.seatCoinRow}>
           <Ionicons name="star" size={11} color="#f5c518" />
@@ -552,7 +540,7 @@ const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress }) => 
       {emoji && isGifReaction(emoji) ? (
         <View
           pointerEvents="none"
-          style={{ position: 'absolute', top: SEAT_FRAME_OFFSET, left: (SEAT_CELL_W - SEAT_FRAME_SIZE) / 2, width: SEAT_FRAME_SIZE, height: SEAT_FRAME_SIZE, zIndex: 999, elevation: 999 }}
+          style={{ position: 'absolute', top: SEAT_FRAME_OFFSET, left: (cellW - SEAT_FRAME_SIZE) / 2, width: SEAT_FRAME_SIZE, height: SEAT_FRAME_SIZE, zIndex: 999, elevation: 999 }}
         >
           <ExpoImage source={gifSource(emoji)} contentFit="contain" autoplay style={{ width: '100%', height: '100%' }} />
         </View>
@@ -560,11 +548,11 @@ const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress }) => 
     </TouchableOpacity>
   );
 }, (p, n) =>
-  p.seatKey === n.seatKey && p.index === n.index && p.stars === n.stars &&
+  p.seatKey === n.seatKey && p.index === n.index && p.stars === n.stars && p.cellW === n.cellW &&
   p.isSpeaking === n.isSpeaking && p.onPress === n.onPress && seatEqual(p.seat, n.seat)
 );
 
-const SpeakingSeat = memo(({ seatKey, index, seat, stars, onPress }) => {
+const SpeakingSeat = memo(({ seatKey, index, seat, stars, onPress, cellW }) => {
   const uid = seat.userId ? uidToNum(seat.userId) : 0;
   const muted = !!seat.isMuted;
   const [speaking, setSpeaking] = useState(!!(uid && !muted && speakingStore.map[uid]));
@@ -588,10 +576,11 @@ const SpeakingSeat = memo(({ seatKey, index, seat, stars, onPress }) => {
       stars={stars}
       isSpeaking={speaking}
       onPress={onPress}
+      cellW={cellW}
     />
   );
 }, (p, n) =>
-  p.seatKey === n.seatKey && p.index === n.index && p.stars === n.stars &&
+  p.seatKey === n.seatKey && p.index === n.index && p.stars === n.stars && p.cellW === n.cellW &&
   p.onPress === n.onPress && seatEqual(p.seat, n.seat)
 );
 
@@ -687,6 +676,16 @@ const GiftLayer = memo(forwardRef(function GiftLayer(_props, ref) {
     if (deferTimerRef.current) clearTimeout(deferTimerRef.current);
   }, []);
 
+  // PRELOAD: 3D gifts WebView me three.js CDN se aata hai. Pehli gift animation par wo
+  // download hone me atakti thi. Room khulne ke kuch sec baad ek chhota hidden WebView
+  // three.js ko cache me daal deta hai (phir band) -> gift animation turant chalti hai.
+  const [warm, setWarm] = useState(false);
+  useEffect(() => {
+    const t1 = setTimeout(() => setWarm(true), 3500);
+    const t2 = setTimeout(() => setWarm(false), 12000);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, []);
+
   // banner pop-in animation (all native driver)
   const comboShownRef = useRef(false);
   useEffect(() => {
@@ -728,6 +727,19 @@ const GiftLayer = memo(forwardRef(function GiftLayer(_props, ref) {
 
   return (
     <>
+      {warm && !activeGift ? (
+        <View pointerEvents="none" style={{ position: "absolute", width: 1, height: 1, opacity: 0, top: 0, left: 0 }}>
+          <WebView
+            source={{ html: '<html><body><script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script></body></html>', baseUrl: "https://localhost" }}
+            originWhitelist={["*"]}
+            javaScriptEnabled
+            domStorageEnabled={false}
+            cacheEnabled
+            style={{ width: 1, height: 1, backgroundColor: "transparent" }}
+            pointerEvents="none"
+          />
+        </View>
+      ) : null}
       {activeGift ? (
         <View
           pointerEvents="none"
@@ -901,7 +913,7 @@ const ChatItem = memo(({ chat }) => {
                         {
                             (chat.level>=10 || !!chat.senderId) && (
 
-                                <LevelFrame level={chat.level} uid={chat.senderId} animated={false}
+                                <GuardedFrame level={chat.level} uid={chat.senderId} animated={CHAT_FRAME_ANIM}
                                     style={FRAME_CHAT22}
                                 />
 
@@ -928,17 +940,7 @@ const ChatItem = memo(({ chat }) => {
                             {chat.senderName}
                         </Text>
 
-                        {isVerified(chat.verified) && (
-  <MaterialCommunityIcons
-  name="check-decagram"
-  size={17}
-  color={
-    chat?.verifiedColor === "yellow"
-      ? "#FFD700"
-      : "#ffffff"
-  }
-/>
-)}
+                        <UserTick uid={chat.senderId || chat.uid} verified={!!(isVerified(chat.verified))} verifiedColor={chat?.verifiedColor} size={17} />
 
                         <View
                             style={[
@@ -1019,20 +1021,14 @@ const ChatItem = memo(({ chat }) => {
                             style={{ width:22, height:22, borderRadius:11, backgroundColor:'#2a2b38' }}
                         />
                         {(chat.level >= 10 || !!chat.senderId) && (
-                            <LevelFrame level={chat.level} uid={chat.senderId} animated={false}
+                            <GuardedFrame level={chat.level} uid={chat.senderId} animated={CHAT_FRAME_ANIM}
                                 style={FRAME_CHAT22} />
                         )}
                     </View>
                     <Text style={{ color:"#d0d0d0", fontSize:13, fontWeight:"600", marginLeft:6 }}>
                         {chat.senderName}
                     </Text>
-                    {isVerified(chat.verified) && (
-                        <MaterialCommunityIcons
-                            name="check-decagram"
-                            size={17}
-                            color={chat?.verifiedColor === "yellow" ? "#FFD700" : "#ffffff"}
-                        />
-                    )}
+                    <UserTick uid={chat.senderId || chat.uid} verified={!!(isVerified(chat.verified))} verifiedColor={chat?.verifiedColor} size={17} />
                     <Text style={{ color:"#d0d0d0", fontSize:13, marginLeft:5 }}>
                         sent
                     </Text>
@@ -1082,7 +1078,7 @@ const ChatItem = memo(({ chat }) => {
                     {
                         (chat.level>=10 || !!chat.senderId) && (
 
-                            <LevelFrame level={chat.level} uid={chat.senderId} animated={false}
+                            <GuardedFrame level={chat.level} uid={chat.senderId} animated={CHAT_FRAME_ANIM}
                                 style={FRAME_CHAT36}
                             />
 
@@ -1105,23 +1101,7 @@ const ChatItem = memo(({ chat }) => {
                             {chat.senderName}
                         </Text>
 
-                        {isVerified(chat.verified) && (
-                            <View style={styles.verifiedBadge}>
-                                
-<MaterialCommunityIcons
-  name="check-decagram"
-  size={15}
-  color={
-    chat?.verifiedColor === "yellow"
-      ? "#FFD700"
-      : "#ffffff"
-  }
-/>
-
-
-
-                            </View>
-                        )}
+                        <UserTick uid={chat.senderId || chat.uid} verified={!!(isVerified(chat.verified))} verifiedColor={chat?.verifiedColor} size={15} />
 
                         <View
                             style={[
@@ -1171,9 +1151,12 @@ const ChatItem = memo(({ chat }) => {
 
                     <Text
                         style={{
-                            color:"#888",
+                            color:"#e3e3f0",
                             fontSize:11,
                             marginTop:2,
+                            textShadowColor:'rgba(0,0,0,0.9)',
+                            textShadowOffset:{width:0,height:1},
+                            textShadowRadius:3,
                         }}
                     >
                         @{chat.username}
@@ -1202,27 +1185,53 @@ const chatKeyExtractor = (item, index) => item.id || String(index);
 // likhne par 6000 line ki screen dobara render hoti thi -> keyboard lagta tha.
 const ChatTextInput = memo(({ onSend, locked = false, onFocus, onBlur }) => {
   const [text, setText] = useState('');
+  const textRef = useRef('');
+
+  const onChange = useCallback((t) => {
+    textRef.current = t;
+    setText(t);
+  }, []);
+
+  // textRef se hamesha latest text jata hai (stale closure nahi)
   const submit = useCallback(() => {
-    const t = text.trim();
+    const t = textRef.current.trim();
     if (!t || locked) return;
+    textRef.current = '';
     setText('');
     onSend(t);
-  }, [text, onSend, locked]);
+  }, [onSend, locked]);
+
   return (
-    <TextInput
-      style={[styles.inputStyle, locked && { opacity: 0.6 }]}
-      placeholder={locked ? "🔒 Chat locked by host" : "Chat"}
-      placeholderTextColor="rgba(255,255,255,0.85)"
-      value={locked ? '' : text}
-      onChangeText={setText}
-      onSubmitEditing={submit}
-      onFocus={onFocus}
-      onBlur={onBlur}
-      editable={!locked}
-      maxLength={200}
-      returnKeyType="send"
-      blurOnSubmit={false}   // keyboard band nahi hota -> lagatar chat smooth
-    />
+    <>
+      <TextInput
+        style={[styles.inputStyle, locked && { opacity: 0.6 }]}
+        placeholder={locked ? "🔒 Chat locked by host" : "Chat"}
+        placeholderTextColor="rgba(255,255,255,0.85)"
+        value={locked ? '' : text}
+        onChangeText={onChange}
+        onSubmitEditing={submit}
+        onFocus={onFocus}
+        onBlur={onBlur}
+        editable={!locked}
+        maxLength={200}
+        returnKeyType="send"
+        blurOnSubmit={false}   // keyboard band nahi hota -> lagatar chat smooth
+        autoCorrect={false}
+        autoComplete="off"
+        underlineColorAndroid="transparent"
+      />
+      {text.trim().length > 0 && !locked ? (
+        <TouchableOpacity
+          onPress={submit}
+          activeOpacity={0.6}
+          delayPressIn={0}
+          hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+          style={{ marginRight: 8 }}
+        >
+          <Ionicons name="send" size={20} color="#f71084" />
+        </TouchableOpacity>
+      ) : null}
+    </>
   );
 });
 
@@ -1239,7 +1248,7 @@ const HostRow = memo(({ user, invited, onInvite, onKick, onUserPress }) => (
         style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#2a2b38' }}
       />
       {(user.level >= 10 || !!user.uid) && (
-        <LevelFrame level={user.level} uid={user.uid} animated={false} pointerEvents="none"
+        <GuardedFrame level={user.level} uid={user.uid} pointerEvents="none"
           style={FRAME_LIST40} />
       )}
     </View>
@@ -1339,6 +1348,24 @@ const HostPanelSheet = memo(
               </TouchableOpacity>
             </View>
 
+            <View style={{ flexDirection: 'row', marginBottom: 14 }}>
+              {seatCount === 12 ? (
+                <TouchableOpacity
+                  onPress={() => onChangeSeats && onChangeSeats(9)}
+                  style={{ flex: 1, paddingVertical: 12, borderRadius: 14, alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.10)' }}
+                >
+                  <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 13 }}>➖ 3 Seat Kam (9 • 3-3-3)</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  onPress={() => onChangeSeats && onChangeSeats(12)}
+                  style={{ flex: 1, paddingVertical: 12, borderRadius: 14, alignItems: 'center', backgroundColor: '#00c27a' }}
+                >
+                  <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 13 }}>➕ 3 Seat Add (12 • 4-4-4-4)</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
             <Text style={{ color: '#bbb', fontSize: 13, marginBottom: 6 }}>
               👥 Listeners ({users.length})
             </Text>
@@ -1385,7 +1412,7 @@ const AvatarWithFrame = ({ uri, level, size = 70 }) => {
       />
 
       {level >= 10 && (
-        <LevelFrame level={level}
+        <GuardedFrame level={level}
           style={{
             position: "absolute",
             width: size + 20,
@@ -1403,7 +1430,7 @@ const AvatarWithFrame = ({ uri, level, size = 70 }) => {
 
 // ============================================================
 // ProfileFrame: animated level frame for profile popups.
-//  - level >= 10 : uses the existing <LevelFrame> (lv10/20/30/40/50 art)
+//  - level >= 10 : uses the existing <GuardedFrame> (lv10/20/30/40/50 art)
 //  - level 1..9  : smooth pulsing + glowing ring, a different colour per
 //                  level, so EVERY user has a frame in their profile.
 // All animation runs on the native driver, so it stays smooth even in a
@@ -1427,31 +1454,6 @@ const ProfileFrame = memo(({ level = 1, avatarSize = 100, frameSize, uid, contai
   const outer = frameSize || Math.round(avatarSize * FRAME_SCALE);
   const offset = ((containerSize || avatarSize) - outer) / 2;
 
-  const pulse = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    if (adminKey || lv >= 10) return;
-    pulse.setValue(0);
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, {
-          toValue: 1,
-          duration: 1100,
-          easing: RNEasing.inOut(RNEasing.sin),
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulse, {
-          toValue: 0,
-          duration: 1100,
-          easing: RNEasing.inOut(RNEasing.sin),
-          useNativeDriver: true,
-        }),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [lv, pulse]);
-
   const wrapStyle = {
     position: "absolute",
     width: outer,
@@ -1466,7 +1468,7 @@ const ProfileFrame = memo(({ level = 1, avatarSize = 100, frameSize, uid, contai
   if (adminKey || lv >= 10) {
     return (
       <View pointerEvents="none" style={wrapStyle}>
-        <LevelFrame
+        <GuardedFrame
           key={`lf-${lv}-${adminKey || ''}`}
           level={lv}
           special={adminKey}
@@ -1477,46 +1479,9 @@ const ProfileFrame = memo(({ level = 1, avatarSize = 100, frameSize, uid, contai
     );
   }
 
-  const color = LOW_LEVEL_RING_COLORS[Math.min(lv, 9) - 1];
-  const ring = avatarSize + 8;
-
-  const scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.1] });
-  const haloOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.55, 0] });
-  const haloScale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.35] });
-
-  return (
-    <View pointerEvents="none" style={wrapStyle}>
-      {/* soft expanding halo */}
-      <Animated.View
-        style={{
-          position: "absolute",
-          width: ring,
-          height: ring,
-          borderRadius: ring / 2,
-          borderWidth: 2,
-          borderColor: color,
-          opacity: haloOpacity,
-          transform: [{ scale: haloScale }],
-        }}
-      />
-      {/* main ring */}
-      <Animated.View
-        style={{
-          width: ring,
-          height: ring,
-          borderRadius: ring / 2,
-          borderWidth: 3,
-          borderColor: color,
-          shadowColor: color,
-          shadowOffset: { width: 0, height: 0 },
-          shadowOpacity: 0.9,
-          shadowRadius: 8,
-          elevation: 6,
-          transform: [{ scale }],
-        }}
-      />
-    </View>
-  );
+  // FIX: frame sirf unhi ko dikhe jinhe mila hai (admin frame ya level >= 10).
+  // Pehle low-level (1-9) sab users ko pulsing ring dikhta tha -> ab kuch nahi dikhega.
+  return null;
 });
 
 
@@ -1615,7 +1580,7 @@ const GiftUserChip = memo(({ user, selected, onSelect }) => (
         }}
       />
       {(user.level >= 10 || !!user.uid) && (
-        <LevelFrame level={user.level} uid={user.uid} animated={false} pointerEvents="none"
+        <GuardedFrame level={user.level} uid={user.uid} pointerEvents="none"
           style={FRAME_GIFT44} />
       )}
     </View>
@@ -1651,6 +1616,29 @@ const GiftAllChip = memo(({ selected, onPress }) => (
   </TouchableOpacity>
 ));
 
+// Pending (abhi write na hue) gift kharcha: chhota store + chhota component.
+const giftPendingStore = {
+  v: 0,
+  subs: new Set(),
+  set(n) {
+    giftPendingStore.v = n;
+    giftPendingStore.subs.forEach((f) => f(n));
+  },
+};
+const GiftBalance = memo(({ stars }) => {
+  const [pending, setPending] = useState(giftPendingStore.v);
+  useEffect(() => {
+    setPending(giftPendingStore.v);
+    giftPendingStore.subs.add(setPending);
+    return () => { giftPendingStore.subs.delete(setPending); };
+  }, []);
+  return (
+    <Text style={{ color: GIFT_GOLD, fontSize: 15, fontWeight: 'bold', marginLeft: 4 }}>
+      {Math.max(0, stars - pending)}
+    </Text>
+  );
+});
+
 // SMOOTH OPEN: sheet ka open/close state ab is component ke ANDAR hai (ref.open()/ref.close()).
 // Pehle `giftModalVisible` poori LiveRoom screen ka state tha -> gift button dabate hi
 // 6000 line ki screen re-render hoti thi aur popup atak kar khulta tha. Ab sirf ye
@@ -1665,8 +1653,10 @@ const GiftSheet = memo(
     const fade = useRef(new Animated.Value(0)).current;
     const closingRef = useRef(false);
     const [pageIdx, setPageIdx] = useState(0);
-    // pending spend yahin rakha -> sirf ye chhota sheet re-render hota hai, room nahi
-    const [pending, setPending] = useState(0);
+    // pending spend ab <GiftBalance/> ke andar -> har gift tap par sirf wo ek chhota number
+    // re-render hota hai (pehle poori sheet: chips + pages + dots sab dobara render hote the)
+    const setPending = giftPendingStore.set;
+    const openStartedRef = useRef(false);
 
     // Swipe khatam hone par hi page dot update (per-frame setState nahi -> smooth)
     const onPageEnd = useCallback((e) => {
@@ -1697,14 +1687,24 @@ const GiftSheet = memo(
 
     useImperativeHandle(ref, () => ({ open, close: onClose, setPending }), [open, onClose]);
 
-    useEffect(() => {
-      if (!visible) return;
+    // SMOOTH OPEN: animation tab shuru hota hai jab Modal window sach me screen par aa jaye (onShow).
+    // Pehle effect me chalta tha -> window ready hone se pehle chal kar shuruat ke frames kat jate the
+    // aur popup "jhatke" se khulta tha. Fallback timer: onShow na aaye to bhi khul jaye.
+    const startOpenAnim = useCallback(() => {
+      if (openStartedRef.current) return;
+      openStartedRef.current = true;
       Animated.parallel([
-        // spring = natural + fast; native driver -> JS thread busy ho tab bhi smooth
-        Animated.spring(anim, { toValue: 0, damping: 22, stiffness: 260, mass: 0.8, overshootClamping: true, useNativeDriver: true }),
-        Animated.timing(fade, { toValue: 1, duration: 160, useNativeDriver: true }),
+        Animated.spring(anim, { toValue: 0, damping: 24, stiffness: 300, mass: 0.7, overshootClamping: true, useNativeDriver: true }),
+        Animated.timing(fade, { toValue: 1, duration: 150, useNativeDriver: true }),
       ]).start();
-    }, [visible, anim, fade]);
+    }, [anim, fade]);
+
+    useEffect(() => {
+      if (!visible) { openStartedRef.current = false; return; }
+      openStartedRef.current = false;
+      const t = setTimeout(startOpenAnim, 220);
+      return () => clearTimeout(t);
+    }, [visible, startOpenAnim]);
 
     const renderPage = useCallback(
       ({ item }) => <GiftPage page={item} onSend={onSendGift} />,
@@ -1722,6 +1722,7 @@ const GiftSheet = memo(
         animationType="none"
         statusBarTranslucent
         hardwareAccelerated
+        onShow={startOpenAnim}
         onRequestClose={onClose}
       >
         <View style={[styles.giftOverlay, { backgroundColor: 'transparent' }]}>
@@ -1755,9 +1756,7 @@ const GiftSheet = memo(
               <Text style={styles.giftTitle}>🎁 Send Gifts</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                 <Text style={{ fontSize: 16 }}>⭐</Text>
-                <Text style={{ color: GIFT_GOLD, fontSize: 15, fontWeight: 'bold', marginLeft: 4 }}>
-                  {Math.max(0, stars - pending)}
-                </Text>
+                <GiftBalance stars={stars} />
               </View>
             </View>
 
@@ -1802,7 +1801,7 @@ const GiftSheet = memo(
               initialNumToRender={2}
               maxToRenderPerBatch={2}
               updateCellsBatchingPeriod={16}
-              windowSize={3}
+              windowSize={5}
               // Android pe ye gift icons ko gayab kar deta tha
               removeClippedSubviews={false}
               bounces={Platform.OS === 'ios'}
@@ -1838,9 +1837,52 @@ const GiftSheet = memo(
     a.selectedGiftUser === b.selectedGiftUser &&
     a.onSelectUser === b.onSelectUser &&
     a.onSendGift === b.onSendGift &&
-    a.giftUsers.map((u) => u.uid + '|' + u.img + '|' + u.name).join(',') ===
-      b.giftUsers.map((u) => u.uid + '|' + u.img + '|' + u.name).join(',')
+    (a.giftUsers === b.giftUsers ||
+      a.giftUsers.map((u) => u.uid + '|' + u.img + '|' + u.name).join(',') ===
+        b.giftUsers.map((u) => u.uid + '|' + u.img + '|' + u.name).join(','))
 );
+
+// ===== TIME-BASED ROOM BACKGROUND =====
+// Subah / Dopahar / Sham / Raat - phone ke time ke hisaab se apne aap badalta hai.
+// 5am-12pm morning | 12pm-5pm afternoon | 5pm-8pm evening | 8pm-5am night
+const LIVE_BGS = {
+  morning:   { src: require('../assets/live_bg/morning.jpg'),   dim: 0.05 },
+  afternoon: { src: require('../assets/live_bg/afternoon.jpg'), dim: 0.05 },
+  evening:   { src: require('../assets/live_bg/evening.jpg'),   dim: 0.05 },
+  night:     { src: require('../assets/live_bg/night.jpg'),     dim: 0.0 },
+};
+const getBgKey = () => {
+  const h = new Date().getHours();
+  if (h >= 5 && h < 12) return 'morning';
+  if (h >= 12 && h < 17) return 'afternoon';
+  if (h >= 17 && h < 20) return 'evening';
+  return 'night';
+};
+const TimeBackground = React.memo(function TimeBackground() {
+  const [key, setKey] = React.useState(getBgKey);
+  React.useEffect(() => {
+    const t = setInterval(() => {
+      const k = getBgKey();
+      setKey((prev) => (prev === k ? prev : k)); // same slot = no re-render
+    }, 60000);
+    return () => clearInterval(t);
+  }, []);
+  const bg = LIVE_BGS[key];
+  return (
+    <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      <ExpoImage
+        source={bg.src}
+        style={StyleSheet.absoluteFill}
+        contentFit="cover"
+        transition={700}
+        cachePolicy="memory-disk"
+      />
+      {bg.dim > 0 && (
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: `rgba(0,0,0,${bg.dim})` }]} />
+      )}
+    </View>
+  );
+});
 
 export default function LiveRoom() {
 const insets = useSafeAreaInsets();
@@ -1851,47 +1893,6 @@ const {
   stopLive,
   currentLive,
 } = useLive();
-
-
-const glow=useSharedValue(1);
-
-useEffect(()=>{
-
-glow.value=withRepeat(
-
-withTiming(
-1.15,
-{
-duration:1800,
-easing:Easing.inOut(
-Easing.ease
-)
-}
-),
-
--1,
-true
-
-);
-
-},[]);
-
-const frameAnimation=
-useAnimatedStyle(()=>{
-
-return{
-
-transform:[
-{
-scale:glow.value
-}
-],
-
-opacity:glow.value
-
-};
-
-});
 
 
   const params = useLocalSearchParams();
@@ -2161,6 +2162,12 @@ const audSeenRef = useRef({});             // uid -> { v: lastSeen, at: LOCAL ti
 const [viewersVisible, setViewersVisible] = useState(false);
 const [giftersVisible, setGiftersVisible] = useState(false);
 const [menuVisible, setMenuVisible] = useState(false);
+// ===== TEEN PATTI GAME (aadhi screen, nav bar ke upar) =====
+// gameOpen: false | 'teen' | 'greedy'
+const [gameOpen, setGameOpen] = useState(false);
+const [gamePickerOpen, setGamePickerOpen] = useState(false);
+const gameOpenRef = useRef(false);
+gameOpenRef.current = gameOpen;
 const [emojiOpen, setEmojiOpen] = useState(false);
 const heartsRef = useRef(null);
 const pendingHeartsRef = useRef(0);
@@ -2287,8 +2294,12 @@ useEffect(() => {
 
 const kickUser = useCallback(async (user) => {
   if (!db || !roomId || !user || !user.uid) return;
+  // ADMIN = host jaisi power: host ko koi kick nahi kar sakta, baaki sabko host/admin kick kar sakte hain
+  if (user.uid === roomData?.hostId) return;
+  if (user.uid === currentUid) return;
   try {
     const updates = {
+      ['admins.' + user.uid]: deleteField(),
       ['kicked.' + user.uid]: Date.now(),
       ['speakerRequests.' + user.uid]: deleteField(),
       ['seatInvites.' + user.uid]: deleteField(),
@@ -2304,7 +2315,7 @@ const kickUser = useCallback(async (user) => {
     await updateDoc(doc(db, 'rooms', roomId), updates);
     await deleteDoc(doc(db, 'rooms', roomId, 'audience', user.uid));
   } catch (e) { log(e); }
-}, [roomId, roomData?.seatsData]);
+}, [roomId, roomData?.seatsData, roomData?.hostId, roomData?.admins, currentUid]);
 
 const toggleRoomLock = useCallback(async () => {
   if (!db || !roomId) return;
@@ -2347,10 +2358,41 @@ const stableEmojiPick = useCallback((e) => { if (onPickEmojiRef.current) onPickE
 
 // ===== HOST TOOLS: chat lock / clear chat / invite to seat / kick =====
 const isHost = currentUserRole === 'host';
-const seatCount = 9;
+// ===== ADMIN: host jise admin banaye use host jaisi (moderation) power =====
+// room doc me `admins: { [uid]: true }`. Admin = seat/mute/remove, kick, chat lock,
+// clear chat, room lock, requests approve, listener ko seat par bulana, lock chat me bolna.
+// Admin ko host jaisi POORI power: dusre admin banana/hatana, live end karna, seat par seedha baithna.
+// Sirf host-account ka: host seat (seat_1), host heartbeat / live reward (host ki kamai).
+const isAdmin = !isHost && !!(currentUid && roomData?.admins?.[currentUid]);
+const canManage = isHost || isAdmin;
+
+const toggleAdmin = useCallback(async (uid, name) => {
+  if (!db || !roomId || !uid || !canManage || uid === currentUid || uid === roomData?.hostId) return;
+  const makeIt = !roomData?.admins?.[uid];
+  try {
+    await updateDoc(doc(db, 'rooms', roomId), { ['admins.' + uid]: makeIt ? true : deleteField() });
+    showToast(makeIt ? `🛡 ${name || 'User'} ab Admin hai` : `${name || 'User'} ab Admin nahi hai`);
+  } catch (e) { log(e); }
+}, [roomId, canManage, currentUid, roomData?.admins, roomData?.hostId]);
+
+// jise admin banaya/hataya use turant pata chale (pehli load par toast nahi)
+const prevAdminRef = useRef(null);
+useEffect(() => {
+  if (!roomData) return;
+  if (prevAdminRef.current === null) { prevAdminRef.current = isAdmin; return; }
+  if (prevAdminRef.current !== isAdmin) {
+    prevAdminRef.current = isAdmin;
+    showToast(isAdmin ? '🛡 Host ne aapko Admin bana diya' : 'Aap ab Admin nahi ho');
+  }
+}, [isAdmin, !!roomData]); // eslint-disable-line react-hooks/exhaustive-deps
+
+// host 9 ya 12 seat rakh sakta hai (room doc ke `seatCount` se). 9 = 3-3-3, 12 = 4-4-4-4
+const seatCount = roomData?.seatCount === 12 ? 12 : 9;
+const seatCols = seatCount === 12 ? 4 : 3;
+const seatCellW = seatCols === 4 ? SEAT_CELL_W4 : SEAT_CELL_W;
 
 const changeSeatCount = useCallback(async (n) => {
-  if (!db || !roomId || !isHost || !SEAT_OPTIONS.includes(n)) return;
+  if (!db || !roomId || !canManage || !SEAT_OPTIONS.includes(n)) return;
   const updates = { seatCount: n };
   const seats = roomData?.seatsData || {};
   // seat kam karne par hatne wali seats ke users neeche (listener) utar jaate hain
@@ -2362,7 +2404,7 @@ const changeSeatCount = useCallback(async (n) => {
     }
   });
   try { await updateDoc(doc(db, 'rooms', roomId), updates); } catch (e) { log(e); }
-}, [roomId, isHost, roomData?.seatsData]);
+}, [roomId, canManage, roomData?.seatsData]);
 const chatLocked = !!roomData?.chatLocked;
 const [hostPanelVisible, setHostPanelVisible] = useState(false);
 const [inviteBusy, setInviteBusy] = useState(false);
@@ -2385,10 +2427,82 @@ const showToast = useCallback((msg) => {
 }, [toastAnim]);
 useEffect(() => () => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current); }, []);
 
+// ===== REPORT / BLOCK from live room profile popup =====
+const blockBusyRef = useRef(false);
+const handleReportFromRoom = useCallback((u) => {
+  const uid = u?.userId;
+  if (!uid || uid === currentUid) return;
+  setProfileVisible(false);
+  setSpeakerModalVisible(false);
+  router.push({ pathname: '/report', params: { reportedUserId: uid } });
+}, [currentUid, router]);
+
+const handleBlockFromRoom = useCallback((u) => {
+  const uid = u?.userId;
+  if (!uid || uid === currentUid) return;
+  Alert.alert('Block User', `Block @${u?.userName || 'user'}? Wo aapko aur aap use live me nahi dikhoge.`, [
+    { text: 'Cancel', style: 'cancel' },
+    {
+      text: 'Block',
+      style: 'destructive',
+      onPress: async () => {
+        if (blockBusyRef.current) return;
+        blockBusyRef.current = true;
+        setProfileVisible(false);
+        setSpeakerModalVisible(false);
+        try {
+          await setDoc(doc(db, 'blockedUsers', `${currentUid}_${uid}`), {
+            blockerId: currentUid,
+            blockedUserId: uid,
+            username: u?.userName || '',
+            profileImg: u?.userImg || '',
+            createdAt: serverTimestamp(),
+          });
+          // follow relation dono taraf se hata do (userProfile.js jaisa)
+          deleteDoc(doc(db, 'follows', `${currentUid}_${uid}`)).catch(() => {});
+          deleteDoc(doc(db, 'follows', `${uid}_${currentUid}`)).catch(() => {});
+          showToast('User blocked');
+        } catch (e) {
+          showToast('Block failed, try again');
+        } finally {
+          blockBusyRef.current = false;
+        }
+      },
+    },
+  ]);
+}, [currentUid, showToast]);
+
+const renderReportBlock = (user) => {
+  if (!user?.userId || user.userId === currentUid) return null;
+  return (
+    <View style={{ position: 'absolute', top: 18, right: 16, zIndex: 20 }}>
+      <TouchableOpacity
+        activeOpacity={0.8}
+        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+        onPress={() => handleReportFromRoom(user)}
+        style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 16, backgroundColor: 'rgba(255,90,90,0.12)', borderWidth: 1, borderColor: 'rgba(255,90,90,0.5)' }}
+      >
+        <Ionicons name="flag" size={13} color="#ff5a5a" />
+        <Text allowFontScaling={false} style={{ color: '#ff5a5a', fontWeight: 'bold', fontSize: 12, marginLeft: 5 }}>Report</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        activeOpacity={0.8}
+        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+        onPress={() => handleBlockFromRoom(user)}
+        style={{ flexDirection: 'row', alignItems: 'center', marginTop: 8, paddingVertical: 6, paddingHorizontal: 12, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)' }}
+      >
+        <Ionicons name="ban" size={13} color="#fff" />
+        <Text allowFontScaling={false} style={{ color: '#fff', fontWeight: 'bold', fontSize: 12, marginLeft: 5 }}>Block</Text>
+      </TouchableOpacity>
+    </View>
+  );
+};
+
 const [hiddenReqUids, setHiddenReqUids] = useState({}); // host: approve/reject par row turant hide
 const [myReqSent, setMyReqSent] = useState(false);       // listener: request turant "sent" dikhe
 const myReqSentRef = useRef(false);
 const myReqSeenRef = useRef(false);
+const myReqSentAtRef = useRef(0);
 const [sentFriendIds, setSentFriendIds] = useState({});  // friend share: "✓ Sent" badge
 const [shareDone, setShareDone] = useState(false);       // system share: "✓ Shared"
 
@@ -2492,14 +2606,14 @@ const inviteToSeat = useCallback(async (user) => {
 
 // Host panel ke liye: sirf wahi listeners jo seat par nahi hain
 const hostPanelUsers = useMemo(() => {
-  if (!isHost) return [];
+  if (!canManage) return [];
   const onSeat = new Set(
     Object.values(roomData?.seatsData || {}).map((s) => s?.userId).filter(Boolean)
   );
   return Object.values(audienceMap).filter(
     (u) => u && u.uid && u.uid !== currentUid && u.uid !== roomData?.hostId && !onSeat.has(u.uid)
   );
-}, [isHost, audienceMap, roomData?.seatsData, roomData?.hostId, currentUid]);
+}, [canManage, audienceMap, roomData?.seatsData, roomData?.hostId, currentUid]);
 
 const activeInvites = useMemo(() => {
   const out = {};
@@ -2560,8 +2674,44 @@ const acceptInvite = useCallback(async () => {
   setInviteBusy(false);
 }, [roomId, currentUid, inviteBusy, roomData?.seatsData, myInvite?.seatKey, currentName, currentRealName, currentAvatar, hostVerified, hostVerifiedColor, hostLevel, declineInvite, seatCount]);
 
-
-
+// ADMIN: seat par seedha baith jao (host ki approval ki zarurat nahi). seatKey null -> pehli khaali seat.
+// Seat likhte hi snapshot logic role ko 'speaker' bana deta hai (acceptInvite jaisa flow).
+const adminTakeSeat = async (seatKey) => {
+  if (!db || !roomId || !currentUid || !isAdmin) return;
+  try {
+    const roomRef = doc(db, 'rooms', roomId);
+    const res = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(roomRef);
+      if (!snap.exists()) return 'noroom';
+      const seats = snap.data()?.seatsData || {};
+      if (Object.values(seats).some((x) => x?.userId === currentUid)) return 'already';
+      let target = seatKey && !seats[seatKey]?.userId ? seatKey : null;
+      if (!target) {
+        for (let i = 2; i <= seatCount; i++) {
+          if (!seats[`seat_${i}`]?.userId) { target = `seat_${i}`; break; }
+        }
+      }
+      if (!target) return 'full';
+      tx.update(roomRef, {
+        ['seatsData.' + target]: {
+          userId: currentUid,
+          userName: currentName,
+          realName: currentRealName,
+          userImg: currentAvatar || STABLE_AVATAR,
+          verified: hostVerified === true,
+          verifiedColor: hostVerifiedColor || 'white',
+          level: hostLevel,
+          isMuted: false,
+          roleTag: 'ADMIN',
+        },
+        ['speakerRequests.' + currentUid]: deleteField(),
+        ['seatInvites.' + currentUid]: deleteField(),
+      });
+      return 'ok';
+    });
+    if (res === 'full') alert('Koi seat khaali nahi hai');
+  } catch (e) { log(e); }
+};
 
 useEffect(() => {
 
@@ -2817,6 +2967,13 @@ useEffect(() => {
 // Mirrors the exact same "follows" collection + doc-id convention used on
 // the full userProfile screen, so following someone here and following
 // them from their profile page always agree.
+// SPEED: follow / follow-back / like state sirf 3 chhote doc-reads hain -> pehle wahi aate hain (button turant sahi dikhe).
+// Followers/Following count + likes ka total (jo bhaari query hai) alag se baad me aata hai, aur cache hota hai
+// taaki dobara same user kholne par sab kuch ek dum se dikhe.
+const previewLevelCacheRef = useRef({});   // uid -> level
+const previewCacheRef = useRef({});   // uid -> { followers, following, likes, isFollowing, isFollowBack, hasLiked, at }
+const PREVIEW_CACHE_MS = 60 * 1000;
+
 const fetchProfilePreview = async (targetUserId) => {
 
   if (!db || !targetUserId || targetUserId === currentUid) {
@@ -2826,6 +2983,7 @@ const fetchProfilePreview = async (targetUserId) => {
     setPreviewIsFollowing(false);
     setPreviewIsFollowBack(false);
     setPreviewHasLiked(false);
+    setPreviewStatsLoading(false);
     return;
   }
 
@@ -2833,74 +2991,88 @@ const fetchProfilePreview = async (targetUserId) => {
   // opened a different person's preview (fast taps in a busy room).
   const requestId = ++previewRequestIdRef.current;
 
-  setPreviewStatsLoading(true);
-
-  try {
-
-    const followersQuery = query(
-      collection(db, "follows"),
-      where("followingId", "==", targetUserId)
-    );
-
-    const followingQuery = query(
-      collection(db, "follows"),
-      where("followerId", "==", targetUserId)
-    );
-
-    const videosQuery = query(
-      collection(db, "all_videos"),
-      where("userId", "==", targetUserId)
-    );
-
-    const followRef = currentUid
-      ? doc(db, "follows", `${currentUid}_${targetUserId}`)
-      : null;
-
-    const backRef = currentUid
-      ? doc(db, "follows", `${targetUserId}_${currentUid}`)
-      : null;
-
-    const likeRef = currentUid
-      ? doc(db, "profileLikes", `${currentUid}_${targetUserId}`)
-      : null;
-
-    const [
-      followersSnap,
-      followingSnap,
-      videosSnap,
-      followSnap,
-      backSnap,
-      likeSnap,
-    ] = await Promise.all([
-      getCountFromServer(followersQuery),
-      getCountFromServer(followingQuery),
-      getDocs(videosQuery),
-      followRef ? getDoc(followRef) : Promise.resolve(null),
-      backRef ? getDoc(backRef) : Promise.resolve(null),
-      likeRef ? getDoc(likeRef) : Promise.resolve(null),
-    ]);
-
-    if (requestId !== previewRequestIdRef.current) return; // stale, ignore
-
-    let likesCount = 0;
-    videosSnap.forEach((v) => {
-      likesCount += Number(v.data()?.likes || 0);
-    });
-
-    setPreviewFollowersCount(followersSnap.data().count);
-    setPreviewFollowingCount(followingSnap.data().count);
-    setPreviewLikesCount(likesCount);
-    setPreviewIsFollowing(followSnap ? followSnap.exists() : false);
-    setPreviewIsFollowBack(backSnap ? backSnap.exists() : false);
-    setPreviewHasLiked(likeSnap ? likeSnap.exists() : false);
-
-  } catch (error) {
-    if (__DEV__) log("PROFILE PREVIEW FETCH ERROR =", error);
-  } finally {
-    if (requestId === previewRequestIdRef.current) {
-      setPreviewStatsLoading(false);
-    }
+  // cache hai -> turant dikhao (fir bhi background me taaza kar lenge)
+  const cached = previewCacheRef.current[targetUserId];
+  if (cached) {
+    setPreviewFollowersCount(cached.followers);
+    setPreviewFollowingCount(cached.following);
+    setPreviewLikesCount(cached.likes);
+    setPreviewIsFollowing(cached.isFollowing);
+    setPreviewIsFollowBack(cached.isFollowBack);
+    setPreviewHasLiked(cached.hasLiked);
+    setPreviewStatsLoading(false);
+    if (Date.now() - cached.at < PREVIEW_CACHE_MS) return;
+  } else {
+    setPreviewIsFollowing(false);
+    setPreviewIsFollowBack(false);
+    setPreviewHasLiked(false);
+    setPreviewStatsLoading(true);
   }
+
+  const patchCache = (patch) => {
+    previewCacheRef.current[targetUserId] = {
+      followers: 0, following: 0, likes: 0, isFollowing: false, isFollowBack: false, hasLiked: false,
+      ...(previewCacheRef.current[targetUserId] || {}),
+      ...patch,
+      at: Date.now(),
+    };
+  };
+
+  // ---- FAST: follow / back / like (3 tiny reads, parallel) ----
+  const fastJob = (async () => {
+    try {
+      const followRef = currentUid ? doc(db, "follows", `${currentUid}_${targetUserId}`) : null;
+      const backRef = currentUid ? doc(db, "follows", `${targetUserId}_${currentUid}`) : null;
+      const likeRef = currentUid ? doc(db, "profileLikes", `${currentUid}_${targetUserId}`) : null;
+      const [followSnap, backSnap, likeSnap] = await Promise.all([
+        followRef ? getDoc(followRef) : Promise.resolve(null),
+        backRef ? getDoc(backRef) : Promise.resolve(null),
+        likeRef ? getDoc(likeRef) : Promise.resolve(null),
+      ]);
+      const isFollowing = followSnap ? followSnap.exists() : false;
+      const isFollowBack = backSnap ? backSnap.exists() : false;
+      const hasLiked = likeSnap ? likeSnap.exists() : false;
+      patchCache({ isFollowing, isFollowBack, hasLiked });
+      if (requestId !== previewRequestIdRef.current) return;
+      setPreviewIsFollowing(isFollowing);
+      setPreviewIsFollowBack(isFollowBack);
+      setPreviewHasLiked(hasLiked);
+    } catch (error) {
+      if (__DEV__) log("PROFILE PREVIEW FAST ERROR =", error);
+    }
+  })();
+
+  // ---- SLOW: counts + likes total (alag chalta hai, button ko nahi rokta) ----
+  const slowJob = (async () => {
+    try {
+      const followersQuery = query(collection(db, "follows"), where("followingId", "==", targetUserId));
+      const followingQuery = query(collection(db, "follows"), where("followerId", "==", targetUserId));
+      const videosQuery = query(collection(db, "all_videos"), where("userId", "==", targetUserId));
+
+      const [followersSnap, followingSnap, videosSnap] = await Promise.all([
+        getCountFromServer(followersQuery),
+        getCountFromServer(followingQuery),
+        getDocs(videosQuery),
+      ]);
+
+      let likesCount = 0;
+      videosSnap.forEach((v) => { likesCount += Number(v.data()?.likes || 0); });
+      const followers = followersSnap.data().count;
+      const following = followingSnap.data().count;
+      patchCache({ followers, following, likes: likesCount });
+
+      if (requestId !== previewRequestIdRef.current) return; // stale, ignore
+      setPreviewFollowersCount(followers);
+      setPreviewFollowingCount(following);
+      setPreviewLikesCount(likesCount);
+    } catch (error) {
+      if (__DEV__) log("PROFILE PREVIEW STATS ERROR =", error);
+    } finally {
+      if (requestId === previewRequestIdRef.current) setPreviewStatsLoading(false);
+    }
+  })();
+
+  await Promise.all([fastJob, slowJob]);
 
 };
 
@@ -2935,25 +3107,34 @@ const handlePreviewFollow = async (targetSpeaker) => {
         followerId: currentUid,
         followingId: targetUserId,
       });
+
+      // notification wagairah background me -> button turant dobara dabne layak ho jata hai
       notifyNewFollower(targetUserId);
+      (async () => {
+        try {
+          const currentUserSnap = await getDoc(doc(db, "users", currentUid));
+          const currentUserData = currentUserSnap.data();
+          await addDoc(
+            collection(db, "users", targetUserId, "notifications"),
+            {
+              type: "follow",
+              senderId: currentUid,
+              senderName: currentUserData?.username || currentName || "User",
+              senderPhoto: currentUserData?.profileImg || currentAvatar || "",
+              createdAt: serverTimestamp(),
+            }
+          );
+        } catch (_) {}
+      })();
 
-      const currentUserSnap = await getDoc(
-        doc(db, "users", currentUid)
-      );
-      const currentUserData = currentUserSnap.data();
+    }
 
-      await addDoc(
-        collection(db, "users", targetUserId, "notifications"),
-        {
-          type: "follow",
-          senderId: currentUid,
-          senderName: currentUserData?.username || currentName || "User",
-          senderPhoto:
-            currentUserData?.profileImg || currentAvatar || "",
-          createdAt: serverTimestamp(),
-        }
-      );
-
+    // cache bhi sahi rakho
+    const c = previewCacheRef.current[targetUserId];
+    if (c) {
+      c.isFollowing = !wasFollowing;
+      c.followers = Math.max(0, c.followers + (wasFollowing ? -1 : 1));
+      c.at = Date.now();
     }
 
   } catch (error) {
@@ -2997,6 +3178,7 @@ const handlePreviewLike = async (targetSpeaker) => {
         createdAt: serverTimestamp(),
       });
     }
+    if (previewCacheRef.current[targetUserId]) previewCacheRef.current[targetUserId].hasLiked = !wasLiked;
 
   } catch (error) {
 
@@ -3025,12 +3207,16 @@ useEffect(() => {
   if (!(profileVisible || speakerModalVisible) || !selectedSpeaker?.userId || !db) return;
 
   let cancelled = false;
-  setPreviewLevel(null);
+  const uidForLevel = selectedSpeaker.userId;
+  // cache me ho to turant wahi dikhao (frame flicker / delay nahi)
+  setPreviewLevel(previewLevelCacheRef.current[uidForLevel] ?? null);
 
-  getDoc(doc(db, "wallets", selectedSpeaker.userId))
+  getDoc(doc(db, "wallets", uidForLevel))
     .then((snap) => {
-      if (!cancelled && snap.exists()) {
-        setPreviewLevel(snap.data()?.level || 1);
+      if (snap.exists()) {
+        const lv = snap.data()?.level || 1;
+        previewLevelCacheRef.current[uidForLevel] = lv;
+        if (!cancelled) setPreviewLevel(lv);
       }
     })
     .catch(() => {});
@@ -3059,6 +3245,11 @@ const profileLevel = previewLevel ?? selectedSpeaker?.level ?? 1;
 
   const backAction = () => {
 
+    // Game khula ho to back pehle game band kare
+    if (gameOpenRef.current) {
+      setGameOpen(false);
+      return true;
+    }
     // Ab har user (host + audience + speaker) ko Yes/No popup milega
     setControlModalVisible(true);
     return true;
@@ -3565,16 +3756,16 @@ if (
   agoraEngineRef.current
 ) {
 
-  if (mySeat.isMuted) {
-
-    agoraEngineRef.current.muteLocalAudioStream(true);
-
-  } else {
-
-    agoraEngineRef.current.muteLocalAudioStream(false);
-
+  // sirf tab jab seat ka mute value sach me badla ho (gift/chat jaise unrelated updates par
+  // mic ko dobara touch nahi karte -> user ne abhi mute/unmute dabaya ho to wapas nahi palatta)
+  const seatMuteNow = !!mySeat.isMuted;
+  if (lastSeatMuteAppliedRef.current !== seatMuteNow) {
+    lastSeatMuteAppliedRef.current = seatMuteNow;
+    try { agoraEngineRef.current.muteLocalAudioStream(seatMuteNow); } catch (_) {}
   }
 
+} else if (!mySeat) {
+  lastSeatMuteAppliedRef.current = null;   // seat chhodi -> agli baar fresh apply ho
 }
 
 
@@ -3650,9 +3841,9 @@ useEffect(() => {
       });
       added.sort((a, b) => msOf(a.createdAt) - msOf(b.createdAt));
       added.forEach(m => chatOrder.push(m.id));
-      if (chatOrder.length > 80) {
+      if (chatOrder.length > 60) {
         chatOrder.slice(0, chatOrder.length - 80).forEach(id => chatMap.delete(id));
-        chatOrder = chatOrder.slice(-80);
+        chatOrder = chatOrder.slice(-60);
       }
     }
     let msgs = chatOrder.map(id => chatMap.get(id)).filter(Boolean);
@@ -3669,14 +3860,17 @@ useEffect(() => {
     const chatSig = msgs.map(m => m.id).join(',');
     if (chatSig !== chatLastSig) {
       chatLastSig = chatSig;
-      if (chatFirst) {
+      // apna naya message turant dikhao (latency compensation se local write turant aata hai)
+      const mineNew = msgs.length > 0 && msgs[msgs.length - 1].senderId === currentUid;
+      if (chatFirst || mineNew) {
         chatFirst = false;
+        if (chatFlushTimer) { clearTimeout(chatFlushTimer); chatFlushTimer = null; }
         setChatMessages(msgs);
       } else if (!chatFlushTimer) {
         chatFlushTimer = setTimeout(() => {
           chatFlushTimer = null;
           setChatMessages(chatLatest);
-        }, 120);
+        }, 80);
       }
     }
 
@@ -3757,7 +3951,7 @@ useEffect(() => {
       flushTimer = setTimeout(() => {
         flushTimer = null;
         setAudienceMap(latestMap);
-      }, 600);
+      }, 1500);
     }
   }, (e) => log("Audience listener error:", e));
 
@@ -3845,7 +4039,9 @@ useEffect(() => {
   };
 
   // --- CLEAN & EXIT: Direct Fix for Navigation ---
-  const cleanAndExit = async () => {
+  // endForAll === true -> room sabke liye band (host ya admin). Warna sirf mera exit.
+  const cleanAndExit = async (endForAll) => {
+    const closeForEveryone = endForAll === true;
     exitingRef.current = true;
     speakingStore.reset();
     setControlModalVisible(false);
@@ -3890,9 +4086,9 @@ useEffect(() => {
 
 
 
-if (currentUserRole === "host") {
+if (currentUserRole === "host" || (closeForEveryone && isAdmin)) {
 
-  // Sirf host hi live band kare — room khatam hone par uske
+  // Host ya ADMIN live band kar sakta hai — room khatam hone par uske
   // chats aur audience subcollections bhi saaf karo, warna agli
   // baar live open karne par purana chat/audience dikhega.
   // SPEED: delete the room doc FIRST -> it vanishes from every "All Live"
@@ -4146,6 +4342,11 @@ useEffect(() => {
     });
     try {
       const jobs = stale.map((uid) => deleteDoc(doc(db, 'rooms', roomId, 'audience', uid)));
+      const reqs = roomDataRef.current?.speakerRequests || {};
+      stale.forEach((uid) => {
+        if (reqs[uid]) seatUpdates['speakerRequests.' + uid] = deleteField();
+        if (roomDataRef.current?.seatInvites?.[uid]) seatUpdates['seatInvites.' + uid] = deleteField();
+      });
       if (Object.keys(seatUpdates).length) jobs.push(updateDoc(doc(db, 'rooms', roomId), seatUpdates));
       await Promise.all(jobs);
     } catch (_) {}
@@ -4164,9 +4365,11 @@ useEffect(() => {
 // Request already pending (host ne abhi tak approve/reject nahi ki)?
 // approve/reject par speakerRequests.<uid> hat jata hai -> tab dobara bhej sakte hain.
 const hasPendingSeatRequest = () => {
-  if (myReqSentRef.current) return true;
   const r = roomData?.speakerRequests?.[currentUid];
-  return !!r && Date.now() - (r.requestedAt || 0) < SEAT_REQUEST_TTL_MS;
+  // doc me request hai: sirf tab pending jab 2 min se purani na ho (purani ho to dobara bhej sakte hain)
+  if (r) return Date.now() - (r.requestedAt || 0) < SEAT_REQUEST_TTL_MS;
+  // doc me abhi nahi dikhi: write abhi nikla hai (snapshot aana baaki) -> thodi der pending maano
+  return myReqSentRef.current && !myReqSeenRef.current && Date.now() - myReqSentAtRef.current < 15000;
 };
 
 // INSTANT: pehle UI/ref lock + toast, phir write background me (await ka wait nahi).
@@ -4180,6 +4383,8 @@ const submitSeatRequest = (seatKey, okText) => {
   requestSendingRef.current = true;
   myReqSentRef.current = true;
   myReqSeenRef.current = false;
+  const sentAt = Date.now();
+  myReqSentAtRef.current = sentAt;
   setMyReqSent(true);
   showToast(okText);
 
@@ -4206,10 +4411,12 @@ const submitSeatRequest = (seatKey, okText) => {
     })
     .finally(() => { requestSendingRef.current = false; });
 
-  // safety: kabhi doc me dikhi hi nahi (offline) to 2 min baad lock khol do
+  // safety: 2 min tak host ne kuch nahi kiya (ya doc me dikhi hi nahi) -> lock khol do,
+  // taaki user dobara request bhej sake (sirf wahi timer jo isi request ka ho)
   setTimeout(() => {
-    if (myReqSentRef.current && !myReqSeenRef.current) {
+    if (myReqSentRef.current && myReqSentAtRef.current === sentAt) {
       myReqSentRef.current = false;
+      myReqSeenRef.current = false;
       setMyReqSent(false);
     }
   }, SEAT_REQUEST_TTL_MS);
@@ -4244,7 +4451,10 @@ setCurrentUserRole("speaker");
 
 
 
-const handleRaiseHand = () => submitSeatRequest(null, "Request Sent To Host ✅");
+const handleRaiseHand = () => {
+  if (isAdmin) { adminTakeSeat(null); return; }   // admin ko host ki approval nahi chahiye
+  submitSeatRequest(null, "Request Sent To Host ✅");
+};
 
 
 
@@ -4498,7 +4708,7 @@ const initAgora = async (userRole) => {
       await engine.enableAudio();
       await engine.setEnableSpeakerphone(true);
       await engine.setClientRole(role);
-      engine.enableAudioVolumeIndication(300, 3, false);
+      engine.enableAudioVolumeIndication(400, 3, false);
 
       if (role === ClientRoleType.ClientRoleBroadcaster) {
         await engine.enableLocalAudio(true);
@@ -4558,13 +4768,13 @@ initAgoraRef.current = initAgora;
     const messageText = (text || '').trim().slice(0, 200);
     if (!messageText) return;
     // Host ne chat lock kiya ho to sirf host likh sakta hai
-    if (roomData?.chatLocked && currentUserRole !== 'host') {
+    if (roomData?.chatLocked && !canManage) {
       alert('Host ne chat lock kar di hai 🔒');
       return;
     }
     // spam guard: 0.5s se tez nahi (keyboard ab band nahi hota, isliye smooth)
     const nowTs = Date.now();
-    if (nowTs - lastChatAtRef.current < 500) return;
+    if (nowTs - lastChatAtRef.current < 250) return;
     lastChatAtRef.current = nowTs;
     try {
       // SCALE FIX: append-only write (one small new doc) instead of
@@ -4592,7 +4802,7 @@ const stableSendChat = useCallback((t) => { handleSendChatRef.current && handleS
 
 const sendQuickChat = async (text) => {
   if (!db || !roomId || !text) return;
-  if (roomData?.chatLocked && currentUserRole !== 'host') return;
+  if (roomData?.chatLocked && !canManage) return;
   try {
     await addDoc(collection(db, 'rooms', roomId, 'chats'), {
         senderId: currentUid,
@@ -4740,8 +4950,12 @@ const sendInvite = () => {
 // Ab: (1) approvals line (queue) me ek-ek karke chalte hain, (2) Firestore transaction
 // se TAAZA seat dekhte hain: seat khali ho to hi baithate hain, bhari ho to kisi ko
 // hataate nahi.
+const lastSeatMuteAppliedRef = useRef(null);
 const approveQueueRef = useRef(Promise.resolve());
 const approvingUidsRef = useRef(new Set());
+const justApprovedSeatsRef = useRef(new Set());   // abhi-abhi diye gaye seat (snapshot aane se pehle double-assign na ho)
+const reqLevelCacheRef = useRef({});   // uid -> wallet level (request aate hi prefetch)
+const seenReqUidsRef = useRef(null);   // naye request par host ko turant toast
 
 const approveRequest = (user) => {
   if (!user?.uid) return Promise.resolve();
@@ -4756,77 +4970,86 @@ const approveRequest = (user) => {
     try {
       const roomRef = doc(db, "rooms", roomId);
 
-      // user ka asli level (wallet) - transaction ke bahar, taaki transaction tez rahe
-      let approvedLevel = Math.max(
+      // SPEED: transaction (server round-trip, 2 hops) hata diya. Ab taaza local room data + local "abhi diya gaya"
+      // seat set se seat chunte hain aur ek hi updateDoc likhte hain -> host ko turant seat dikhti hai,
+      // user ko bhi sirf ek hop me. Seat sirf dotted-path se likhi jati hai, isliye baaki seats nahi chhedti.
+      const data = roomDataRef.current || {};
+      const seats = data.seatsData || {};
+      const maxSeats = data.seatCount === 12 ? 12 : 9;
+      const justTaken = justApprovedSeatsRef.current;
+
+      // request ab bhi maujood hai? (user ne cancel ya host ne reject kar diya ho to skip)
+      if (!data.speakerRequests?.[user.uid]) return;
+
+      // user pehle se kisi seat par baitha hai -> bas request hata do
+      if (Object.values(seats).some((s) => s?.userId === user.uid)) {
+        updateDoc(roomRef, { [`speakerRequests.${user.uid}`]: deleteField() }).catch(() => {});
+        return;
+      }
+
+      const isFree = (k) => !seats?.[k]?.userId && !justTaken.has(k);
+      let targetSeat = user.seatKey;
+
+      if (targetSeat) {
+        if (!isFree(targetSeat)) {
+          setHiddenReqUids((h) => { const n = { ...h }; delete n[user.uid]; return n; });
+          alert(`${(targetSeat || "").replace("_", " ")} pe pehle se koi baitha hai ❌ (use hataya nahi). Reject karo ya wo seat khali hone ka wait karo.`);
+          return;
+        }
+      } else {
+        for (let i = 2; i <= maxSeats; i++) {
+          const k = `seat_${i}`;
+          if (isFree(k)) { targetSeat = k; break; }
+        }
+        if (!targetSeat) {
+          setHiddenReqUids((h) => { const n = { ...h }; delete n[user.uid]; return n; });
+          alert("No Empty Seat Available");
+          return;
+        }
+      }
+
+      // level: jo turant pata hai wahi lo (wallet ka wait nahi); cache me nahi ho to baad me seat par update
+      const approvedLevel = Math.max(
         Number(user.level) || 1,
-        Number(audienceMap[user.uid]?.level) || 1
+        Number(audienceMap[user.uid]?.level) || 1,
+        Number(reqLevelCacheRef.current[user.uid]) || 1
       );
-      // wallet level: max 350ms wait (pehle poora network wait hota tha -> approve slow lagta tha)
-      try {
-        const w = await Promise.race([
-          getDoc(doc(db, "wallets", user.uid)),
-          new Promise((res) => setTimeout(() => res(null), 350)),
-        ]);
-        if (w && w.exists()) approvedLevel = Math.max(approvedLevel, Number(w.data()?.level) || 1);
-      } catch (_) {}
 
-      const result = await runTransaction(db, async (tx) => {
-        const snap = await tx.get(roomRef);
-        if (!snap.exists()) return { status: "noroom" };
-        const data = snap.data() || {};
-        const seats = data.seatsData || {};
-        const maxSeats = 9;
+      justTaken.add(targetSeat);
+      const seatToRelease = targetSeat;
+      setTimeout(() => { justTaken.delete(seatToRelease); }, 8000);
 
-        // request ab bhi maujood hai? (user ne cancel ya host ne reject kar diya ho to skip)
-        if (!data.speakerRequests?.[user.uid]) return { status: "gone" };
-
-        // user pehle se kisi seat par baitha hai -> bas request hata do
-        const alreadySeated = Object.values(seats).some((s) => s?.userId === user.uid);
-        if (alreadySeated) {
-          tx.update(roomRef, { [`speakerRequests.${user.uid}`]: deleteField() });
-          return { status: "already" };
-        }
-
-        const isFree = (k) => !seats?.[k]?.userId;
-        let targetSeat = user.seatKey;
-
-        if (targetSeat) {
-          // user ne jo seat maangi wo khali nahi -> kisi ko hatana nahi, baithana nahi
-          if (!isFree(targetSeat)) return { status: "taken", seat: targetSeat };
-        } else {
-          // seat nahi maangi thi -> pehli khali seat (seat_1 host ki hai)
-          for (let i = 2; i <= maxSeats; i++) {
-            const k = `seat_${i}`;
-            if (isFree(k)) { targetSeat = k; break; }
-          }
-          if (!targetSeat) return { status: "full" };
-        }
-
-        tx.update(roomRef, {
-          [`seatsData.${targetSeat}`]: {
-            userId: user.uid,
-            userName: user.name,
-            realName: user.realName,
-            userImg: user.img,
-            verified: isVerified(user.verified),
-            verifiedColor: normTickColor(user.verifiedColor),
-            level: approvedLevel,
-            isMuted: false,
-            roleTag: "SPEAKER",
-          },
-          [`speakerRequests.${user.uid}`]: deleteField(),
-        });
-        return { status: "ok", seat: targetSeat };
+      updateDoc(roomRef, {
+        [`seatsData.${targetSeat}`]: {
+          userId: user.uid,
+          userName: user.name,
+          realName: user.realName,
+          userImg: user.img,
+          verified: isVerified(user.verified),
+          verifiedColor: normTickColor(user.verifiedColor),
+          level: approvedLevel,
+          isMuted: false,
+          roleTag: "SPEAKER",
+        },
+        [`speakerRequests.${user.uid}`]: deleteField(),
+      }).catch((e) => {
+        log("approveRequest write error", e);
+        justTaken.delete(seatToRelease);
+        setHiddenReqUids((h) => { const n = { ...h }; delete n[user.uid]; return n; });
+        showToast("❌ Approve nahi hua, dobara try karo");
       });
 
-      if (result && result.status !== "ok" && result.status !== "already" && result.status !== "gone") {
-        // approve nahi hua -> row wapas dikhao taaki host reject kar sake
-        setHiddenReqUids((h) => { const n = { ...h }; delete n[user.uid]; return n; });
-      }
-      if (result?.status === "taken") {
-        alert(`${(result.seat || "").replace("_", " ")} pe pehle se koi baitha hai ❌ (use hataya nahi). Reject karo ya wo seat khali hone ka wait karo.`);
-      } else if (result?.status === "full") {
-        alert("No Empty Seat Available");
+      // asli wallet level cache me nahi tha -> background me seat ka level theek kar do
+      if (reqLevelCacheRef.current[user.uid] == null) {
+        getDoc(doc(db, "wallets", user.uid)).then((w) => {
+          if (!w.exists()) return;
+          const lv = Number(w.data()?.level) || 1;
+          reqLevelCacheRef.current[user.uid] = lv;
+          const cur = roomDataRef.current?.seatsData?.[seatToRelease];
+          if (lv > approvedLevel && cur?.userId === user.uid) {
+            updateDoc(roomRef, { [`seatsData.${seatToRelease}.level`]: lv }).catch(() => {});
+          }
+        }).catch(() => {});
       }
     } catch (e) {
       log("approveRequest error", e);
@@ -5254,11 +5477,18 @@ const sendGiftInBackground = async ({
   ids.forEach((id) => {
     roomUpdate[`seatStars.${id}`] = increment(unit);
   });
+  // TOP GIFTERS: GiftersSheet room doc ka `topGifters` padhta hai -> gift ke saath usi ek write me
+  // is room me bheje gaye total stars bhi jod do (pehle ye sirf users/{id} me jata tha, isliye list khali rehti thi)
+  roomUpdate[`topGifters.${currentUid}.uid`] = currentUid;
+  roomUpdate[`topGifters.${currentUid}.username`] = currentName || "";
+  roomUpdate[`topGifters.${currentUid}.name`] = currentRealName || currentName || "User";
+  roomUpdate[`topGifters.${currentUid}.profileImg`] = currentAvatar || "";
+  roomUpdate[`topGifters.${currentUid}.stars`] = increment(total);
 
   const jobs = [
 
     // sender wallet (total kharcha)
-    updateDoc(doc(db, "wallets", currentUid), { stars: increment(-total) }),
+    updateDoc(doc(db, "wallets", currentUid), { stars: increment(-total), totalSpent: increment(total) }),
 
     // seatStars + liveGift in ONE write -> every viewer gets ONE snapshot
     // ALL me bhi ek hi liveGift => animation/banner sab ko SIRF EK baar
@@ -5332,61 +5562,70 @@ const sendGiftInBackground = async ({
 
 };
 
+// HOST/ADMIN: nayi request aate hi turant pata chale (toast) + us user ka wallet level pehle se
+// le lo, taaki Approve dabate hi seat mil jaye.
+useEffect(() => {
+  if (!canManage) { seenReqUidsRef.current = null; return; }
+  const reqs = roomData?.speakerRequests || {};
+  const uids = Object.keys(reqs).filter((u) => reqs[u] && reqs[u].uid);
+  const prev = seenReqUidsRef.current;
+  const next = new Set(uids);
+  if (prev) {
+    uids.forEach((u) => {
+      if (!prev.has(u) && Date.now() - (reqs[u].requestedAt || 0) < 15000) {
+        showToast(`✋ ${reqs[u].name || 'User'} ne seat request bheji`);
+      }
+    });
+  }
+  seenReqUidsRef.current = next;
+  uids.forEach((u) => {
+    if (reqLevelCacheRef.current[u] != null || !db) return;
+    reqLevelCacheRef.current[u] = 0;   // in-flight marker (dobara fetch na ho)
+    getDoc(doc(db, 'wallets', u))
+      .then((w) => { reqLevelCacheRef.current[u] = w && w.exists() ? (Number(w.data()?.level) || 1) : 1; })
+      .catch(() => { delete reqLevelCacheRef.current[u]; });
+  });
+  // jo request hat gayi unka cache saaf
+  Object.keys(reqLevelCacheRef.current).forEach((u) => { if (!next.has(u)) delete reqLevelCacheRef.current[u]; });
+}, [roomData?.speakerRequests, canManage]); // eslint-disable-line react-hooks/exhaustive-deps
+
+// ===== SPEED: ye saari derived lists ab sirf tab banti hain jab data sach me badle =====
+// Pehle har render (gift/emoji/seat update) par naye array/object bante the -> memo components
+// (ViewersSheet, GiftSheet) bina wajah re-render hote the. Hooks early-return se PEHLE hain (rules of hooks).
+const audienceArray = useMemo(() => Object.values(audienceMap).filter(
+  (user) => user && user.uid && user.uid !== roomData?.hostId
+), [audienceMap, roomData?.hostId]);
+const topUsers = useMemo(() => audienceArray.slice(0, 3), [audienceArray]);
+const totalViewers = audienceArray.length;
+const heartTotal = useMemo(() => Object.values(audienceMap).reduce(
+  (a, u) => a + ((u && u.hearts) || 0), 0
+), [audienceMap]);
+// GIFT POPUP: sirf wahi users jo seat pe baithe hain (khud ko chhod kar, duplicate nahi)
+const giftUsers = useMemo(() => {
+  const out = [];
+  const seen = new Set();
+  Object.values(roomData?.seatsData || {}).forEach((seat) => {
+    if (!seat || !seat.userId) return;
+    if (seat.userId === currentUid) return;
+    if (seen.has(seat.userId)) return;
+    seen.add(seat.userId);
+    out.push({ uid: seat.userId, name: seat.userName, img: seat.userImg });
+  });
+  return out;
+}, [roomData?.seatsData, currentUid]);
+const requestsArray = useMemo(() => (
+  roomData?.speakerRequests
+    ? Object.values(roomData.speakerRequests)
+        .filter((r) => r && r.uid && !hiddenReqUids[r.uid])
+        .sort((x, y) => (x.requestedAt || 0) - (y.requestedAt || 0))
+    : []
+), [roomData?.speakerRequests, hiddenReqUids]);
+
   if (loading) return <View style={styles.loader}><Text style={{color:'#fff'}}>Entering Live Room...</Text></View>;
 
-  // SCALE FIX: sourced from the audience subcollection listener now.
-  // A doc only exists here while that viewer is actually present, so
-  // there's no separate "online" flag to check anymore — presence IS
-  // document existence.
-  const audienceArray = Object.values(audienceMap).filter(
-    user =>
-      user &&
-      user.uid &&
-      user.uid !== roomData?.hostId
-  );
-
-const topUsers = audienceArray.slice(0,3);
-
-const totalViewers = audienceArray.length;
-
-const heartTotal = Object.values(audienceMap).reduce(
-  (a, u) => a + ((u && u.hearts) || 0), 0
-);
-
-const topSeatUsers = Object.values(
-  roomData?.seatsData || {}
-).filter(
-  item => item?.userId
-);
-
+const topSeatUsers = Object.values(roomData?.seatsData || {}).filter((item) => item?.userId);
 
 handleSendGiftRef.current = handleSendGift;
-
-// GIFT POPUP: sirf wahi users jo seat (site) pe baithe hain.
-// Upar audience/listener list wale users popup me nahi aayenge.
-const giftUsers = [];
-const _giftSeen = new Set();
-
-Object.values(roomData?.seatsData || {}).forEach((seat) => {
-
-  if (!seat || !seat.userId) return;
-
-  // nobody can gift themselves (host included)
-  if (seat.userId === currentUid) return;
-
-  // same user 2 seats pe ho to sirf ek baar (duplicate key fix)
-  if (_giftSeen.has(seat.userId)) return;
-  _giftSeen.add(seat.userId);
-
-  giftUsers.push({
-    uid: seat.userId,
-    name: seat.userName,
-    img: seat.userImg
-  });
-
-});
-
-
 
 const toastEl = toastMsg ? (
   <Animated.View
@@ -5403,12 +5642,7 @@ const toastEl = toastMsg ? (
   </Animated.View>
 ) : null;
 
-const requestsArray =
-roomData?.speakerRequests
-? Object.values(roomData.speakerRequests)
-    .filter((r) => r && r.uid && !hiddenReqUids[r.uid])
-    .sort((x, y) => (x.requestedAt || 0) - (y.requestedAt || 0))
-: [];
+
 
 
 
@@ -5425,15 +5659,18 @@ const handleSeatPress = (key) => {
   }
 
   if (!seat.userId && currentUserRole === "listener") {
+    if (isAdmin) { adminTakeSeat(key); return; }   // admin = host jaisa: bina request ke seat
     sendSeatRequest(key);
     return;
   }
 
-  if (currentUserRole === "host" && seat.userId && key !== "seat_1") {
+  // host aur admin dono kisi bhi speaker par (remove/mute/make-admin) chala sakte hain
+  const canActOnSeat = canManage;
+  if (canManage && canActOnSeat && seat.userId && key !== "seat_1") {
     setSelectedSeatKey(key);
     setSelectedSpeaker(seat);
     setSpeakerModalVisible(true);
-  } else if (seat.userId && currentUserRole !== "host") {
+  } else if (seat.userId && !isHost) {
     setSelectedSpeaker(seat);
     setProfileVisible(true);
   }
@@ -5487,7 +5724,7 @@ return (
     <Stack.Screen options={{ gestureEnabled: false }} />
 
     <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
-    <LinearGradient pointerEvents="none" colors={['#0b3b42', '#14465f', '#4a3a86', '#9b57a6']} locations={[0, 0.35, 0.7, 1]} style={StyleSheet.absoluteFill} />
+    <TimeBackground />
 
     {/* ================= TOP HEADER ================= */}
     <View style={[styles.topHeader, { paddingTop: topInset + 8 }]}>
@@ -5499,7 +5736,7 @@ return (
             style={styles.topHostImg}
           />
           {(roomData?.seatsData?.seat_1?.level >= 10 || !!roomData?.seatsData?.seat_1?.userId) && (
-            <LevelFrame
+            <GuardedFrame
               level={roomData?.seatsData?.seat_1?.level}
               uid={roomData?.seatsData?.seat_1?.userId}
               style={FRAME_HOST38}
@@ -5517,6 +5754,7 @@ return (
               {fmtCount((roomData?.seatsData?.seat_1?.userId && roomData?.seatStars?.[roomData.seatsData.seat_1.userId]) || 0)}
             </Text>
           </View>
+          {!!roomStartTime && <LiveTimer startTime={roomStartTime} />}
         </View>
 
         {!isHost && (
@@ -5543,7 +5781,7 @@ return (
                 style={styles.viewerAvatar}
               />
               {(user.level >= 10 || !!user.uid) && (
-                <LevelFrame level={user.level} uid={user.uid} animated={false} pointerEvents="none"
+                <GuardedFrame level={user.level} uid={user.uid} animated pointerEvents="none"
                   style={{ position: 'absolute', width: 40, height: 40, top: -5, left: -5 }} />
               )}
             </View>
@@ -5569,13 +5807,13 @@ return (
         <Ionicons name="stats-chart" size={11} color="#f1c40f" style={{ flexShrink: 0 }} />
         <Text allowFontScaling={false} style={styles.monthlyTxt} numberOfLines={1}>Monthly Host</Text>
       </View>
-      {isHost && (
+      {canManage && (
         <TouchableOpacity
           style={[styles.chip, chatLocked && { backgroundColor: 'rgba(241,196,15,0.25)' }]}
           onPress={() => setHostPanelVisible(true)}
         >
           <Ionicons name={chatLocked ? "lock-closed" : "construct"} size={12} color={chatLocked ? "#f1c40f" : "#fff"} />
-          <Text allowFontScaling={false} style={styles.chipTxt} numberOfLines={1}>Host</Text>
+          <Text allowFontScaling={false} style={styles.chipTxt} numberOfLines={1}>{isHost ? 'Host' : 'Admin'}</Text>
         </TouchableOpacity>
       )}
       <View style={styles.chip}>
@@ -5603,7 +5841,7 @@ return (
     }}>
 
       {/* SEATS */}
-      <View style={styles.micGrid}>
+      <View style={[styles.micGrid, { width: seatCellW * seatCols }]}>
         {SEAT_KEYS.slice(0, seatCount).map((key, i) => {
           const seat = resolvedSeats[key] || EMPTY_SEAT;
           return (
@@ -5613,6 +5851,7 @@ return (
               index={i + 1}
               seat={seat}
               stars={(seat.userId && roomData?.seatStars?.[seat.userId]) || 0}
+              cellW={seatCellW}
               onPress={stableSeatPress}
             />
           );
@@ -5638,9 +5877,9 @@ return (
         paddingBottom: 4,
     }}
     showsVerticalScrollIndicator={false}
-    initialNumToRender={12}
-    maxToRenderPerBatch={8}
-    windowSize={7}
+    initialNumToRender={10}
+    maxToRenderPerBatch={6}
+    windowSize={5}
     removeClippedSubviews={false}
     updateCellsBatchingPeriod={50}
     overScrollMode="never"
@@ -5675,6 +5914,28 @@ return (
 
     <FloatingHearts ref={heartsRef} />
 
+    {/* ===== TEEN PATTI: neeche aadha screen, navigation bar ke upar; upar seats dikhti rahengi ===== */}
+    {gameOpen === 'teen' && (
+      <TeenPattiGame
+        db={db}
+        uid={currentUid}
+        roomId={roomId}
+        stars={stars}
+        bottom={Math.max(insets.bottom, 10)}
+        onClose={() => setGameOpen(false)}
+      />
+    )}
+    {gameOpen === 'greedy' && (
+      <GreedyGame
+        db={db}
+        uid={currentUid}
+        roomId={roomId}
+        stars={stars}
+        bottom={Math.max(insets.bottom, 10)}
+        onClose={() => setGameOpen(false)}
+      />
+    )}
+
     {emojiOpen && (
       <ReAnimated.View
         style={[
@@ -5688,8 +5949,85 @@ return (
     )}
 
     {/* ================= BOTTOM BAR ================= */}
+{/* ===== GAME LOGO (song button ke UPAR) - sabko dikhta hai ===== */}
+{!keyboardOpen && !gameOpen && (
+  <TouchableOpacity
+    activeOpacity={0.8}
+    onPress={() => { Keyboard.dismiss(); setEmojiOpen(false); setGamePickerOpen((v) => !v); }}
+    style={{
+      position: 'absolute',
+      right: 12,
+      bottom: keyboardHeight + bottomBarTotal + 24 + 62,
+      width: 48,
+      height: 48,
+      borderRadius: 24,
+      zIndex: 60,
+      elevation: 12,
+      shadowColor: '#000',
+      shadowOpacity: 0.35,
+      shadowRadius: 6,
+      shadowOffset: { width: 0, height: 3 },
+    }}
+  >
+    <LinearGradient
+      colors={['#ffd54a', '#ff8a00']}
+      start={{ x: 0.2, y: 0 }}
+      end={{ x: 0.8, y: 1 }}
+      style={{
+        flex: 1, borderRadius: 24, borderWidth: 2, borderColor: '#fff3b0',
+        alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      <Text allowFontScaling={false} style={{ fontSize: 22 }}>🎴</Text>
+    </LinearGradient>
+    <View
+      style={{
+        position: 'absolute', bottom: -4, alignSelf: 'center', backgroundColor: '#e0152b',
+        paddingHorizontal: 6, borderRadius: 8, borderWidth: 1, borderColor: '#fff',
+      }}
+    >
+      <Text allowFontScaling={false} style={{ color: '#fff', fontSize: 8, fontWeight: '900' }}>GAME</Text>
+    </View>
+  </TouchableOpacity>
+)}
+
+{/* ===== GAME PICKER (logo ke upar) ===== */}
+{gamePickerOpen && !keyboardOpen && !gameOpen && (
+  <View
+    style={{
+      position: 'absolute',
+      right: 12,
+      bottom: keyboardHeight + bottomBarTotal + 24 + 62 + 56,
+      zIndex: 61,
+      elevation: 13,
+      backgroundColor: 'rgba(20,10,60,0.95)',
+      borderRadius: 16,
+      padding: 8,
+      borderWidth: 1,
+      borderColor: 'rgba(255,255,255,0.25)',
+    }}
+  >
+    <TouchableOpacity
+      activeOpacity={0.8}
+      onPress={() => { setGamePickerOpen(false); setGameOpen('teen'); }}
+      style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 8, paddingHorizontal: 10 }}
+    >
+      <Text allowFontScaling={false} style={{ fontSize: 22, marginRight: 8 }}>🎴</Text>
+      <Text allowFontScaling={false} style={{ color: '#fff', fontSize: 13, fontWeight: '800' }}>Teen Patti</Text>
+    </TouchableOpacity>
+    <TouchableOpacity
+      activeOpacity={0.8}
+      onPress={() => { setGamePickerOpen(false); setGameOpen('greedy'); }}
+      style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 8, paddingHorizontal: 10 }}
+    >
+      <Text allowFontScaling={false} style={{ fontSize: 22, marginRight: 8 }}>🐰</Text>
+      <Text allowFontScaling={false} style={{ color: '#fff', fontSize: 13, fontWeight: '800' }}>Greedy</Text>
+    </TouchableOpacity>
+  </View>
+)}
+
 {/* ===== SONG BUTTON (gift button ke upar) - sirf host/speaker ===== */}
-{currentUserRole !== 'listener' && !keyboardOpen && (
+{currentUserRole !== 'listener' && !keyboardOpen && !gameOpen && (
   <MusicFab
     playing={music.playing}
     onPress={() => setMusicSheetVisible(true)}
@@ -5716,7 +6054,7 @@ return (
 >
 
       <View style={[styles.inputBox, keyboardOpen && { marginRight: 0 }]}>
-        <ChatTextInput onSend={stableSendChat} locked={chatLocked && !isHost} onFocus={onChatFocus} onBlur={onChatBlur} />
+        <ChatTextInput onSend={stableSendChat} locked={chatLocked && !canManage} onFocus={onChatFocus} onBlur={onChatBlur} />
         <TouchableOpacity onPress={() => setEmojiOpen(v => !v)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Ionicons name={emojiOpen ? "happy" : "happy-outline"} size={22} color={T.sub} />
         </TouchableOpacity>
@@ -5746,7 +6084,7 @@ return (
         </TouchableOpacity>
       )}
 
-      {currentUserRole === 'host' && !keyboardOpen && (
+      {canManage && !keyboardOpen && (
 
 
        <TouchableOpacity
@@ -5837,11 +6175,30 @@ return (
 
 <TouchableOpacity
   style={styles.yesBtn}
-  onPress={cleanAndExit}
+  onPress={() => cleanAndExit(false)}
 >
   <Text style={styles.btnText}>Yes</Text>
 </TouchableOpacity>
           </View>
+
+          {isAdmin && (
+            <TouchableOpacity
+              activeOpacity={0.85}
+              style={[styles.yesBtn, { marginTop: 14, backgroundColor: '#c0392b', alignSelf: 'stretch', alignItems: 'center' }]}
+              onPress={() => {
+                Alert.alert(
+                  'Live band karni hai? 🔴',
+                  'Ye live sabke liye band ho jayegi (host ke liye bhi).',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'End Live', style: 'destructive', onPress: () => cleanAndExit(true) },
+                  ]
+                );
+              }}
+            >
+              <Text style={styles.btnText}>🛑 End Live (sabke liye)</Text>
+            </TouchableOpacity>
+          )}
         </TouchableOpacity>
       </TouchableOpacity>
     </SafeModal>
@@ -6048,6 +6405,21 @@ fontWeight:'bold'
 
 </View>
 
+{!!selectedSpeaker?.userId && selectedSpeaker.userId !== currentUid && (
+  <View style={{ flexDirection: 'row', justifyContent: 'center', marginTop: 12 }}>
+    <TouchableOpacity activeOpacity={0.8} onPress={() => handleReportFromRoom(selectedSpeaker)}
+      style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6, paddingHorizontal: 14, borderRadius: 16, marginRight: 10, backgroundColor: 'rgba(255,90,90,0.12)', borderWidth: 1, borderColor: 'rgba(255,90,90,0.5)' }}>
+      <Ionicons name="flag" size={13} color="#ff5a5a" />
+      <Text allowFontScaling={false} style={{ color: '#ff5a5a', fontWeight: 'bold', fontSize: 12, marginLeft: 5 }}>Report</Text>
+    </TouchableOpacity>
+    <TouchableOpacity activeOpacity={0.8} onPress={() => handleBlockFromRoom(selectedSpeaker)}
+      style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6, paddingHorizontal: 14, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)' }}>
+      <Ionicons name="ban" size={13} color="#fff" />
+      <Text allowFontScaling={false} style={{ color: '#fff', fontWeight: 'bold', fontSize: 12, marginLeft: 5 }}>Block</Text>
+    </TouchableOpacity>
+  </View>
+)}
+
 
 <TouchableOpacity
 onPress={() => {
@@ -6097,18 +6469,7 @@ router.push({
 
   {/* Verified Tick */}
  
-{isVerified(selectedSpeaker?.verified) && (
-  <MaterialCommunityIcons
-    name="check-decagram"
-    size={18}
-    color={
-selectedSpeaker?.verifiedColor
-=== "yellow"
-? "#FFD700"
-: "#ffffff"
-}
-  />
-)}
+<UserTick uid={selectedSpeaker?.uid || selectedSpeaker?.userId || selectedSpeaker?.senderId || selectedSpeaker?.id} verified={!!(isVerified(selectedSpeaker?.verified))} verifiedColor={selectedSpeaker?.verifiedColor} size={18} />
 
   
 
@@ -6152,6 +6513,26 @@ selectedSpeaker?.verifiedColor
   </View>
 
 </View>
+
+{canManage && !!selectedSpeaker?.userId && selectedSpeaker.userId !== currentUid && selectedSpeaker.userId !== roomData?.hostId && (
+  <TouchableOpacity
+    activeOpacity={0.8}
+    onPress={() => toggleAdmin(selectedSpeaker.userId, selectedSpeaker.userName)}
+    style={{
+      marginTop: 10,
+      paddingVertical: 6,
+      paddingHorizontal: 16,
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: roomData?.admins?.[selectedSpeaker.userId] ? '#ff5a5a' : '#f1c40f',
+      backgroundColor: roomData?.admins?.[selectedSpeaker.userId] ? 'rgba(255,90,90,0.12)' : 'rgba(241,196,15,0.12)',
+    }}
+  >
+    <Text allowFontScaling={false} style={{ color: roomData?.admins?.[selectedSpeaker.userId] ? '#ff5a5a' : '#f1c40f', fontWeight: 'bold', fontSize: 13 }}>
+      {roomData?.admins?.[selectedSpeaker.userId] ? '🛡 Remove Admin' : '🛡 Make Admin'}
+    </Text>
+  </TouchableOpacity>
+)}
 
 {/* Followers / Following / Likes — host can see this too, same as viewer popup */}
 <View
@@ -6300,6 +6681,8 @@ paddingBottom: navGap + 10,
 }}
 >
 
+{renderReportBlock(selectedSpeaker)}
+
 <TouchableOpacity
 onPress={() => {
 
@@ -6344,19 +6727,7 @@ roomId:roomId
   </Text>
 
   {/* Verified Tick - sirf verified user ko */}
-  {isVerified(selectedSpeaker?.verified) && (
-    <View style={styles.verifiedBadge}>
-      <MaterialCommunityIcons
-        name="check-decagram"
-        size={18}
-        color={
-          selectedSpeaker?.verifiedColor === "yellow"
-            ? "#FFD700"
-            : "#ffffff"
-        }
-      />
-    </View>
-  )}
+  <UserTick uid={selectedSpeaker?.uid || selectedSpeaker?.userId || selectedSpeaker?.senderId || selectedSpeaker?.id} verified={!!(isVerified(selectedSpeaker?.verified))} verifiedColor={selectedSpeaker?.verifiedColor} size={18} />
 
   {/* Level Badge */}
   <View
@@ -6397,6 +6768,26 @@ roomId:roomId
     </Text>
   </View>
 </View>
+
+{canManage && !!selectedSpeaker?.userId && selectedSpeaker.userId !== currentUid && selectedSpeaker.userId !== roomData?.hostId && (
+  <TouchableOpacity
+    activeOpacity={0.8}
+    onPress={() => toggleAdmin(selectedSpeaker.userId, selectedSpeaker.userName)}
+    style={{
+      marginTop: 10,
+      paddingVertical: 6,
+      paddingHorizontal: 16,
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: roomData?.admins?.[selectedSpeaker.userId] ? '#ff5a5a' : '#f1c40f',
+      backgroundColor: roomData?.admins?.[selectedSpeaker.userId] ? 'rgba(255,90,90,0.12)' : 'rgba(241,196,15,0.12)',
+    }}
+  >
+    <Text allowFontScaling={false} style={{ color: roomData?.admins?.[selectedSpeaker.userId] ? '#ff5a5a' : '#f1c40f', fontWeight: 'bold', fontSize: 13 }}>
+      {roomData?.admins?.[selectedSpeaker.userId] ? '🛡 Remove Admin' : '🛡 Make Admin'}
+    </Text>
+  </TouchableOpacity>
+)}
 
 {/* Followers / Following / Likes — same numbers as the full profile */}
 <View
@@ -6607,7 +6998,7 @@ marginTop:8,
 fontWeight:"bold"
 }}
 >
- {currentUserRole === "host" ? "👤 Host" : "👤 Speaker"}
+ {currentUserRole === "host" ? "👤 Host" : isAdmin ? "🛡 Admin" : "👤 Speaker"}
 </Text>
 
 </View>
@@ -6763,7 +7154,7 @@ style={styles.friendImg}
 {
 (item.level>=10 || !!item.id) && (
 
-<LevelFrame level={item.level} uid={item.id} animated={false}
+<GuardedFrame level={item.level} uid={item.id} animated
 style={{
 position:"absolute",
 width:90,
@@ -6793,22 +7184,7 @@ left:-17
     </Text>
 
     {/* Verified Tick - Sirf Verified User ko */}
-    {isVerified(item.verified) && (
-      <View style={styles.verifiedBadge}>
-        
- <MaterialCommunityIcons
-      name="check-decagram"
-      size={17}
-      color={
-        item.verifiedColor === "yellow"
-          ? "#FFD700"
-          : "#ffffff"
-      }
-  />
-
-
-      </View>
-    )}
+    <UserTick uid={item.uid || item.userId || item.senderId || item.id} verified={!!(isVerified(item.verified))} verifiedColor={item.verifiedColor} size={17} />
 
     {/* Level Badge */}
     <View
@@ -6919,7 +7295,7 @@ onPress={sendInvite}
 
 
 
-    {isHost && (
+    {canManage && (
       <HostPanelSheet
         visible={hostPanelVisible}
         onUserPress={openUserPopup}
@@ -6972,7 +7348,7 @@ onPress={sendInvite}
       onClose={() => setViewersVisible(false)}
       users={audienceArray}
       onUserPress={openUserPopup}
-      isHost={currentUserRole === 'host'}
+      isHost={canManage}
       onKick={kickUser}
     />
     <GiftersSheet
@@ -6983,7 +7359,7 @@ onPress={sendInvite}
     <RoomMenuSheet
       visible={menuVisible}
       onClose={() => setMenuVisible(false)}
-      isHost={currentUserRole === 'host'}
+      isHost={canManage}
       locked={!!roomData?.roomLocked}
       onToggleLock={toggleRoomLock}
       onShare={() => setFriendShareVisible(true)}
@@ -7008,13 +7384,13 @@ const styles = StyleSheet.create({
   chip: {
     flexDirection: 'row', alignItems: 'center', marginLeft: 4,
     paddingHorizontal: 8, height: 26, borderRadius: 13, flexShrink: 1,
-    backgroundColor: 'rgba(255,255,255,0.09)', borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: 'rgba(0,0,0,0.42)', borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.18)',
   },
   chipTxt: { color: '#fff', fontSize: 11, fontWeight: '700', marginLeft: 3, flexShrink: 1 },
   pinned: {
     flexDirection: 'row', alignItems: 'flex-start', alignSelf: 'flex-start',
     marginHorizontal: 14, marginTop: 2, paddingHorizontal: 12, paddingVertical: 8,
-    borderRadius: 12, backgroundColor: 'rgba(0,0,0,0.28)', maxWidth: '94%',
+    borderRadius: 12, backgroundColor: 'rgba(0,0,0,0.5)', maxWidth: '94%',
   },
   pinnedTxt: { color: '#fff', fontSize: 13, lineHeight: 18, marginLeft: 7, flexShrink: 1 },
   emojiBar: {
@@ -7032,20 +7408,20 @@ const styles = StyleSheet.create({
   },
   hostPillWrap: {
     flexDirection:'row', alignItems:'center',
-    backgroundColor:'rgba(0,0,0,0.28)', borderRadius:26, flexShrink:1,
+    backgroundColor:'rgba(0,0,0,0.5)', borderRadius:26, flexShrink:1,
     paddingLeft:4, paddingRight:6, paddingVertical:4,
   },
   topHostImg: { width: 38, height: 38, borderRadius: 19 },
-  roomNameText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  roomNameText: { color: '#fff', fontSize: 13, fontWeight: '700', textShadowColor: 'rgba(0,0,0,0.9)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
   coinRow: { flexDirection:'row', alignItems:'center', marginTop:1 },
   coinDot: { width:11, height:11, borderRadius:6, backgroundColor:'#f5c518', borderWidth:1, borderColor:'#c99a00' },
-  coinTxt: { color:'#fff', fontSize:11, marginLeft:4, fontWeight:'600' },
+  coinTxt: { color:'#fff', fontSize:11, marginLeft:4, fontWeight:'700', textShadowColor:'rgba(0,0,0,0.9)', textShadowOffset:{width:0,height:1}, textShadowRadius:2 },
   plusBtn: { width:30, height:30, borderRadius:15, backgroundColor:'#fff200', justifyContent:'center', alignItems:'center', marginLeft:8 },
   headerRight: { flexDirection:'row', alignItems:'center', flexShrink:0, marginLeft:6 },
   closeBtn: { marginLeft:10 },
   hostBadge: { flexDirection: 'row', alignItems: 'center' },
   viewRow: { flexDirection: 'row', alignItems: 'center', marginLeft: 10, marginTop: 2 },
-  onlineText: { color: '#bdc3c7', fontSize: 11, marginLeft: 4 },
+  onlineText: { color: '#fff', fontSize: 11, marginLeft: 4, textShadowColor: 'rgba(0,0,0,0.9)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
   liveTag: { backgroundColor: '#FF3B5C', paddingHorizontal: 7, paddingVertical: 1, borderRadius: 8, marginLeft: 8 },
   liveTagText: { color: '#fff', fontSize: 9, fontWeight: 'bold' },
   audienceAvatars: { flexDirection: 'row', alignItems: 'center' },
@@ -7078,10 +7454,11 @@ const styles = StyleSheet.create({
   seatEmoji: { position: 'absolute', top: -6, right: -6, fontSize: 22 },
   seatHostPill: { position: 'absolute', bottom: SEAT_FRAME_OFFSET - 4, zIndex: 30, elevation: 30, backgroundColor: '#2f7bf5', borderRadius: 9, paddingHorizontal: 8, paddingVertical: 1 },
   seatHostPillTxt: { color: '#fff', fontSize: 9, fontWeight: '800' },
-  seatLabel: { color: '#fff', fontSize: 10, fontWeight: '600', marginTop: -SEAT_FRAME_OFFSET + 3, maxWidth: SEAT_CELL_W - 16 },
-  seatCoinRow: { flexDirection: 'row', alignItems: 'center', marginTop: 3 },
+  seatLabelPill: { marginTop: -SEAT_FRAME_OFFSET + 3, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 9, paddingHorizontal: 7, paddingVertical: 1.5, maxWidth: SEAT_CELL_W - 8 },
+  seatLabel: { color: '#fff', fontSize: 10, fontWeight: '700', textShadowColor: 'rgba(0,0,0,0.9)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
+  seatCoinRow: { flexDirection: 'row', alignItems: 'center', marginTop: 3, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 9, paddingHorizontal: 6, paddingVertical: 1 },
   seatCoinDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#f5c518' },
-  seatCoinTxt: { color: '#fff', fontSize: 9, marginLeft: 4 },
+  seatCoinTxt: { color: '#fff', fontSize: 9, marginLeft: 4, fontWeight: '700', textShadowColor: 'rgba(0,0,0,0.9)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 },
 
   seatItem: { width:width*0.20, alignItems: 'center', marginBottom: 15 },
   avatarBox: { width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', backgroundColor: '#151728' },
@@ -7109,16 +7486,16 @@ chatArea: {
   chatAva: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#2a2b38' },
   chatContent: { flex: 1, marginLeft: 10 },
   chatHeaderInline: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  chatUser: { color: '#fff', fontWeight: 'bold', fontSize: 13 },
-  bubble: { backgroundColor: 'rgba(0,0,0,0.28)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, alignSelf: 'flex-start' },
-  chatMsg: { color: '#eee', fontSize: 13 },
+  chatUser: { color: '#fff', fontWeight: 'bold', fontSize: 13, textShadowColor: 'rgba(0,0,0,0.9)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
+  bubble: { backgroundColor: 'rgba(0,0,0,0.5)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, alignSelf: 'flex-start' },
+  chatMsg: { color: '#fff', fontSize: 13, textShadowColor: 'rgba(0,0,0,0.6)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 },
   bottomNav: {
   // in-flow (absolute nahi): content ke neeche hamesha fixed jagah, har phone par same
   flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, paddingTop: 10,
   minHeight: BOTTOM_BAR_H, backgroundColor: 'transparent' },
-  inputBox: { flex: 1, height: 40, backgroundColor: 'rgba(0,0,0,0.30)', borderRadius: 22, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, marginRight: 10 },
+  inputBox: { flex: 1, height: 40, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 22, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, marginRight: 10 },
   inputStyle: { color: '#fff', fontSize: 14, flex: 1 },
-  actionCircle: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.30)', justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
+  actionCircle: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center' },
   exitBox: { width: '80%', backgroundColor: '#1C1E2E', padding: 25, borderRadius: 20, alignItems: 'center' },
   exitTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },

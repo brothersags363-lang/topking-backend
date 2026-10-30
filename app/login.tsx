@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
 View,
 Text,
@@ -21,9 +21,11 @@ import {
 GoogleAuthProvider,
 signInWithCredential,
 onAuthStateChanged,
+signOut,
 } from 'firebase/auth';
 
 import { auth, db, getFCMToken } from './firebaseConfig';
+import { checkDeviceBanned, registerDevice } from '../utils/api';
 
 import {
   collection,
@@ -38,6 +40,7 @@ import {
 import TopKingLogo from '../assets/images/topking-logo.png';
 export default function LoginScreen() {
 const router = useRouter();
+const busy = useRef(false); // sign-in + device check chal raha ho to auto-redirect mat karo
 
 useEffect(() => {
 GoogleSignin.configure({
@@ -50,7 +53,7 @@ offlineAccess: true,
 
 useEffect(() => {
   const unsubscribe = onAuthStateChanged(auth, (user) => {
-    if (user) {
+    if (user && !busy.current) {
       router.replace('/profile');
     }
   });
@@ -60,7 +63,14 @@ useEffect(() => {
 
 
 const signIn = async () => {
+busy.current = true;
 try {
+// 1) Login se PEHLE: ye device banned hai to Google picker tak nahi jayenge
+if (await checkDeviceBanned()) {
+  Alert.alert('Device Banned', 'This device has been banned. You cannot log in.');
+  return;
+}
+
 await GoogleSignin.hasPlayServices();
 
 
@@ -87,6 +97,19 @@ await GoogleSignin.hasPlayServices();
   );
 
 const uid = userCredential.user.uid;
+
+// 2) Login ke TURANT baad: device register + ban check (server naya account bhi band kar deta hai)
+const reg = await registerDevice();
+if (!reg.ok) {
+  await signOut(auth).catch(() => {});
+  await GoogleSignin.signOut().catch(() => {});
+  if (reg.banned) {
+    Alert.alert('Device Banned', 'This device has been banned. You cannot log in.');
+  } else {
+    Alert.alert('Update Required', 'Please update the app to continue.');
+  }
+  return;
+}
 
 const createUniqueUsername = async (name) => {
 
@@ -219,6 +242,8 @@ router.replace('/profile');
       error?.message || 'Google Sign In Failed'
     );
   }
+} finally {
+  busy.current = false;
 }
 
 
@@ -227,7 +252,7 @@ router.replace('/profile');
 return ( <View style={styles.container}>
 
 <Text style={styles.appName}>
-  TOP KING
+  Tiki Max
 </Text>
 
 <Image

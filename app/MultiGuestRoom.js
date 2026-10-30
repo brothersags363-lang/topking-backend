@@ -40,6 +40,7 @@ import { gifts } from '../assets/giftsData';
 import { giftHtml } from '../assets/giftWeb';
 import LevelFrame, { getSpecialKey } from '../components/LevelFrame';
 import JoinEntry from '../components/live/JoinEntry';
+import UserTick from '../components/UserTick';
 
 let db = null;
 let auth = null;
@@ -586,10 +587,7 @@ const ChatItem = memo(({ chat, onUser }) => {
       uid: chat.senderId, name: chat.senderName, username: chat.username, img: chat.userImg,
       level: chat.level, verified: chat.verified, verifiedColor: chat.verifiedColor,
     });
-  const tick = (size) => chat.verified && (
-    <MaterialCommunityIcons name="check-decagram" size={size} style={{ marginLeft: 3 }}
-      color={chat?.verifiedColor === 'yellow' ? '#FFD700' : '#ffffff'} />
-  );
+  const tick = (size) => <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={size} />;
 
   if (chat.type === 'join') {
     return (
@@ -597,7 +595,7 @@ const ChatItem = memo(({ chat, onUser }) => {
         <TouchableOpacity activeOpacity={0.8} onPress={openUser}>
           <Image source={{ uri: chat.userImg || DEFAULT_AVATAR }} style={styles.sysAva} />
           {(chat.level >= 10 || chat.special || !!chat.senderId) && (
-            <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated={false} style={styles.sysFrame} />
+            <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated style={styles.sysFrame} />
           )}
         </TouchableOpacity>
         <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginLeft: 6 }}>
@@ -640,7 +638,7 @@ const ChatItem = memo(({ chat, onUser }) => {
       <TouchableOpacity activeOpacity={0.8} onPress={openUser} style={{ width: 38, height: 38, justifyContent: 'center', alignItems: 'center' }}>
         <Image source={{ uri: chat.userImg || DEFAULT_AVATAR }} style={styles.chatAva} />
         {(chat.level >= 10 || chat.special || !!chat.senderId) && (
-          <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated={false} style={styles.chatFrame} />
+          <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated style={styles.chatFrame} />
         )}
       </TouchableOpacity>
       <View style={styles.chatContent}>
@@ -740,10 +738,7 @@ const Tile = memo(function Tile({ index, seat, score, extraGifters, mine, speaki
             <View style={{ flex: 1 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                 <Text style={[styles.nameText, { flexShrink: 1 }]} numberOfLines={1}>{seat.userName || 'User'}</Text>
-                {isVerified(seat.verified) && (
-                  <MaterialCommunityIcons name="check-decagram" size={11} style={{ marginLeft: 2 }}
-                    color={seat.verifiedColor === 'yellow' ? '#FFD700' : '#ffffff'} />
-                )}
+                <UserTick uid={seat.userId || seat.uid} verified={!!(isVerified(seat.verified))} verifiedColor={seat.verifiedColor} size={11} />
               </View>
               <View style={styles.scoreRow}>
                 <View style={styles.coinDot} />
@@ -1808,7 +1803,7 @@ export default function MultiGuestRoom() {
     }
 
     const jobs = [
-      updateDoc(doc(db, 'wallets', myUid), { stars: increment(-price) }),
+      updateDoc(doc(db, 'wallets', myUid), { stars: increment(-price), totalSpent: increment(price) }),
       updateDoc(doc(db, 'rooms', roomId), roomUpdate),
       setDoc(doc(db, 'wallets', receiverId), { earnings: increment(price), receivedStars: increment(price) }, { merge: true }),
       updateDoc(doc(db, 'users', receiverId), {
@@ -1931,10 +1926,7 @@ export default function MultiGuestRoom() {
               <View style={{ marginLeft: 7, maxWidth: width * 0.28 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                   <Text style={styles.hostPillName} numberOfLines={1}>{room?.hostName || 'Host'}</Text>
-                  {isVerified(hostSeat.verified) && (
-                    <MaterialCommunityIcons name="check-decagram" size={13} style={{ marginLeft: 3 }}
-                      color={hostSeat.verifiedColor === 'yellow' ? '#FFD700' : '#ffffff'} />
-                  )}
+                  <UserTick uid={hostSeat.userId || hostSeat.uid} verified={!!(isVerified(hostSeat.verified))} verifiedColor={hostSeat.verifiedColor} size={13} />
                 </View>
                 <View style={styles.coinRow}>
                   <View style={styles.coinDotSm} />
@@ -2434,10 +2426,7 @@ export default function MultiGuestRoom() {
                       <View style={{ flex: 1, marginLeft: 12 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                           <Text style={styles.pkRowName} numberOfLines={1}>{item.name || item.username || 'User'}</Text>
-                          {!!item.verified && (
-                            <MaterialCommunityIcons name="check-decagram" size={14} style={{ marginLeft: 4 }}
-                              color={item.verifiedColor === 'yellow' ? '#FFD700' : '#ffffff'} />
-                          )}
+                          <UserTick uid={item.uid || item.userId || item.senderId || item.id} verified={!!(!!item.verified)} verifiedColor={item.verifiedColor} size={14} />
                           <View style={[styles.levelBadge, { backgroundColor: th.bg, borderColor: th.border }]}>
                             <MaterialCommunityIcons name="diamond-stone" size={9} color={th.icon} />
                             <Text style={[styles.levelText, { color: th.text }]}>LV {item.level || 1}</Text>
@@ -2514,10 +2503,7 @@ export default function MultiGuestRoom() {
                 </View>
                 <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10 }}>
                   <Text style={styles.pcName} numberOfLines={1}>{profileCard.name || profileCard.username || 'User'}</Text>
-                  {!!profileCard.verified && (
-                    <MaterialCommunityIcons name="check-decagram" size={17} style={{ marginLeft: 5 }}
-                      color={profileCard.verifiedColor === 'yellow' ? '#FFD700' : '#ffffff'} />
-                  )}
+                  <UserTick uid={profileCard.uid || profileCard.userId || profileCard.senderId || profileCard.id} verified={!!(!!profileCard.verified)} verifiedColor={profileCard.verifiedColor} size={17} />
                 </View>
                 <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6 }}>
                   {(() => {

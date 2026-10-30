@@ -14,41 +14,14 @@ import {
   BackHandler,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { doc, getDoc } from "firebase/firestore";
-import { onAuthStateChanged } from "firebase/auth";
-import { auth, db } from "./firebaseConfig";
 import { callApi } from "../utils/api";
 import useIsAdmin from "./useIsAdmin";
+import useIsOfficial from "./useIsOfficial";
+import { Ionicons } from "@expo/vector-icons";
 import { formatBanUntil, banDaysLeft } from "../utils/liveBan";
 
 const PLACEHOLDER = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 const DAY_OPTIONS = [1, 3, 7, 15, 30];
-
-// null = checking, true / false
-function useIsOfficial() {
-  const [isOfficial, setIsOfficial] = useState(null);
-  useEffect(() => {
-    let active = true;
-    const unsub = onAuthStateChanged(auth, async (user) => {
-      if (!active) return;
-      if (!user) {
-        setIsOfficial(false);
-        return;
-      }
-      try {
-        const snap = await getDoc(doc(db, "users", user.uid));
-        if (active) setIsOfficial(snap.exists() && snap.data().isOfficial === true);
-      } catch (_) {
-        if (active) setIsOfficial(false);
-      }
-    });
-    return () => {
-      active = false;
-      unsub();
-    };
-  }, []);
-  return isOfficial;
-}
 
 // Official panel: BD add/hatao, agency do/delete, ID ban, live entry ban, live start ban.
 // Asli permission server check karta hai. Ye screen sirf UI hai.
@@ -267,6 +240,25 @@ export default function OfficialPanel() {
     <View style={styles.container}>
       <Text style={styles.title}>Official Panel</Text>
 
+      <View style={styles.quickRow}>
+        <TouchableOpacity
+          style={[styles.quickBtn, { backgroundColor: "#e67e22" }]}
+          activeOpacity={0.8}
+          onPress={() => router.push("/bdPanel")}
+        >
+          <Ionicons name="briefcase" size={16} color="#fff" />
+          <Text style={styles.quickText}>BD Panel</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.quickBtn, { backgroundColor: "#00BFFF" }]}
+          activeOpacity={0.8}
+          onPress={() => router.push("/agencyPanel")}
+        >
+          <Ionicons name="business" size={16} color="#fff" />
+          <Text style={styles.quickText}>Agency Panel</Text>
+        </TouchableOpacity>
+      </View>
+
       <View style={styles.tabs}>
         <TouchableOpacity
           style={[styles.tab, tab === "users" && styles.tabOn]}
@@ -477,6 +469,17 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#111", paddingTop: 50, paddingHorizontal: 14 },
   center: { flex: 1, backgroundColor: "#111", justifyContent: "center", alignItems: "center" },
   title: { color: "#fff", fontSize: 22, fontWeight: "bold", marginBottom: 12 },
+  quickRow: { flexDirection: "row", justifyContent: "space-between", marginBottom: 12 },
+  quickBtn: {
+    width: "48.5%",
+    paddingVertical: 9,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  quickText: { color: "#fff", fontSize: 13, fontWeight: "bold", marginLeft: 6 },
   tabs: { flexDirection: "row", marginBottom: 12 },
   tab: { flex: 1, paddingVertical: 8, alignItems: "center", backgroundColor: "#222", marginRight: 6, borderRadius: 8 },
   tabOn: { backgroundColor: "#FFD700" },

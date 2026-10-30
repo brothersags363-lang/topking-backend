@@ -6,6 +6,7 @@ import {
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import LevelFrame from '../LevelFrame';
 import { T } from './liveTheme';
+import UserTick from '../UserTick';
 
 const AVATAR = 'https://avatar.iran.liara.run/public/65';
 
@@ -26,15 +27,14 @@ const Sheet = ({ visible, onClose, title, children, tall, extraBottom = 0 }) => 
 // Color: yellow -> yellow tick, baaki sab -> white tick. Blue kabhi nahi.
 const isTrue = (v) => v === true || v === 'true';
 
-const Verified = ({ user }) =>
-  isTrue(user.verified) ? (
-    <MaterialCommunityIcons
-      name="check-decagram"
-      size={15}
-      color={user.verifiedColor === 'yellow' ? '#FFD700' : '#FFFFFF'}
-      style={{ marginLeft: 4 }}
-    />
-  ) : null;
+const Verified = ({ user }) => (
+  <UserTick
+    uid={user.uid || user.userId}
+    verified={isTrue(user.verified)}
+    verifiedColor={user.verifiedColor}
+    size={15}
+  />
+);
 
 // ---------- viewers ----------
 const ViewerRow = memo(({ user, canKick, onKick, onPressUser }) => (

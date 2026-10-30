@@ -41,6 +41,10 @@ import { Ionicons } from "@expo/vector-icons";
 
 import * as ImagePicker from "expo-image-picker";
 
+import useIsAdmin from "./useIsAdmin";
+
+import useIsOfficial from "./useIsOfficial";
+
 
 export default function AgencyPanel(){
 
@@ -50,7 +54,13 @@ const auth = getAuth();
 
 const [loading,setLoading]=useState(true);
 
-const [isAdmin,setIsAdmin]=useState(false);
+const isAdmin = useIsAdmin();
+
+const isOfficial = useIsOfficial();
+
+const allowed = isAdmin === true || isOfficial === true;
+
+const checking = isAdmin === null || isOfficial === null;
 
 const [agencies,setAgencies]=useState([]);
 
@@ -93,32 +103,6 @@ setLogo(result.assets[0].uri);
 
 
 
-useEffect(()=>{
-
-const checkAdmin=async()=>{
-
-const user=auth.currentUser;
-
-if(!user) return;
-
-const snap=await getDoc(
-doc(db,"admins",user.uid)
-);
-
-if(
-snap.exists() &&
-snap.data().role==="admin"
-){
-
-setIsAdmin(true);
-
-}
-
-};
-
-checkAdmin();
-
-},[]);
 
 
 
@@ -192,14 +176,14 @@ const filteredAgency=agencies.filter(item=>
 
 );
 
-if(!isAdmin){
+if(!allowed){
 
 return(
 
 <View style={styles.center}>
 
 <Text style={styles.denied}>
-Access Denied
+{checking ? "Checking..." : "Access Denied"}
 </Text>
 
 </View>

@@ -31,7 +31,9 @@ import {
 import TopKingLogo from "../../assets/images/topking-logo.png";
 // FIREBASE CONFIG
 import { auth, db } from '../firebaseConfig';
+import FamilyCell from '../../components/FamilyCell';
 import { profileLink } from '../../utils/shareLinks';
+import UserTick, { isFaceVerified } from '../../components/UserTick';
 
 
 
@@ -65,12 +67,89 @@ const clampBio = (text) =>
     .slice(0, BIO_MAX_CHARS);
 
 // ---- Username: koi bhi simple naam (Instagram rules) ----
+const USERNAME_MAX = 24;
+// Username ek baar badalne ke baad itne din tak dobara nahi badal sakte
+const USERNAME_COOLDOWN_DAYS = 14;
+const USERNAME_COOLDOWN_MS = USERNAME_COOLDOWN_DAYS * 24 * 60 * 60 * 1000;
+
+// Firestore Timestamp / number / undefined -> milliseconds
+const toMillis = (v) => {
+  if (!v) return 0;
+  if (typeof v === 'number') return v;
+  if (typeof v.toMillis === 'function') return v.toMillis();
+  if (typeof v.seconds === 'number') return v.seconds * 1000;
+  return 0;
+};
+
+// Username abhi locked hai ya nahi + kitne din baaki
+const getUsernameLock = (changedAt) => {
+  const last = toMillis(changedAt);
+  if (!last) return { locked: false, daysLeft: 0 };
+  const remaining = last + USERNAME_COOLDOWN_MS - Date.now();
+  if (remaining <= 0) return { locked: false, daysLeft: 0 };
+  return { locked: true, daysLeft: Math.ceil(remaining / (24 * 60 * 60 * 1000)) };
+};
+const NAME_MAX = 20; // Tiki jaisa chhota limit — isse bada naam nahi
+
 const sanitizeUsername = (text) =>
   (text || '')
     .replace(/^@+/, '')
     .toLowerCase()
     .replace(/[^a-z0-9._]/g, '')
-    .slice(0, 30);
+    .slice(0, USERNAME_MAX);
+
+// ---- Name: copy-paste ka faltu / fancy naam nahi chalega ----
+//  - NFKC: fancy font (𝓐𝓑𝓒, ＡＢＣ) normal letters ban jate hain
+//  - emoji, symbols, zero-width / hidden characters hat jate hain
+//  - sirf letters (kisi bhi bhasha ke), numbers, space aur . _ - '
+//  - ek hi character 3 se zyada baar repeat nahi
+//  - NAME_MAX se bada ho to apne aap kat jata hai (adjust)
+const sanitizeName = (text) =>
+  (text || '')
+    .normalize('NFKC')
+    .replace(/[^\p{L}\p{M}\p{N} ._'-]/gu, '')
+    .replace(/(.)\1{3,}/gu, '$1$1$1')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^\s+/, '')
+    .slice(0, NAME_MAX);
+
+const validateName = (n) => {
+  const t = (n || '').trim();
+  if (t.length < 2) return 'Name kam se kam 2 characters ka hona chahiye.';
+  if (!/[\p{L}\p{N}]/u.test(t)) return 'Name me kam se kam ek letter ya number hona chahiye.';
+  return null;
+};
+
+// ---- Birthday: DD/MM/YYYY type karo, Firestore me YYYY-MM-DD ----
+const birthdayToDisplay = (iso) => {
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(iso || '');
+  return m ? `${m[3].padStart(2, '0')}/${m[2].padStart(2, '0')}/${m[1]}` : '';
+};
+
+const formatBirthdayInput = (t) => {
+  const d = (t || '').replace(/\D/g, '').slice(0, 8);
+  let out = d.slice(0, 2);
+  if (d.length > 2) out += '/' + d.slice(2, 4);
+  if (d.length > 4) out += '/' + d.slice(4);
+  return out;
+};
+
+const parseBirthday = (disp) => {
+  if (!disp) return { iso: '' };
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(disp);
+  if (!m) return { error: 'Birthday DD/MM/YYYY format me daalo.' };
+  const d = +m[1], mo = +m[2], y = +m[3];
+  const dt = new Date(y, mo - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) {
+    return { error: 'Ye date sahi nahi hai.' };
+  }
+  const now = new Date();
+  let age = now.getFullYear() - y;
+  if (now < new Date(now.getFullYear(), mo - 1, d)) age--;
+  if (age < 13) return { error: 'App use karne ke liye kam se kam 13 saal ki age honi chahiye.' };
+  if (age > 100) return { error: 'Birthday sahi nahi lag raha.' };
+  return { iso: `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}` };
+};
 
 const validateUsername = (u) => {
   if (u.length < 3) return 'Username kam se kam 3 characters ka hona chahiye.';
@@ -261,14 +340,7 @@ const FollowRow = memo(function FollowRow({
           <View style={styles.followNameLine}>
             <Text style={styles.followUsername} numberOfLines={1}>{item.username}</Text>
 
-            {item.verified && (
-              <MaterialCommunityIcons
-                name="check-decagram"
-                size={15}
-                color={item.verifiedColor === 'yellow' ? '#FFD700' : '#ffffff'}
-                style={{ marginLeft: 4 }}
-              />
-            )}
+            <UserTick uid={item.id} verified={item.verified} verifiedColor={item.verifiedColor} faceVerified={isFaceVerified(item)} size={15} />
 
             <View style={[styles.levelBadge, { backgroundColor: theme.bg, borderColor: theme.border }]}>
               <MaterialCommunityIcons name="diamond-stone" size={9} color={theme.icon} />
@@ -394,9 +466,11 @@ useEffect(() => {
     
   name: 'User',
   username: 'user',
+  usernameChangedAt: 0,
     bioText: '',
     category: 'Video Creator',
     gender: 'Male', 
+    birthday: '',
    followers: '0',
 following: '0',
 likes: '0',
@@ -410,6 +484,7 @@ likes: '0',
   const [tempBioText, setTempBioText] = useState('');
   const [tempCategory, setTempCategory] = useState('');
   const [tempGender, setTempGender] = useState('');
+  const [tempBirthday, setTempBirthday] = useState('');
   const [tempProfileImg, setTempProfileImg] = useState('');
   const videoCount = videos.length;
   const categories = [
@@ -823,9 +898,11 @@ const checkVerifiedBadge = async (uid) => {
           data.username ||
           auth.currentUser?.email?.split('@')[0] ||
           'user',
+        usernameChangedAt: toMillis(data.usernameChangedAt),
         bioText: cleanBio(data.bioText),
         category: data.category || 'Video Creator',
         gender: data.gender || 'Male',
+        birthday: data.birthday || '',
         profileImg: data.profileImg || 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
         verified: data.verified || false,
         faceVerified: data.faceStatus === 'submitted' || data.faceStatus === 'approved',
@@ -1119,7 +1196,8 @@ const loadLikedVideos = async (uid) => {
 
   const openEditModal = () => {
     // Current data ko inputs me feed karein taaki edit ho sake
-    setTempName(profileData.name);
+    setTempName(sanitizeName(profileData.name));
+    setTempBirthday(birthdayToDisplay(profileData.birthday));
     setTempUsername(profileData.username);
     setTempBioText(cleanBio(profileData.bioText));
     setTempCategory(profileData.category);
@@ -1415,9 +1493,24 @@ const uploadProfileImage = async (imageUri) => {
     if (!user) return;
 
     // ---- 1. Validate FIRST (no point uploading an image if this fails) ----
-    const cleanUsername = sanitizeUsername(tempUsername);
+    // username badla nahi to jaisa hai waisa (purane lambe usernames na tootein)
+    const cleanUsername =
+      tempUsername === profileData.username ? tempUsername : sanitizeUsername(tempUsername);
 
-    const usernameError = validateUsername(cleanUsername);
+    const cleanName = sanitizeName(tempName).trim();
+    const nameError = validateName(cleanName);
+    if (nameError) {
+      Alert.alert('Name Error', nameError);
+      return;
+    }
+
+    const birthday = parseBirthday(tempBirthday);
+    if (birthday.error) {
+      Alert.alert('Birthday Error', birthday.error);
+      return;
+    }
+
+    const usernameError = tempUsername === profileData.username ? null : validateUsername(cleanUsername);
     if (usernameError) {
       Alert.alert('Username Error', usernameError);
       return;
@@ -1426,8 +1519,25 @@ const uploadProfileImage = async (imageUri) => {
     setSaving(true);
 
     try {
-      // ---- 2. Image upload + username-unique check run IN PARALLEL ----
       const usernameChanged = cleanUsername !== profileData.username;
+
+      // ---- 14 din ka lock: server se taza value padh ke check (stale data se bachne ke liye) ----
+      if (usernameChanged) {
+        const freshSnap = await getDoc(doc(db, 'users', user.uid));
+        const lock = getUsernameLock(
+          freshSnap.exists() ? freshSnap.data().usernameChangedAt : profileData.usernameChangedAt
+        );
+        if (lock.locked) {
+          Alert.alert(
+            'Username abhi nahi badal sakte',
+            `Username sirf ${USERNAME_COOLDOWN_DAYS} din me ek baar badal sakte ho. ${lock.daysLeft} din baad dobara try karo.`
+          );
+          setTempUsername(profileData.username);
+          return;
+        }
+      }
+
+      // ---- 2. Image upload + username-unique check run IN PARALLEL ----
 
       const [imageUrl, usernameTaken] = await Promise.all([
         uploadProfileImage(tempProfileImg),
@@ -1454,12 +1564,15 @@ const uploadProfileImage = async (imageUri) => {
       // (old code spread the whole profileData, which re-wrote stale
       // followers / following / likes strings back into Firestore)
       const payload = {
-        name: tempName.trim(),
+        name: cleanName,
         username: cleanUsername,
+        birthday: birthday.iso,
         bioText: clampBio(tempBioText).trim(),
         category: tempCategory,
         gender: tempGender,
         profileImg: imageUrl,
+        // username badla tabhi time save hoga (14 din ka lock isi se chalta hai)
+        ...(usernameChanged ? { usernameChangedAt: Date.now() } : {}),
       };
 
       await setDoc(doc(db, 'users', user.uid), payload, { merge: true });
@@ -1681,6 +1794,13 @@ getLevelTheme(profileData.level || 1);
           onPress={() => go("../Feedback")}
         />
 
+        <MenuRow
+          icon="people-circle-outline"
+          label="Family"
+          iconColor="#FFE500"
+          onPress={() => go("../family")}
+        />
+
         {hasAgency && (
           <MenuRow
             icon="business-outline"
@@ -1755,11 +1875,6 @@ refreshControl={
                   fallback={AVATAR_FALLBACK}
                   style={styles.avatar}
                 />
-                {profileData.faceVerified && (
-                  <View style={styles.faceBadge} pointerEvents="none">
-                    <Ionicons name="person" size={17} color="#fff" />
-                  </View>
-                )}
               </View>
 
               <View style={styles.statsRow}>
@@ -1795,14 +1910,7 @@ refreshControl={
                   {showName ? profileData.name : `@${profileData.username || 'user'}`}
                 </Text>
 
-                {profileData.verified && (
-                  <MaterialCommunityIcons
-                    name="check-decagram"
-                    size={18}
-                    color={profileData.verifiedColor === 'yellow' ? '#FFD700' : '#ffffff'}
-                    style={{ marginLeft: 5 }}
-                  />
-                )}
+                <UserTick verified={profileData.verified} verifiedColor={profileData.verifiedColor} faceVerified={profileData.faceVerified} size={18} style={{ marginLeft: 5 }} />
 
                 <View
                   style={[
@@ -2007,21 +2115,26 @@ refreshControl={
 
   <View style={styles.premiumDivider} />
 
-  {/* Share */}
-  <TouchableOpacity
-    style={styles.shareButton}
-    activeOpacity={0.8}
-  >
-    <Ionicons
-      name="share-social"
-      size={18}
-      color="#FFD700"
-    />
+  {/* Family (joined) / Share (not joined) */}
+  <FamilyCell
+    userId={auth.currentUser?.uid}
+    fallback={
+      <TouchableOpacity
+        style={styles.shareButton}
+        activeOpacity={0.8}
+      >
+        <Ionicons
+          name="share-social"
+          size={18}
+          color="#FFD700"
+        />
 
-    <Text style={styles.shareText}>
-      Share
-    </Text>
-  </TouchableOpacity>
+        <Text style={styles.shareText}>
+          Share
+        </Text>
+      </TouchableOpacity>
+    }
+  />
 
 </View>
 
@@ -2252,27 +2365,47 @@ Like ({likedVideos.length})
             <Image source={{ uri: tempProfileImg }} style={styles.editAvatarLarge} />
             <TouchableOpacity onPress={pickImage}><Text style={styles.blueLink}>Change Profile Photo</Text></TouchableOpacity>
             
-            {/* Name Input */}
-            <View style={styles.inputBox}>
-              <Text style={styles.label}>Name</Text>
-              <TextInput style={styles.textInput} value={tempName} onChangeText={(text) => setTempName(text)} />
-            </View>
-            
             {/* Username Input */}
+            {(() => {
+              const usernameLock = getUsernameLock(profileData.usernameChangedAt);
+              return (
             <View style={styles.inputBox}>
               <Text style={styles.label}>Username</Text>
               <TextInput
-                style={styles.textInput}
+                style={[styles.textInput, usernameLock.locked && { opacity: 0.5 }]}
+                editable={!usernameLock.locked}
                 value={tempUsername}
                 onChangeText={(text) => setTempUsername(sanitizeUsername(text))}
                 autoCapitalize="none"
                 autoCorrect={false}
-                maxLength={30}
+                maxLength={USERNAME_MAX}
                 placeholder="simple name, jaise: rahul ya rahul.k"
                 placeholderTextColor="#555"
               />
               <Text style={styles.helperText}>
-                Letters, numbers, . aur _ use kar sakte ho (kam se kam 3)
+                {usernameLock.locked
+                  ? `Username ${usernameLock.daysLeft} din baad badal sakte ho (${USERNAME_COOLDOWN_DAYS} din me sirf ek baar)`
+                  : `Letters, numbers, . aur _ use kar sakte ho (3 se ${USERNAME_MAX} characters). Ek baar badalne ke baad ${USERNAME_COOLDOWN_DAYS} din tak dobara nahi badlega.`}
+              </Text>
+            </View>
+              );
+            })()}
+
+            {/* Name Input — max NAME_MAX, paste kiya faltu text apne aap saaf */}
+            <View style={styles.inputBox}>
+              <Text style={styles.label}>Name</Text>
+              <TextInput
+                style={styles.textInput}
+                value={tempName}
+                onChangeText={(text) => setTempName(sanitizeName(text))}
+                maxLength={NAME_MAX}
+                autoCorrect={false}
+                contextMenuHidden={false}
+                placeholder="Apna naam"
+                placeholderTextColor="#555"
+              />
+              <Text style={styles.helperText}>
+                {tempName.length}/{NAME_MAX} • sirf letters, numbers aur . _ -
               </Text>
             </View>
 
@@ -2291,6 +2424,20 @@ Like ({likedVideos.length})
               <Text style={styles.helperText}>
                 {tempBioText.length}/{BIO_MAX_CHARS} • max {BIO_MAX_LINES} lines
               </Text>
+            </View>
+
+            {/* Birthday */}
+            <View style={styles.inputBox}>
+              <Text style={styles.label}>Birthday</Text>
+              <TextInput
+                style={styles.textInput}
+                value={tempBirthday}
+                onChangeText={(text) => setTempBirthday(formatBirthdayInput(text))}
+                keyboardType="number-pad"
+                maxLength={10}
+                placeholder="DD/MM/YYYY"
+                placeholderTextColor="#555"
+              />
             </View>
 
             {/* Category Input */}

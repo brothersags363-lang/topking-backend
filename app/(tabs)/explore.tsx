@@ -40,11 +40,13 @@ import {
   where,
   getDocs,
   limit,
+  startAfter,
   orderBy,
   doc,
   getDoc,
   runTransaction,
 } from 'firebase/firestore';
+import UserTick, { isFaceVerified } from '../../components/UserTick';
 
 const { width } = Dimensions.get('window');
 const BANNER_W = width - 32;
@@ -96,7 +98,7 @@ const TRENDING_BANNERS_DATA = [
 
 const TROPHY_ITEMS = [
   { label: 'Live', icon: 'mic-sharp', note: 'Go Live Now', route: '/all-live' },
-  { label: 'Family Ranking', icon: 'trophy-sharp', note: 'Top Families', route: null },
+  { label: 'Family Ranking', icon: 'trophy-sharp', note: 'Top Families', route: '../family' },
   { label: 'Agency', icon: 'people-sharp', note: 'Agency Ranking', route: '../AgencyTop' },
   { label: 'Creator', icon: 'ribbon-sharp', note: 'For Creators', route: '../top-followers' },
 ];
@@ -148,7 +150,6 @@ const homeCache = {
   giftKings: [] as any[],
   giftKingsMonth: '', // kis mahine ka data cache me hai
   profileImg: '',
-  kingCreators: [] as any[],
   kingStar: [] as any[],
   kingAgencies: [] as any[],
   kingFamilies: [] as any[],
@@ -179,6 +180,47 @@ const searchCache = new Map<string, { ts: number; users: any[]; vids: any[] }>()
 
 let videoCache: { ts: number; items: any[]; hays: string[] } | null = null;
 let videoCachePromise: Promise<void> | null = null;
+
+// Top Video: home par sirf 3 thumbnail (fast), "All View" par baaki sab
+const TOP_PREVIEW = 3;
+const ALL_PAGE = 24;
+const ALL_TTL = 5 * 60 * 1000;
+const TOPVIDEO_ROW = { flexDirection: 'row' as const };
+let allVideosCache: { ts: number; items: any[]; last: any; done: boolean } | null = null;
+let allVideosPromise: Promise<void> | null = null;
+
+// Page-by-page (24 video) => pehli baar jaldi khulta hai, scroll par aur aate hain
+const fetchAllVideosPage = (reset = false): Promise<void> => {
+  if (reset) allVideosCache = null;
+  if (allVideosCache?.done) return Promise.resolve();
+  if (allVideosPromise) return allVideosPromise;
+  const prev = allVideosCache;
+  const base = [collection(db, 'all_videos'), orderBy('views', 'desc')] as const;
+  const q = prev?.last
+    ? query(base[0], base[1], startAfter(prev.last), limit(ALL_PAGE))
+    : query(base[0], base[1], limit(ALL_PAGE));
+  allVideosPromise = getDocs(q)
+    .then((snap) => {
+      const fresh = snap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
+      const old = prev?.items || [];
+      const seen = new Set(old.map((i: any) => i.id));
+      allVideosCache = {
+        ts: prev?.ts || Date.now(),
+        items: old.concat(fresh.filter((i: any) => !seen.has(i.id))),
+        last: snap.docs.length ? snap.docs[snap.docs.length - 1] : prev?.last || null,
+        done: snap.docs.length < ALL_PAGE,
+      };
+      // pehle 12 thumbnails pehle se download => grid turant dikhta hai
+      fresh.slice(0, 12).forEach((i: any) => {
+        if (i.thumbnail) Image.prefetch(i.thumbnail).catch(() => {});
+      });
+    })
+    .catch((e) => console.log(e))
+    .finally(() => {
+      allVideosPromise = null;
+    });
+  return allVideosPromise;
+};
 
 const BASE_SIZE = 50; // starting snapshot: top 50 wallets
 const LIVE_SIZE = 30; // live compare: top 30 wallets (kam reads => fast)
@@ -237,6 +279,8 @@ const readHomeFromDisk = async () => {
     return null;
   }
 };
+// import hote hi disk padhna shuru => component mount hone tak data ready
+const homeDiskPromise = readHomeFromDisk();
 const baselineCaches: Record<
   string,
   { month: string; base: Record<string, number>; floor: number }
@@ -332,6 +376,7 @@ const loadMonthTop3 = async (field: string, force = false) => {
         img: d.profileImg || '',
         verified: !!d.verified,
         verifiedColor: d.verifiedColor,
+        faceVerified: isFaceVerified(d),
       };
     })
   );
@@ -357,123 +402,25 @@ const loadTopAgencies = async () => {
     }));
 };
 
-// Top 3 family. Collection: 'families', fields: familyName, logo, totalStars (apne naam se badal lena)
+// Top 3 family: sirf admin se approved families, points desc (family.js jaisa hi)
 const loadTopFamilies = async () => {
   const snap = await getDocs(
-    query(collection(db, 'families'), orderBy('totalStars', 'desc'), limit(3))
+    query(collection(db, 'families'), where('status', '==', 'approved'))
   );
-  return snap.docs.map((d) => {
-    const f: any = d.data();
-    return {
-      id: d.id,
-      stars: f.totalStars || 0,
-      name: f.familyName || f.name || 'Family',
-      img: f.logo || f.image || '',
+  return snap.docs
+    .map((d) => ({ id: d.id, ...(d.data() as any) }))
+    .sort((a: any, b: any) => (b.points || 0) - (a.points || 0))
+    .slice(0, 3)
+    .map((f: any) => ({
+      id: f.id,
+      stars: f.points || 0,
+      name: f.name || 'Family',
+      img: f.logo || '',
       verified: false,
       verifiedColor: undefined,
-    };
-  });
+    }));
 };
 
-// Top 3 creators - top-followers.js jaisa hi: follows me followingId ki ginti
-const TOP_FOLLOWERS_STORAGE_KEY = '@top_followers_cache_v2'; // top-followers.js ka cache
-let followersTop3Cache: { ts: number; rows: any[] } | null = null;
-
-const userToCreatorRow = (u: any) => ({
-  id: u.id,
-  stars: u.followersCount || 0,
-  name: u.username || u.userName || u.name || u.displayName || 'User',
-  img: u.profileImg || u.profileImage || u.profileImageUrl || u.photoURL || u.avatar || '',
-  verified: !!u.verified,
-  verifiedColor: u.verifiedColor,
-});
-
-const CREATORS_STORAGE_KEY = '@explore_top_creators_v1';
-const CREATORS_TTL = 10 * 60 * 1000; // follows ka poora scan mehnga hai => 10 min me ek baar
-let creatorsPromise: Promise<any[]> | null = null;
-
-// TIP: sabse tez tarika => users doc me followersCount rakho aur
-// orderBy('followersCount','desc').limit(3) chalao. Tab ye poora scan hat jayega.
-const scanTopCreators = async () => {
-  const followsSnap = await getDocs(collection(db, 'follows'));
-  const counts: Record<string, number> = {};
-  followsSnap.docs.forEach((d) => {
-    const fid = d.data()?.followingId;
-    if (fid) counts[fid] = (counts[fid] || 0) + 1;
-  });
-
-  const topIds = Object.entries(counts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 6)
-    .map(([id]) => id);
-
-  const users = await Promise.all(
-    topIds.map(async (id) => {
-      try {
-        const data = await getUserCached(id);
-        if (!data) return null;
-        return { id, ...(data as any), followersCount: counts[id] };
-      } catch (e) {
-        return null;
-      }
-    })
-  );
-
-  const rows = (users.filter(Boolean) as any[])
-    .sort((a, b) => b.followersCount - a.followersCount)
-    .slice(0, 3)
-    .map(userToCreatorRow);
-
-  followersTop3Cache = { ts: Date.now(), rows };
-  AsyncStorage.setItem(CREATORS_STORAGE_KEY, JSON.stringify(followersTop3Cache)).catch(() => {});
-  return rows;
-};
-
-const loadTopCreators = async (onCached?: (rows: any[]) => void, force = false) => {
-  if (!force && followersTop3Cache && Date.now() - followersTop3Cache.ts < CREATORS_TTL) {
-    return followersTop3Cache.rows;
-  }
-
-  if (!force) {
-    let shown = false;
-    // apna disk cache => fresh ho to scan hi skip, purana ho to turant dikha ke refresh
-    try {
-      const raw = await AsyncStorage.getItem(CREATORS_STORAGE_KEY);
-      if (raw) {
-        const saved = JSON.parse(raw);
-        if (saved && Array.isArray(saved.rows) && saved.rows.length) {
-          if (Date.now() - saved.ts < CREATORS_TTL) {
-            followersTop3Cache = saved;
-            return saved.rows as any[];
-          }
-          onCached?.(saved.rows);
-          shown = true;
-        }
-      }
-    } catch (e) {}
-
-    // top-followers page ka saved cache => pehli baar bhi turant dikha do
-    if (!shown && onCached) {
-      try {
-        const stored = await AsyncStorage.getItem(TOP_FOLLOWERS_STORAGE_KEY);
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          if (Array.isArray(parsed) && parsed.length) {
-            onCached(parsed.slice(0, 3).map(userToCreatorRow));
-          }
-        }
-      } catch (e) {}
-    }
-  }
-
-  // concurrent calls ek hi scan share karte hain
-  if (!creatorsPromise) {
-    creatorsPromise = scanTopCreators().finally(() => {
-      creatorsPromise = null;
-    });
-  }
-  return creatorsPromise;
-};
 
 /* ------------------------------------------------------------------ */
 /*  SEARCH HELPERS (pure, outside component)                           */
@@ -677,15 +624,7 @@ const UserCard = memo(function UserCard({
         <View style={ROW_CENTER}>
           <Text style={styles.userName}>@{item.username}</Text>
 
-          {item.verified && (
-            <View style={styles.verifiedBadge}>
-              <MaterialCommunityIcons
-                name="check-decagram"
-                size={16}
-                color={item.verifiedColor === 'yellow' ? '#FFD700' : '#f8fbff'}
-              />
-            </View>
-          )}
+          <UserTick uid={item.id} verified={item.verified} verifiedColor={item.verifiedColor} faceVerified={item.faceVerified} size={16} whiteColor="#f8fbff" />
 
           <LevelBadge level={item.level} iconSize={12} fontSize={11} />
         </View>
@@ -756,6 +695,91 @@ const TopVideoCard = memo(function TopVideoCard({
         </View>
       )}
     </TouchableOpacity>
+  );
+});
+
+const AllVideosScreen = memo(function AllVideosScreen({
+  onClose,
+  onOpen,
+}: {
+  onClose: () => void;
+  onOpen: (id: string, index: number, list: any[]) => void;
+}) {
+  const [items, setItems] = useState<any[]>(() =>
+    allVideosCache?.items.length ? allVideosCache.items : homeCache.topVideos
+  );
+  const [loadingFirst, setLoadingFirst] = useState(!allVideosCache?.items.length);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const itemsRef = useRef<any[]>(items);
+  itemsRef.current = items;
+  const aliveRef = useRef(true);
+  const busyRef = useRef(false);
+
+  useEffect(() => {
+    aliveRef.current = true;
+    (async () => {
+      const stale = !!allVideosCache && Date.now() - allVideosCache.ts > ALL_TTL;
+      await fetchAllVideosPage(stale);
+      if (!aliveRef.current) return;
+      if (allVideosCache) setItems(allVideosCache.items);
+      setLoadingFirst(false);
+    })();
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+
+  const onEnd = useCallback(async () => {
+    if (busyRef.current || !allVideosCache || allVideosCache.done) return;
+    busyRef.current = true;
+    setLoadingMore(true);
+    await fetchAllVideosPage();
+    busyRef.current = false;
+    if (!aliveRef.current) return;
+    if (allVideosCache) setItems(allVideosCache.items);
+    setLoadingMore(false);
+  }, []);
+
+  const press = useCallback(
+    (id: string, index: number) => onOpen(id, index, itemsRef.current),
+    [onOpen]
+  );
+  const renderItem = useCallback(
+    ({ item, index }: any) => <SearchVideoCard item={item} index={index} onPress={press} />,
+    [press]
+  );
+
+  return (
+    <View style={styles.allOverlay}>
+      <View style={styles.allHeader}>
+        <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          <Ionicons name="chevron-back" size={26} color="#fff" />
+        </TouchableOpacity>
+        <Text style={styles.allTitle}>Top Videos</Text>
+      </View>
+
+      <FlatList
+        data={items}
+        keyExtractor={keyById}
+        renderItem={renderItem}
+        numColumns={3}
+        columnWrapperStyle={VIDEOS_COLUMN}
+        contentContainerStyle={VIDEOS_CONTENT}
+        showsVerticalScrollIndicator={false}
+        initialNumToRender={12}
+        maxToRenderPerBatch={9}
+        updateCellsBatchingPeriod={40}
+        windowSize={5}
+        removeClippedSubviews
+        onEndReached={onEnd}
+        onEndReachedThreshold={0.6}
+        ListFooterComponent={
+          loadingFirst || loadingMore ? (
+            <ActivityIndicator color="#f1c40f" style={{ marginVertical: 16 }} />
+          ) : null
+        }
+      />
+    </View>
   );
 });
 
@@ -865,14 +889,7 @@ const RankCard = memo(function RankCard({
                 <Text style={styles.kingName} numberOfLines={1}>
                   {r.name}
                 </Text>
-                {r.verified && (
-                  <MaterialCommunityIcons
-                    name="check-decagram"
-                    size={14}
-                    color={r.verifiedColor === 'yellow' ? '#FFD700' : '#f8fbff'}
-                    style={{ marginLeft: 4 }}
-                  />
-                )}
+                <UserTick uid={r.id} verified={r.verified} verifiedColor={r.verifiedColor} faceVerified={r.faceVerified} size={14} whiteColor="#f8fbff" />
               </View>
               <View style={ROW_CENTER}>
                 <MaterialCommunityIcons name={valueIcon as any} size={13} color="#FFD700" />
@@ -1004,17 +1021,21 @@ const HomeContent = memo(function HomeContent({
   refreshControl,
   topVideos,
   giftKings,
-  kingCreators,
   kingStar,
   kingAgencies,
   kingFamilies,
   openUser,
   renderTopVideo,
   renderGiftKing,
+  openAllVideos,
 }: any) {
   const router = useRouter();
-  const goTopFollowers = useCallback(() => router.push('../top-followers' as any), [router]);
   const goAgencyTop = useCallback(() => router.push('../AgencyTop' as any), [router]);
+  const goFamily = useCallback(() => router.push('../family' as any), [router]);
+  const openFamily = useCallback(
+    (id: string) => router.push({ pathname: '/familyDetail', params: { id } } as any),
+    [router]
+  );
 
   return (
     <View style={hidden ? HIDDEN_STYLE : HOME_WRAP}>
@@ -1059,24 +1080,26 @@ const HomeContent = memo(function HomeContent({
               <MaterialCommunityIcons name="emoticon-happy" size={20} color="#FFD700" style={{ marginRight: 6 }} />
               <Text style={styles.sectionTitle}>Top Video</Text>
             </View>
-            <Text style={styles.viewsText}>
-              {topVideos.length} Videos{' '}
-              <Ionicons name="chevron-forward" size={13} color="#f1c40f" />
-            </Text>
+            <TouchableOpacity
+              onPress={openAllVideos}
+              activeOpacity={0.7}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Text style={styles.viewsText}>
+                All View{' '}
+                <Ionicons name="chevron-forward" size={13} color="#f1c40f" />
+              </Text>
+            </TouchableOpacity>
           </View>
 
-          <FlatList
-            horizontal
-            data={topVideos}
-            keyExtractor={keyById}
-            renderItem={renderTopVideo}
-            getItemLayout={getTopVideoLayout}
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={TOPVIDEO_CONTENT}
-            initialNumToRender={4}
-            maxToRenderPerBatch={4}
-            windowSize={5}
-          />
+          {/* sirf 3 card => FlatList ki zarurat nahi, seedha row (fast) */}
+          <View style={TOPVIDEO_ROW}>
+            {topVideos.length > 0
+              ? topVideos.slice(0, TOP_PREVIEW).map((item: any, index: number) => (
+                  <React.Fragment key={item.id}>{renderTopVideo({ item, index })}</React.Fragment>
+                ))
+              : [0, 1, 2].map((i) => <View key={i} style={styles.topVideoCard} />)}
+          </View>
 
           </View>
 
@@ -1098,15 +1121,6 @@ const HomeContent = memo(function HomeContent({
             contentContainerStyle={styles.kingScroll}
           >
             <RankCard
-              title="Top Creators"
-              icon="account-star"
-              rows={kingCreators}
-              valueIcon="account-multiple"
-              valueSuffix=" followers"
-              onRowPress={openUser}
-              onViewAll={goTopFollowers}
-            />
-            <RankCard
               title="Top Star"
               icon="star-circle"
               rows={kingStar}
@@ -1122,6 +1136,9 @@ const HomeContent = memo(function HomeContent({
               title="Top Family"
               icon="home-heart"
               rows={kingFamilies}
+              valueIcon="fire"
+              onRowPress={openFamily}
+              onViewAll={goFamily}
             />
           </ScrollView>
 
@@ -1185,11 +1202,11 @@ export default function ExplorePage() {
   const [giftKings, setGiftKings] = useState<any[]>(
     homeCache.giftKingsMonth === getMonthKey() ? homeCache.giftKings : []
   );
-  const [topVideos, setTopVideos] = useState<any[]>(homeCache.topVideos);
+  const [topVideos, setTopVideos] = useState<any[]>(homeCache.topVideos.slice(0, TOP_PREVIEW));
   const [refreshing, setRefreshing] = useState(false);
+  const [showAll, setShowAll] = useState(false);
 
   // TopKing Star: creators / spenders / agencies (is mahine ke top 3)
-  const [kingCreators, setKingCreators] = useState<any[]>(homeCache.kingCreators);
   const [kingStar, setKingStar] = useState<any[]>(
     homeCache.kingMonth === getMonthKey() ? homeCache.kingStar : []
   );
@@ -1233,9 +1250,12 @@ export default function ExplorePage() {
   const loadTopVideos = async () => {
     try {
       const snap = await getDocs(
-        query(collection(db, 'all_videos'), orderBy('views', 'desc'), limit(20))
+        query(collection(db, 'all_videos'), orderBy('views', 'desc'), limit(TOP_PREVIEW))
       );
-      const arr = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const arr = snap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
+      arr.forEach((v: any) => {
+        if (v.thumbnail) Image.prefetch(v.thumbnail).catch(() => {});
+      });
       homeCache.topVideos = arr;
       setTopVideos(arr);
     } catch (e) {
@@ -1280,6 +1300,9 @@ export default function ExplorePage() {
       );
 
       const result = users.filter(Boolean) as any[];
+      result.forEach((r: any) => {
+        if (r.profileImg) Image.prefetch(r.profileImg).catch(() => {});
+      });
       homeCache.giftKings = result;
       homeCache.giftKingsMonth = monthKey;
       setGiftKings(result);
@@ -1293,12 +1316,6 @@ export default function ExplorePage() {
   const loadTopKing = (force = false) => {
     const monthKey = getMonthKey();
     return Promise.all([
-      loadTopCreators((rows) => setKingCreators(rows), force)
-        .then((rows) => {
-          homeCache.kingCreators = rows;
-          setKingCreators(rows);
-        })
-        .catch(() => {}),
       loadMonthTop3('receivedStars', force)
         .then((rows) => {
           homeCache.kingStar = rows;
@@ -1327,15 +1344,14 @@ export default function ExplorePage() {
     let alive = true;
     (async () => {
       if (!homeCache.ts) {
-        const saved = await readHomeFromDisk();
+        const saved = await homeDiskPromise;
         if (saved && alive && !homeCache.ts) {
           Object.assign(homeCache, saved);
           const m = getMonthKey();
           setProfileImg(saved.profileImg || '');
-          setTopVideos(saved.topVideos || []);
+          setTopVideos((saved.topVideos || []).slice(0, TOP_PREVIEW));
           if (saved.giftKingsMonth === m) setGiftKings(saved.giftKings || []);
           if (saved.kingMonth === m) setKingStar(saved.kingStar || []);
-          setKingCreators(saved.kingCreators || []);
           setKingAgencies(saved.kingAgencies || []);
           setKingFamilies(saved.kingFamilies || []);
         }
@@ -1355,6 +1371,8 @@ export default function ExplorePage() {
       ]);
       homeCache.ts = Date.now();
       saveHomeToDisk();
+      // All View pehle se tayyar => click par instant khulta hai
+      fetchAllVideosPage();
     })();
     return () => {
       alive = false;
@@ -1365,6 +1383,7 @@ export default function ExplorePage() {
     try {
       setRefreshing(true);
       videoCache = null; // search cache bhi naya
+      allVideosCache = null;
       searchCache.clear();
       userDocCache.clear();
       await Promise.all([
@@ -1516,6 +1535,10 @@ export default function ExplorePage() {
   // hasQuery boolean par depend => har keystroke par re-subscribe nahi hota
   useEffect(() => {
     const handleBackButton = () => {
+      if (showAll) {
+        setShowAll(false);
+        return true;
+      }
       if (hasQuery) {
         clearSearch();
         return true;
@@ -1532,7 +1555,7 @@ export default function ExplorePage() {
 
     const sub = BackHandler.addEventListener('hardwareBackPress', handleBackButton);
     return () => sub.remove();
-  }, [router, hasQuery, clearSearch]);
+  }, [router, hasQuery, showAll, clearSearch]);
 
   useEffect(() => {
     return () => {
@@ -1572,6 +1595,25 @@ export default function ExplorePage() {
           from: 'explore',
         },
       }),
+    [router]
+  );
+
+  const openAllVideos = useCallback(() => setShowAll(true), []);
+  const closeAllVideos = useCallback(() => setShowAll(false), []);
+  const openAllVideoItem = useCallback(
+    (id: string, index: number, list: any[]) => {
+      // poori list route params me bhejna bhaari hai => sirf aas-paas ke 30
+      const start = Math.max(0, index - 5);
+      router.push({
+        pathname: '/allvideo',
+        params: {
+          videoId: id,
+          videos: JSON.stringify(list.slice(start, start + 30)),
+          index: index - start,
+          from: 'explore',
+        },
+      });
+    },
     [router]
   );
 
@@ -1660,13 +1702,13 @@ export default function ExplorePage() {
         refreshControl={refreshControl}
         topVideos={topVideos}
         giftKings={giftKings}
-        kingCreators={kingCreators}
         kingStar={kingStar}
         kingAgencies={kingAgencies}
         kingFamilies={kingFamilies}
         openUser={openUser}
         renderTopVideo={renderTopVideo}
         renderGiftKing={renderGiftKing}
+        openAllVideos={openAllVideos}
       />
 
       {/* SEARCH RESULTS: Accounts | Videos tabs */}
@@ -1770,6 +1812,9 @@ export default function ExplorePage() {
           </View>
         </Animated.View>
       )}
+
+      {/* ALL VIDEOS (All View click par) */}
+      {showAll && <AllVideosScreen onClose={closeAllVideos} onOpen={openAllVideoItem} />}
 
       {/* BOTTOM NAVBAR */}
       <BottomNav pathname={pathname} />
@@ -2155,6 +2200,20 @@ kingRank: { width: 18, fontWeight: '900', fontSize: 15 },
 kingAvatar: { width: 38, height: 38, borderRadius: 19, marginRight: 10, backgroundColor: '#1a1b24' },
 kingName: { color: '#fff', fontWeight: '700', fontSize: 13, flexShrink: 1 },
 kingStars: { color: '#FFD700', fontWeight: '700', fontSize: 12, marginLeft: 3 },
+allOverlay: {
+  ...StyleSheet.absoluteFillObject,
+  backgroundColor: '#08080a',
+  paddingTop: Platform.OS === 'ios' ? 45 : 30,
+},
+allHeader: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  paddingHorizontal: 16,
+  paddingVertical: 12,
+  borderBottomWidth: 1,
+  borderColor: 'rgba(255,255,255,0.05)',
+},
+allTitle: { color: '#fff', fontSize: 17, fontWeight: '800', marginLeft: 10 },
 kingEmpty: { color: 'rgba(255,255,255,0.35)', fontSize: 12, textAlign: 'center', paddingVertical: 20 },
 
 });     

@@ -37,6 +37,7 @@ import {
   Ionicons,
   MaterialCommunityIcons,
 } from "@expo/vector-icons";
+import UserTick from "../components/UserTick";
 
 
 export default function Agency(){
@@ -634,34 +635,7 @@ justifyContent:"center",
     {item.username}
   </Text>
 
-  {item.verified && (
-
-    <View
-      style={{
-        marginLeft: 5,
-        width: 18,
-        height: 18,
-        justifyContent: "center",
-        alignItems: "center",
-        position: "relative",
-      }}
-    >
-
-       <MaterialCommunityIcons
-  name="check-decagram"
-  size={18}
-  color={
-    item.verifiedColor === "yellow"
-      ? "#FFD700"
-      : "#ffffff"
-  }
-/>
-
-      
-
-    </View>
-
-  )}
+  <UserTick uid={item.uid || item.userId || item.id} verified={!!item.verified} verifiedColor={item.verifiedColor} size={18} style={{ marginLeft: 5 }} />
 
 
 

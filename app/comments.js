@@ -14,6 +14,7 @@ import {
   onSnapshot, serverTimestamp, doc, updateDoc, increment, getDoc 
 } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
+import UserTick from '../components/UserTick';
 
 // PERF FIX: pehle renderComment component ke andar tha, isliye har render
 // (jaise TextInput me type karte waqt) par naya function ban raha tha aur
@@ -25,7 +26,10 @@ const CommentRow = memo(function CommentRow({ item }) {
       <Image source={{ uri: item.profilePic }} style={styles.avatar} />
       <View style={styles.commentContent}>
         <View style={styles.commentHeader}>
-          <Text style={styles.usernameText}>{item.username}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-start' }}>
+            <Text style={styles.usernameText}>{item.username}</Text>
+            <UserTick uid={item.userId} verified={!!item.verified} verifiedColor={item.verifiedColor} faceVerified={item.faceVerified} size={14} />
+          </View>
           <Text style={styles.timeText}>just now</Text>
         </View>
         <Text style={styles.commentBody}>{item.text}</Text>

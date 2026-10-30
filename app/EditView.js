@@ -43,6 +43,8 @@ import {
 import { Audio } from "../utils/audio";
 
 import { LinearGradient } from "expo-linear-gradient";
+import FilterOverlay from "../components/FilterOverlay";
+import { FILTERS as FILTER_LIBRARY_LIST } from "../constants/filterLibrary";
 
 /*
  * =========================================================
@@ -306,7 +308,7 @@ export default function EditView() {
     useState(false);
 
   const [selectedEffect, setSelectedEffect] =
-    useState("none");
+    useState(textParam(params.videoEffect) || "none");
 
   // =====================================================
   // SUBTITLE COLORS
@@ -1910,14 +1912,17 @@ export default function EditView() {
 
         {videoUri ? (
 
-          <VideoView
-            player={player}
-            style={
-              styles.fullVideo
-            }
-            contentFit="contain"
-            nativeControls={false}
-          />
+          <>
+            <VideoView
+              player={player}
+              style={
+                styles.fullVideo
+              }
+              contentFit="contain"
+              nativeControls={false}
+            />
+            <FilterOverlay filterId={selectedEffect} />
+          </>
 
         ) : (
 
@@ -2350,8 +2355,10 @@ export default function EditView() {
               </TouchableOpacity>
             </View>
 
-            <View
-              style={styles.effectGrid}
+            <ScrollView
+              style={{ maxHeight: height * 0.5 }}
+              contentContainerStyle={styles.effectGrid}
+              showsVerticalScrollIndicator={false}
             >
               {[
                 {
@@ -2374,7 +2381,13 @@ export default function EditView() {
                   title: "B&W",
                   icon: "contrast-outline",
                 },
-              ].map((effect) => (
+              ].concat(
+                FILTER_LIBRARY_LIST.map((f) => ({
+                  id: f.id,
+                  title: f.label,
+                  icon: f.icon,
+                }))
+              ).map((effect) => (
                 <TouchableOpacity
                   key={effect.id}
                   style={[
@@ -2425,7 +2438,7 @@ export default function EditView() {
                   )}
                 </TouchableOpacity>
               ))}
-            </View>
+            </ScrollView>
           </Pressable>
         </Pressable>
       </Modal>

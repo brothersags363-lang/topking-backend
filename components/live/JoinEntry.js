@@ -11,6 +11,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import LevelFrame from '../LevelFrame';
+import UserTick from '../UserTick';
 
 const { width, height } = Dimensions.get('window');
 const FALLBACK_AVATAR = 'https://avatar.iran.liara.run/public/65';
@@ -41,11 +42,12 @@ const EASE_OUT = Easing.bezier(0.4, 0, 0.9, 0.6);
 
 export const pickVariant = (variant, level = 1) => {
   if (variant && variant !== 'auto') return variant;
-  if (level >= 50) return 'lv50';
-  if (level >= 40) return 'lv40';
-  if (level >= 30) return 'lv30';
-  if (level >= 20) return 'lv20';
-  if (level >= 10) return 'lv10';
+  // IMAGE WALE ENTRIES (purane lv10..lv50 abhi bhi variant="lv10" etc. dekar chal sakte hain)
+  if (level >= 50) return 'wing5';
+  if (level >= 40) return 'wing4';
+  if (level >= 30) return 'wing3';
+  if (level >= 20) return 'wing2';
+  if (level >= 10) return 'wing1';
   return 'slide';
 };
 
@@ -93,15 +95,15 @@ const glide = (enter, exit) => ({
 });
 
 // ---------- shared pieces ----------
-const Verified = ({ data, size = 16 }) =>
-  (data.verified === true || data.verified === 'true') ? (
-    <MaterialCommunityIcons
-      name="check-decagram"
-      size={size}
-      color={data.verifiedColor === 'yellow' ? '#FFD700' : '#FFFFFF'}
-      style={{ marginLeft: 3 }}
-    />
-  ) : null;
+const Verified = ({ data, size = 16 }) => (
+  <UserTick
+    uid={data.senderId || data.uid}
+    verified={data.verified === true || data.verified === 'true'}
+    verifiedColor={data.verifiedColor}
+    size={size}
+    style={{ marginLeft: 3 }}
+  />
+);
 
 const Who = ({ data, size = 16, subtitle = 'joined' }) => (
   <>
@@ -748,6 +750,281 @@ const LegendEntry = ({ data, onDone }) => {
 };
 
 // ============================================================
+// IMAGE ENTRIES (wing1 .. wing5) - aapki bheji images HU-BA-HU (transparent PNG)
+//
+//   wing1 : Purple wings + gold plate      (image 1)
+//   wing2 : Crimson bar + crown + lion     (image 2)  - avatar ring ke andar
+//   wing3 : Angel wings + crown ribbon     (image 3)
+//   wing4 : Flame wings + blue gem plate   (image 4)
+//   wing5 : Golden wings + crown ring      (image 5)  - avatar ring ke andar
+//
+//   PNG files JoinEntry.js ke bagal ki  ./entries/  folder me rakhni hain.
+//
+//   MOTION:
+//   1) RIGHT se tezi se udta aata hai, pakh TEZ phadphadate hain
+//   2) DHASU landing: slam + halka shake + sitaron ka burst
+//   3) phir pakh dheere-dheere HILTE-DOLTE rehte hain, poora entry hawa me tairta hai
+//   4) smooth fade-out
+// ============================================================
+const WING_LAND = 620; // right -> landing time (ms)
+const FLAP_FAST = 130; // udte waqt pakh ka half-stroke (ms)  -> chhota = tez
+const FLAP_FAST_COUNT = 3; // kitni baar tez phadphadaye
+const FLAP_SLOW = 560; // landing ke baad pakh ki dheemi hilna (ms)
+const WING_HOLD = 4200; // kitni der screen par rahe (ms)
+const FLAP_DOWN = -3; // pakh neeche kitne degree
+const FLAP_UP = 7; // pakh upar kitne degree
+
+const ENTRY_CFG = {
+  wing1: {
+    w: 760, h: 260, frac: 0.96, extra: 0.0, sub: 'has entered the room',
+    base: require('./entries/e1_base.png'),
+    wings: [{ src: require('./entries/e1_wl.png'), x: 0.0, y: 0.0, w: 123, h: 260, px: 108.57, py: 138.04, dir: 1 },
+      { src: require('./entries/e1_wr.png'), x: 637.47, y: 0.0, w: 123, h: 260, px: 651.43, py: 138.04, dir: -1 }],
+    slot: [166.73, 96.94, 430.41, 77.55],
+  },
+  wing2: {
+    w: 760, h: 293, frac: 0.92, extra: 0.0, sub: 'has entered the room',
+    base: require('./entries/e2_base.png'),
+    wings: [],
+    slot: [200.77, 146.91, 411.34, 78.35],
+    hole: [96.96, 177.27, 125.36],
+  },
+  wing3: {
+    w: 568, h: 250, frac: 0.92, extra: 0.0, sub: 'has entered the room',
+    base: require('./entries/e3_base.png'),
+    wings: [{ src: require('./entries/e3_wl.png'), x: 0.0, y: 0.0, w: 231, h: 112, px: 215.0, py: 92.0, dir: 1 },
+      { src: require('./entries/e3_wr.png'), x: 337.0, y: 0.0, w: 231, h: 112, px: 353.0, py: 92.0, dir: -1 }],
+    slot: [60.0, 124.0, 440.0, 72.0],
+  },
+  wing4: {
+    w: 581, h: 298, frac: 0.98, extra: 0.0, sub: 'joined',
+    base: require('./entries/e4_base.png'),
+    wings: [{ src: require('./entries/e4_wl.png'), x: 0.0, y: 0.0, w: 186, h: 298, px: 172.0, py: 128.0, dir: 1 },
+      { src: require('./entries/e4_wr.png'), x: 359.0, y: 0.0, w: 222, h: 298, px: 373.0, py: 128.0, dir: -1 }],
+    slot: [195.0, 158.0, 185.0, 48.0],
+  },
+  wing5: {
+    w: 727, h: 288, frac: 0.92, extra: 44.0, sub: 'joined',
+    base: require('./entries/e5_base.png'),
+    wings: [{ src: require('./entries/e5_wl.png'), x: 0.0, y: 0.0, w: 278, h: 288, px: 268.0, py: 150.0, dir: 1 },
+      { src: require('./entries/e5_wr.png'), x: 444.0, y: 0.0, w: 283, h: 288, px: 456.0, py: 150.0, dir: -1 }],
+    hole: [365.0, 148.0, 134.0],
+  },
+};
+
+const ImageEntry = ({ data, onDone, kind }) => {
+  const C = ENTRY_CFG[kind] || ENTRY_CFG.wing1;
+  const flap = useRef(new Animated.Value(0)).current;
+  const bob = useRef(new Animated.Value(0)).current;
+  const slam = useRef(new Animated.Value(0)).current;
+  const shake = useRef(new Animated.Value(0)).current;
+  const burst = useRef(new Animated.Value(0)).current;
+
+  const k = (width * C.frac) / C.w; // image ko screen ke hisaab se scale
+  const dw = C.w * k;
+  const dh = (C.h + C.extra) * k;
+  const avatarUri = data.userImg || FALLBACK_AVATAR;
+
+  const sparks = useRef(
+    Array.from({ length: 12 }, (_, i) => ({
+      x: rnd(i + 2, dw - 20) + 10,
+      y: rnd(i + 9, C.h * k * 0.6) + 6,
+      dx: rnd(i + 4, 50) - 25,
+      dy: -(24 + rnd(i + 6, 60)),
+      d: rnd(i + 8, 0.4),
+      s: 0.9 + rnd(i + 3, 0.6),
+      size: 9 + Math.round(rnd(i + 1, 7)),
+      color: i % 2 ? '#FFE08A' : '#ffffff',
+    }))
+  ).current;
+
+  const { enter, exit } = useLifecycle(
+    data._k,
+    onDone,
+    (v) => {
+      [flap, bob, slam, shake, burst].forEach((a) => a.setValue(0));
+      const stroke = (ms) =>
+        Animated.sequence([
+          Animated.timing(flap, { toValue: 1, duration: ms, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+          Animated.timing(flap, { toValue: 0, duration: ms, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+        ]);
+      const j = (to) => Animated.timing(shake, { toValue: to, duration: 50, useNativeDriver: true });
+      return Animated.parallel([
+        // 1) right se tez udaan (halka overshoot = dhasu feel)
+        Animated.timing(v, {
+          toValue: 1,
+          duration: WING_LAND,
+          easing: Easing.out(Easing.back(0.9)),
+          useNativeDriver: true,
+        }),
+        // 2) pakh: pehle tez phadphadahat, phir dheere hilte-dolte (loop)
+        Animated.sequence([
+          Animated.loop(stroke(FLAP_FAST), { iterations: FLAP_FAST_COUNT }),
+          Animated.loop(stroke(FLAP_SLOW)),
+        ]),
+        // 3) landing slam
+        Animated.sequence([
+          Animated.delay(WING_LAND - 100),
+          Animated.timing(slam, { toValue: 1, duration: 100, useNativeDriver: true }),
+          Animated.spring(slam, { toValue: 0, friction: 4, tension: 160, useNativeDriver: true }),
+        ]),
+        // 4) landing shake
+        Animated.sequence([Animated.delay(WING_LAND - 100), j(1), j(-1), j(0.6), j(-0.6), j(0)]),
+        // 5) sitare
+        Animated.timing(burst, {
+          toValue: 1,
+          duration: 1700,
+          delay: WING_LAND - 120,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+        // 6) hawa me halka tairna
+        Animated.sequence([
+          Animated.delay(WING_LAND),
+          Animated.loop(
+            Animated.sequence([
+              Animated.timing(bob, { toValue: 1, duration: 1500, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+              Animated.timing(bob, { toValue: 0, duration: 1500, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+            ])
+          ),
+        ]),
+      ]);
+    },
+    WING_HOLD
+  );
+
+  const g = glide(enter, exit);
+  const slamScale = slam.interpolate({ inputRange: [0, 1], outputRange: [1, 1.1] });
+  const shakeX = shake.interpolate({ inputRange: [-1, 1], outputRange: [-6, 6] });
+  const bobY = bob.interpolate({ inputRange: [0, 1], outputRange: [-3, 3] });
+
+  const Name = ({ size }) => (
+    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+      <Text numberOfLines={1} style={[ws.name, { fontSize: size, flexShrink: 1 }]}>{data.senderName}</Text>
+      <Verified data={data} size={size} />
+    </View>
+  );
+
+  let sx = 0, sy = 0, sw = 0, sh = 0;
+  if (C.slot) [sx, sy, sw, sh] = C.slot.map((v) => v * k);
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        ws.wrap,
+        {
+          opacity: g.opacity,
+          transform: [
+            { translateX: Animated.add(g.translateX, shakeX) },
+            { translateY: bobY },
+            { scale: g.scale },
+            { scale: slamScale },
+          ],
+        },
+      ]}
+    >
+      <View style={{ width: dw, height: dh }}>
+        {/* avatar ring ke andar (image ke PEECHE, taaki ring uske upar rahe) */}
+        {C.hole && (
+          <Image
+            source={{ uri: avatarUri }}
+            style={{
+              position: 'absolute',
+              left: (C.hole[0] - C.hole[2] / 2) * k,
+              top: (C.hole[1] - C.hole[2] / 2) * k,
+              width: C.hole[2] * k,
+              height: C.hole[2] * k,
+              borderRadius: (C.hole[2] * k) / 2,
+              backgroundColor: '#222',
+            }}
+          />
+        )}
+
+        {/* pakh (alag layers, jad se hilte hain) */}
+        {C.wings.map((w, i) => {
+          const dx = (w.px - (w.x + w.w / 2)) * k;
+          const dy = (w.py - (w.y + w.h / 2)) * k;
+          const rot = flap.interpolate({
+            inputRange: [0, 1],
+            outputRange: [`${FLAP_DOWN * w.dir}deg`, `${FLAP_UP * w.dir}deg`],
+          });
+          return (
+            <Animated.Image
+              key={i}
+              source={w.src}
+              resizeMode="stretch"
+              style={{
+                position: 'absolute',
+                left: w.x * k,
+                top: w.y * k,
+                width: w.w * k,
+                height: w.h * k,
+                transform: [{ translateX: dx }, { translateY: dy }, { rotate: rot }, { translateX: -dx }, { translateY: -dy }],
+              }}
+            />
+          );
+        })}
+
+        {/* aapki image (beech ka hissa) */}
+        <Image source={C.base} resizeMode="stretch" style={{ position: 'absolute', left: 0, top: 0, width: C.w * k, height: C.h * k }} />
+
+        {/* plate / ribbon ke upar avatar + naam */}
+        {C.slot && (
+          <View
+            style={{
+              position: 'absolute', left: sx, top: sy, width: sw, height: sh,
+              flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: sh * 0.1,
+            }}
+          >
+            {!C.hole && (
+              <Image
+                source={{ uri: avatarUri }}
+                style={{ width: sh * 0.78, height: sh * 0.78, borderRadius: sh * 0.39, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.9)', backgroundColor: '#222', marginRight: sh * 0.14 }}
+              />
+            )}
+            <View style={{ flexShrink: 1 }}>
+              <Name size={Math.min(19, sh * 0.3)} />
+              <Text numberOfLines={1} style={[ws.sub, { fontSize: Math.min(12, sh * 0.19) }]}>{C.sub}</Text>
+            </View>
+          </View>
+        )}
+
+        {/* image me plate nahi hai (wing5) -> naam neeche */}
+        {!C.slot && (
+          <View style={{ position: 'absolute', left: 0, right: 0, top: C.h * k - 2, alignItems: 'center' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', maxWidth: dw * 0.8 }}>
+              <Name size={17} />
+              <Text style={[ws.sub, { fontSize: 13, marginLeft: 6 }]}>{C.sub}</Text>
+            </View>
+          </View>
+        )}
+
+        <Burst progress={burst} items={sparks} icon="star-four-points" color="#FFE08A" />
+      </View>
+    </Animated.View>
+  );
+};
+
+const ws = StyleSheet.create({
+  wrap: { position: 'absolute', top: -70, left: 0, right: 0, alignItems: 'center' },
+  name: {
+    color: '#fff',
+    fontWeight: '900',
+    textShadowColor: 'rgba(0,0,0,0.8)',
+    textShadowRadius: 4,
+    textShadowOffset: { width: 0, height: 1 },
+  },
+  sub: {
+    color: 'rgba(255,255,255,0.95)',
+    fontWeight: '700',
+    textShadowColor: 'rgba(0,0,0,0.75)',
+    textShadowRadius: 3,
+    textShadowOffset: { width: 0, height: 1 },
+  },
+});
+
+// ============================================================
 // PUBLIC COMPONENT
 // ============================================================
 const JoinEntry = ({ data, variant = 'auto', onDone }) => {
@@ -757,7 +1034,9 @@ const JoinEntry = ({ data, variant = 'auto', onDone }) => {
 
   return (
     <View pointerEvents="none" style={styles.layer}>
-      {v === 'lv10' ? (
+      {ENTRY_CFG[v] ? (
+        <ImageEntry key={k} kind={v} data={data} onDone={onDone} />
+      ) : v === 'lv10' ? (
         <SilverEntry key={k} data={data} onDone={onDone} />
       ) : v === 'lv20' ? (
         <GoldEntry key={k} data={data} onDone={onDone} />

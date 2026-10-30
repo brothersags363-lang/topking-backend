@@ -31,6 +31,7 @@ import {
   doc,
   getDoc,
   increment,
+  limit,
   onSnapshot,
   orderBy,
   query,
@@ -43,6 +44,7 @@ import {
 import { db } from './firebaseConfig';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import UserTick from '../components/UserTick';
 
 const { height, width } = Dimensions.get('screen');
 
@@ -63,7 +65,10 @@ const formatCount = (n) => {
 
 /* ---------------- Verified badge ---------------- */
 
-const VerifiedBadge = ({ color, size = 18 }) => (
+const VerifiedBadge = ({ color, size = 18, verified = true, uid }: any) =>
+  !verified ? (
+    <UserTick uid={uid} size={size} />
+  ) : (
   <View
     style={{
       marginLeft: 5,
@@ -85,7 +90,7 @@ const VerifiedBadge = ({ color, size = 18 }) => (
       style={{ position: 'absolute', top: size * 0.26, left: size * 0.23 }}
     />
   </View>
-);
+  );
 
 /* ---------------- Single video player ---------------- */
 
@@ -247,6 +252,12 @@ export default function App() {
   const [replies, setReplies] = useState({});
   const [showReplies, setShowReplies] = useState({});
 
+  // Likes list (kis kis ne like kiya)
+  const [showLikes, setShowLikes] = useState(false);
+  const [likesVideoId, setLikesVideoId] = useState(null);
+  const [likesList, setLikesList] = useState([]);
+  const [likesLoading, setLikesLoading] = useState(false);
+
   const [showSharePopup, setShowSharePopup] = useState(false);
   const [selectedShareVideo, setSelectedShareVideo] = useState(null);
 
@@ -264,6 +275,7 @@ export default function App() {
   const isLeavingRef = useRef(false);
   const focusedRef = useRef(true);
   const loadedLikeIdsRef = useRef(new Set());
+  const likeUserCacheRef = useRef({});
 
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 70 }).current;
 
@@ -290,6 +302,7 @@ export default function App() {
 
     Keyboard.dismiss();
     setShowComments(false);
+    setShowLikes(false);
     setShowSharePopup(false);
 
     // Sab videos turant pause + mute
@@ -327,6 +340,10 @@ export default function App() {
         setShowSharePopup(false);
         return true;
       }
+      if (showLikes) {
+        setShowLikes(false);
+        return true;
+      }
       if (showComments) {
         setShowComments(false);
         return true;
@@ -337,7 +354,7 @@ export default function App() {
 
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [showComments, showSharePopup, goBack]);
+  }, [showComments, showSharePopup, showLikes, goBack]);
 
   // Focus aane par videos chalao, jaane par pause. activeVideo reset nahi hota.
   useFocusEffect(
@@ -578,6 +595,82 @@ export default function App() {
     return () => unsubscribers.forEach((unsub) => unsub());
   }, [comments, selectedVideoId]);
 
+  /* ============ Likes list listener ============ */
+
+  useEffect(() => {
+    if (!showLikes || !likesVideoId) return;
+
+    let cancelled = false;
+
+    const q = query(
+      collection(db, 'all_videos', likesVideoId, 'likes'),
+      limit(200)
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      async (snap) => {
+        const entries = snap.docs.map((d) => {
+          const data = d.data();
+          return {
+            uid: data.userId || d.id,
+            time: data.createdAt?.toMillis ? data.createdAt.toMillis() : Date.now(),
+          };
+        });
+
+        // Jin users ka data cache me nahi hai sirf unhe fetch karo
+        const missing = entries
+          .map((e) => e.uid)
+          .filter((uid) => !likeUserCacheRef.current[uid]);
+
+        await Promise.all(
+          missing.map(async (uid) => {
+            try {
+              const u = await getDoc(doc(db, 'users', uid));
+              const data = u.exists() ? u.data() : {};
+              likeUserCacheRef.current[uid] = {
+                username: data.username || 'User',
+                photo: data.profileImg || DEFAULT_AVATAR,
+                verified: !!data.verified,
+                verifiedColor: data.verifiedColor || 'white',
+              };
+            } catch (e) {
+              likeUserCacheRef.current[uid] = {
+                username: 'User',
+                photo: DEFAULT_AVATAR,
+                verified: false,
+                verifiedColor: 'white',
+              };
+            }
+          })
+        );
+
+        if (cancelled) return;
+
+        setLikesList(
+          entries
+            .sort((a, b) => b.time - a.time)
+            .map((e) => ({ id: e.uid, ...likeUserCacheRef.current[e.uid] }))
+        );
+        setLikesLoading(false);
+      },
+      (e) => {
+        console.log('LIKES LIST ERROR =', e);
+        if (!cancelled) setLikesLoading(false);
+      }
+    );
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [showLikes, likesVideoId]);
+
+  const visibleLikes = React.useMemo(
+    () => likesList.filter((u) => !blockedUsers.includes(u.id)),
+    [likesList, blockedUsers]
+  );
+
   /* ============ Actions ============ */
 
   const handleLike = async (videoId) => {
@@ -728,6 +821,34 @@ export default function App() {
     setShowComments(false);
     setReplyCommentId(null);
     setReplyText('');
+  };
+
+  // Kisi bhi user ka profile kholo (comment, reply, like list, sidebar sab yahi use karte hain)
+  const openProfile = (targetUserId) => {
+    if (!targetUserId) return;
+
+    Keyboard.dismiss();
+    setShowComments(false);
+    setShowLikes(false);
+    setReplyCommentId(null);
+    setReplyText('');
+
+    router.push({
+      pathname: '/userProfile',
+      params: { userId: String(targetUserId) },
+    });
+  };
+
+  const openLikes = (videoId) => {
+    setLikesList([]);
+    setLikesLoading(true);
+    setLikesVideoId(videoId);
+    setShowComments(false);
+    setShowLikes(true);
+  };
+
+  const closeLikes = () => {
+    setShowLikes(false);
   };
 
   const postComment = async () => {
@@ -888,9 +1009,7 @@ export default function App() {
         <View style={styles.sideBar}>
           <View style={[styles.iconBox, { marginBottom: 20 }]}>
             <TouchableOpacity
-              onPress={() =>
-                router.push({ pathname: '../Profile', params: { userId: item.userId } })
-              }
+              onPress={() => openProfile(item.userId)}
             >
               <Image
                 source={{ uri: item.profile || DEFAULT_AVATAR }}
@@ -899,15 +1018,25 @@ export default function App() {
             </TouchableOpacity>
           </View>
 
-          <TouchableOpacity style={styles.iconBox} onPress={() => handleLike(item.id)}>
-            <Ionicons
-              name="heart"
-              size={44}
-              color={localLikes[item.id] ? '#ff2d55' : '#ffffff'}
-              style={styles.iconShadow}
-            />
-            <Text style={styles.iconText}>{formatCount(item.likes)}</Text>
-          </TouchableOpacity>
+          <View style={styles.iconBox}>
+            {/* Heart: like / unlike */}
+            <TouchableOpacity onPress={() => handleLike(item.id)}>
+              <Ionicons
+                name="heart"
+                size={44}
+                color={localLikes[item.id] ? '#ff2d55' : '#ffffff'}
+                style={styles.iconShadow}
+              />
+            </TouchableOpacity>
+
+            {/* Count: kis kis ne like kiya uski list */}
+            <TouchableOpacity
+              onPress={() => openLikes(item.id)}
+              hitSlop={{ top: 6, bottom: 10, left: 16, right: 16 }}
+            >
+              <Text style={styles.iconText}>{formatCount(item.likes)}</Text>
+            </TouchableOpacity>
+          </View>
 
           <TouchableOpacity
             style={styles.iconBox}
@@ -957,7 +1086,7 @@ export default function App() {
         <View style={styles.bottomInfo}>
           <View style={styles.userRow}>
             <Text style={styles.userName}>{item.username || '@user'}</Text>
-            {item.verified && <VerifiedBadge color={item.verifiedColor} size={18} />}
+            <VerifiedBadge verified={!!item.verified} uid={item.userId} color={item.verifiedColor} size={18} />
           </View>
 
           <Text style={styles.caption}>{item.caption}</Text>
@@ -1070,18 +1199,22 @@ export default function App() {
         <View style={styles.commentsSheet}>
           {selectedVideoData && (
             <View style={styles.commentsHeader}>
-              <Image
-                source={{ uri: selectedVideoData.profile || DEFAULT_AVATAR }}
-                style={{ width: 45, height: 45, borderRadius: 22 }}
-              />
+              <TouchableOpacity onPress={() => openProfile(selectedVideoData.userId)}>
+                <Image
+                  source={{ uri: selectedVideoData.profile || DEFAULT_AVATAR }}
+                  style={{ width: 45, height: 45, borderRadius: 22 }}
+                />
+              </TouchableOpacity>
 
               <View style={{ marginLeft: 10, flex: 1 }}>
                 <View style={styles.userRow}>
-                  <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 15 }}>
-                    @{selectedVideoData.username}
-                  </Text>
+                  <TouchableOpacity onPress={() => openProfile(selectedVideoData.userId)}>
+                    <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 15 }}>
+                      @{selectedVideoData.username}
+                    </Text>
+                  </TouchableOpacity>
                   {selectedVideoData?.verified && (
-                    <VerifiedBadge color={selectedVideoData.verifiedColor} size={16} />
+                    <VerifiedBadge verified={!!selectedVideoData.verified} uid={selectedVideoData.userId} color={selectedVideoData.verifiedColor} size={16} />
                   )}
                 </View>
 
@@ -1115,15 +1248,7 @@ export default function App() {
               keyboardDismissMode="interactive"
               renderItem={({ item }) => (
                 <View style={styles.commentRow}>
-                  <TouchableOpacity
-                    onPress={() => {
-                      closeComments();
-                      router.push({
-                        pathname: '../Profile',
-                        params: { userId: item.userId },
-                      });
-                    }}
-                  >
+                  <TouchableOpacity onPress={() => openProfile(item.userId)}>
                     <Image
                       source={{ uri: item.profilePic || DEFAULT_AVATAR }}
                       style={{ width: 40, height: 40, borderRadius: 20 }}
@@ -1132,11 +1257,13 @@ export default function App() {
 
                   <View style={{ marginLeft: 10, flex: 1 }}>
                     <View style={styles.userRow}>
-                      <Text style={{ color: '#fff', fontWeight: 'bold' }}>
-                        {item.username}
-                      </Text>
+                      <TouchableOpacity onPress={() => openProfile(item.userId)}>
+                        <Text style={{ color: '#fff', fontWeight: 'bold' }}>
+                          {item.username}
+                        </Text>
+                      </TouchableOpacity>
                       {item.verified && (
-                        <VerifiedBadge color={item.verifiedColor} size={16} />
+                        <VerifiedBadge verified={!!item.verified} uid={item.userId} color={item.verifiedColor} size={16} />
                       )}
                     </View>
 
@@ -1172,15 +1299,19 @@ export default function App() {
                     {showReplies[item.id] &&
                       replies[item.id]?.map((reply) => (
                         <View key={reply.id} style={styles.replyRow}>
-                          <Image
-                            source={{ uri: reply.profilePic || DEFAULT_AVATAR }}
-                            style={{ width: 30, height: 30, borderRadius: 15 }}
-                          />
+                          <TouchableOpacity onPress={() => openProfile(reply.userId)}>
+                            <Image
+                              source={{ uri: reply.profilePic || DEFAULT_AVATAR }}
+                              style={{ width: 30, height: 30, borderRadius: 15 }}
+                            />
+                          </TouchableOpacity>
 
                           <View style={{ marginLeft: 8, flex: 1 }}>
-                            <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 13 }}>
-                              {reply.username}
-                            </Text>
+                            <TouchableOpacity onPress={() => openProfile(reply.userId)}>
+                              <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 13 }}>
+                                {reply.username}
+                              </Text>
+                            </TouchableOpacity>
                             <Text style={{ color: '#ddd' }}>{reply.text}</Text>
                           </View>
 
@@ -1244,6 +1375,69 @@ export default function App() {
               <Ionicons name="send" size={24} color="#FFD700" />
             </TouchableOpacity>
           </Animated.View>
+        </View>
+      )}
+
+      {/* Likes sheet: kis kis ne like kiya */}
+      {showLikes && (
+        <View style={styles.commentsSheet}>
+          <View style={styles.likesHeader}>
+            <Text style={styles.likesTitle}>
+              Likes{visibleLikes.length > 0 ? ` • ${formatCount(visibleLikes.length)}` : ''}
+            </Text>
+
+            <TouchableOpacity
+              onPress={closeLikes}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Ionicons name="close" size={26} color="#fff" />
+            </TouchableOpacity>
+          </View>
+
+          {likesLoading ? (
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+              <ActivityIndicator size="large" color="#FFD700" />
+            </View>
+          ) : visibleLikes.length === 0 ? (
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+              <Ionicons name="heart-outline" size={42} color="#666" />
+              <Text style={styles.likesEmpty}>Abhi tak kisi ne like nahi kiya</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={visibleLikes}
+              keyExtractor={(u) => u.id}
+              style={{ flex: 1 }}
+              contentContainerStyle={{ paddingBottom: 30 }}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item: u }) => (
+                <TouchableOpacity
+                  style={styles.likeRow}
+                  activeOpacity={0.7}
+                  onPress={() => openProfile(u.id)}
+                >
+                  <Image source={{ uri: u.photo }} style={styles.likeAvatar} />
+
+                  <View style={[styles.userRow, { flex: 1, marginLeft: 12 }]}>
+                    <Text style={styles.likeName} numberOfLines={1}>
+                      {u.username}
+                    </Text>
+                    {u.verified && (
+                      <VerifiedBadge
+                        verified={!!u.verified}
+                        uid={u.id}
+                        color={u.verifiedColor}
+                        size={16}
+                      />
+                    )}
+                  </View>
+
+                  <Ionicons name="heart" size={20} color="#ff2d55" />
+                </TouchableOpacity>
+              )}
+            />
+          )}
         </View>
       )}
 
@@ -1484,6 +1678,34 @@ const styles = StyleSheet.create({
   },
 
   commentMeta: { color: '#c3c2be', fontSize: 13 },
+
+  /* likes list */
+
+  likesHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    paddingTop: 16,
+    paddingBottom: 12,
+    borderBottomWidth: 0.5,
+    borderBottomColor: '#333',
+  },
+
+  likesTitle: { color: '#fff', fontSize: 17, fontWeight: 'bold' },
+
+  likesEmpty: { color: '#888', marginTop: 10, fontSize: 14 },
+
+  likeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+  },
+
+  likeAvatar: { width: 46, height: 46, borderRadius: 23 },
+
+  likeName: { color: '#fff', fontWeight: '600', fontSize: 15, flexShrink: 1 },
 
   replyRow: {
     flexDirection: 'row',

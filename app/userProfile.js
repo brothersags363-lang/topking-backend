@@ -37,6 +37,7 @@ import {
 
 import { db, auth } from "./firebaseConfig";
 import { profileLink } from "../utils/shareLinks";
+import UserTick, { isFaceVerified } from "../components/UserTick";
 
 import {
   doc,
@@ -58,6 +59,7 @@ import {
 import TopKingLogo from "../assets/images/topking-logo.png";
 
 import BottomNav from "../components/BottomNav";
+import FamilyCell from "../components/FamilyCell";
 import { useLiveHost, openLiveRoom } from "../components/liveHosts";
 
 /* ------------------------------------------------------------------ */
@@ -362,15 +364,9 @@ const FollowRow = memo(function FollowRow({
             {item.username}
           </Text>
 
-          {item.verified && (
-            <View style={styles.followTick}>
-              <MaterialCommunityIcons
-                name="check-decagram"
-                size={14}
-                color={tickColor(item.verifiedColor)}
-              />
+          <View style={styles.followTick}>
+              <UserTick uid={item.id} verified={item.verified} verifiedColor={item.verifiedColor} faceVerified={isFaceVerified(item)} size={14} style={{ marginLeft: 0 }} />
             </View>
-          )}
 
           <View
             style={[
@@ -1171,11 +1167,6 @@ export default function UserProfile() {
               fallback={AVATAR_FALLBACK}
               style={[styles.profileImage, liveRoom && styles.profileImageLive]}
             />
-            {faceVerified && (
-              <View style={styles.faceBadge} pointerEvents="none">
-                <Ionicons name="person" size={16} color="#fff" />
-              </View>
-            )}
             {liveRoom && (
               <View style={styles.liveTagProfile} pointerEvents="none">
                 <Text style={styles.liveTagProfileText}>LIVE</Text>
@@ -1193,14 +1184,7 @@ export default function UserProfile() {
                 @{username}
               </Text>
 
-              {isVerified && (
-                <MaterialCommunityIcons
-                  name="check-decagram"
-                  size={18}
-                  color={verifiedTickColor}
-                  style={styles.profileTick}
-                />
-              )}
+              <UserTick verified={isVerified} verifiedColor={verifiedColor} faceVerified={faceVerified} size={18} style={styles.profileTick} />
 
               <View
                 style={[
@@ -1359,14 +1343,20 @@ export default function UserProfile() {
           <View style={styles.premiumDivider} />
 
           {/* Share */}
-          <TouchableOpacity
-            style={styles.shareButton}
-            activeOpacity={0.8}
-            onPress={handleShareProfile}
-          >
-            <Ionicons name="share-social" size={18} color="#FFD700" />
-            <Text style={styles.shareText}>Share</Text>
-          </TouchableOpacity>
+          <FamilyCell
+            userId={userId}
+            data={userData}
+            fallback={
+              <TouchableOpacity
+                style={styles.shareButton}
+                activeOpacity={0.8}
+                onPress={handleShareProfile}
+              >
+                <Ionicons name="share-social" size={18} color="#FFD700" />
+                <Text style={styles.shareText}>Share</Text>
+              </TouchableOpacity>
+            }
+          />
         </View>
 
         {/* Tabs */}
@@ -1469,15 +1459,9 @@ export default function UserProfile() {
           <View style={styles.userRow}>
             <Text style={styles.topUsername}>@{username}</Text>
 
-            {isVerified && (
-              <View style={styles.topTick}>
-                <MaterialCommunityIcons
-                  name="check-decagram"
-                  size={18}
-                  color={tickColor(verifiedColor)}
-                />
+            <View style={styles.topTick}>
+                <UserTick verified={isVerified} verifiedColor={verifiedColor} faceVerified={faceVerified} size={18} style={{ marginLeft: 0 }} />
               </View>
-            )}
           </View>
         </View>
 

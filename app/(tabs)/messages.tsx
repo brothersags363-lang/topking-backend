@@ -65,6 +65,7 @@ import {
 } from 'firebase/storage';
 import * as ImagePicker from 'expo-image-picker';
 import { VideoView, useVideoPlayer } from 'expo-video';
+import UserTick, { isFaceVerified } from '../../components/UserTick';
 
 
 const { width } = Dimensions.get('window');
@@ -233,15 +234,7 @@ const FriendRow = memo(function FriendRow({ item, onOpen, onMenu, showPreview })
             {item.username}
           </Text>
 
-          {item.verified && (
-            <View style={styles.verifiedBadge}>
-              <MaterialCommunityIcons
-                name="check-decagram"
-                size={16}
-                color={item.verifiedColor === 'yellow' ? '#FFD700' : '#ffffff'}
-              />
-            </View>
-          )}
+          <UserTick uid={item.userId || item.id} verified={item.verified} verifiedColor={item.verifiedColor} faceVerified={item.faceVerified} size={16} />
 
           <View
             style={[
@@ -973,14 +966,14 @@ useEffect(() => {
 const withCachedBadges = (item) => {
   const c = enrichCache.get(item.userId);
   return c
-    ? { ...item, level: c.level, verified: c.verified, verifiedColor: c.verifiedColor }
+    ? { ...item, level: c.level, verified: c.verified, verifiedColor: c.verifiedColor, faceVerified: c.faceVerified }
     : item;
 };
 
 const mergeFriendsIntoState = (list, append) => {
   const keepBadges = (item, existing) =>
     existing
-      ? { ...item, level: existing.level, verified: existing.verified, verifiedColor: existing.verifiedColor }
+      ? { ...item, level: existing.level, verified: existing.verified, verifiedColor: existing.verifiedColor, faceVerified: existing.faceVerified }
       : item;
 
   if (append) {
@@ -1028,6 +1021,7 @@ const enrichInBackground = (docs, setter) => {
         level: walletSnap.exists() ? walletSnap.data().level || 1 : 1,
         verified: userSnap.exists() ? userSnap.data().verified === true : false,
         verifiedColor: userSnap.exists() ? userSnap.data().verifiedColor || 'white' : 'white',
+        faceVerified: userSnap.exists() ? isFaceVerified(userSnap.data()) : false,
         at: Date.now(),
       };
       enrichCache.set(uid, info);
@@ -1035,7 +1029,7 @@ const enrichInBackground = (docs, setter) => {
       setter((prev) =>
         prev.map((item) =>
           item.userId === uid
-            ? { ...item, level: info.level, verified: info.verified, verifiedColor: info.verifiedColor }
+            ? { ...item, level: info.level, verified: info.verified, verifiedColor: info.verifiedColor, faceVerified: info.faceVerified }
             : item
         )
       );
@@ -1427,7 +1421,7 @@ const hideChat = async (friend) => {
 
   try {
     // do not save the temporary UI-only fields into Firestore
-    const { id, level, verified, verifiedColor, ...saved } = friend;
+    const { id, level, verified, verifiedColor, faceVerified, ...saved } = friend;
 
     await setDoc(doc(db, 'userChats', currentUser.uid, 'hiddenFriends', friend.id), saved);
     await deleteDoc(doc(db, 'userChats', currentUser.uid, 'friends', friend.id));

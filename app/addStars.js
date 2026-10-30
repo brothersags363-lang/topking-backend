@@ -27,24 +27,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { auth, db } from "./firebaseConfig";
 import useIsAdmin from "./useIsAdmin";
 
-// Stars -> Level (backend/server.js wali table ke same)
-function starsToLevel(stars) {
-  const t = [
-    [499000, 50], [440000, 49], [385000, 48], [310000, 47], [299000, 46],
-    [260000, 45], [210000, 44], [189000, 43], [155000, 42], [125000, 41],
-    [110000, 40], [101000, 39], [99000, 38], [89000, 37], [78000, 36],
-    [67000, 35], [51000, 34], [43000, 33], [31000, 32], [26000, 31],
-    [23000, 30], [19000, 29], [17000, 28], [14000, 27], [12300, 26],
-    [9000, 24], [8200, 23], [7200, 22], [6100, 21], [5050, 20],
-    [4000, 19], [3500, 18], [2800, 17], [2400, 16], [1900, 15],
-    [1600, 14], [1300, 13], [1150, 12], [1000, 11], [870, 10],
-    [670, 9], [540, 8], [360, 7], [280, 6], [200, 5], [160, 4],
-    [100, 3], [60, 2], [10, 1],
-  ];
-  for (const [min, lvl] of t) if (stars >= min) return lvl;
-  return 0;
-}
-
 // Seedha Firestore se Stars add (admin ko rules me permission hai).
 // Server / Render par depend nahi, isliye turant ho jata hai.
 // level: admin ne manual level likha ho to wahi lagega, warna stars se auto.
@@ -58,15 +40,19 @@ async function grantStars({ uid, username, stars, amount, level: manualLevel }) 
     const wSnap = await tx.get(walletRef);
     const oldStars = wSnap.exists() ? Number(wSnap.data().stars || 0) : 0;
     const total = oldStars + stars;
-    const level =
-      manualLevel === null || manualLevel === undefined
-        ? starsToLevel(total)
-        : manualLevel;
+    // Level ab stars add karne se NAHI badhta (level = kharche se). Manual level diya ho tabhi badlega.
+    const hasManual = !(manualLevel === null || manualLevel === undefined);
+    const level = hasManual
+      ? manualLevel
+      : Number(wSnap.exists() ? (wSnap.data().level || 0) : 0);
 
     if (wSnap.exists()) {
-      tx.update(walletRef, { stars: total, level });
+      tx.update(walletRef, hasManual ? { stars: total, level, manualLevel } : { stars: total });
     } else {
-      tx.set(walletRef, { stars: total, level, earnings: 0, receivedStars: 0 });
+      tx.set(walletRef, {
+        stars: total, level, earnings: 0, receivedStars: 0, totalSpent: 0,
+        ...(hasManual ? { manualLevel } : {}),
+      });
     }
 
     // user ki wallet History me dikhega
@@ -195,7 +181,7 @@ export default function AddStars() {
     Alert.alert(
       "Confirm",
       `${selected.username} ko ${s} Stars dene hain?${r ? `\n(₹${r} mile)` : ""}${
-        lvl !== null ? `\nLevel: ${lvl}` : "\nLevel: auto (stars ke hisaab se)"
+        lvl !== null ? `\nLevel: ${lvl}` : "\nLevel: same rahega (kharche se badhta hai)"
       }`,
       [
         { text: "Cancel", style: "cancel" },
@@ -308,7 +294,7 @@ export default function AddStars() {
           />
 
           <TextInput
-            placeholder="Level (0-50) — khali = auto"
+            placeholder="Level (0-50) — khali = same rahega"
             placeholderTextColor="#777"
             keyboardType="numeric"
             maxLength={2}

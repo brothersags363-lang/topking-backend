@@ -19,6 +19,7 @@ import { auth, db } from "./firebaseConfig";
 
 import { useRouter, useLocalSearchParams } from "expo-router";
 import useIsAdmin from "./useIsAdmin";
+import useIsOfficial from "./useIsOfficial";
 import { callApi } from "../utils/api";
 
 import {
@@ -40,6 +41,7 @@ import {
   Ionicons,
   MaterialCommunityIcons,
 } from "@expo/vector-icons";
+import UserTick from "../components/UserTick";
 
 
 // PERF FIX: getLevelTheme koi component state use nahi karta, isliye ise
@@ -124,31 +126,7 @@ const HostRow = memo(function HostRow({ item, onRemove }) {
         <View style={{ flexDirection: "row", alignItems: "center" }}>
           <Text style={styles.hostName}>{item.username}</Text>
 
-          {item.verified && (
-            <View
-              style={{
-                marginLeft: 5,
-                width: 18,
-                height: 18,
-                justifyContent: "center",
-                alignItems: "center",
-                position: "relative",
-              }}
-            >
-              <MaterialCommunityIcons
-                name="check-decagram"
-                size={18}
-                color={item.verifiedColor === "yellow" ? "#FFD700" : "#ffffff"}
-              />
-
-              <Ionicons
-                name="checkmark"
-                size={10}
-                color="#131212"
-                style={{ position: "absolute", top: 4.5, left: 4.2 }}
-              />
-            </View>
-          )}
+          <UserTick uid={item.uid || item.userId || item.id} verified={!!item.verified} verifiedColor={item.verifiedColor} size={18} style={{ marginLeft: 5 }} />
 
           <View
             style={{
@@ -229,6 +207,10 @@ export default function Agency(){
   // ADMIN: admin kisi bhi agency ke andar ja sakta hai (agencyPanel -> View -> agencyId param)
   const { agencyId: paramAgencyId } = useLocalSearchParams();
   const isAdmin = useIsAdmin(); // null = checking
+  const isOfficial = useIsOfficial(); // null = checking
+  // Admin ya Official dono kisi bhi agency ko view / host hata sakte hain
+  const isStaff = isAdmin === true || isOfficial === true;
+  const staffChecking = isAdmin === null || isOfficial === null;
 
   // =========================
   // MOBILE HARDWARE BACK
@@ -290,11 +272,11 @@ const [busyRequestId,setBusyRequestId]=useState(null);
 useEffect(()=>{
 
 // admin check complete hone tak wait karo
-if (isAdmin === null) return;
+if (staffChecking) return;
 
 loadAgency();
 
-},[isAdmin, paramAgencyId]);
+},[isStaff, staffChecking, paramAgencyId]);
 
 
 
@@ -331,7 +313,7 @@ try {
 
 let data;
 
-if (isAdmin === true && paramAgencyId) {
+if (isStaff && paramAgencyId) {
 
 // ADMIN MODE: agencyId se seedha koi bhi agency kholo
 const agencySnap = await getDoc(doc(db,"agencies",String(paramAgencyId)));
@@ -373,10 +355,10 @@ setAgency({
 
 loadHosts(data.id);
 
-calculateAgencyStars(data.id);
+calculateAgencyStars(data.id, agencyData);
 
 // admin view me requests nahi dikhti (sirf owner accept kar sakta hai)
-if (!(isAdmin === true && paramAgencyId)) {
+if (!(isStaff && paramAgencyId)) {
   loadRequests(data.id);
 }
 
@@ -431,7 +413,7 @@ setHosts(arr);
 };
 
 
-const calculateAgencyStars = async (agencyId) => {
+const calculateAgencyStars = async (agencyId, agencyData) => {
 
   try {
 
@@ -496,8 +478,8 @@ if (totalStars >= 300000) {
       notifyRef,
       {
         agencyId,
-        agencyName: agency?.agencyName || "",
-        ownerUserId: agency.ownerUserId,
+        agencyName: agencyData?.agencyName || "",
+        ownerUserId: agencyData?.ownerUserId || "",
         stars: totalStars,
         month,
         status: "pending",
@@ -725,13 +707,13 @@ const removeHost = useCallback(async (host) => {
 
   try {
 
-    if (!isAdmin && agency.ownerUserId !== auth.currentUser?.uid) {
+    if (!isStaff && agency.ownerUserId !== auth.currentUser?.uid) {
       Alert.alert("Access Denied");
       return;
     }
 
     // ADMIN: server route se hatao (kisi bhi agency ka user)
-    if (isAdmin === true) {
+    if (isStaff) {
       await callApi("/admin/remove-agency-host", {
         agencyId: agency.id,
         userId: host.id,
@@ -769,7 +751,7 @@ const removeHost = useCallback(async (host) => {
 
   }
 
-}, [agency, isAdmin]);
+}, [agency, isStaff]);
 
 
 
@@ -974,7 +956,7 @@ Add Host
 
 </View>
 
-{!(isAdmin === true && paramAgencyId) && (
+{!(isStaff && paramAgencyId) && (
 <TouchableOpacity
 style={styles.requestsBtn}
 onPress={()=>{ setRequestsVisible(true); loadRequests(agency.id); }}

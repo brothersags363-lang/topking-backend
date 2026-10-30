@@ -12,6 +12,7 @@ import Animated, {
 import LevelFrame from '../LevelFrame';
 import SeatEmoji from './SeatEmoji';
 import { T } from './liveTheme';
+import UserTick from '../UserTick';
 
 const AVATAR = 'https://avatar.iran.liara.run/public/65';
 
@@ -88,9 +89,14 @@ function SeatItem({ seatKey, seat, stars, isSpeaking, index, onPress }) {
         )}
       </View>
 
-      <Text numberOfLines={1} style={styles.name}>
-        {active ? seat.userName : (isHost ? 'Host' : `No.${index}`)}
-      </Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+        <Text numberOfLines={1} style={[styles.name, { flexShrink: 1 }]}>
+          {active ? seat.userName : (isHost ? 'Host' : `No.${index}`)}
+        </Text>
+        {active && (
+          <UserTick uid={seat.userId} verified={seat.verified === true || seat.verified === 'true'} verifiedColor={seat.verifiedColor} size={11} />
+        )}
+      </View>
 
       {active && (
         <View style={styles.starPill}>

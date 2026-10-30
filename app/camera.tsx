@@ -51,6 +51,8 @@ import {
 } from 'firebase/auth';
 
 import { db } from './firebaseConfig';
+import FilterOverlay from '../components/FilterOverlay';
+import FilterStrip from '../components/FilterStrip';
 
 
 // ==================================================
@@ -467,6 +469,12 @@ export default function CameraPage() {
 
   const [facing, setFacing] =
     useState('back');
+
+  // Selected filter (id from constants/filterLibrary). 'none' = original.
+  const [filterId, setFilterId] = useState('none');
+  const [showFilters, setShowFilters] = useState(false);
+  const filterIdRef = useRef('none');
+  filterIdRef.current = filterId;
 
   const [seconds, setSeconds] =
     useState(0);
@@ -992,6 +1000,8 @@ export default function CameraPage() {
 
             musicId,
 
+            videoEffect: filterIdRef.current,
+
           },
 
         });
@@ -1181,6 +1191,8 @@ export default function CameraPage() {
               musicArtist: username,
 
             musicId,
+
+              videoEffect: filterIdRef.current,
 
               // Exact duration of this camera take. EditView and /merge
               // use this so a 5s take can never receive the full 15s song.
@@ -1380,6 +1392,19 @@ export default function CameraPage() {
       />
 
 
+      {/* FILTER PREVIEW (approximate - final look is rendered on upload) */}
+
+      <FilterOverlay filterId={filterId} />
+
+      {showFilters && !busy && (
+        <View
+          style={{ position: 'absolute', left: 0, right: 0, bottom: pillsBottom + 48 }}
+        >
+          <FilterStrip value={filterId} onChange={setFilterId} />
+        </View>
+      )}
+
+
       {/* COUNTDOWN 3 / 2 / 1 */}
 
       {countdown !== null && (
@@ -1552,10 +1577,25 @@ export default function CameraPage() {
 
         {/* BEAUTY */}
 
-        <View style={styles.icnGrp}>
-          <Ionicons name="sparkles-outline" size={26} color="#fff" />
-          <Text style={styles.fTxt}>{LABELS.beauty}</Text>
-        </View>
+        <TouchableOpacity
+          style={styles.icnGrp}
+          onPress={() => setShowFilters((v) => !v)}
+          activeOpacity={0.8}
+        >
+          <Ionicons
+            name="sparkles-outline"
+            size={26}
+            color={showFilters || filterId !== 'none' ? YELLOW : '#fff'}
+          />
+          <Text
+            style={[
+              styles.fTxt,
+              (showFilters || filterId !== 'none') && { color: YELLOW },
+            ]}
+          >
+            {LABELS.beauty}
+          </Text>
+        </TouchableOpacity>
 
 
         {/* FLASH (back camera) */}

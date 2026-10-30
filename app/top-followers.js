@@ -23,6 +23,7 @@ import {
 } from "react-native";
 
 import { db } from "./firebaseConfig";
+import UserTick from "../components/UserTick";
 
 const { width } = Dimensions.get("window");
 
@@ -175,15 +176,16 @@ const TopCard = memo(function TopCard({ user, rank, onPress }) {
         </LinearGradient>
       </View>
 
-      <Text
-        numberOfLines={1}
-        style={[
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+
+      <Text numberOfLines={1} style={[
           styles.topUsername,
           isFirst && styles.firstUsername,
-        ]}
-      >
-        @{getName(user)}
-      </Text>
+        ]}>@{getName(user)}</Text>
+
+      <UserTick uid={user.uid} verified={!!user.verified} verifiedColor={user.verifiedColor} size={13} />
+
+      </View>
 
       <View style={styles.followersInfo}>
         <Ionicons
@@ -239,12 +241,10 @@ const LeaderRow = memo(function LeaderRow({ item, index, onPress }) {
       />
 
       <View style={styles.rowInfo}>
-        <Text
-          numberOfLines={1}
-          style={styles.rowUsername}
-        >
-          @{getName(item)}
-        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+        <Text numberOfLines={1} style={styles.rowUsername}>@{getName(item)}</Text>
+        <UserTick uid={item.uid} verified={!!item.verified} verifiedColor={item.verifiedColor} size={13} />
+        </View>
 
         <View style={styles.rowFollowerLine}>
           <Ionicons

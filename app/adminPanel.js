@@ -13,6 +13,7 @@ import useIsAdmin from "./useIsAdmin";
 
 // Saare buttons chhote, 2 column grid me. Route / rang pehle jaise hi hain.
 const ITEMS = [
+  { label: "Family Requests", icon: "people-circle", route: "/familyAdmin", bg: "#FFE500", fg: "#000" },
   { label: "Agency Panel", icon: "business", route: "/agencyPanel", bg: "#00BFFF", fg: "#fff" },
   { label: "BD Panel", icon: "briefcase", route: "/bdPanel", bg: "#e67e22", fg: "#fff" },
   { label: "Official", icon: "shield-checkmark", route: "/officialAdmin", bg: "#6c5ce7", fg: "#fff" },

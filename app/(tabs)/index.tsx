@@ -52,6 +52,7 @@ import {
   where,
   documentId,
   writeBatch,
+  Timestamp,
 } from 'firebase/firestore';
 
 
@@ -79,6 +80,7 @@ import { getAuth, onAuthStateChanged } from 'firebase/auth';
 // ye screen sirf isko "sunti" hai — jahan bhi user ho, yahi dikhega)
 // File app/ ke BAHAR services/upload/ me hai, isliye '@/...' alias use kiya.
 import { useUploadState } from '@/services/upload/uploadManager';
+import UserTick, { isFaceVerified } from '../../components/UserTick';
 
 
 
@@ -266,6 +268,7 @@ const buildMyProfile = (user, data) => ({
   photo: data?.profileImg || AVATAR_FALLBACK,
   verified: data?.verified || false,
   verifiedColor: data?.verifiedColor || '',
+  faceVerified: isFaceVerified(data),
 });
 
 const readCachedProfile = async () => {
@@ -312,6 +315,60 @@ const loadMyProfile = async (force = false) => {
   return p;
 };
 
+// ==========================
+// BADI LIBRARY (1000+ videos) KE LIYE FETCH
+// ==========================
+// Pehle sirf "sabse naye" videos hi padhe jaate the -> purane videos kabhi
+// feed me aate hi nahi the, aur sab dekhe hue hon to 25 pages (750 reads) padhta tha.
+// Ab: naye videos + time ke RANDOM point se chhote pages (discovery).
+// Purane videos bhi aate hain, reads kam lagte hain.
+const OLDEST_TS_KEY = 'feed_oldest_ts_v1';
+const RANDOM_PAGE_SIZE = 20;
+const MAX_FETCH_ROUNDS = 6;   // ek baar me max itne rounds (pehle 25 pages tak jata tha)
+let oldestTsCache: number | null = null;
+
+// Sabse purane video ka time (sirf 1 read, phir phone me yaad)
+const getOldestTs = async (): Promise<number | null> => {
+  if (oldestTsCache) return oldestTsCache;
+  try {
+    const raw = await AsyncStorage.getItem(OLDEST_TS_KEY);
+    const n = raw ? Number(raw) : 0;
+    if (n > 0) {
+      oldestTsCache = n;
+      return n;
+    }
+  } catch (e) {}
+  try {
+    const snap = await getDocs(
+      query(collection(db, 'all_videos'), orderBy('createdAt', 'asc'), limit(1))
+    );
+    if (!snap.empty) {
+      const c: any = snap.docs[0].data().createdAt;
+      const ms = c && typeof c.seconds === 'number' ? c.seconds * 1000 : 0;
+      if (ms > 0) {
+        oldestTsCache = ms;
+        AsyncStorage.setItem(OLDEST_TS_KEY, String(ms)).catch(() => {});
+        return ms;
+      }
+    }
+  } catch (e) {}
+  return null;
+};
+
+// Purane se naye ke beech kisi random time ke aas-paas ka page
+const fetchRandomPage = (oldestMs: number) => {
+  const ts = oldestMs + Math.random() * Math.max(1, Date.now() - oldestMs);
+  return getDocs(
+    query(
+      collection(db, 'all_videos'),
+      orderBy('createdAt', 'desc'),
+      orderBy('__name__', 'desc'),
+      startAfter(Timestamp.fromMillis(ts)),
+      limit(RANDOM_PAGE_SIZE)
+    )
+  );
+};
+
 const HOUR_MS = 60 * 60 * 1000;
 const RANK_USER_GAP = 3;      // ek hi user ke videos ke beech minimum gap
 const RANK_LOOKAHEAD = 8;     // gap ke liye kitne aage tak dekhna
@@ -333,11 +390,15 @@ const scoreVideo = (video, now) => {
   // Naya video: 48h tak bada bonus, phir dheere dheere kam
   score += 60 * Math.exp(-ageH / 36);
 
-  // Popular video: chhota bonus (max 12)
-  score += Math.min(12, Math.log10(1 + (video.engagementScore || 0)) * 4);
+  // Popular video: bonus (max 24) -> purane lekin acche videos bhi upar aate hain
+  score += Math.min(24, Math.log10(1 + (video.engagementScore || 0)) * 7);
+
+  // Quality: views ke muqable likes zyada -> acha video (max 20)
+  const views = Math.max(10, Number(video.views) || 0);
+  score += Math.min(1, (Number(video.likes) || 0) / views) * 20;
 
   // Random jitter: same level ke videos ka order har baar alag
-  score += Math.random() * 45;
+  score += Math.random() * 35;
 
   return score;
 };
@@ -356,7 +417,8 @@ const rankFeed = (
   seenMap,
   previous = [],
   lastTopId = null,
-  allowRecentSeen = false
+  allowRecentSeen = false,
+  need = Infinity
 ) => {
   if (!list || list.length === 0) return [];
 
@@ -384,6 +446,11 @@ const rankFeed = (
 
   const queue = [...unseen, ...seen];
 
+  // SPEED: 1000+ videos me poora pool arrange nahi karna -- sirf aage ke
+  // `need` (+ gap ke liye lookahead) videos chahiye.
+  const queueLimit = need + RANK_LOOKAHEAD * 2;
+  if (queue.length > queueLimit) queue.length = queueLimit;
+
   // Pichli baar ka top video is baar top par nahi -> 4th position par
   if (
     lastTopId &&
@@ -399,7 +466,7 @@ const rankFeed = (
   const recent = previous.slice(-RANK_USER_GAP).map(keyOf);
   const result = [];
 
-  while (queue.length > 0) {
+  while (queue.length > 0 && result.length < need) {
     let idx = queue.findIndex(
       (v, i) => i < RANK_LOOKAHEAD && !recent.includes(keyOf(v))
     );
@@ -962,25 +1029,7 @@ const VideoItem = memo(function VideoItem({
             {item.username || "@user"}
           </Text>
 
-          {item.verified && (
-            <View style={styles.badge}>
-              <MaterialCommunityIcons
-                name="check-decagram"
-                size={17}
-                color={
-                  item?.verifiedColor === "yellow"
-                    ? "#FFD700"
-                    : "#ffffff"
-                }
-              />
-              <Ionicons
-                name="checkmark"
-                size={10}
-                color="#131212"
-                style={styles.badgeTick}
-              />
-            </View>
-          )}
+          <UserTick uid={item.userId} verified={item.verified} verifiedColor={item.verifiedColor} faceVerified={isFaceVerified(item)} size={17} />
         </View>
 
         <Text style={styles.caption} numberOfLines={1} ellipsizeMode="tail">{item.caption}</Text>
@@ -1166,14 +1215,7 @@ const CommentRow = memo(function CommentRow({
       <View style={cs.body}>
         <View style={cs.nameRow}>
           <Text style={cs.name}>{item.username}</Text>
-          {item.verified ? (
-            <MaterialCommunityIcons
-              name="check-decagram"
-              size={17}
-              color={item.verifiedColor === 'yellow' ? '#FFD700' : '#ffffff'}
-              style={cs.badge}
-            />
-          ) : null}
+          <UserTick uid={item.userId} verified={item.verified} verifiedColor={item.verifiedColor} faceVerified={isFaceVerified(item)} size={17} />
         </View>
 
         <Text style={cs.text}>{item.text}</Text>
@@ -1210,14 +1252,7 @@ const CommentRow = memo(function CommentRow({
                 <View style={cs.replyBody}>
                   <View style={cs.nameRow}>
                     <Text style={cs.replyName}>{reply.username}</Text>
-                    {reply.verified ? (
-                      <MaterialCommunityIcons
-                        name="check-decagram"
-                        size={15}
-                        color={reply.verifiedColor === 'yellow' ? '#FFD700' : '#ffffff'}
-                        style={cs.badge}
-                      />
-                    ) : null}
+                    <UserTick uid={reply.userId} verified={reply.verified} verifiedColor={reply.verifiedColor} faceVerified={isFaceVerified(reply)} size={15} />
                   </View>
                   <Text style={cs.replyText}>{reply.text}</Text>
                   <Text style={cs.replyTime}>{commentTimeAgo(reply.createdAt)}</Text>
@@ -1596,6 +1631,7 @@ const [currentUserData, setCurrentUserData] = useState({
   photo: 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
   verified: false,
   verifiedColor: '',
+  faceVerified: false,
 });
 
 // Latest loaded profile (uid ke saath) -- comment/like bhejte waqt yahi use hota hai
@@ -1608,6 +1644,7 @@ const applyMyProfile = (p) => {
     photo: p.photo,
     verified: p.verified || false,
     verifiedColor: p.verifiedColor || '',
+    faceVerified: isFaceVerified(p),
   });
 };
 
@@ -1836,6 +1873,7 @@ const fetchedIdsRef = useRef(new Set());
 const exhaustedRef = useRef(false);
 const fillChainRef = useRef(Promise.resolve());
 const sessionRef = useRef(0);           // refresh par purane fetch cancel
+const fetchRoundRef = useRef(0);        // kaunsa fetch round (fresh / random mix)
 const videosRef = useRef([]);
 const currentIndexRef = useRef(0);
 const seenTimeout = useRef(null);
@@ -1883,6 +1921,7 @@ const toVideo = (docItem) => {
     ...data,
     verified: data.verified || false,
     verifiedColor: data.verifiedColor || "",
+    faceVerified: isFaceVerified(data),
   };
 };
 
@@ -1917,6 +1956,7 @@ const resetFeedState = () => {
   lastVideoDocRef.current = null;
   loadingMoreRef.current = false;
   fillChainRef.current = Promise.resolve();
+  fetchRoundRef.current = 0;
   return sessionRef.current;
 };
 
@@ -1924,16 +1964,33 @@ const resetFeedState = () => {
 const ingestSnap = (snap) => {
   if (!snap || snap.empty) {
     exhaustedRef.current = true;
-    return;
+    return 0;
   }
   lastVideoDocRef.current = snap.docs[snap.docs.length - 1];
+  let added = 0;
   snap.forEach((docItem) => {
     if (fetchedIdsRef.current.has(docItem.id)) return;
     fetchedIdsRef.current.add(docItem.id);
     if (!isAllowedVideo(docItem.data())) return;
     poolRef.current.push(toVideo(docItem));
+    added++;
   });
   if (snap.docs.length < PAGE_SIZE) exhaustedRef.current = true;
+  return added;
+};
+
+// Random page ke docs (cursor / exhausted ko touch nahi karta)
+const ingestRandom = (snap) => {
+  if (!snap || snap.empty) return 0;
+  let added = 0;
+  snap.forEach((docItem) => {
+    if (fetchedIdsRef.current.has(docItem.id)) return;
+    fetchedIdsRef.current.add(docItem.id);
+    if (!isAllowedVideo(docItem.data())) return;
+    poolRef.current.push(toVideo(docItem));
+    added++;
+  });
+  return added;
 };
 
 const countUnseen = () =>
@@ -1944,16 +2001,44 @@ const countUnseen = () =>
 const ensurePool = (minUnseen, session) => {
   const run = async () => {
     let guard = 0;
+    let dry = 0; // lagatar kitne round me naya kuch nahi mila
     while (
       session === sessionRef.current &&
       countUnseen() < minUnseen &&
-      !exhaustedRef.current &&
-      guard < 25
+      guard < MAX_FETCH_ROUNDS &&
+      dry < 2
     ) {
-      const snap = await fetchVideoPage(lastVideoDocRef.current);
-      if (session !== sessionRef.current) return;
-      ingestSnap(snap);
       guard++;
+      const round = fetchRoundRef.current++;
+      let added = 0;
+
+      // Naye videos (cursor) round 0 me, phir har 3rd round me.
+      // Baaki rounds me random purane videos (discovery).
+      if (round === 0 || (!exhaustedRef.current && round % 3 === 0)) {
+        if (exhaustedRef.current) break;
+        const snap = await fetchVideoPage(lastVideoDocRef.current);
+        if (session !== sessionRef.current) return;
+        added = ingestSnap(snap);
+      } else {
+        const oldest = await getOldestTs();
+        if (session !== sessionRef.current) return;
+        if (!oldest) {
+          // random possible nahi -> seedha cursor se padho
+          if (exhaustedRef.current) break;
+          const snap = await fetchVideoPage(lastVideoDocRef.current);
+          if (session !== sessionRef.current) return;
+          added = ingestSnap(snap);
+        } else {
+          const [a, b] = await Promise.all([
+            fetchRandomPage(oldest).catch(() => null),
+            fetchRandomPage(oldest).catch(() => null),
+          ]);
+          if (session !== sessionRef.current) return;
+          added = ingestRandom(a) + ingestRandom(b);
+        }
+      }
+
+      dry = added === 0 ? dry + 1 : 0;
     }
   };
   fillChainRef.current = fillChainRef.current.then(run, run);
@@ -1963,7 +2048,7 @@ const ensurePool = (minUnseen, session) => {
 // Pool ko rank karo, top `n` nikalo (user-gap ke saath)
 const pullFromPool = (n, previous) => {
   const lastTop = previous.length === 0 ? lastTopIdRef.current : null;
-  let ranked = rankFeed(poolRef.current, seenRef.current, previous, lastTop);
+  let ranked = rankFeed(poolRef.current, seenRef.current, previous, lastTop, false, n);
 
   // Feed bilkul khali na rahe: agar koi naya/purana video hi nahi bacha
   // (sab 3 din ke andar dekhe hue), to sabse purana dekha hua dikhao.
@@ -1973,7 +2058,7 @@ const pullFromPool = (n, previous) => {
     exhaustedRef.current &&
     poolRef.current.length > 0
   ) {
-    ranked = rankFeed(poolRef.current, seenRef.current, previous, null, true);
+    ranked = rankFeed(poolRef.current, seenRef.current, previous, null, true, n);
   }
 
   const picked = ranked.slice(0, n);
@@ -2473,6 +2558,7 @@ useEffect(() => {
             o.profilePic === n.profilePic &&
             o.verified === n.verified &&
             o.verifiedColor === n.verifiedColor &&
+            o.faceVerified === n.faceVerified &&
             o.createdAt?.seconds === n.createdAt?.seconds
             ? o
             : n;
@@ -2859,6 +2945,7 @@ const onOpenComments = useCallback((item) => {
     userId: item.userId,
     verified: item.verified || false,
     verifiedColor: item.verifiedColor || "",
+    faceVerified: isFaceVerified(item),
   });
   setShowComments(true);
 }, []);
@@ -3128,6 +3215,7 @@ const postComment = async () => {
       userId: user.uid,
       verified: me.verified || false,
       verifiedColor: me.verifiedColor || "",
+      faceVerified: isFaceVerified(me),
       createdAt: serverTimestamp(),
     });
 
@@ -3210,6 +3298,7 @@ const postReply = async () => {
       userId: user.uid,
       verified: me.verified || false,
       verifiedColor: me.verifiedColor || "",
+      faceVerified: isFaceVerified(me),
       createdAt: serverTimestamp(),
     });
 
@@ -3498,7 +3587,6 @@ disableIntervalMomentum={true}
         maxToRenderPerBatch={2}
         updateCellsBatchingPeriod={30}
         overScrollMode="never"
-        scrollEventThrottle={16}
         directionalLockEnabled
 
 
@@ -3850,107 +3938,8 @@ translateY:commentAnim
 ]}
 >
 
-    {selectedVideoData && (
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          paddingHorizontal: 15,
-          marginBottom: 15,
-          borderBottomWidth: 0.5,
-          borderBottomColor: '#333',
-          paddingBottom: 12,
-        }}
-      >
-
-        <Image
-          source={{
-            uri:
-              selectedVideoData.profile ||
-              'https://cdn-icons-png.flaticon.com/512/3135/3135715.png',
-          }}
-          style={{
-            width: 45,
-            height: 45,
-            borderRadius: 22,
-          }}
-        />
-
-        <View
-          style={{
-            marginLeft: 10,
-            flex: 1,
-          }}
-        >
-
-          
-
-<View
-  style={{
-    flexDirection: "row",
-    alignItems: "center",
-  }}
->
-  <Text
-    style={{
-      color: "#fff",
-      fontWeight: "bold",
-      fontSize: 15,
-    }}
-  >
-    @{selectedVideoData.username}
-  </Text>
-
-
-
-
-{selectedVideoData?.verified && (
-<View
-  style={{
-    marginLeft: 5,
-    width: 18,
-    height: 18,
-    justifyContent: "center",
-    alignItems: "center",
-    position: "relative",
-  }}
->
-  <MaterialCommunityIcons
-  name="check-decagram"
-  size={17}
-  color={
-  selectedVideoData?.verifiedColor === "yellow"
-    ? "#FFD700"
-    : "#ffffff"
-}
-/>
-
-  
-
-</View>
-
-)}
-
-   
-</View>
-
-
-          <Text
-            style={{
-              color: '#ccc',
-              marginTop: 3,
-            }}
-            numberOfLines={2}
-          >
-            {selectedVideoData.caption}
-          </Text>
-
-        </View>
-
-      </View>
-    )}
-
-
+    {/* SIMPLE: sirf chhota handle -- caption / username / photo hata diya */}
+    <View style={styles.commentHandle} pointerEvents="none" />
 
 {commentsLoading ? (
   <View style={{ flex: 1, justifyContent: "center", alignItems: "center", marginTop: 20 }}>
@@ -3961,8 +3950,8 @@ translateY:commentAnim
     data={comments}
     renderItem={renderComment}
     keyExtractor={commentKeyExtractor}
-    style={{ flex: 1, marginTop: 20 }}
-    contentContainerStyle={{ paddingBottom: 80 }}
+    style={{ flex: 1, marginTop: 6 }}
+    contentContainerStyle={{ paddingBottom: 90 }}
     showsVerticalScrollIndicator={false}
     keyboardDismissMode="interactive"
     keyboardShouldPersistTaps="handled"
@@ -4005,13 +3994,7 @@ translateY:Animated.multiply(keyboardHeight,-1)
     <TextInput
     ref={commentInputRef}
   onChangeText={onCommentChange}
-  placeholder={
-  replyingTo
-    ? `Reply to @${replyingTo.username}`
-    : currentUserData.name
-    ? `Comment as ${currentUserData.name}...`
-    : 'Add a comment...'
-}
+  placeholder={replyingTo ? 'Add a reply...' : 'Add a comment...'}
   placeholderTextColor="#999"
   style={styles.commentInput}
 
@@ -4313,6 +4296,14 @@ borderTopLeftRadius:25,
 
 borderTopRightRadius:25,
 overflow:'hidden',
+},
+commentHandle: {
+  alignSelf: 'center',
+  width: 40,
+  height: 4,
+  borderRadius: 2,
+  backgroundColor: '#444',
+  marginTop: 10,
 },
 commentInputContainer: {
   position: 'absolute',

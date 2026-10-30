@@ -58,6 +58,7 @@ import { callApi } from '../../utils/api';
 import { videoLink } from '../../utils/shareLinks';
 
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
+import UserTick, { isFaceVerified } from '../../components/UserTick';
 
 import {
   useFocusEffect,
@@ -198,7 +199,10 @@ const createAnims = () => {
 // VERIFIED BADGE
 // ======================================================
 const VerifiedBadge = React.memo(
-  ({ color, box = 18, icon = 18, tick = 10, top = 4.6, left = 4.2 }) => (
+  ({ color, verified = true, face = false, uid, box = 18, icon = 18, tick = 10, top = 4.6, left = 4.2 }) =>
+    !verified ? (
+      <UserTick uid={uid} faceVerified={face || undefined} size={icon} />
+    ) : (
     <View
       style={{
         marginLeft: 5,
@@ -526,7 +530,7 @@ const VideoItem = React.memo(
       <View style={styles.bottomInfo}>
         <View style={styles.userRow}>
           <Text style={styles.userName}>{item.username || '@user'}</Text>
-          {!!item.verified && <VerifiedBadge color={item.verifiedColor} />}
+          <VerifiedBadge uid={item.userId} verified={!!item.verified} face={isFaceVerified(item)} color={item.verifiedColor} />
         </View>
 
         <Text style={styles.caption}>{item.caption}</Text>
@@ -591,16 +595,13 @@ const CommentItem = React.memo(
       <View style={styles.commentBody}>
         <View style={styles.rowCenter}>
           <Text style={styles.commentUser}>{item.username}</Text>
-          {!!item.verified && (
-            <VerifiedBadge
-              color={item.verifiedColor}
+          <VerifiedBadge uid={item.userId} verified={!!item.verified} face={isFaceVerified(item)} color={item.verifiedColor}
               box={16}
               icon={16}
               tick={9}
               top={4}
               left={3.8}
             />
-          )}
         </View>
 
         <Text style={styles.commentContent}>{item.text}</Text>
@@ -866,6 +867,7 @@ export default function App() {
             photo: data.profileImg || DEFAULT_AVATAR,
             verified: data.verified || false,
             verifiedColor: data.verifiedColor || 'white',
+            faceVerified: isFaceVerified(data),
           });
         }
       } catch (e) {
@@ -1404,6 +1406,7 @@ export default function App() {
           userId: user.uid,
           verified: currentUserData.verified || false,
           verifiedColor: currentUserData.verifiedColor || 'white',
+          faceVerified: isFaceVerified(currentUserData),
           createdAt: serverTimestamp(),
         }),
         updateDoc(doc(db, 'all_videos', selectedVideoId), {
@@ -1446,6 +1449,7 @@ export default function App() {
           userId: user.uid,
           verified: currentUserData.verified || false,
           verifiedColor: currentUserData.verifiedColor || 'white',
+          faceVerified: isFaceVerified(currentUserData),
           createdAt: serverTimestamp(),
         }
       );
@@ -1725,16 +1729,13 @@ export default function App() {
                     @{selectedVideoData.username}
                   </Text>
 
-                  {!!selectedVideoData.verified && (
-                    <VerifiedBadge
-                      color={selectedVideoData.verifiedColor}
+                  <VerifiedBadge uid={selectedVideoData.userId} verified={!!selectedVideoData.verified} face={isFaceVerified(selectedVideoData)} color={selectedVideoData.verifiedColor}
                       box={18}
                       icon={16}
                       tick={10}
                       top={4.6}
                       left={4.2}
                     />
-                  )}
                 </View>
 
                 <Text style={styles.commentsHeaderCaption} numberOfLines={2}>

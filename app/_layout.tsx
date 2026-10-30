@@ -1,6 +1,6 @@
 import { Stack, useRouter, usePathname, useGlobalSearchParams } from 'expo-router';
 import { useEffect, useRef } from 'react';
-import { AppState, Platform, View, Text, TouchableOpacity } from 'react-native';
+import { Alert, AppState, Platform, View, Text, TouchableOpacity } from 'react-native';
 
 import { getApp } from '@react-native-firebase/app';
 import {
@@ -12,12 +12,13 @@ import {
 } from '@react-native-firebase/messaging';
 import * as NavigationBar from 'expo-navigation-bar';
 import * as Notifications from 'expo-notifications';
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore';
 
 import LiveMiniPlayer from '../components/LiveMiniPlayer';
 import { LiveProvider } from '../context/LiveContext';
-import { API_BASE } from '../utils/api';
+import { API_BASE, registerDevice } from '../utils/api';
+import { onDeviceBanned } from '../utils/deviceId';
 import { auth, db, getFCMToken } from './firebaseConfig';
 
 
@@ -177,12 +178,32 @@ export default function RootLayout() {
   }, []);
 
 
+  // Device ban: koi bhi API "DEVICE_BANNED" de to turant logout + login screen
+  useEffect(() => {
+    let shown = false;
+    const off = onDeviceBanned(() => {
+      signOut(auth).catch(() => {});
+      if (!shown) {
+        shown = true;
+        Alert.alert('Device Banned', 'This device has been banned.', [
+          { text: 'OK', onPress: () => { shown = false; } },
+        ]);
+      }
+      try { router.replace('/login' as any); } catch (e) {}
+    });
+    return off;
+  }, []);
+
+
   // Login ke baad har baar fresh FCM token save (pehle sirf login screen par hota tha)
   useEffect(() => {
 
     const unsub = onAuthStateChanged(auth, async (user) => {
 
       if (!user) return;
+
+      // Har app launch par device ko user se jodo (banned ho to api.js khud DEVICE_BANNED event deta hai)
+      registerDevice().catch(() => {});
 
       try {
         const token = await getFCMToken();

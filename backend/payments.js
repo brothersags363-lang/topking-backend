@@ -14,23 +14,6 @@ module.exports = function mountPayments({ app, db, admin, verifyUser, rateLimit 
     message: { success: false, error: "Too many requests. Please try again later." },
   });
 
-  const LEVELS = [
-    [499000, 50], [440000, 49], [385000, 48], [310000, 47], [299000, 46],
-    [260000, 45], [210000, 44], [189000, 43], [155000, 42], [125000, 41],
-    [110000, 40], [101000, 39], [99000, 38], [89000, 37], [78000, 36],
-    [67000, 35], [51000, 34], [43000, 33], [31000, 32], [26000, 31],
-    [23000, 30], [19000, 29], [17000, 28], [14000, 27], [12300, 26],
-    [9000, 24], [8200, 23], [7200, 22], [6100, 21], [5050, 20],
-    [4000, 19], [3500, 18], [2800, 17], [2400, 16], [1900, 15],
-    [1600, 14], [1300, 13], [1150, 12], [1000, 11], [870, 10],
-    [670, 9], [540, 8], [360, 7], [280, 6], [200, 5], [160, 4],
-    [100, 3], [60, 2], [10, 1],
-  ];
-  const starsToLevel = (s) => {
-    for (const [min, lv] of LEVELS) if (s >= min) return lv;
-    return 0;
-  };
-
   async function requireAdmin(req, res, next) {
     try {
       if (req.user && req.user.admin === true) return next();
@@ -80,7 +63,7 @@ module.exports = function mountPayments({ app, db, admin, verifyUser, rateLimit 
         const balance = sSnap.exists ? Number(sSnap.data().stars || 0) : 0;
         if (balance < amount) throw new Error("NO_STARS");
 
-        tx.update(senderWalletRef, { stars: FieldValue.increment(-amount) });
+        tx.update(senderWalletRef, { stars: FieldValue.increment(-amount), totalSpent: FieldValue.increment(amount) });
 
         tx.set(
           ownerWalletRef,
@@ -201,10 +184,12 @@ module.exports = function mountPayments({ app, db, admin, verifyUser, rateLimit 
         const walletRef = db.collection("wallets").doc(r.uid);
         const wSnap = await tx.get(walletRef);
         const total = (wSnap.exists ? Number(wSnap.data().stars || 0) : 0) + stars;
-        const level = starsToLevel(total);
+        // Recharge se level NAHI badhta. Level sirf kharch (totalSpent) se badhta hai
+        // (functions/index.js -> syncWalletLevel). Isliye yahan level jyon ka tyon rehta hai.
+        const level = wSnap.exists ? Number(wSnap.data().level || 0) : 0;
 
-        if (wSnap.exists) tx.update(walletRef, { stars: total, level });
-        else tx.set(walletRef, { stars: total, level, earnings: 0, receivedStars: 0 });
+        if (wSnap.exists) tx.update(walletRef, { stars: total });
+        else tx.set(walletRef, { stars: total, level, earnings: 0, receivedStars: 0, totalSpent: 0 });
 
         tx.update(reqRef, {
           status: "Approved",

@@ -14,13 +14,17 @@ import {
 import { useRouter } from "expo-router";
 import { callApi } from "../utils/api";
 import useIsAdmin from "./useIsAdmin";
+import useIsOfficial from "./useIsOfficial";
 
 const PLACEHOLDER = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 
-// ADMIN ONLY: yahan se kisi user ko BD banao / hatao
+// ADMIN + OFFICIAL: yahan se kisi user ko BD banao / hatao
 export default function BDPanel() {
   const router = useRouter();
   const isAdmin = useIsAdmin();
+  const isOfficial = useIsOfficial();
+  const allowed = isAdmin === true || isOfficial === true;
+  const checking = isAdmin === null || isOfficial === null;
 
   const [bds, setBds] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -47,8 +51,8 @@ export default function BDPanel() {
   }, []);
 
   useEffect(() => {
-    if (isAdmin) load();
-  }, [isAdmin, load]);
+    if (allowed) load();
+  }, [allowed, load]);
 
   const addBD = async () => {
     const name = username.trim();
@@ -91,11 +95,11 @@ export default function BDPanel() {
       ]
     );
 
-  if (!isAdmin) {
+  if (!allowed) {
     return (
       <View style={styles.center}>
         <Text style={{ color: "red", fontSize: 22 }}>
-          {isAdmin === null ? "Checking..." : "Access Denied"}
+          {checking ? "Checking..." : "Access Denied"}
         </Text>
       </View>
     );

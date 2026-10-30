@@ -93,6 +93,7 @@ import {
   ClientRoleType,
   RtcSurfaceView,
 } from "react-native-agora";
+import UserTick from '../components/UserTick';
 
 // Firebase safety check (same pattern as LiveRoom.js / all-live.js)
 let db: any = null;
@@ -238,6 +239,16 @@ const FILTERS = [
     color: { strengthLevel: 0.3, skinProtectLevel: 1 },
   },
 ];
+
+// Extra filters (Glossy, Sunset, Clarendon, Rosy, ...) from the shared library.
+// Agora only supports beauty + colour-enhance, so these are mapped to the
+// closest Agora options (see toAgora() in constants/filterLibrary.js).
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { liveFilters } = require("../constants/filterLibrary");
+// Skip ids already defined above (e.g. "rosy") so React keys stay unique.
+liveFilters().forEach((lf: any) => {
+  if (!FILTERS.some((f) => f.id === lf.id)) FILTERS.push(lf);
+});
 
 // Where the "Recharge / Buy stars" button sends the user. Change to your real route.
 const RECHARGE_ROUTE = "/recharge";
@@ -672,18 +683,12 @@ const ChatItem = memo(({ chat, onUser }: any) => {
         <TouchableOpacity activeOpacity={0.8} onPress={openUser}>
           <Image source={{ uri: chat.userImg || STABLE_AVATAR }} style={styles.sysAva} />
           {(chat.level >= 10 || chat.special || !!chat.senderId) && (
-            <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated={false} style={styles.sysFrame} />
+            <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated style={styles.sysFrame} />
           )}
         </TouchableOpacity>
         <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", marginLeft: 6 }}>
           <Text style={styles.sysText}>{chat.senderName}</Text>
-          {chat.verified && (
-            <MaterialCommunityIcons
-              name="check-decagram"
-              size={15}
-              color={chat?.verifiedColor === "yellow" ? "#FFD700" : "#ffffff"}
-            />
-          )}
+          <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={15} />
           <View style={[styles.levelBadge, { marginLeft: 5, backgroundColor: theme.bg, borderColor: theme.border }]}>
             <MaterialCommunityIcons name="diamond-stone" size={8} color={theme.icon} />
             <Text style={[styles.levelText, { color: theme.text, fontSize: 8 }]}>LV {chat.level || 1}</Text>
@@ -702,13 +707,7 @@ const ChatItem = memo(({ chat, onUser }: any) => {
           <Image source={{ uri: chat.userImg || STABLE_AVATAR }} style={styles.sysAva} />
         </TouchableOpacity>
         <Text style={[styles.sysText, { marginLeft: 6 }]}>{chat.senderName}</Text>
-        {chat.verified && (
-          <MaterialCommunityIcons
-            name="check-decagram"
-            size={15}
-            color={chat?.verifiedColor === "yellow" ? "#FFD700" : "#ffffff"}
-          />
-        )}
+        <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={15} />
         <Text style={[styles.sysText, { marginLeft: 5 }]}>sent</Text>
         {gd?.icon ? (
           <Image source={gd.icon} style={{ width: 24, height: 24, resizeMode: "contain", marginHorizontal: 4 }} />
@@ -733,20 +732,13 @@ const ChatItem = memo(({ chat, onUser }: any) => {
       >
         <Image source={{ uri: chat.userImg || STABLE_AVATAR }} style={styles.chatAva} />
         {(chat.level >= 10 || chat.special || !!chat.senderId) && (
-          <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated={false} style={styles.chatFrame} />
+          <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated style={styles.chatFrame} />
         )}
       </TouchableOpacity>
       <View style={styles.chatContent}>
         <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap" }}>
           <Text style={styles.chatUser}>{chat.senderName}</Text>
-          {chat.verified && (
-            <MaterialCommunityIcons
-              name="check-decagram"
-              size={14}
-              style={{ marginLeft: 4 }}
-              color={chat?.verifiedColor === "yellow" ? "#FFD700" : "#ffffff"}
-            />
-          )}
+          <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={14} />
           <View style={[styles.levelBadge, { backgroundColor: theme.bg, borderColor: theme.border }]}>
             <MaterialCommunityIcons name="diamond-stone" size={9} color={theme.icon} />
             <Text style={[styles.levelText, { color: theme.text, fontSize: 8 }]}>LV {chat.level || 1}</Text>
@@ -3016,9 +3008,9 @@ export default function VideoLive() {
         },
         [`guestReq.${req.uid}`]: deleteField(),
       });
-    } catch (e) {
-      console.log("ACCEPT GUEST ERROR:", e);
-      showToast("Could not accept the request");
+    } catch (e: any) {
+      console.log("ACCEPT GUEST ERROR:", e?.code, e?.message || e);
+      showToast(`Could not accept the request${e?.code ? ` (${e.code})` : ""}`);
     }
   };
 
@@ -3558,7 +3550,7 @@ export default function VideoLive() {
 
     const jobs: Promise<any>[] = [
       // sender wallet
-      updateDoc(doc(db, "wallets", currentUid), { stars: increment(-price) }),
+      updateDoc(doc(db, "wallets", currentUid), { stars: increment(-price), totalSpent: increment(price) }),
 
       updateDoc(roomRef, roomUpdate),
 
@@ -4085,14 +4077,7 @@ export default function VideoLive() {
                 <Text style={styles.hostNameText} numberOfLines={1}>
                   {hostName}
                 </Text>
-                {hostVerified && (
-                  <MaterialCommunityIcons
-                    name="check-decagram"
-                    size={14}
-                    style={{ marginLeft: 3 }}
-                    color={hostVerifiedColor === "yellow" ? "#FFD700" : "#ffffff"}
-                  />
-                )}
+                <UserTick uid={hostId} verified={!!hostVerified} verifiedColor={hostVerifiedColor} size={14} />
               </View>
               <Text style={styles.starsText}>⭐ {hostStars}</Text>
             </View>
@@ -4639,14 +4624,7 @@ export default function VideoLive() {
                           <Text style={styles.pkRowName} numberOfLines={1}>
                             {item.name || item.username || "User"}
                           </Text>
-                          {!!item.verified && (
-                            <MaterialCommunityIcons
-                              name="check-decagram"
-                              size={14}
-                              style={{ marginLeft: 4 }}
-                              color={item.verifiedColor === "yellow" ? "#FFD700" : "#ffffff"}
-                            />
-                          )}
+                          <UserTick uid={item.uid || item.userId || item.senderId || item.id} verified={!!(!!item.verified)} verifiedColor={item.verifiedColor} size={14} />
                           <View style={[styles.levelBadge, { backgroundColor: th.bg, borderColor: th.border }]}>
                             <MaterialCommunityIcons name="diamond-stone" size={9} color={th.icon} />
                             <Text style={[styles.levelText, { color: th.text, fontSize: 8 }]}>LV {item.level || 1}</Text>
@@ -4745,14 +4723,7 @@ export default function VideoLive() {
                   <Text style={styles.pcName} numberOfLines={1}>
                     {profileCard.name || profileCard.username || "User"}
                   </Text>
-                  {!!profileCard.verified && (
-                    <MaterialCommunityIcons
-                      name="check-decagram"
-                      size={17}
-                      style={{ marginLeft: 5 }}
-                      color={profileCard.verifiedColor === "yellow" ? "#FFD700" : "#ffffff"}
-                    />
-                  )}
+                  <UserTick uid={profileCard.uid || profileCard.userId || profileCard.senderId || profileCard.id} verified={!!(!!profileCard.verified)} verifiedColor={profileCard.verifiedColor} size={17} />
                 </View>
                 <View style={{ flexDirection: "row", alignItems: "center", marginTop: 6 }}>
                   {(() => {
@@ -5097,7 +5068,10 @@ export default function VideoLive() {
         onRequestClose={() => setFilterModalVisible(false)}
       >
         <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={() => setFilterModalVisible(false)}>
-          <TouchableOpacity activeOpacity={1} style={styles.sheet}>
+          <TouchableOpacity
+            activeOpacity={1}
+            style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, Platform.OS === "android" ? 28 : 14) + 20 }]}
+          >
             <Text style={styles.sheetTitle}>Beauty & Filters</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingVertical: 6 }}>
               {FILTERS.map((f) => (
