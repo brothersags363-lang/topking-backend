@@ -527,6 +527,40 @@ async function isDeviceBanned(hash) {
   }
 }
 
+// Banned device par koi bhi (naya ya purana) account aaye to wo account turant band.
+// Isse "naya ID bana lo" wala bypass band ho jata hai. Unban par ye bhi wapas chalu hote hain
+// (devices/{hash}.uids me jod dete hain taaki setDeviceBan unban inhe pakad sake).
+async function lockAccountOnBannedDevice(uid, dh) {
+  try {
+    if (!uid || !dh) return;
+    if (await isAdminUser({ uid })) return; // admin kabhi band nahi
+    const FV = admin.firestore.FieldValue;
+    const uRef = db.collection("users").doc(uid);
+    const uSnap = await uRef.get();
+    const ud = uSnap.exists ? uSnap.data() : {};
+    if (ud.deviceBanned === true) return; // pehle se band
+    await admin.auth().updateUser(uid, { disabled: true });
+    await admin.auth().revokeRefreshTokens(uid);
+    await Promise.all([
+      uRef.set(
+        { banned: true, deviceBanned: true, banBeforeDevice: ud.banned === true },
+        { merge: true }
+      ),
+      db.collection("devices").doc(dh).set(
+        { uids: FV.arrayUnion(uid), lastSeen: FV.serverTimestamp() },
+        { merge: true }
+      ),
+      db.collection("user_devices").doc(uid).set(
+        { hashes: FV.arrayUnion(dh), updatedAt: FV.serverTimestamp() },
+        { merge: true }
+      ),
+    ]);
+    console.log("DEVICE BAN AUTO-LOCK: uid=" + uid);
+  } catch (e) {
+    console.error("DEVICE AUTO-LOCK ERROR:", uid, e.code || e.message);
+  }
+}
+
 
 // =====================================================
 // FIREBASE AUTH MIDDLEWARE
@@ -601,7 +635,17 @@ async function verifyUser(
 
     // Banned device se koi bhi login-wali request nahi chalegi
     req.deviceHash = deviceHash(req.headers["x-device-id"]);
+    // Render env me REQUIRE_DEVICE_ID=1 karo (sab users ke updated app aa jane ke baad).
+    // Tab bina device ID wali request (purani / modified app) chalegi hi nahi.
+    if (!req.deviceHash && process.env.REQUIRE_DEVICE_ID === "1") {
+      return res.status(400).json({
+        success: false,
+        code: "DEVICE_REQUIRED",
+        error: "Please update the app",
+      });
+    }
     if (req.deviceHash && (await isDeviceBanned(req.deviceHash))) {
+      await lockAccountOnBannedDevice(decodedToken.uid, req.deviceHash);
       return res.status(403).json({
         success: false,
         code: "DEVICE_BANNED",
@@ -3050,10 +3094,20 @@ app.post("/device/register", generalLimiter, verifyUser, async (req, res) => {
       return res.status(400).json({ success: false, error: "Invalid device" });
     }
     if (await isDeviceBanned(dh)) {
+      await lockAccountOnBannedDevice(req.user.uid, dh);
       return res.status(403).json({
         success: false,
         code: "DEVICE_BANNED",
         error: "This device has been banned",
+      });
+    }
+    // Pakki ID ("d_" = Android ID / iOS vendor ID) ke bina login nahi: kamzor ID reinstall se badal jati hai
+    const rawId = String((req.body && req.body.deviceId) || req.headers["x-device-id"] || "");
+    if (!rawId.startsWith("d_")) {
+      return res.status(400).json({
+        success: false,
+        code: "DEVICE_UNSUPPORTED",
+        error: "Please update the app",
       });
     }
     const uid = req.user.uid;
@@ -3068,7 +3122,13 @@ app.post("/device/register", generalLimiter, verifyUser, async (req, res) => {
         { hashes: FV.arrayUnion(dh), updatedAt: FV.serverTimestamp() },
         { merge: true }
       ),
-      db.collection("users").doc(uid).set({ deviceRegistered: true }, { merge: true }),
+      db.collection("users").doc(uid).set(
+        {
+          deviceRegistered: true,
+          deviceIdKind: req.body && req.body.idKind === "stable" ? "stable" : "weak",
+        },
+        { merge: true }
+      ),
     ]);
     return res.json({ success: true });
   } catch (e) {
@@ -3251,7 +3311,7 @@ async function loadOwnAgency(req, res) {
 // ---------- ADMIN: BD manage ----------
 
 // body: { username }
-app.post("/admin/add-bd", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+app.post("/admin/add-bd", generalLimiter, verifyUser, requireOfficialOrAdmin, async (req, res) => {
   try {
     const username = cleanText(req.body && req.body.username, 80);
     if (!username) {
@@ -3291,7 +3351,7 @@ app.post("/admin/add-bd", generalLimiter, verifyUser, requireAdminDoc, async (re
 });
 
 // body: { uid }
-app.post("/admin/remove-bd", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+app.post("/admin/remove-bd", generalLimiter, verifyUser, requireOfficialOrAdmin, async (req, res) => {
   try {
     const uid = String((req.body && req.body.uid) || "");
     if (!isValidUid(uid)) {
@@ -3306,7 +3366,7 @@ app.post("/admin/remove-bd", generalLimiter, verifyUser, requireAdminDoc, async 
   }
 });
 
-app.post("/admin/list-bds", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+app.post("/admin/list-bds", generalLimiter, verifyUser, requireOfficialOrAdmin, async (req, res) => {
   try {
     const snap = await db.collection("bds").get();
     const bds = await Promise.all(
@@ -3555,7 +3615,7 @@ app.post("/bd/delete-agency", generalLimiter, verifyUser, requireBD, async (req,
 
 // ADMIN: kisi bhi agency ko delete karo (BD ne banayi ho ya admin ne).
 // body: { agencyId }  -> agency + owner + saare hosts ke agency fields saaf
-app.post("/admin/delete-agency", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+app.post("/admin/delete-agency", generalLimiter, verifyUser, requireOfficialOrAdmin, async (req, res) => {
   try {
     const agencyId = String((req.body && req.body.agencyId) || "");
     if (!isValidUid(agencyId)) {
@@ -3947,6 +4007,65 @@ app.post("/official/list-live-bans", generalLimiter, verifyUser, requireOfficial
 //     allow write: if false;
 //   }
 // =====================================================================
+
+// =====================================================================
+// ADMIN PANEL -> Official manage (officialAdmin.js yahi 3 routes call karta hai)
+// Sirf ADMIN. users/{uid}.isOfficial server (Admin SDK) hi set karta hai.
+// =====================================================================
+
+// body: { username }
+app.post("/admin/add-official", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const raw = cleanText(req.body && req.body.username, 80).replace(/^@/, "");
+    if (!raw) return res.status(400).json({ success: false, error: "Username daalo" });
+    let q = await db.collection("users").where("username", "==", raw).limit(1).get();
+    if (q.empty && raw.toLowerCase() !== raw) {
+      q = await db.collection("users").where("username", "==", raw.toLowerCase()).limit(1).get();
+    }
+    if (q.empty) return res.status(404).json({ success: false, error: "User not found" });
+    const uid = q.docs[0].id;
+    if (q.docs[0].data().isOfficial === true) {
+      return res.status(400).json({ success: false, error: "Ye user pehle se Official hai" });
+    }
+    await db.collection("users").doc(uid).set({ isOfficial: true }, { merge: true });
+    console.log(`ADMIN ADD OFFICIAL: by=${req.user.uid} official=${uid}`);
+    return res.json({ success: true, uid });
+  } catch (e) {
+    console.error("ADMIN ADD OFFICIAL ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// body: { uid }
+app.post("/admin/remove-official", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const uid = String((req.body && req.body.uid) || "");
+    if (!isValidUid(uid)) return res.status(400).json({ success: false, error: "Invalid user" });
+    await db.collection("users").doc(uid).set({ isOfficial: false }, { merge: true });
+    console.log(`ADMIN REMOVE OFFICIAL: by=${req.user.uid} official=${uid}`);
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("ADMIN REMOVE OFFICIAL ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+app.post("/admin/list-officials", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const snap = await db.collection("users").where("isOfficial", "==", true).limit(200).get();
+    const officials = snap.docs
+      .map((d) => ({
+        uid: d.id,
+        username: d.data().username || "",
+        profileImg: d.data().profileImg || "",
+      }))
+      .sort((a, b) => a.username.localeCompare(b.username));
+    return res.json({ success: true, officials });
+  } catch (e) {
+    console.error("ADMIN LIST OFFICIALS ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
 
 // body: { agencyId } -> agency ke hosts (View ke liye)
 app.post("/bd/agency-hosts", generalLimiter, verifyUser, requireBD, async (req, res) => {
