@@ -869,6 +869,9 @@ async function sendPushNotification(
 //
 // =====================================================
 
+// moderation.js yahan baad me set hota hai (neeche /official/list-live-bans ke baad)
+let moderation = null;
+
 app.get(
 
   "/token",
@@ -920,6 +923,26 @@ app.get(
       }
 
 
+      // ---- LIVE BAN CHECK (gali / abuse ban) ----
+      // Ban wale user ko Agora token milega hi nahi => na live me ja sakta, na live chala sakta.
+      if (moderation) {
+        try {
+          const banned = await moderation.checkLiveBan(req.user.uid, channelName);
+          if (banned) {
+            return res.status(403).json({
+              success: false,
+              code: banned.code,
+              error: banned.error,
+              until: banned.until,
+            });
+          }
+        } catch (e) {
+          // Firestore atka to live na roko, bas log karo
+          console.error("LIVE BAN CHECK ERROR:", e.message);
+        }
+      }
+
+
       // Generate a deterministic numeric Agora UID
       // from authenticated Firebase UID.
 
@@ -944,6 +967,12 @@ app.get(
       if (agoraUid === 0) {
         agoraUid = 1;
       }
+
+      // STT/voice-moderation webhook ko agoraUid se Firebase uid dhundhne ke liye
+      db.collection("agoraUidMap")
+        .doc(String(agoraUid))
+        .set({ uid: req.user.uid, at: Date.now() }, { merge: true })
+        .catch(() => {});
 
 
       const role =
@@ -3138,7 +3167,8 @@ app.post("/device/check", generalLimiter, async (req, res) => {
   }
 });
 
-async function setDeviceBan(req, res, ban) {
+async function setDeviceBan(req, res, ban, opts) {
+  const protectStaff = !!(opts && opts.protectStaff); // official ke liye: admin/official ka device ban nahi
   try {
     const uid = String((req.body && req.body.uid) || "");
     if (!isValidUid(uid)) {
@@ -3175,6 +3205,18 @@ async function setDeviceBan(req, res, ban) {
         d.data().uids.forEach((u) => isValidUid(u) && linked.add(u));
       }
     });
+
+    // Official ban kare to: is device par koi Admin / Official account ho to device ban mana hai
+    if (ban && protectStaff) {
+      for (const u of linked) {
+        if (await isStaffUser(u)) {
+          return res.status(403).json({
+            success: false,
+            error: "Is device par Admin / Official ka account hai, isliye device ban nahi ho sakta",
+          });
+        }
+      }
+    }
 
     const FV = admin.firestore.FieldValue;
     for (const h of hashes) {
@@ -3227,7 +3269,8 @@ async function setDeviceBan(req, res, ban) {
       }
     }
 
-    console.log(`ADMIN DEVICE ${ban ? "BAN" : "UNBAN"}: uid=${uid} devices=${hashes.length} accounts=${linked.size}`);
+    console.log(`${protectStaff ? "OFFICIAL" : "ADMIN"} DEVICE ${ban ? "BAN" : "UNBAN"}: by=${req.user.uid} uid=${uid} devices=${hashes.length} accounts=${linked.size}`);
+    logModeration(req, ban ? "device_ban" : "device_unban", uid, { devices: hashes.length, accounts: linked.size, reason });
     return res.json({ success: true, devices: hashes.length, accounts: linked.size });
   } catch (e) {
     console.error("ADMIN DEVICE BAN ERROR:", e);
@@ -3910,6 +3953,7 @@ async function officialSetBan(req, res, ban) {
     if (ban) await admin.auth().revokeRefreshTokens(uid);
     await db.collection("users").doc(uid).set({ banned: ban }, { merge: true });
     console.log(`OFFICIAL ${ban ? "BAN" : "UNBAN"}: by=${req.user.uid} user=${uid}`);
+    logModeration(req, ban ? "user_ban" : "user_unban", uid);
     return res.json({ success: true });
   } catch (e) {
     console.error("OFFICIAL BAN ERROR:", e);
@@ -3963,6 +4007,7 @@ app.post("/official/live-restrict", generalLimiter, verifyUser, requireOfficialO
     await uRef.set(userUpd, { merge: true });
     await db.collection("liveBans").doc(uid).set(banUpd, { merge: true });
     console.log(`OFFICIAL LIVE RESTRICT: by=${req.user.uid} user=${uid}`, JSON.stringify(req.body));
+    logModeration(req, "live_restrict", uid, { entryDays: req.body.entryDays, liveDays: req.body.liveDays });
     return res.json({ success: true });
   } catch (e) {
     if (e && e.code === 400) return res.status(400).json({ success: false, error: e.message });
@@ -3987,6 +4032,155 @@ app.post("/official/list-live-bans", generalLimiter, verifyUser, requireOfficial
     console.error("OFFICIAL LIST BANS ERROR:", e);
     return res.status(500).json({ success: false, error: "Server error" });
   }
+});
+
+// =====================================================================
+// OFFICIAL LIVE TOOLS  (live me baithe-baithe: search + ID ban + DEVICE ban + live band)
+// Saari checks server par: sirf Official / Admin. Admin ya Official ko koi ban / band nahi kar sakta.
+// Har action moderation_logs me likha jata hai (kisne, kispar, kya).
+// =====================================================================
+async function isOfficialUser(uid) {
+  try {
+    const s = await db.collection("users").doc(uid).get();
+    return s.exists && s.data().isOfficial === true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function isStaffUser(uid) {
+  return (await isAdminUser({ uid })) || (await isOfficialUser(uid));
+}
+
+function logModeration(req, action, targetUid, extra) {
+  try {
+    db.collection("moderation_logs")
+      .add({
+        action,
+        by: req.user.uid,
+        target: targetUid || "",
+        extra: extra || {},
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      })
+      .catch(() => {});
+  } catch (_) {}
+}
+
+// Official: device ban / unban (user ka device + us device par login saare accounts)
+app.post("/official/ban-device", generalLimiter, verifyUser, requireOfficialOrAdmin, (req, res) =>
+  setDeviceBan(req, res, true, { protectStaff: true })
+);
+app.post("/official/unban-device", generalLimiter, verifyUser, requireOfficialOrAdmin, (req, res) =>
+  setDeviceBan(req, res, false, { protectStaff: true })
+);
+
+// body: { q } -> username prefix YA exact uid. Result me live status + device ban status bhi.
+app.post("/official/live-search", generalLimiter, verifyUser, requireOfficialOrAdmin, async (req, res) => {
+  try {
+    const raw = cleanText(req.body && req.body.q, 60).replace(/^@/, "");
+    if (raw.length < 1) return res.json({ success: true, users: [] });
+
+    const found = new Map(); // uid -> user data
+    if (isValidUid(raw) && raw.length >= 20) {
+      const d = await db.collection("users").doc(raw).get();
+      if (d.exists) found.set(d.id, d.data());
+    }
+    const variants = Array.from(new Set([raw.toLowerCase(), raw]));
+    for (const q of variants) {
+      const snap = await db
+        .collection("users")
+        .where("username", ">=", q)
+        .where("username", "<=", q + "\uf8ff")
+        .orderBy("username")
+        .limit(15)
+        .get();
+      snap.docs.forEach((d) => found.set(d.id, d.data()));
+    }
+
+    const ids = Array.from(found.keys()).slice(0, 15);
+    const liveMap = new Map(); // hostId -> roomId
+    const deviceKnown = new Set();
+    if (ids.length) {
+      for (let i = 0; i < ids.length; i += 10) {
+        const chunk = ids.slice(i, i + 10);
+        const rs = await db.collection("rooms").where("hostId", "in", chunk).get();
+        rs.docs.forEach((r) => {
+          const h = r.data().hostId;
+          if (h && !liveMap.has(h)) liveMap.set(h, r.id);
+        });
+      }
+      const udSnaps = await db.getAll(...ids.map((id) => db.collection("user_devices").doc(id)));
+      udSnaps.forEach((d) => {
+        if (d.exists && Array.isArray(d.data().hashes) && d.data().hashes.length) deviceKnown.add(d.id);
+      });
+    }
+
+    const users = ids.map((id) => ({
+      ...officialUserBrief(id, found.get(id)),
+      deviceBanned: found.get(id).deviceBanned === true,
+      deviceKnown: deviceKnown.has(id),
+      liveRoomId: liveMap.get(id) || "",
+    }));
+    return res.json({ success: true, users });
+  } catch (e) {
+    console.error("OFFICIAL LIVE SEARCH ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// body: { roomId } YA { uid }  -> us live ko sabke liye zabardasti band (host + sab viewers bahar).
+// Room doc delete hote hi app ka handleRoomEnded sabko nikal deta hai.
+app.post("/official/end-live", generalLimiter, verifyUser, requireOfficialOrAdmin, async (req, res) => {
+  try {
+    const roomId = String((req.body && req.body.roomId) || "");
+    const uid = String((req.body && req.body.uid) || "");
+    const rooms = [];
+    if (roomId) {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(roomId)) {
+        return res.status(400).json({ success: false, error: "Invalid room" });
+      }
+      const s = await db.collection("rooms").doc(roomId).get();
+      if (s.exists) rooms.push(s);
+    } else if (isValidUid(uid)) {
+      const q = await db.collection("rooms").where("hostId", "==", uid).limit(5).get();
+      q.docs.forEach((d) => rooms.push(d));
+    } else {
+      return res.status(400).json({ success: false, error: "Room ya user chahiye" });
+    }
+    if (!rooms.length) {
+      return res.status(404).json({ success: false, error: "Live nahi mili (shayad pehle hi band ho gayi)" });
+    }
+
+    let ended = 0;
+    for (const r of rooms) {
+      const hostId = String(r.data().hostId || "");
+      if (hostId && hostId !== req.user.uid && (await isStaffUser(hostId))) {
+        return res.status(403).json({ success: false, error: "Admin / Official ki live band nahi kar sakte" });
+      }
+      await r.ref.delete(); // pehle doc: sabke "All Live" se turant gayab + sab bahar
+      db.recursiveDelete(r.ref).catch((e) => console.error("END LIVE CLEANUP:", r.id, e.message)); // chat / audience
+      ended += 1;
+      logModeration(req, "end_live", hostId, { roomId: r.id });
+      console.log(`OFFICIAL END LIVE: by=${req.user.uid} room=${r.id} host=${hostId}`);
+    }
+    return res.json({ success: true, ended });
+  } catch (e) {
+    console.error("OFFICIAL END LIVE ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// =====================================================================
+// MODERATION (gali filter ke saath jude ban + voice report + STT webhook)
+// =====================================================================
+moderation = require("./moderation")({
+  app,
+  admin,
+  db,
+  verifyUser,
+  generalLimiter,
+  requireOfficialOrAdmin,
+  isValidUid,
 });
 
 // =====================================================================
