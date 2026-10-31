@@ -1,3 +1,6 @@
+import { reportVoiceAbuse } from "../utils/voiceReport";
+import OfficialLiveTools from "../components/live/OfficialLiveTools";
+import { blockIfProfane } from "../utils/guardText";
 // MultiGuestRoom.js  -> route: /MultiGuestRoom   (params: id)
 // VIDEO multi-guest room: host + 8 guests, sab video par baat kar sakte hain.
 // VideoLive.tsx ke saare features yahan bhi hain:
@@ -79,7 +82,8 @@ const RECHARGE_ROUTE = '/recharge';
 const GIFT_QTY = [1, 10, 66, 99];
 const QUICK_EMOJIS = ['😂', '😍', '🔥', '👏', '🥰', '😮', '🎉', '💯'];
 const BAD_WORDS = ['fuck', 'bitch', 'sex', 'porn', 'madarchod', 'bhosdi', 'chutiya', 'randi', 'gaand', 'lund'];
-const REPORT_REASONS = ['Nudity / sexual content', 'Abuse / harassment', 'Spam / scam', 'Underage user', 'Other'];
+const VOICE_ABUSE_REASON = 'Gali / abuse (voice)';
+const REPORT_REASONS = ['Nudity / sexual content', VOICE_ABUSE_REASON, 'Abuse / harassment', 'Spam / scam', 'Underage user', 'Other'];
 const WELCOME_TEXT =
   'Welcome to TopKing Live, where you can interact with hosts and other viewers in real time. '
   + 'Please abide by our community guidelines to help us maintain a good community environment';
@@ -1508,6 +1512,7 @@ export default function MultiGuestRoom() {
     const now = Date.now();
     if (now - lastChatAtRef.current < 1200) return;
     lastChatAtRef.current = now;
+    if (blockIfProfane(t)) return;
     const messageText = cleanText(t).slice(0, 200);
     Keyboard.dismiss();
     setEmojiOpen(false);
@@ -1685,6 +1690,7 @@ export default function MultiGuestRoom() {
       await addDoc(collection(db, 'reports'), {
         roomId, hostId: hostId || null, reporterId: myUid, targetId: t.uid, targetName: t.name || '', reason, createdAt: Date.now(),
       });
+      if (reason === VOICE_ABUSE_REASON) { reportVoiceAbuse(roomId, t.uid); return; }
       Alert.alert('Thanks', 'Your report was sent. Our team will review it.');
     } catch (e) { Alert.alert('Report', 'Could not send the report. Try again.'); }
   };
@@ -2685,6 +2691,9 @@ export default function MultiGuestRoom() {
           </ScrollView>
         </View>
       </Modal>
+      {/* Official / Admin: live ke andar hi search + ID/device ban + live band */}
+      <OfficialLiveTools roomId={roomId} hostId={hostId} />
+
     </View>
   );
 }

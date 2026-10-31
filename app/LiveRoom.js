@@ -1,3 +1,6 @@
+import { reportVoiceAbuse } from "../utils/voiceReport";
+import OfficialLiveTools from "../components/live/OfficialLiveTools";
+import { blockIfProfane } from "../utils/guardText";
   import React, { useEffect, useState, useRef, useCallback, useMemo, memo, forwardRef, useImperativeHandle } from 'react';
 
   import {
@@ -296,6 +299,33 @@ return null;
 // ============================================================
 
 const SPEAK_HOLD_MS = 550;
+
+// ===== SMOOTH ENTER/EXIT HELPERS =====
+// runWhenIdle: animation/navigation khatam hone ke baad chalao (max `maxWait` ms ruko).
+// Pehle sab kuch room khulte hi ek saath chalta tha (Agora engine, 12 animated frames, WebView)
+// -> JS thread bhar jata tha aur entry lag karti thi. Ab bhaari kaam transition ke BAAD hota hai.
+const runWhenIdle = (fn, maxWait = 1200) => {
+  let done = false;
+  const go = () => { if (done) return; done = true; try { fn(); } catch (_) {} };
+  InteractionManager.runAfterInteractions(go);
+  setTimeout(go, maxWait);
+};
+// useSettled(delay): room khulne ke `delay` ms BAAD (aur animation khatam hone par) true hota hai.
+// Seat frames ko isse stagger karke start karte hain (12 frames ek saath nahi).
+const useSettled = (delay = 0) => {
+  const [ok, setOk] = useState(false);
+  useEffect(() => {
+    let t = null;
+    let dead = false;
+    runWhenIdle(() => { t = setTimeout(() => { if (!dead) setOk(true); }, delay); }, 1500);
+    return () => { dead = true; if (t) clearTimeout(t); };
+  }, [delay]);
+  return ok;
+};
+// three.js WebView warm-up (gift 3D ke liye). Ye Android par naya WebView process banata hai ->
+// 1 baar ~200ms atak. Smooth chahiye to false, pehli 3D gift turant chahiye to true.
+const WARM_GIFT_WEBVIEW = true;
+const WARM_GIFT_WEBVIEW_DELAY_MS = 12000;
 // PERF: chat ki har row me 22-36px frame animate hota tha (40-80 rows = bahut load).
 // false = chat me frame static (smooth). Seat/profile ke frames animated hi rehte hain.
 // Pehle jaisa chahiye to true kar do.
@@ -482,6 +512,8 @@ const seatEqual = (a, b) => {
 // Screenshot-style seat: rounded translucent square, "+" when empty, NO.x label.
 const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress, cellW = SEAT_CELL_W }) => {
   const isHostSeat = index === 1;
+  // ENTER SMOOTH: frames room khulne ke baad ek-ek karke animate shuru karte hain
+  const frameAnimOk = useSettled(300 + index * 140);
   // MUTE FIX: mute user par kabhi glow nahi
   const glowOn = !!isSpeaking && !seat.isMuted;
   const occupied = !!seat.userId;
@@ -505,7 +537,7 @@ const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress, cellW
                 level={seat.level}
                 special={seat.special}
                 uid={seat.userId}
-                animated
+                animated={frameAnimOk}
                 pointerEvents="none"
                 style={SEAT_FRAME_STYLE}
               />
@@ -681,9 +713,14 @@ const GiftLayer = memo(forwardRef(function GiftLayer(_props, ref) {
   // three.js ko cache me daal deta hai (phir band) -> gift animation turant chalti hai.
   const [warm, setWarm] = useState(false);
   useEffect(() => {
-    const t1 = setTimeout(() => setWarm(true), 3500);
-    const t2 = setTimeout(() => setWarm(false), 12000);
-    return () => { clearTimeout(t1); clearTimeout(t2); };
+    if (!WARM_GIFT_WEBVIEW) return;
+    let t1 = null, t2 = null, dead = false;
+    runWhenIdle(() => {
+      if (dead) return;
+      t1 = setTimeout(() => setWarm(true), WARM_GIFT_WEBVIEW_DELAY_MS);
+      t2 = setTimeout(() => setWarm(false), WARM_GIFT_WEBVIEW_DELAY_MS + 8500);
+    }, 3000);
+    return () => { dead = true; if (t1) clearTimeout(t1); if (t2) clearTimeout(t2); };
   }, []);
 
   // banner pop-in animation (all native driver)
@@ -2054,6 +2091,7 @@ const agoraInitPromiseRef = useRef(null);
 const agoraJoinStartedRef = useRef(false);
 
 const agoraEngineRef = useRef(null);
+const agoraKickRef = useRef(false);   // initAgora ek hi baar schedule ho
 
 // ===== AGORA MINUTES SAVER =====
 // Agora har user ke channel me rehne ke har minute ka bill/free-quota kaatta hai
@@ -2104,6 +2142,29 @@ const navigateAfterEnd = () => {
   if (cameFromAllLive) router.replace("/all-live");
   else router.replace("/");
 };
+
+// BACK FIX: history na ho (mini-live / notification / deep link / replace se khula) to
+// router.back() kuch nahi karta tha aur user room me atak jata tha. Ab hamesha bahar nikalta hai.
+const navigateBack = () => {
+  try {
+    if (cameFromAllLive) router.replace("/all-live");
+    else if (router.canGoBack && router.canGoBack()) router.back();
+    else router.replace("/");
+  } catch (_) {
+    try { router.replace("/"); } catch (__) {}
+  }
+};
+// BackHandler effect [] deps wala hai, isliye latest loading ref se padhta hai
+const loadingRef = useRef(true);
+loadingRef.current = loading;
+// Loading screen ka Back button normal entry me nahi dikhta; sirf tab jab room 8 sec se
+// zyada load na ho (net slow / atak gaya). Hardware back pehle din se kaam karta hai.
+const [showLoadBack, setShowLoadBack] = useState(false);
+useEffect(() => {
+  if (!loading) { setShowLoadBack(false); return; }
+  const t = setTimeout(() => setShowLoadBack(true), 8000);
+  return () => clearTimeout(t);
+}, [loading]);
 
 // Host ended the live (or host's app died). Stop audio + mini-live instantly.
 // Only navigate if this screen is in front; otherwise navigate when user returns.
@@ -2227,7 +2288,7 @@ useEffect(() => {
   const hid = roomData?.hostId;
   if (hid && hid !== currentUid && blockedIds.has(hid)) {
     try { alert("Ye live aapke liye available nahi hai"); } catch (_) {}
-    router.back();
+    navigateBack();
   }
 }, [roomData?.hostId, blockedIds]);
 
@@ -2434,8 +2495,12 @@ const handleReportFromRoom = useCallback((u) => {
   if (!uid || uid === currentUid) return;
   setProfileVisible(false);
   setSpeakerModalVisible(false);
-  router.push({ pathname: '/report', params: { reportedUserId: uid } });
-}, [currentUid, router]);
+  Alert.alert('Report', `@${u?.userName || 'user'} ko kis wajah se report karna hai?`, [
+    { text: 'Voice me gali de raha hai', onPress: () => reportVoiceAbuse(roomId, uid) },
+    { text: 'Doosri wajah', onPress: () => router.push({ pathname: '/report', params: { reportedUserId: uid } }) },
+    { text: 'Cancel', style: 'cancel' },
+  ]);
+}, [currentUid, router, roomId]);
 
 const handleBlockFromRoom = useCallback((u) => {
   const uid = u?.userId;
@@ -3245,6 +3310,11 @@ const profileLevel = previewLevel ?? selectedSpeaker?.level ?? 1;
 
   const backAction = () => {
 
+    // BACK FIX: room load ho raha ho (exit popup render nahi hota) to seedha bahar
+    if (loadingRef.current) {
+      navigateBack();
+      return true;
+    }
     // Game khula ho to back pehle game band kare
     if (gameOpenRef.current) {
       setGameOpen(false);
@@ -3432,7 +3502,7 @@ if (
   data?.hostId !== currentUid
 ) {
   alert("Room Locked");
-  router.back();
+  navigateBack();
   return;
 }
 
@@ -3443,7 +3513,7 @@ if (
   releaseAgora();
   try { stopLive(); } catch (_) {}
   alert("Host ne aapko is room se hata diya hai");
-  router.back();
+  navigateBack();
   return;
 }
 
@@ -3559,6 +3629,9 @@ log("Audience Added =", audiencePayload);
   
 
     const unsubscribe = onSnapshot(roomRef, (snapshot) => {
+      // EXIT SMOOTH: bahar nikalte waqt (apna seat/audience delete hone par bhi snapshot aata hai)
+      // poori screen re-render + startLive() dobara na chale.
+      if (exitingRef.current) return;
       if (snapshot.exists()) {
         const data = snapshot.data();
 
@@ -3595,7 +3668,7 @@ log("Audience Added =", audiencePayload);
           releaseAgora();
           try { stopLive(); } catch (_) {}
           alert("Host ne aapko is room se hata diya hai");
-          router.back();
+          navigateBack();
           return;
         }
 
@@ -3725,11 +3798,20 @@ else if (onPod) {
 role = "speaker";
 }
 
-setTimeout(() => {
-  Promise.resolve(initAgora(role)).catch(() => {
-    scheduleAgoraReconnectRef.current && scheduleAgoraReconnectRef.current();
-  });
-},100);
+// ENTER SMOOTH: Agora engine banana (native, JS thread block karta hai) screen draw + navigation
+// animation khatam hone ke BAAD. Pehle 100ms me chalta tha -> room khulte hi lag.
+if (!agoraKickRef.current) {
+  agoraKickRef.current = true;
+  runWhenIdle(() => {
+    setTimeout(() => {
+      agoraKickRef.current = false;
+      if (exitingRef.current || roomEndedRef.current || agoraEngineRef.current) return;
+      Promise.resolve(initAgora(role)).catch(() => {
+        scheduleAgoraReconnectRef.current && scheduleAgoraReconnectRef.current();
+      });
+    }, 50);
+  }, 1200);
+}
 
 }
 
@@ -3817,6 +3899,7 @@ useEffect(() => {
   let chatOrder = [];
 
   const unsubChats = onSnapshot(chatsQuery, { includeMetadataChanges: false }, (snap) => {
+    if (exitingRef.current) return;   // EXIT SMOOTH
     // ORDER FIX: pehle createdAt (har phone ki apni clock, Date.now()) se sort hota tha,
     // isliye jis phone ki clock peeche ho uska message purane messages ke UPAR chala jata tha.
     // Ab pehli baar history createdAt se, uske baad jo bhi naya message aaye wo hamesha
@@ -3919,6 +4002,7 @@ useEffect(() => {
   let lastSig = null;
 
   const unsubAudience = onSnapshot(audienceQuery, (snap) => {
+    if (exitingRef.current) return;   // EXIT SMOOTH
     const map = {};
     const nowLocal = Date.now();
     const seen = audSeenRef.current;
@@ -4042,42 +4126,34 @@ useEffect(() => {
   // endForAll === true -> room sabke liye band (host ya admin). Warna sirf mera exit.
   const cleanAndExit = async (endForAll) => {
     const closeForEveryone = endForAll === true;
+    if (exitingRef.current) return;   // double-tap par dobara na chale
     exitingRef.current = true;
-    speakingStore.reset();
     setControlModalVisible(false);
+
+    // 1) Awaaz/mic TURANT band (ye sasta hai) - baaki bhaari teardown baad me.
+    const engineToRelease = agoraEngineRef.current;
+    agoraEngineRef.current = null;
+    if (engineToRelease) {
+      try { engineToRelease.muteAllRemoteAudioStreams(true); } catch (_) {}
+      try { engineToRelease.muteLocalAudioStream(true); } catch (_) {}
+    }
     try { stopLive(); } catch (_) {}
 
-    if (agoraEngineRef.current) {
-      // FIX: this used to be `await agoraEngineRef.current.leaveChannel()`
-      // before navigating, which meant tapping "exit" visibly paused for
-      // however long that network round-trip took. leaveChannel()/release()
-      // don't need to block the UI — fire them and move on immediately.
-      const engineToRelease = agoraEngineRef.current;
-      agoraEngineRef.current = null;
-      // FIX: leaveChannel() is synchronous in this react-native-agora
-      // version — it returns a plain number, not a Promise — so calling
-      // `.catch()` on it directly throws "leaveChannel().catch is not a
-      // function". Wrap in try/catch, and only chain .catch() if the
-      // result actually is a Promise (keeps this safe across SDK versions).
-      try {
-        const leaveResult = engineToRelease.leaveChannel();
-        if (leaveResult && typeof leaveResult.catch === "function") {
-          leaveResult.catch(() => {});
-        }
-      } catch (_) {}
-      try { engineToRelease.release(); } catch (_) {}
-    }
+    // 2) PEHLE navigate: user ko bilkul wait na karna pade.
+    navigateBack();
 
-    // Pehle navigate karein taaki user ko wait na karna pade
-   if (cameFromAllLive) {
-
-  router.replace("/all-live");
-
-} else {
-
-  router.back();
-
-}
+    // 3) leaveChannel()/release() native hain aur JS/UI thread rok dete the (exit atakta tha).
+    //    Ab screen ka transition shuru hone ke BAAD chalte hain.
+    runWhenIdle(() => {
+      speakingStore.reset();
+      if (engineToRelease) {
+        try {
+          const leaveResult = engineToRelease.leaveChannel();
+          if (leaveResult && typeof leaveResult.catch === "function") leaveResult.catch(() => {});
+        } catch (_) {}
+        try { engineToRelease.release(); } catch (_) {}
+      }
+    }, 450);
 
     try {
       if (db && roomId) {
@@ -4767,6 +4843,7 @@ initAgoraRef.current = initAgora;
   const handleSendChat = async (text) => {
     const messageText = (text || '').trim().slice(0, 200);
     if (!messageText) return;
+    if (blockIfProfane(messageText)) return;
     // Host ne chat lock kiya ho to sirf host likh sakta hai
     if (roomData?.chatLocked && !canManage) {
       alert('Host ne chat lock kar di hai 🔒');
@@ -5621,7 +5698,21 @@ const requestsArray = useMemo(() => (
     : []
 ), [roomData?.speakerRequests, hiddenReqUids]);
 
-  if (loading) return <View style={styles.loader}><Text style={{color:'#fff'}}>Entering Live Room...</Text></View>;
+  if (loading) return (
+    <View style={styles.loader}>
+      <Text style={{color:'#fff'}}>Entering Live Room...</Text>
+      {showLoadBack && (
+        <TouchableOpacity
+          onPress={navigateBack}
+          activeOpacity={0.8}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          style={{ marginTop: 28, paddingVertical: 12, paddingHorizontal: 28, borderRadius: 24, backgroundColor: 'rgba(255,255,255,0.18)' }}
+        >
+          <Text style={{ color: '#fff', fontWeight: '700' }}>Back</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
 
 const topSeatUsers = Object.values(roomData?.seatsData || {}).filter((item) => item?.userId);
 
@@ -7365,6 +7456,9 @@ onPress={sendInvite}
       onShare={() => setFriendShareVisible(true)}
       onExit={() => setControlModalVisible(true)}
     />
+
+    {/* Official / Admin: live ke andar hi search + ID/device ban + live band */}
+    <OfficialLiveTools roomId={roomId} hostId={roomData?.hostId} />
 
   </View>
 );

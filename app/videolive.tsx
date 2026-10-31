@@ -1,3 +1,6 @@
+import { reportVoiceAbuse } from "../utils/voiceReport";
+import OfficialLiveTools from "../components/live/OfficialLiveTools";
+import { blockIfProfane } from "../utils/guardText";
 // @ts-nocheck
 // VideoLive.tsx
 //
@@ -296,7 +299,8 @@ const cleanText = (t: string) => {
   return out;
 };
 
-const REPORT_REASONS = ["Nudity / sexual content", "Abuse / harassment", "Spam / scam", "Underage user", "Other"];
+const VOICE_ABUSE_REASON = "Gali / abuse (voice)";
+const REPORT_REASONS = ["Nudity / sexual content", VOICE_ABUSE_REASON, "Abuse / harassment", "Spam / scam", "Underage user", "Other"];
 
 const getLevelTheme = (level = 1) => {
   if (level >= 50) return { bg: "#7B1FFF", border: "#FFD700", text: "#fff", icon: "#FFD700" };
@@ -3089,6 +3093,7 @@ export default function VideoLive() {
     const nowMs = Date.now();
     if (nowMs - lastChatAtRef.current < 1200) return; // anti-spam
     lastChatAtRef.current = nowMs;
+    if (blockIfProfane(chatMessage)) return;
     const messageText = cleanText(chatMessage.trim()).slice(0, 200);
     Keyboard.dismiss();
     setEmojiOpen(false);
@@ -3347,6 +3352,10 @@ export default function VideoLive() {
         reason,
         createdAt: Date.now(),
       });
+      if (reason === VOICE_ABUSE_REASON) {
+        reportVoiceAbuse(roomId as string, t.uid);
+        return;
+      }
       Alert.alert("Thanks", "Your report was sent. Our team will review it.");
     } catch (e) {
       Alert.alert("Report", "Could not send the report. Try again.");
@@ -5250,6 +5259,9 @@ export default function VideoLive() {
           </View>
         </View>
       </Modal>
+      {/* Official / Admin: live ke andar hi search + ID/device ban + live band */}
+      <OfficialLiveTools roomId={roomId} hostId={hostId} />
+
     </View>
   );
 }
