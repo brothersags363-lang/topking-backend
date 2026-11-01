@@ -3499,6 +3499,234 @@ app.post("/admin/list-framed-users", generalLimiter, verifyUser, requireAdminDoc
   }
 });
 
+
+
+// =====================================================
+// AUTO (ek baar): purane agency members ko live (liveGranted) - deploy par apne aap
+// =====================================================
+async function grandfatherAgencyLiveOnce() {
+  const markerRef = db.collection("config").doc("liveGrandfather");
+  if ((await markerRef.get()).exists) return;
+  let granted = 0, last = null;
+  let batch = db.batch(), inBatch = 0;
+  for (;;) {
+    let q = db.collection("users").where("agencyId", ">", "").orderBy("agencyId").limit(400);
+    if (last) q = q.startAfter(last);
+    const snap = await q.get();
+    if (snap.empty) break;
+    for (const d of snap.docs) {
+      if (d.data().liveGranted !== true) {
+        batch.update(d.ref, { liveGranted: true });
+        granted++; inBatch++;
+        if (inBatch >= 400) { await batch.commit(); batch = db.batch(); inBatch = 0; }
+      }
+    }
+    last = snap.docs[snap.docs.length - 1];
+  }
+  if (inBatch > 0) await batch.commit();
+  await markerRef.set({ doneAt: admin.firestore.FieldValue.serverTimestamp(), granted });
+  console.log(`LIVE GRANDFATHER done: ${granted} users`);
+}
+
+// =====================================================
+// ADMIN: LEVEL RECALC (ek baar chalao) - level = totalSpent se
+// Purane galat level (recharge se mile) theek ho jate hain.
+// body: { apply?: true }   apply na ho to sirf DRY-RUN (kuch badalta nahi, count batata hai)
+// manualLevel wale users ka level uske neeche nahi jata.
+// =====================================================
+const LEVEL_STEPS_SRV = [10, 60, 100, 160, 200, 280, 360, 540, 670, 870, 1000, 1150, 1300, 1600, 1900, 2400, 2800, 3500, 4000, 5050, 6100, 7200, 8200, 9000, 10500, 12300, 14000, 17000, 19000, 23000, 26000, 31000, 43000, 51000, 67000, 78000, 89000, 99000, 101000, 110000, 125000, 155000, 189000, 210000, 260000, 299000, 310000, 385000, 440000, 499000];
+function levelFromSpentSrv(spent) {
+  const n = Number(spent) || 0;
+  let lv = 0;
+  for (let i = 0; i < LEVEL_STEPS_SRV.length; i++) {
+    if (n >= LEVEL_STEPS_SRV[i]) lv = i + 1; else break;
+  }
+  return lv;
+}
+
+app.post("/admin/recalc-levels", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const apply = !!(req.body && req.body.apply === true);
+    let scanned = 0, changed = 0, last = null;
+    let batch = db.batch(), inBatch = 0;
+    for (;;) {
+      let q = db.collection("wallets").orderBy(admin.firestore.FieldPath.documentId()).limit(400);
+      if (last) q = q.startAfter(last);
+      const snap = await q.get();
+      if (snap.empty) break;
+      for (const docSnap of snap.docs) {
+        scanned++;
+        const d = docSnap.data() || {};
+        const manual = Math.min(50, Math.max(0, Math.floor(Number(d.manualLevel) || 0)));
+        const target = Math.max(levelFromSpentSrv(d.totalSpent), manual);
+        if ((Number(d.level) || 0) !== target) {
+          changed++;
+          if (apply) {
+            batch.update(docSnap.ref, { level: target });
+            inBatch++;
+            if (inBatch >= 400) { await batch.commit(); batch = db.batch(); inBatch = 0; }
+          }
+        }
+      }
+      last = snap.docs[snap.docs.length - 1];
+    }
+    if (apply && inBatch > 0) await batch.commit();
+    console.log(`RECALC LEVELS by ${req.user.uid} apply=${apply} scanned=${scanned} changed=${changed}`);
+    return res.json({ success: true, apply, scanned, changed });
+  } catch (e) {
+    console.error("RECALC LEVELS ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// =====================================================
+// ADMIN: PURANE AGENCY MEMBERS KO LIVE (liveGranted) - ek baar chalao
+// Naye rule ke baad agency join karne se live NAHI milta (white tick chahiye).
+// Jo log ABHI agency me hain unko liveGranted = true de do taaki unka live na ruke.
+// body: { apply?: true }  (dry-run default)
+// IMPORTANT: ye naya app / naye rules lagane SE PEHLE chalao.
+// =====================================================
+app.post("/admin/grant-live-existing-agency", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const apply = !!(req.body && req.body.apply === true);
+    let scanned = 0, granted = 0, last = null;
+    let batch = db.batch(), inBatch = 0;
+    for (;;) {
+      let q = db.collection("users").where("agencyId", ">", "").orderBy("agencyId").limit(400);
+      if (last) q = q.startAfter(last);
+      const snap = await q.get();
+      if (snap.empty) break;
+      for (const docSnap of snap.docs) {
+        scanned++;
+        const d = docSnap.data() || {};
+        if (d.liveGranted !== true) {
+          granted++;
+          if (apply) {
+            batch.update(docSnap.ref, { liveGranted: true });
+            inBatch++;
+            if (inBatch >= 400) { await batch.commit(); batch = db.batch(); inBatch = 0; }
+          }
+        }
+      }
+      last = snap.docs[snap.docs.length - 1];
+    }
+    if (apply && inBatch > 0) await batch.commit();
+    console.log(`GRANT LIVE EXISTING by ${req.user.uid} apply=${apply} scanned=${scanned} granted=${granted}`);
+    return res.json({ success: true, apply, scanned, granted });
+  } catch (e) {
+    console.error("GRANT LIVE EXISTING ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// =====================================================
+// USER APNA FRAME / ENTRY CHUNE YA HATAYE (Settings > Frames & Entries)
+// users/{uid}:  frameOff, frameChoice, entryOff, entryChoice
+//   frameChoice = "lv30" (level frame)  ya  "adm:<key>" (admin ka diya frame)  ya null (auto = sabse bada)
+//   entryChoice = "slide" | "wing1".."wing5"  ya null (auto = level ke hisaab se)
+// Server check karta hai ki user ke paas wo frame/entry sach me hai.
+// =====================================================
+const LEVEL_FRAME_TIERS = [10, 20, 30, 35, 40, 45, 50];
+// Agency / BD ka frame ab apne aap NAHI milta (sirf admin frame de to). Sirf crown / vip1 (admin set kare).
+const SPECIAL_FRAME_TIER = { crown: 40, vip1: 50 };
+const ENTRY_MIN_LEVEL = { slide: 0, wing1: 10, wing2: 20, wing3: 30, wing4: 40, wing5: 50 };
+
+function levelTierOf(lv) {
+  lv = Number(lv) || 0;
+  let t = 0;
+  for (const x of LEVEL_FRAME_TIERS) if (lv >= x) t = x;
+  return t;
+}
+
+function ownedFrameInfo(d) {
+  let special = null;
+  if (d.special && SPECIAL_FRAME_TIER[d.special]) special = d.special;
+  const maxTier = Math.max(levelTierOf(d.level), special ? SPECIAL_FRAME_TIER[special] : 0);
+  return { maxTier, adminFrame: d.adminFrame && ADMIN_FRAME_KEYS.includes(d.adminFrame) ? d.adminFrame : null };
+}
+
+// body: { frameOff?, frameChoice?, entryOff?, entryChoice? }  (jo bheje wahi badlega)
+app.post("/user/set-frame-prefs", generalLimiter, verifyUser, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const b = req.body || {};
+    const ref = db.collection("users").doc(uid);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ success: false, error: "User not found" });
+    const d = snap.data();
+    const owned = ownedFrameInfo(d);
+    const lvl = Number(d.level) || 0;
+
+    const update = {};
+    const del = admin.firestore.FieldValue.delete();
+
+    if (Object.prototype.hasOwnProperty.call(b, "frameOff")) {
+      update.frameOff = b.frameOff === true ? true : del;
+    }
+    if (Object.prototype.hasOwnProperty.call(b, "entryOff")) {
+      update.entryOff = b.entryOff === true ? true : del;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(b, "frameChoice")) {
+      const c = b.frameChoice ? String(b.frameChoice) : null;
+      if (c === null) {
+        update.frameChoice = del; // auto
+      } else if (/^lv\d+$/.test(c)) {
+        const t = Number(c.slice(2));
+        if (!LEVEL_FRAME_TIERS.includes(t) || t > owned.maxTier) {
+          return res.status(403).json({ success: false, error: "Ye frame abhi aapke paas nahi hai" });
+        }
+        update.frameChoice = c;
+        update.frameOff = del; // frame chuna = frame ON
+      } else if (c.indexOf("adm:") === 0) {
+        const k = c.slice(4);
+        if (!owned.adminFrame || owned.adminFrame !== k) {
+          return res.status(403).json({ success: false, error: "Ye frame aapko admin se nahi mila" });
+        }
+        update.frameChoice = c;
+        update.frameOff = del;
+      } else {
+        return res.status(400).json({ success: false, error: "Invalid frame" });
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(b, "entryChoice")) {
+      const c = b.entryChoice ? String(b.entryChoice) : null;
+      if (c === null) {
+        update.entryChoice = del; // auto
+      } else if (Object.prototype.hasOwnProperty.call(ENTRY_MIN_LEVEL, c)) {
+        if (lvl < ENTRY_MIN_LEVEL[c]) {
+          return res.status(403).json({ success: false, error: "Ye entry abhi aapke paas nahi hai" });
+        }
+        update.entryChoice = c;
+        update.entryOff = del; // entry chuni = entry ON
+      } else {
+        return res.status(400).json({ success: false, error: "Invalid entry" });
+      }
+    }
+
+    if (!Object.keys(update).length) {
+      return res.status(400).json({ success: false, error: "Kuch badla nahi" });
+    }
+    await ref.set(update, { merge: true });
+
+    const out = await ref.get();
+    const o = out.data() || {};
+    return res.json({
+      success: true,
+      prefs: {
+        frameOff: o.frameOff === true,
+        frameChoice: o.frameChoice || null,
+        entryOff: o.entryOff === true,
+        entryChoice: o.entryChoice || null,
+      },
+    });
+  } catch (e) {
+    console.error("USER SET FRAME PREFS ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
 // ---------- BD: apni agencies ----------
 
 app.post("/bd/my-agencies", generalLimiter, verifyUser, requireBD, async (req, res) => {
@@ -4012,6 +4240,33 @@ app.post("/official/live-restrict", generalLimiter, verifyUser, requireOfficialO
   } catch (e) {
     if (e && e.code === 400) return res.status(400).json({ success: false, error: e.message });
     console.error("OFFICIAL LIVE RESTRICT ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// VIDEO LIVE AUTO BAN: host ka face 5 min se zyada nahi dikha / black screen raha -> 30 min live band.
+// App (videolive.tsx) khud call karta hai. Sirf apni hi uid par lagta hai, aur pehle se bada ban ho to chhota nahi karta.
+const AUTO_VIDEO_BAN_MS = 30 * 60 * 1000;
+app.post("/live/auto-video-ban", generalLimiter, verifyUser, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const uRef = db.collection("users").doc(uid);
+    const uSnap = await uRef.get();
+    if (!uSnap.exists) return res.status(404).json({ success: false, error: "User not found" });
+
+    const cur = Number((uSnap.data() || {}).liveBanUntil) || 0;
+    const until = Math.max(cur, Date.now() + AUTO_VIDEO_BAN_MS);
+    const reason = "Video live me 5 minute se zyada face nahi dikha / black screen raha";
+
+    await uRef.set({ liveBanUntil: until }, { merge: true });
+    await db.collection("liveBans").doc(uid).set(
+      { uid, liveBanUntil: until, reason, updatedBy: "auto", updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+      { merge: true }
+    );
+    console.log(`AUTO VIDEO BAN: user=${uid} until=${until}`);
+    return res.json({ success: true, until });
+  } catch (e) {
+    console.error("AUTO VIDEO BAN ERROR:", e);
     return res.status(500).json({ success: false, error: "Server error" });
   }
 });
@@ -4573,6 +4828,13 @@ const server =
 
       console.log(
         `Server running on port ${PORT}`
+      );
+
+      // Ek baar apne aap: jo log ABHI agency me hain unko liveGranted = true.
+      // Marker doc (config/liveGrandfather) ban jaye to dobara kabhi nahi chalta,
+      // isliye naye agency members ko ye live nahi dega (unko white tick chahiye).
+      grandfatherAgencyLiveOnce().catch((e) =>
+        console.error("LIVE GRANDFATHER ERROR:", e)
       );
 
     }
