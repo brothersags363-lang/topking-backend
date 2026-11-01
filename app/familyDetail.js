@@ -278,6 +278,11 @@ export default function FamilyDetail() {
   );
 
   let action = null;
+  const editBtn = isLeader ? (
+    <TouchableOpacity style={[s.cta, s.ctaGhost]} onPress={() => router.push({ pathname: "/editFamily", params: { fid } })}>
+      <Text style={[s.ctaT, { color: "#fff" }]}>Edit Family (Logo / Slogan)</Text>
+    </TouchableOpacity>
+  ) : null;
   if (fam.status === "approved") {
     if (isMember && !isLeader) action = <TouchableOpacity style={[s.cta, s.ctaGhost]} onPress={leave}><Text style={[s.ctaT, { color: "#ff6b6b" }]}>Leave Family</Text></TouchableOpacity>;
     else if (!isMember && !isLeader) {
@@ -345,7 +350,7 @@ export default function FamilyDetail() {
           }
           contentContainerStyle={{ paddingTop: 14, paddingBottom: 110 + insets.bottom }}
         />
-        {action && <View style={[s.footer, { paddingBottom: 14 + insets.bottom }]}>{action}</View>}
+        {(action || editBtn) && <View style={[s.footer, { paddingBottom: 14 + insets.bottom }]}>{action}{editBtn}</View>}
       </View>
     </View>
   );

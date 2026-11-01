@@ -1984,6 +1984,10 @@ const [selfSeatModalVisible, setSelfSeatModalVisible] = useState(false);
 
 const [selfMuted, setSelfMuted] = useState(false);
 const selfMutedRef = useRef(false);   // volume callback ke liye (state purani na pade)
+// AUTO SEAT-DROP: seat par baithe user ki awaaz 20 min tak na aaye to seat se utar do
+const lastVoiceAtRef = useRef(Date.now());   // local user ki aakhri asli awaaz ka time
+const voiceSeatKeyRef = useRef(null);        // abhi kis seat par baitha hai (seat badli -> timer reset)
+const leaveOwnSeatRef = useRef(null);        // leaveOwnSeat ka latest version (interval me purana closure na chale)
 
 const [profileVisible, setProfileVisible] = useState(false);
 
@@ -4748,6 +4752,7 @@ const initAgora = async (userRole) => {
               const key = isLocal ? backendUid : item.uid;
               if (isLocal ? (selfMutedRef.current || mutedNums.has(Number(backendUid))) : mutedNums.has(Number(item.uid))) return;
               map[key] = true;
+              if (isLocal) lastVoiceAtRef.current = Date.now();
               if (!isLocal) remoteVoice = true;
             }
           });
@@ -5331,6 +5336,45 @@ const leaveOwnSeat = async () => {
   }
 
 };
+leaveOwnSeatRef.current = leaveOwnSeat;
+
+// ============================================================
+// AUTO SEAT-DROP (20 min no voice)
+// Seat par baithe (host seat_1 / HOST roleTag chhodkar) user ki awaaz 20 minute tak na aaye
+// to usse seat se utaar dete hain. Timer: seat par baithte hi shuru, har baar bolne par reset.
+// Date.now() se check hota hai, isliye app background me gayi ho tab bhi wapas aate hi chal jata hai.
+// ============================================================
+const VOICE_IDLE_LIMIT_MS = 20 * 60 * 1000;
+useEffect(() => {
+  if (!roomId || !currentUid) return undefined;
+  const iv = setInterval(() => {
+    if (exitingRef.current || roomEndedRef.current) return;
+    const seats = roomDataRef.current?.seatsData || {};
+    let mine = null;
+    let mineSeat = null;
+    for (const k in seats) {
+      if (seats[k]?.userId === currentUid) { mine = k; mineSeat = seats[k]; }
+    }
+    // seat par nahi / host hai -> timer band
+    if (!mine || mine === "seat_1" || mineSeat?.roleTag === "HOST") {
+      voiceSeatKeyRef.current = null;
+      return;
+    }
+    // nayi seat par baitha -> timer fresh shuru
+    if (voiceSeatKeyRef.current !== mine) {
+      voiceSeatKeyRef.current = mine;
+      lastVoiceAtRef.current = Date.now();
+      return;
+    }
+    if (Date.now() - lastVoiceAtRef.current >= VOICE_IDLE_LIMIT_MS) {
+      voiceSeatKeyRef.current = null;
+      lastVoiceAtRef.current = Date.now();
+      showToast("⏱ 20 minute se awaaz nahi aayi, aap seat se utar gaye");
+      try { leaveOwnSeatRef.current && leaveOwnSeatRef.current(); } catch (_) {}
+    }
+  }, 15000);
+  return () => clearInterval(iv);
+}, [roomId, currentUid, showToast]);
 
 
 

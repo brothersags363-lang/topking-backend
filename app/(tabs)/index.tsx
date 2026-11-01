@@ -1,3 +1,5 @@
+import { blockIfProfane } from "../../utils/guardText";
+import { checkVideoAction } from "../../utils/videoLocks";
 // ==========================
 // IMPORTS
 // ==========================
@@ -13,6 +15,7 @@ import {
   StyleSheet,
   Dimensions,
   FlatList,
+  ScrollView,
   Platform,
   Image,
   StatusBar,
@@ -27,6 +30,7 @@ import {
   Easing,
   AppState,
   PanResponder,
+  InteractionManager,
 } from 'react-native';
 
 
@@ -72,6 +76,7 @@ import { useRouter, usePathname, useFocusEffect } from 'expo-router';
 import { db } from '../firebaseConfig';
 import { useLiveHost } from '../../components/liveHosts';
 import { callApi } from '../../utils/api';
+import { loadDiscover, loadFollow } from '../../utils/homeData';
 import { videoLink } from '../../utils/shareLinks';
 
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
@@ -81,6 +86,7 @@ import { getAuth, onAuthStateChanged } from 'firebase/auth';
 // File app/ ke BAHAR services/upload/ me hai, isliye '@/...' alias use kiya.
 import { useUploadState } from '@/services/upload/uploadManager';
 import UserTick, { isFaceVerified } from '../../components/UserTick';
+import { AvatarFrame } from '../../components/FramedAvatar';
 
 
 
@@ -97,6 +103,8 @@ const formatCount = (n) => {
   if (num >= 1000) return (num / 1000).toFixed(num >= 100000 ? 0 : 1).replace(/\.0$/, '') + 'K';
   return String(num);
 };
+
+const feedKeyExtractor = (item) => item.id;
 
 const getFeedItemLayout = (_data, index) => ({
   length: height,
@@ -491,13 +499,16 @@ const rankFeed = (
 // (Har ready player ek video decoder pakadta hai -> zyada karoge to
 // kam RAM wale phone atkenge. 10 ek saath safe nahi, isliye 1 peeche + 3 aage.)
 // SPEED: 1 peeche + 2 aage ke players ready -> fast swipe par bhi video turant chalta hai.
-const PRELOAD_BEHIND = 1;
-const PRELOAD_AHEAD = 2; // SPEED: agle 2 videos ke player pehle se ready
+const PRELOAD_BEHIND = 1; // INSTA: peeche ka 1 video ready -> upar scroll karte hi turant chalta hai
+const PRELOAD_AHEAD = 2; // SMOOTH: current video ke time agle 2 videos background me ready
 
+// STALL FIX: minBufferForPlayback 1 sec par network ek baar slow hote hi video
+// 1 sec chalke dobara ruk jata tha (ruk-ruk ke chalna). Active video ko 2 sec
+// ka buffer + bada forward buffer diya -> rebuffer ke baad bhi smooth chalta hai.
 const ACTIVE_BUFFER = {
-  maxBufferBytes: 20 * 1024 * 1024,
-  preferredForwardBufferDuration: 10,
-  minBufferForPlayback: 1, // SPEED: 2 -> 1, video jaldi shuru
+  maxBufferBytes: 30 * 1024 * 1024,
+  preferredForwardBufferDuration: 20,
+  minBufferForPlayback: 2,
   prioritizeTimeOverSizeThreshold: true,
 };
 // Agla video (index+1): itna buffer ki scroll karte hi turant chal pade
@@ -510,8 +521,8 @@ const NEAR_BUFFER = {
 // Door ke videos (pichla / index+2, +3): shuru ke ~3 sec,
 // taaki active video ka bandwidth na khayein
 const PRELOAD_BUFFER = {
-  maxBufferBytes: 4 * 1024 * 1024,
-  preferredForwardBufferDuration: 4,
+  maxBufferBytes: 6 * 1024 * 1024,
+  preferredForwardBufferDuration: 6,
   minBufferForPlayback: 1,
   prioritizeTimeOverSizeThreshold: true,
 };
@@ -577,7 +588,7 @@ const VideoSeekBar = memo(function VideoSeekBar() {
       } catch (e) {}
     };
     tick();
-    const t = setInterval(tick, 100);
+    const t = setInterval(tick, 250); // PERF: 100ms -> 250ms (JS thread halka)
     return () => clearInterval(t);
   }, [target]);
 
@@ -656,6 +667,40 @@ const VideoSeekBar = memo(function VideoSeekBar() {
   );
 });
 
+// ======================================================
+// AUDIO FIX: sab feed players ek registry me.
+// Swipe par pichhle video ki awaaz React re-render ka intezaar nahi
+// karti -> turant (synchronously) band/mute hoti hai.
+// ======================================================
+const feedPlayers = new Map<string, any>();
+
+// activeId ke alawa sab players turant pause + mute
+const silenceOthers = (activeId: string | null | undefined) => {
+  feedPlayers.forEach((p, id) => {
+    if (id === activeId) return;
+    try { p.muted = true; } catch (e) {}
+    try { p.pause(); } catch (e) {}
+  });
+};
+
+// INSTA: swipe par naya video React re-render ka wait kiye bina TURANT chalu
+// (registry ke player par seedha unmute + play)
+const playActiveNow = (activeId: string | null | undefined) => {
+  if (!activeId) return;
+  const p = feedPlayers.get(activeId);
+  if (!p) return;
+  try { p.muted = false; } catch (e) {}
+  try { p.play(); } catch (e) {}
+};
+
+// Sirf awaaz band/chalu (video wahi rahe) -> swipe ke beech me halka
+const setActiveMuted = (activeId: string | null | undefined, muted: boolean) => {
+  if (!activeId) return;
+  const p = feedPlayers.get(activeId);
+  if (!p) return;
+  try { p.muted = muted; } catch (e) {}
+};
+
 const FeedVideo = memo(
 function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
 
@@ -676,6 +721,15 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
       try { p.currentTime = resumeAtRef.current; } catch (e) {}
     }
   });
+
+  // Registry me daalo / hatao
+  useEffect(() => {
+    if (!videoId) return;
+    feedPlayers.set(videoId, player);
+    return () => {
+      if (feedPlayers.get(videoId) === player) feedPlayers.delete(videoId);
+    };
+  }, [player, videoId]);
 
   // Agar player ready hone par position set nahi hui to ek baar aur seek
   useEffect(() => {
@@ -722,7 +776,18 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
         if (c > 0) videoPositions[videoId] = c;
       } catch (e) {}
     };
-    const t = setInterval(save, 1000);
+    // WATCHDOG: active video data ready hone ke baad bhi ruka ho (audio focus /
+    // decoder hiccup / rebuffer ke baad) to khud dobara play karo.
+    // Tap se pause hone par `active` false hota hai, isliye wo yahan nahi chhedta.
+    const nudge = () => {
+      try {
+        if (player.status === 'readyToPlay' && !player.playing) player.play();
+      } catch (e) {}
+    };
+    const t = setInterval(() => {
+      save();
+      nudge();
+    }, 1000);
     return () => {
       clearInterval(t);
       save();
@@ -756,8 +821,11 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
   // isi wajah se screen badalne / tap-pause ke baad video shuru se start hota tha.)
   useEffect(() => {
     if (active) {
+      try { player.muted = false; } catch (e) {}
       player.play();
     } else {
+      // inactive: pehle mute (turant), phir pause
+      try { player.muted = true; } catch (e) {}
       player.pause();
     }
   }, [active, player]);
@@ -793,10 +861,13 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
         allowsFullscreen={false}
         allowsPictureInPicture={false}
         contentFit="cover"
+        // Android: SurfaceView scroll me black flash deta hai -> TextureView
+        surfaceType="textureView"
+        useExoShutter={false}
         onFirstFrameRender={() => setReady(true)}
       />
       {!ready && thumbnail ? (
-        <ExpoImage source={thumbnail} style={StyleSheet.absoluteFill} contentFit="cover" cachePolicy="memory-disk" pointerEvents="none" />
+        <ExpoImage source={thumbnail} style={StyleSheet.absoluteFill} contentFit="cover" cachePolicy="memory-disk" priority="high" transition={0} pointerEvents="none" />
       ) : null}
       {isBuffering ? (
         <View style={styles.bufferSpinner} pointerEvents="none">
@@ -820,6 +891,224 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
 
 );
 
+
+// ==========================================================
+// TabGrid — Follow (live row + 2 column grid) / Discover (masonry)
+// Alag memo component: For You feed se koi lena-dena nahi, isliye
+// feed ki speed par asar nahi padta. Sirf thumbnail images dikhte hain
+// (koi video player nahi) -> bahut halka.
+// ==========================================================
+const GRID_GAP = 6;
+const GRID_PAD = 8;
+const GRID_TOP = Platform.OS === 'ios' ? 112 : 92;
+const GRID_BOTTOM = 96;
+const DISC_RATIOS = [1.0, 1.5, 1.25, 1.65, 1.1, 1.4];
+
+const timeAgo = (t) => {
+  const ms = Date.now() - tsMsGlobal(t);
+  if (!t || ms < 0) return '';
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} mins ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} hrs ago`;
+  return `${Math.floor(h / 24)} days ago`;
+};
+const tsMsGlobal = (t) => {
+  if (!t) return 0;
+  if (typeof t === 'number') return t;
+  if (t.toMillis) return t.toMillis();
+  if (t.seconds) return t.seconds * 1000;
+  return 0;
+};
+
+const GridTile = memo(function GridTile({ item, idx, w, h, meta, onPress }) {
+  return (
+    <TouchableOpacity
+      activeOpacity={0.85}
+      onPress={() => onPress(idx)}
+      style={{ width: w, height: h, borderRadius: 10, overflow: 'hidden', backgroundColor: '#1a1a1a', marginBottom: GRID_GAP }}
+    >
+      {item.thumbnail ? (
+        <ExpoImage
+          source={item.thumbnail}
+          style={StyleSheet.absoluteFill}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          recyclingKey={item.id}
+          transition={0}
+        />
+      ) : null}
+      {meta ? (
+        <View style={styles.gridMeta}>
+          <ExpoImage
+            source={item.profile || AVATAR_FALLBACK}
+            style={styles.gridAvatar}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+          />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.gridName} numberOfLines={1}>{item.username || 'user'}</Text>
+            <Text style={styles.gridTime} numberOfLines={1}>{timeAgo(item.createdAt)}</Text>
+          </View>
+        </View>
+      ) : (
+        <Text style={styles.gridCaption} numberOfLines={1}>{item.username || ''}</Text>
+      )}
+    </TouchableOpacity>
+  );
+});
+
+const LiveBubble = memo(function LiveBubble({ st, onPress }) {
+  const isLive = st.type === 'video';
+  return (
+    <TouchableOpacity style={styles.liveBubble} activeOpacity={0.8} onPress={() => onPress(st)}>
+      <View style={[styles.liveRing, !isLive && { borderColor: '#ff8a00' }]}>
+        <ExpoImage source={st.img} style={styles.liveImg} contentFit="cover" cachePolicy="memory-disk" />
+        <View style={[styles.liveBadge, { backgroundColor: isLive ? '#FFEB00' : '#ff8a00' }]}>
+          <Text style={styles.liveBadgeText}>{isLive ? 'LIVE' : 'CHAT'}</Text>
+        </View>
+      </View>
+      <Text style={styles.liveName} numberOfLines={1}>{st.host}</Text>
+    </TouchableOpacity>
+  );
+});
+
+const TabGrid = memo(function TabGrid({ mode, data, live, loading, onOpen, onLive }) {
+  const isFollow = mode === 'follow';
+  const tileW = (width - GRID_PAD * 2 - GRID_GAP) / 2;
+  const open = useCallback((idx) => onOpen(data, idx), [onOpen, data]);
+
+  const empty = !loading && data.length === 0;
+  const emptyView = empty ? (
+    <Text style={styles.gridEmpty}>
+      {isFollow ? 'Jin ko aap follow karte ho unke videos yahan dikhenge' : 'Abhi koi video nahi mila'}
+    </Text>
+  ) : loading && data.length === 0 ? (
+    <ActivityIndicator size="large" color="#FFEB00" style={{ marginTop: 60 }} />
+  ) : null;
+
+  const liveRow = live && live.length > 0 ? (
+    <FlatList
+      data={live}
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      keyExtractor={(l) => l.id}
+      renderItem={({ item }) => <LiveBubble st={item} onPress={onLive} />}
+      contentContainerStyle={{ paddingHorizontal: GRID_PAD, paddingBottom: 10 }}
+      initialNumToRender={6}
+      windowSize={3}
+    />
+  ) : null;
+
+  if (isFollow) {
+    return (
+      <View style={styles.gridRoot}>
+        <FlatList
+          data={data}
+          numColumns={2}
+          keyExtractor={(v) => v.id}
+          renderItem={({ item, index }) => (
+            <GridTile item={item} idx={index} w={tileW} h={tileW * 1.55} meta onPress={open} />
+          )}
+          columnWrapperStyle={{ justifyContent: 'space-between', paddingHorizontal: GRID_PAD }}
+          ListHeaderComponent={<View>{liveRow}</View>}
+          ListEmptyComponent={emptyView}
+          contentContainerStyle={{ paddingTop: GRID_TOP, paddingBottom: GRID_BOTTOM }}
+          showsVerticalScrollIndicator={false}
+          initialNumToRender={6}
+          maxToRenderPerBatch={4}
+          windowSize={5}
+          removeClippedSubviews
+        />
+      </View>
+    );
+  }
+
+  // DISCOVER: 2 column masonry (alag-alag height). Max 30 tile = halka.
+  const cols = [[], []];
+  const items = data.slice(0, 30);
+  items.forEach((it, i) => {
+    const ratio = DISC_RATIOS[i % DISC_RATIOS.length];
+    cols[i % 2].push({ it, i, h: tileW * ratio });
+  });
+  return (
+    <View style={styles.gridRoot}>
+      <ScrollView
+        contentContainerStyle={{ paddingTop: GRID_TOP, paddingBottom: GRID_BOTTOM, paddingHorizontal: GRID_PAD }}
+        showsVerticalScrollIndicator={false}
+      >
+        {emptyView}
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+          {cols.map((col, ci) => (
+            <View key={ci} style={{ width: tileW }}>
+              {col.map(({ it, i, h }) => (
+                <GridTile key={it.id} item={it} idx={i} w={tileW} h={h} meta={false} onPress={open} />
+              ))}
+            </View>
+          ))}
+        </View>
+      </ScrollView>
+    </View>
+  );
+});
+
+// ==========================================================
+// FeedTopBar — Live icon + Discover / Follow / For You
+// memo: sirf activeTab badalne par re-render, scroll/like par nahi
+// ==========================================================
+const FeedTopBar = memo(function FeedTopBar({
+  activeTab,
+  onLive,
+  onDiscover,
+  onFollow,
+  onForYou,
+}) {
+  return (
+    <View style={styles.topBar} pointerEvents="box-none">
+      <TouchableOpacity
+        style={styles.topLiveBtn}
+        onPress={onLive}
+        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+        activeOpacity={0.7}
+      >
+        <Ionicons name="radio-outline" size={26} color="#ffffff" style={styles.iconShadow} />
+      </TouchableOpacity>
+
+      <View style={styles.topTabsRow}>
+        <TouchableOpacity
+          style={styles.topTabBtn}
+          onPress={onDiscover}
+          hitSlop={{ top: 12, bottom: 12, left: 6, right: 6 }}
+          activeOpacity={0.7}
+        >
+          <Text style={[styles.topTabText, activeTab === 'discover' && styles.topTabTextActive]}>Discover</Text>
+          {activeTab === 'discover' && <View style={styles.topTabUnderline} />}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.topTabBtn}
+          onPress={onFollow}
+          hitSlop={{ top: 12, bottom: 12, left: 6, right: 6 }}
+          activeOpacity={0.7}
+        >
+          <Text style={[styles.topTabText, activeTab === 'follow' && styles.topTabTextActive]}>Follow</Text>
+          {activeTab === 'follow' && <View style={styles.topTabUnderline} />}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.topTabBtn}
+          onPress={onForYou}
+          hitSlop={{ top: 12, bottom: 12, left: 6, right: 6 }}
+          activeOpacity={0.7}
+        >
+          <Text style={[styles.topTabText, activeTab === 'foryou' && styles.topTabTextActive]}>For You</Text>
+          {activeTab === 'foryou' && <View style={styles.topTabUnderline} />}
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+});
 
 // ======================================================
 // UploadStatusBadge — background reel-upload progress pill
@@ -870,6 +1159,77 @@ const UploadStatusBadge = memo(function UploadStatusBadge() {
 
 
 // ======================================================
+// SMOOTH LIKE: heart bounce + double-tap heart pop animation
+// (native driver -> JS thread block hone par bhi smooth)
+// ======================================================
+const LikeButton = memo(function LikeButton({ liked, count, videoId, onLike }) {
+  const scale = useRef(new Animated.Value(1)).current;
+  const prevLiked = useRef(liked);
+
+  useEffect(() => {
+    if (liked !== prevLiked.current) {
+      scale.stopAnimation();
+      scale.setValue(liked ? 0.6 : 0.85);
+      Animated.spring(scale, {
+        toValue: 1,
+        friction: liked ? 3 : 5,
+        tension: liked ? 180 : 200,
+        useNativeDriver: true,
+      }).start();
+      prevLiked.current = liked;
+    }
+  }, [liked, scale]);
+
+  return (
+    <TouchableOpacity
+      style={styles.iconBox}
+      activeOpacity={0.8}
+      onPress={() => onLike(videoId)}
+    >
+      <Animated.View style={{ transform: [{ scale }] }}>
+        <Ionicons
+          name="heart"
+          size={44}
+          color={liked ? "#ff2d55" : "#ffffff"}
+          style={styles.iconShadow}
+        />
+      </Animated.View>
+      <Text style={styles.iconText}>{formatCount(count)}</Text>
+    </TouchableOpacity>
+  );
+});
+
+const HeartPopup = memo(function HeartPopup() {
+  const scale = useRef(new Animated.Value(0.3)).current;
+  const opacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.spring(scale, {
+        toValue: 1.2,
+        friction: 4,
+        tension: 140,
+        useNativeDriver: true,
+      }),
+      Animated.sequence([
+        Animated.timing(opacity, { toValue: 1, duration: 80, useNativeDriver: true }),
+        Animated.delay(480),
+        Animated.timing(opacity, { toValue: 0, duration: 260, useNativeDriver: true }),
+      ]),
+    ]).start();
+  }, [scale, opacity]);
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[styles.heartPopup, { opacity, transform: [{ scale }] }]}
+    >
+      <Ionicons name="heart" size={140} color="#ff004f" />
+    </Animated.View>
+  );
+});
+
+// ======================================================
 // VideoItem — memoized single feed row
 // ======================================================
 // FIX (biggest perf change): pehle ye poora JSX seedha renderItem
@@ -888,6 +1248,8 @@ const UploadStatusBadge = memo(function UploadStatusBadge() {
 // baaki sab as-is rahenge. Isse scroll aur like/follow tap dono
 // kaafi zyada smooth feel honge.
 const VideoItem = memo(function VideoItem({
+  itemHeight,
+  fullHeight,
   item,
   index,
   shouldRenderVideo,
@@ -895,6 +1257,7 @@ const VideoItem = memo(function VideoItem({
   isVideoActive,
   isCurrent,
   showHeart,
+  heartTick,
   showStar,
   starCount,
   isLiked,
@@ -921,7 +1284,7 @@ const VideoItem = memo(function VideoItem({
   return (
     <TouchableOpacity
       activeOpacity={1}
-      style={{ width, height: height, backgroundColor: '#000' }}
+      style={{ width, height: itemHeight, backgroundColor: '#000' }}
       onPress={() => onItemPress(item.id)}
     >
 
@@ -935,26 +1298,25 @@ const VideoItem = memo(function VideoItem({
           thumbnail={item.thumbnail}
         />
       ) : item.thumbnail ? (
-        <ExpoImage source={item.thumbnail} style={{ width, height, backgroundColor: "#000" }} contentFit="cover" cachePolicy="memory-disk" />
+        <ExpoImage source={item.thumbnail} style={{ width, height: itemHeight, backgroundColor: "#000" }} contentFit="cover" cachePolicy="memory-disk" priority="high" transition={0} />
       ) : (
         <View
           style={{
             width,
-            height,
+            height: itemHeight,
             backgroundColor: "#000"
           }}
         />
       )}
 
-      {showHeart && (
-        <View style={styles.heartPopup}>
-          <Ionicons
-            name="heart"
-            size={140}
-            color="#ff004f"
-          />
-        </View>
-      )}
+      {/* OVERLAY LAYER: poori screen ki height (fullHeight) ka, upar se aligned.
+          Isse caption / icons / heart bilkul pehle wali jagah par rehte hain,
+          chahe video ab nav bar ke upar tak hi ho. */}
+      <View
+        pointerEvents="box-none"
+        style={{ position: 'absolute', top: 0, left: 0, width, height: fullHeight }}
+      >
+      {showHeart && <HeartPopup key={heartTick} />}
 
       {showStar && (
         <View
@@ -1084,6 +1446,8 @@ const VideoItem = memo(function VideoItem({
         <View style={[styles.iconBox, { marginBottom: 20 }]}>
           <TouchableOpacity onPress={() => onOpenProfile(item.userId)}>
             <ExpoImage source={item.profile || AVATAR_FALLBACK} style={[styles.profileImage, hostLive && styles.profileImageLive]} contentFit="cover" cachePolicy="memory-disk" />
+            {/* FRAME: video banane wale ka frame (level / agency / admin / user ki choice) */}
+            <AvatarFrame uid={item.userId} size={50} animated={false} />
             {hostLive && (
               <View style={styles.liveTagFeed} pointerEvents="none">
                 <Text style={styles.liveTagFeedText}>LIVE</Text>
@@ -1105,10 +1469,12 @@ const VideoItem = memo(function VideoItem({
           )}
         </View>
 
-        <TouchableOpacity style={styles.iconBox} onPress={() => onLike(item.id)}>
-          <Ionicons name="heart" size={44} color={isLiked ? "#ff2d55" : "#ffffff"} style={styles.iconShadow} />
-          <Text style={styles.iconText}>{formatCount(item.likes)}</Text>
-        </TouchableOpacity>
+        <LikeButton
+          liked={isLiked}
+          count={item.likes}
+          videoId={item.id}
+          onLike={onLike}
+        />
 
         <TouchableOpacity
           style={styles.iconBox}
@@ -1136,6 +1502,7 @@ const VideoItem = memo(function VideoItem({
           />
           <Text style={styles.starUpText}>StarUp</Text>
         </TouchableOpacity>
+      </View>
       </View>
     </TouchableOpacity>
   );
@@ -1210,6 +1577,7 @@ const CommentRow = memo(function CommentRow({
           cachePolicy="memory-disk"
           transition={0}
         />
+        <AvatarFrame uid={item.userId} size={40} animated={false} />
       </TouchableOpacity>
 
       <View style={cs.body}>
@@ -1241,13 +1609,16 @@ const CommentRow = memo(function CommentRow({
           <View style={cs.repliesBox}>
             {replyList.map((reply) => (
               <View key={reply.id} style={cs.replyRow}>
-                <ExpoImage
-                  source={{ uri: reply.profilePic || AVATAR_FALLBACK }}
-                  style={cs.replyAvatar}
-                  contentFit="cover"
-                  cachePolicy="memory-disk"
-                  transition={0}
-                />
+                <View style={{ width: 30, height: 30 }}>
+                  <ExpoImage
+                    source={{ uri: reply.profilePic || AVATAR_FALLBACK }}
+                    style={cs.replyAvatar}
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                    transition={0}
+                  />
+                  <AvatarFrame uid={reply.userId} size={30} animated={false} />
+                </View>
 
                 <View style={cs.replyBody}>
                   <View style={cs.nameRow}>
@@ -1282,13 +1653,102 @@ const CommentRow = memo(function CommentRow({
 });
 
 
+// ======================================================
+// BottomBar — nav bar alag memo component
+// Sirf pathname / onLayout badalne par re-render; swipe, like, comment par nahi.
+// ======================================================
+const BottomBar = memo(function BottomBar({ pathname, onLayout }) {
+  const router = useRouter();
+  const color = (p) => (pathname === p ? '#3498db' : '#ffffff');
+
+  return (
+    <View style={styles.bottomSection} onLayout={onLayout}>
+      <VideoSeekBar />
+      <View style={styles.bottomNavContainer}>
+        <View style={styles.bottomNav}>
+
+          {/* HOME */}
+          <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/')}>
+            <Ionicons name="home-outline" size={26} color={color('/')} />
+          </TouchableOpacity>
+
+          {/* SEARCH */}
+          <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/explore')}>
+            <Ionicons name="search" size={26} color={color('/explore')} />
+          </TouchableOpacity>
+
+          {/* CENTER PLUS BUTTON */}
+          <View style={styles.navItem}>
+            <TouchableOpacity style={styles.plusBtn} onPress={() => router.push('/camera')}>
+              <Text style={styles.plusText}>+</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* MESSAGES */}
+          <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/messages')}>
+            <Ionicons name="chatbubble-ellipses" size={26} color={color('/messages')} />
+          </TouchableOpacity>
+
+          {/* PROFILE */}
+          <TouchableOpacity
+            style={styles.navItem}
+            onPress={() => {
+              if (!auth.currentUser) {
+                router.push('/login');
+                return;
+              }
+              router.replace('/profile');
+            }}
+          >
+            <Ionicons name="person-outline" size={26} color={color('/profile')} />
+          </TouchableOpacity>
+
+        </View>
+      </View>
+      <View style={styles.bottomFill} />
+    </View>
+  );
+});
+
 export default function BottomNav() {
   const router = useRouter();
   const pathname = usePathname();
 const [showSharePopup, setShowSharePopup] = useState(false);
 const [selectedShareVideo, setSelectedShareVideo] = useState(null);
   const [videos, setVideos] = useState([]);
+  // TOP BAR tab: 'foryou' (default) | 'follow' | 'discover' (discover alag screen kholta hai)
+  const [feedTab, setFeedTab] = useState('foryou');
+  const feedTabRef = useRef('foryou');
+  const showGridRef = useRef(false);
+  const [showGrid, setShowGrid] = useState(false); // Follow / Discover grid screen
+  const [gridLoading, setGridLoading] = useState(false);
+  const [followList, setFollowList] = useState([]);
+  const [discoverList, setDiscoverList] = useState([]);
+  const [liveList, setLiveList] = useState([]);
+  const forYouSnapRef = useRef(null);
+  const gridTimeRef = useRef({ follow: 0, discover: 0 });
   const [loading, setLoading] = useState(true);
+  // VIDEO CHIPKAO: app ke bottom nav (bottomSection) ki asli height naapte hain.
+  // Video list = poori screen - nav ki height, yaani video nav ke theek upar
+  // tak aata hai, aur do videos ke beech koi black patti nahi bachti.
+  // Nav bar ko chhua nahi gaya -- sirf uski height padhi jaati hai.
+  const [fullH, setFullH] = useState(height);
+  const [navH, setNavH] = useState(Platform.OS === 'ios' ? 115 : 105);
+  const listH = Math.max(1, Math.round(fullH - navH));
+  const listHRef = useRef(listH);
+  listHRef.current = listH;
+  const onRootLayout = useCallback((e) => {
+    const h = Math.round(e.nativeEvent.layout.height);
+    if (h > 0) setFullH((p) => (p === h ? p : h));
+  }, []);
+  const onNavLayout = useCallback((e) => {
+    const h = Math.round(e.nativeEvent.layout.height);
+    if (h > 0) setNavH((p) => (p === h ? p : h));
+  }, []);
+  const getItemLayoutFn = useCallback(
+    (_data, index) => ({ length: listH, offset: listH * index, index }),
+    [listH]
+  );
   const [refreshing, setRefreshing] = useState(false);
   const [activeVideo, setActiveVideo] = useState(0);
   const [currentIndex,setCurrentIndex]=useState(0);
@@ -1318,6 +1778,8 @@ const commentInputRef = useRef(null);
 // ======================================================
 
 const likeFollowWindowRef = useRef("");
+const checkedLikesRef = useRef(new Set());
+const checkedFollowRef = useRef(new Set());
 
 useEffect(() => {
 
@@ -1365,9 +1827,11 @@ useEffect(() => {
       // 1. LIKES
       // ==================================================
 
+      // SPEED: sirf wahi ids jo pehle check nahi hue (window me 4/5 purane hote hain)
       const videoIds = nearbyVideos
         .map(video => video.id)
-        .filter(Boolean);
+        .filter(id => id && !checkedLikesRef.current.has(id));
+      videoIds.forEach(id => checkedLikesRef.current.add(id));
 
       if (videoIds.length > 0) {
 
@@ -1437,10 +1901,12 @@ useEffect(() => {
             .filter(
               userId =>
                 userId &&
-                userId !== user.uid
+                userId !== user.uid &&
+                !checkedFollowRef.current.has(userId)
             )
         )
       ];
+      userIds.forEach(u => checkedFollowRef.current.add(u));
 
 
       if (userIds.length > 0) {
@@ -1505,6 +1971,11 @@ useEffect(() => {
 
     } catch (error) {
 
+      // retry ho sake isliye checked se hata do
+      nearbyVideos.forEach(v => {
+        checkedLikesRef.current.delete(v.id);
+        checkedFollowRef.current.delete(v.userId);
+      });
       console.log(
         "Nearby Like/Following Error:",
         error
@@ -1533,6 +2004,7 @@ useEffect(() => {
 
 
   const [heartVideoId, setHeartVideoId] = useState(null);
+  const [heartTick, setHeartTick] = useState(0); // har double-tap par animation dobara chale
 const lastTap = useRef(null);
 const tapTimeout = useRef(null);
 const likeQueueRef = useRef({});
@@ -1555,6 +2027,13 @@ useEffect(() => {
 const commentAnim = useRef(new Animated.Value(height)).current;
 
 const keyboardHeight = useRef(new Animated.Value(0)).current;
+// Sheet ke saath backdrop bhi fade ho (pehle ekdam se dark ho jata tha)
+const commentBackdrop = commentAnim.interpolate({
+  inputRange: [0, height],
+  outputRange: [0.5, 0],
+  extrapolate: 'clamp',
+});
+const commentListRef = useRef(null);
 
 const [selectedVideoId, setSelectedVideoId] = useState(null);
 const commentTextRef = useRef('');
@@ -1624,6 +2103,39 @@ const closeComments = useCallback(() => {
     setCommentsLoading(false);
   });
 }, [commentAnim]);
+
+// Handle pakad ke neeche kheencho -> sheet band (finger ke saath chalti hai)
+const commentPan = useMemo(
+  () =>
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dy) > 4,
+      onPanResponderMove: (_e, g) => {
+        if (g.dy > 0) commentAnim.setValue(g.dy);
+      },
+      onPanResponderRelease: (_e, g) => {
+        if (g.dy > 120 || g.vy > 0.8) {
+          closeComments();
+        } else {
+          Animated.spring(commentAnim, {
+            toValue: 0,
+            bounciness: 0,
+            speed: 18,
+            useNativeDriver: true,
+          }).start();
+        }
+      },
+      onPanResponderTerminate: () => {
+        Animated.spring(commentAnim, {
+          toValue: 0,
+          bounciness: 0,
+          speed: 18,
+          useNativeDriver: true,
+        }).start();
+      },
+    }),
+  [commentAnim, closeComments]
+);
 
 const [currentUserData, setCurrentUserData] = useState({
   // name shuru me KHALI: "User" default se galat naam se comment jata tha
@@ -1911,6 +2423,7 @@ useEffect(() => {
 // Feed + current index yaad rakho (screen badal kar wapas aane par wahi video)
 useEffect(() => {
   if (videos.length === 0) return;
+  if (feedTabRef.current !== 'foryou') return; // grid se khuli list resume me save nahi hogi
   feedCache = { videos, index: currentIndex, savedAt: Date.now() };
 }, [videos, currentIndex]);
 
@@ -2187,6 +2700,7 @@ useEffect(() => {
 // PULL-TO-REFRESH (aur app wapas aane par auto-refresh)
 const refreshVideos = useCallback(async () => {
   if (refreshing) return;
+  if (feedTabRef.current !== 'foryou') return; // grid tabs ka refresh tab dobara tap se
   setRefreshing(true);
 
   try {
@@ -2253,6 +2767,7 @@ useEffect(() => {
 
 // LOAD MORE (background me, user ke last 4 video par pahunchne se pehle)
 const loadMoreVideos = useCallback(async () => {
+  if (feedTabRef.current !== 'foryou') return;
   if (loadingMoreRef.current) return;
   if (!hasMoreVideos) return;
 
@@ -2407,29 +2922,27 @@ useEffect(() => {
 
 useEffect(() => {
 
-  const show = Keyboard.addListener(
-    "keyboardDidShow",
-    (e) => {
+  const isIOS = Platform.OS === 'ios';
 
+  const show = Keyboard.addListener(
+    isIOS ? "keyboardWillShow" : "keyboardDidShow",
+    (e) => {
       Animated.timing(keyboardHeight,{
         toValue:e.endCoordinates.height,
-        duration:250,
-        useNativeDriver:false,
+        duration:isIOS ? (e.duration || 250) : 180,
+        useNativeDriver:true,
       }).start();
-
     }
   );
 
   const hide = Keyboard.addListener(
-    "keyboardDidHide",
-    ()=>{
-
+    isIOS ? "keyboardWillHide" : "keyboardDidHide",
+    (e)=>{
       Animated.timing(keyboardHeight,{
         toValue:0,
-        duration:250,
-        useNativeDriver:false,
+        duration:isIOS ? ((e && e.duration) || 250) : 180,
+        useNativeDriver:true,
       }).start();
-
     }
   );
 
@@ -2450,8 +2963,8 @@ useEffect(() => {
         Animated.spring(commentAnim,{
             toValue:0,
             useNativeDriver:true,
-            speed:15,
-            bounciness:4
+            speed:16,
+            bounciness:0
         }).start();
 
     } else {
@@ -2834,8 +3347,9 @@ const handleFollow = async (targetUserId) => {
 
 const handleDoubleTapLike = (videoId) => {
 
-  // Heart animation
+  // Heart animation (tick badalne se popup dobara mount -> animation replay)
   setHeartVideoId(videoId);
+  setHeartTick((t) => t + 1);
 
   if (heartTimeout.current) {
     clearTimeout(heartTimeout.current);
@@ -2873,6 +3387,222 @@ const handleFollowRef = useRef(handleFollow);
 handleFollowRef.current = handleFollow;
 const onFollow = useCallback((userId) => handleFollowRef.current(userId), []);
 
+// ==========================================================
+// TOP BAR actions + Follow / Discover grid data
+// (grid sirf tab load hota hai jab tab dabao; For You feed ko touch nahi)
+// ==========================================================
+const GRID_TTL_MS = 60 * 1000;
+const tsMs = (t) => {
+  if (!t) return 0;
+  if (typeof t === 'number') return t;
+  if (t.toMillis) return t.toMillis();
+  if (t.seconds) return t.seconds * 1000;
+  return 0;
+};
+
+const loadFollowGrid = useCallback(async (force) => {
+  const user = auth.currentUser;
+  if (!user) {
+    setFollowList([]);
+    setLiveList([]);
+    return;
+  }
+  if (!force && Date.now() - gridTimeRef.current.follow < GRID_TTL_MS) return;
+  gridTimeRef.current.follow = Date.now();
+  setGridLoading(true);
+  try {
+    const fSnap = await getDocs(
+      query(collection(db, "follows"), where("followerId", "==", user.uid), limit(60))
+    );
+    const ids = [];
+    fSnap.forEach((d) => {
+      const t = d.data()?.followingId || d.id.slice(user.uid.length + 1);
+      if (t) ids.push(t);
+    });
+    if (ids.length === 0) {
+      setFollowList([]);
+      setLiveList([]);
+      return;
+    }
+    const idSet = new Set(ids);
+
+    // videos (10-10 ke chunk, bina orderBy -> naya index nahi chahiye) + live rooms ek saath
+    const chunks = [];
+    for (let i = 0; i < ids.length; i += 10) chunks.push(ids.slice(i, i + 10));
+    const [snaps, roomsSnap] = await Promise.all([
+      Promise.all(
+        chunks.map((c) =>
+          getDocs(query(collection(db, "all_videos"), where("userId", "in", c), limit(20))).catch(() => null)
+        )
+      ),
+      getDocs(collection(db, "rooms")).catch(() => null),
+    ]);
+
+    const list = [];
+    snaps.forEach((sn) => {
+      if (!sn) return;
+      sn.forEach((docItem) => {
+        if (!isAllowedVideo(docItem.data())) return;
+        list.push(toVideo(docItem));
+      });
+    });
+    list.sort((a, b) => tsMs(b.createdAt) - tsMs(a.createdAt));
+    setFollowList(list.slice(0, 40));
+
+    // followed logon ke live rooms (video = LIVE, audio = CHAT)
+    const lives = [];
+    const now = Date.now();
+    if (roomsSnap) {
+      roomsSnap.forEach((d) => {
+        const r = d.data();
+        const st = String(r.status || '').toLowerCase().trim();
+        if (st === 'ended' || st === 'inactive' || st === 'closed') return;
+        if ((r.roomType || 'public') !== 'public') return;
+        const hb = tsMs(r.hostHeartbeat) || tsMs(r.lastHeartbeat);
+        if (hb && now - hb > 10 * 60 * 1000) return;
+        const hostId = r.hostId || r.seatsData?.seat_1?.userId;
+        if (!hostId || !idSet.has(hostId) || blockedRef.current.includes(hostId)) return;
+        lives.push({
+          id: d.id,
+          hostId,
+          host: r.hostName || r.host || 'User',
+          img: r.hostImg || r.profileImg || AVATAR_FALLBACK,
+          type: String(r.type || 'audio').toLowerCase(),
+          layout: String(r.roomLayout || 'chat').toLowerCase(),
+        });
+      });
+    }
+    setLiveList(lives);
+  } catch (e) {
+    console.log("Follow grid error:", e);
+    gridTimeRef.current.follow = 0;
+  } finally {
+    setGridLoading(false);
+  }
+}, []);
+
+const loadDiscoverGrid = useCallback(async (force) => {
+  if (!force && Date.now() - gridTimeRef.current.discover < GRID_TTL_MS) return;
+  gridTimeRef.current.discover = Date.now();
+  setGridLoading(true);
+  try {
+    const snap = await fetchVideoPage(null);
+    const list = [];
+    snap.forEach((docItem) => {
+      if (!isAllowedVideo(docItem.data())) return;
+      list.push(toVideo(docItem));
+    });
+    // halka sa mix (Fisher-Yates) taaki har baar same order na dikhe
+    for (let i = list.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [list[i], list[j]] = [list[j], list[i]];
+    }
+    setDiscoverList(list);
+  } catch (e) {
+    console.log("Discover grid error:", e);
+    gridTimeRef.current.discover = 0;
+  } finally {
+    setGridLoading(false);
+  }
+}, []);
+
+// For You ki list yaad rakho (grid se video kholne par feed list badalti hai)
+const saveForYouSnap = () => {
+  if (feedTabRef.current === 'foryou') {
+    forYouSnapRef.current = {
+      videos: videosRef.current,
+      index: currentIndexRef.current,
+    };
+  }
+};
+
+const onTopLive = useCallback(() => {
+  router.push('/all-live');
+}, []);
+
+const onTopDiscover = useCallback(() => {
+  if (feedTabRef.current === 'discover' && showGridRef.current) {
+    loadDiscoverGrid(true);
+    return;
+  }
+  saveForYouSnap();
+  feedTabRef.current = 'discover';
+  showGridRef.current = true;
+  setFeedTab('discover');
+  setShowGrid(true);
+  setPausedVideoId(null);
+  loadDiscoverGrid(false);
+}, [loadDiscoverGrid]);
+
+const onTopFollow = useCallback(() => {
+  if (feedTabRef.current === 'follow' && showGridRef.current) {
+    loadFollowGrid(true);
+    return;
+  }
+  saveForYouSnap();
+  feedTabRef.current = 'follow';
+  showGridRef.current = true;
+  setFeedTab('follow');
+  setShowGrid(true);
+  setPausedVideoId(null);
+  loadFollowGrid(false);
+}, [loadFollowGrid]);
+
+const onTopForYou = useCallback(() => {
+  if (feedTabRef.current === 'foryou') {
+    scrollRef.current?.scrollToOffset?.({ offset: 0, animated: true });
+    return;
+  }
+  const snap = forYouSnapRef.current;
+  feedTabRef.current = 'foryou';
+  showGridRef.current = false;
+  setFeedTab('foryou');
+  setShowGrid(false);
+  if (snap && snap.videos && snap.videos.length) {
+    const idx = Math.min(snap.index || 0, snap.videos.length - 1);
+    lastViewableIndexRef.current = idx;
+    lastViewableIdRef.current = snap.videos[idx]?.id;
+    initialIndexRef.current = idx;
+    setCurrentIndex(idx);
+    setActiveVideo(idx);
+    setMountIndex(idx);
+    setVideos(snap.videos);
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollToOffset?.({ offset: idx * listHRef.current, animated: false });
+    });
+  } else {
+    refreshRef.current?.();
+  }
+}, []);
+
+// Grid ka koi video tap kiya -> wahi list full-screen feed me, usi video se
+const onGridOpen = useCallback((list, idx) => {
+  if (!list || !list[idx]) return;
+  showGridRef.current = false;
+  setShowGrid(false);
+  lastViewableIndexRef.current = -1;
+  lastViewableIdRef.current = "";
+  initialIndexRef.current = idx;
+  setCurrentIndex(idx);
+  setActiveVideo(idx);
+  setMountIndex(idx);
+  setPausedVideoId(null);
+  setVideos(list);
+  requestAnimationFrame(() => {
+    scrollRef.current?.scrollToOffset?.({ offset: idx * listHRef.current, animated: false });
+  });
+}, []);
+
+const onGridLiveOpen = useCallback((st) => {
+  if (st.type === 'video') {
+    router.push({ pathname: '/videolive', params: { id: st.id, role: 'viewer' } });
+  } else if (st.layout === 'multiguest') {
+    router.push({ pathname: '/MultiGuestRoom', params: { id: st.id } });
+  } else {
+    router.push({ pathname: '/LiveRoom', params: { id: st.id, from: 'alllive', layout: st.layout } });
+  }
+}, []);
+
 const handleDoubleTapLikeRef = useRef(handleDoubleTapLike);
 handleDoubleTapLikeRef.current = handleDoubleTapLike;
 const onDoubleTapLike = useCallback((videoId) => handleDoubleTapLikeRef.current(videoId), []);
@@ -2883,7 +3613,7 @@ const onDoubleTapLike = useCallback((videoId) => handleDoubleTapLikeRef.current(
 const onItemPress = useCallback((videoId) => {
   const now = Date.now();
 
-  if (lastTap.current && (now - lastTap.current) < 300) {
+  if (lastTap.current && (now - lastTap.current) < 250) {
     if (tapTimeout.current) {
       clearTimeout(tapTimeout.current);
       tapTimeout.current = null;
@@ -2895,11 +3625,12 @@ const onItemPress = useCallback((videoId) => {
 
   lastTap.current = now;
 
+  // INSTA: 300 -> 250ms, pause jaldi lage, double-tap window bhi theek rahe
   tapTimeout.current = setTimeout(() => {
     tapTimeout.current = null;
     lastTap.current = null;
     setPausedVideoId(prev => (prev === videoId ? null : videoId));
-  }, 300);
+  }, 250);
 }, [onDoubleTapLike]);
 
 // router.push navigation ke liye bhi wahi ref-pattern, taaki
@@ -2930,7 +3661,10 @@ const onOpenMusic = useCallback((item) => {
 
 // Ye sab sirf useState setters call karte hain, jo hamesha stable
 // hote hain -- isliye empty dependency array safe hai.
-const onOpenComments = useCallback((item) => {
+const onOpenComments = useCallback(async (item) => {
+  // Owner ne comments lock kiye hon to panel nahi khulega
+  const chk = await checkVideoAction(item.userId, "comments");
+  if (!chk.ok) { Alert.alert("Comments Off", chk.message); return; }
   setComments([]);
   setReplies({});
   setExpandedReplies({});
@@ -2950,7 +3684,10 @@ const onOpenComments = useCallback((item) => {
   setShowComments(true);
 }, []);
 
-const onOpenShare = useCallback((item) => {
+const onOpenShare = useCallback(async (item) => {
+  // Owner ne share lock kiya ho to share popup nahi khulega
+  const chk = await checkVideoAction(item.userId, "share");
+  if (!chk.ok) { Alert.alert("Share Off", chk.message); return; }
   setSelectedShareVideo(item);
   setShowSharePopup(true);
 }, []);
@@ -3069,6 +3806,13 @@ const deleteComment = async (commentId) => {
 
           try {
 
+            const vid = selectedVideoId;
+            setVideos((prev) => prev.map((video) =>
+              video.id === vid
+                ? { ...video, commentsCount: Math.max(0, (video.commentsCount || 1) - 1) }
+                : video
+            ));
+
             await deleteDoc(
               doc(
                 db,
@@ -3093,6 +3837,13 @@ const deleteComment = async (commentId) => {
           } catch (error) {
 
             console.log(error);
+
+            // fail hua -> feed ka count wapas
+            setVideos((prev) => prev.map((video) =>
+              video.id === selectedVideoId
+                ? { ...video, commentsCount: (video.commentsCount || 0) + 1 }
+                : video
+            ));
 
             Alert.alert(
               "Error",
@@ -3126,6 +3877,13 @@ const deleteReply = async (commentId, replyId) => {
 
           try{
 
+
+            const vid = selectedVideoId;
+            setVideos((prev) => prev.map((video) =>
+              video.id === vid
+                ? { ...video, commentsCount: Math.max(0, (video.commentsCount || 1) - 1) }
+                : video
+            ));
 
             await deleteDoc(
               doc(
@@ -3182,6 +3940,8 @@ const postComment = async () => {
   }
 
   const text = commentTextRef.current.trim();
+
+  if (blockIfProfane(text)) return;
   const videoId = selectedVideoId;
   if (!text || !videoId) return;
 
@@ -3197,6 +3957,7 @@ const postComment = async () => {
   // Turant UI clear + count badhao (optimistic)
   clearCommentInput();
   Keyboard.dismiss();
+  commentListRef.current?.scrollToOffset?.({ offset: 0, animated: true });
   setVideos((prev) => prev.map((video) =>
     video.id === videoId
       ? { ...video, commentsCount: (video.commentsCount || 0) + 1 }
@@ -3269,6 +4030,8 @@ const postReply = async () => {
   if (!user) return;
 
   const text = commentTextRef.current.trim();
+
+  if (blockIfProfane(text)) return;
   const videoId = selectedVideoId;
   const parent = replyingTo;
   if (!text || !videoId || !parent) return;
@@ -3284,6 +4047,11 @@ const postReply = async () => {
   Keyboard.dismiss();
   setReplyingTo(null);
   setExpandedReplies((prev) => ({ ...prev, [parent.id]: true }));
+  setVideos((prev) => prev.map((video) =>
+    video.id === videoId
+      ? { ...video, commentsCount: (video.commentsCount || 0) + 1 }
+      : video
+  ));
 
   try {
     const batch = writeBatch(db);
@@ -3309,6 +4077,11 @@ const postReply = async () => {
 
     await batch.commit();
   } catch (error) {
+    setVideos((prev) => prev.map((video) =>
+      video.id === videoId
+        ? { ...video, commentsCount: Math.max(0, (video.commentsCount || 1) - 1) }
+        : video
+    ));
     console.log("Reply Error:", error);
   }
 };
@@ -3384,6 +4157,12 @@ const renderComment = useCallback(({ item: rawItem }) => {
     lastViewableIndexRef.current = index;
     lastViewableIdRef.current = viewableItems[0].item?.id;
 
+    // AUDIO FIX: state/re-render se pehle hi baaki sab videos band + mute
+    silenceOthers(viewableItems[0].item?.id);
+    // INSTA: React ka intezaar nahi -> naya video turant play
+    if (!showGridRef.current) playActiveNow(viewableItems[0].item?.id);
+    scrollMutedRef.current = false;
+
     // requestIdleCallback hata diya: wo play shuru hone me delay
     // karta tha. Ab video turant chalta hai.
     setCurrentIndex(index);
@@ -3394,7 +4173,7 @@ const renderComment = useCallback(({ item: rawItem }) => {
     if (mountTimeoutRef.current) clearTimeout(mountTimeoutRef.current);
     mountTimeoutRef.current = setTimeout(() => {
       setMountIndex(index);
-    }, 120); // SPEED: 250 -> 120, agla video jaldi ready
+    }, 60); // SPEED: 120 -> 60, agle 2 videos jaldi preload shuru
 
     const currentItem = viewableItems[0].item;
 
@@ -3422,6 +4201,29 @@ const renderComment = useCallback(({ item: rawItem }) => {
   }
 
 }).current;
+
+// WARM-UP: feed settle hone ke baad (4 sec) Discover + Follow ka data chupchap
+// cache me daal do -> un tabs par jaate hi TURANT khulte hain (loader nahi).
+// Interaction/idle ke baad chalta hai, isliye feed ki swipe par asar nahi.
+useEffect(() => {
+  let cancelled = false;
+  let timer: any = null;
+  const task = InteractionManager.runAfterInteractions(() => {
+    timer = setTimeout(() => {
+      if (cancelled) return;
+      try { Promise.resolve(loadDiscover(false)).catch(() => {}); } catch (e) {}
+      const u = auth.currentUser?.uid;
+      if (u) {
+        try { Promise.resolve(loadFollow(u, false)).catch(() => {}); } catch (e) {}
+      }
+    }, 4000);
+  });
+  return () => {
+    cancelled = true;
+    task.cancel();
+    if (timer) clearTimeout(timer);
+  };
+}, []);
 
 // Agle 10 videos ke thumbnails pehle se cache me -> swipe par black flash nahi
 useEffect(() => {
@@ -3462,13 +4264,15 @@ useEffect(() => {
 ]);
 
 
+const scrollMutedRef = useRef(false);
+
  const viewConfigRef = useRef({
   // 50%: video thoda pehle chalna shuru (60 me delay lagta tha)
   itemVisiblePercentThreshold: 50,
   minimumViewTime: 0,
+  waitForInteraction: false,
 });
 
-  const getIconColor = (path) => pathname === path ? '#3498db' : '#ffffff';
 
 
 
@@ -3489,11 +4293,12 @@ const renderItem = useCallback(({ item, index }) => {
   // compute ho rahe hain, aur heavy JSX ab memoized <VideoItem/>
   // ke andar hai. Isse sirf wahi row re-render hoti hai jiska
   // data sach me badla, poori list nahi.
-  const isVideoActive = isFocused && activeVideo === index && pausedVideoId !== item.id;
+  const isVideoActive = isFocused && !showGrid && activeVideo === index && pausedVideoId !== item.id;
   // Pichla 1 + agle 3 videos ke player pehle se ready rakho:
   // scroll karte hi video turant chalega (na ruka, na black screen).
   const shouldRenderVideo =
     isFocused &&
+    !showGrid &&
     (index === currentIndex ||
       (index >= mountIndex - PRELOAD_BEHIND && index <= mountIndex + PRELOAD_AHEAD));
   const nearVideo = index === currentIndex + 1;
@@ -3501,6 +4306,8 @@ const renderItem = useCallback(({ item, index }) => {
 
   return (
     <VideoItem
+      itemHeight={listH}
+      fullHeight={fullH}
       item={item}
       index={index}
       shouldRenderVideo={shouldRenderVideo}
@@ -3508,6 +4315,7 @@ const renderItem = useCallback(({ item, index }) => {
       isVideoActive={isVideoActive}
       isCurrent={isCurrent}
       showHeart={heartVideoId === item.id}
+      heartTick={heartVideoId === item.id ? heartTick : 0}
       showStar={starAnimationVideoId === item.id}
       starCount={starAnimationVideoId === item.id ? starAnimationCount : 0}
       isLiked={!!localLikes[item.id]}
@@ -3530,12 +4338,16 @@ const renderItem = useCallback(({ item, index }) => {
     />
   );
 },[
+  listH,
+  fullH,
   activeVideo,
   currentIndex,
   mountIndex,
   isFocused,
+  showGrid,
   pausedVideoId,
   heartVideoId,
+  heartTick,
   starAnimationVideoId,
   starAnimationCount,
   localLikes,
@@ -3554,8 +4366,12 @@ const renderItem = useCallback(({ item, index }) => {
   if (loading) return <View style={styles.loadingBox}><ActivityIndicator size="large" color="#f1c40f" /></View>;
 
   return (
-    <View style={styles.fullScreenOverlay}>
-      <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
+    <View style={styles.fullScreenOverlay} onLayout={onRootLayout}>
+      {/* STATUS BAR BLACK: charging / time / date wali top patti black.
+          translucent rakha taaki layout (top bar, icons) ki jagah na badle;
+          upar ek black strip status bar ki height ki lagayi hai. */}
+      <StatusBar translucent backgroundColor="#000000" barStyle="light-content" />
+      <View style={styles.statusBarBlack} pointerEvents="none" />
 
       {/* BACKGROUND REEL UPLOAD — top-left percent indicator.
           Standalone component below re-renders on its own; ye line
@@ -3566,11 +4382,12 @@ const renderItem = useCallback(({ item, index }) => {
 
      <FlatList
      ref={scrollRef}
+        style={{ height: listH, flexGrow: 0 }}
         data={videos}
         renderItem={renderItem}
-        keyExtractor={(item) => item.id}
-        pagingEnabled
-        snapToInterval={height}
+        keyExtractor={feedKeyExtractor}
+        pagingEnabled={Platform.OS === 'ios'}
+        snapToInterval={listH}
         snapToAlignment="start"
         decelerationRate="fast"
 disableIntervalMomentum={true}
@@ -3582,10 +4399,10 @@ disableIntervalMomentum={true}
         /* removeClippedSubviews video surface ko baar-baar detach/attach
            karta tha (black flash + atakna) -> band. */
         removeClippedSubviews={false}
-        windowSize={5}
+        windowSize={3}
         initialNumToRender={2}
         maxToRenderPerBatch={2}
-        updateCellsBatchingPeriod={30}
+        updateCellsBatchingPeriod={50}
         overScrollMode="never"
         directionalLockEnabled
 
@@ -3594,25 +4411,31 @@ disableIntervalMomentum={true}
 
 
 
-        getItemLayout={getFeedItemLayout}
+        getItemLayout={getItemLayoutFn}
         initialScrollIndex={initialIndexRef.current}
       />
 
 
 
-      {/* TOP TABS CONTAINER - LINKED WITH all-live SCREEN */}
-      <View style={styles.topTabsContainer}>
-          <TouchableOpacity onPress={() => router.push('/all-live')}>
-            <Text style={styles.tabText}>🎥 Live</Text>
-          </TouchableOpacity>
-          
-          <View style={styles.separator} />
-          
-          <TouchableOpacity>
-            <Text style={[styles.tabText, { fontWeight: 'bold' }]}>For You</Text>
-            <View style={styles.activeUnderline} />
-          </TouchableOpacity>
-      </View>
+      {/* TOP BAR: Live icon | Discover | Follow | For You (Tiki style) */}
+      <FeedTopBar
+        activeTab={feedTab}
+        onLive={onTopLive}
+        onDiscover={onTopDiscover}
+        onFollow={onTopFollow}
+        onForYou={onTopForYou}
+      />
+
+      {showGrid && (feedTab === 'follow' || feedTab === 'discover') && (
+        <TabGrid
+          mode={feedTab}
+          data={feedTab === 'follow' ? followList : discoverList}
+          live={feedTab === 'follow' ? liveList : null}
+          loading={gridLoading}
+          onOpen={onGridOpen}
+          onLive={onGridLiveOpen}
+        />
+      )}
 
   
 
@@ -3911,11 +4734,16 @@ starSending.current=false;
     right: 0,
     top: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'flex-end',
     zIndex: 9999,
   }}
 >
+
+  {/* Fading backdrop */}
+  <Animated.View
+    pointerEvents="none"
+    style={[StyleSheet.absoluteFill, { backgroundColor: '#000', opacity: commentBackdrop }]}
+  />
 
   {/* Background press */}
   <Pressable
@@ -3939,7 +4767,9 @@ translateY:commentAnim
 >
 
     {/* SIMPLE: sirf chhota handle -- caption / username / photo hata diya */}
-    <View style={styles.commentHandle} pointerEvents="none" />
+    <View style={styles.commentHandleArea} {...commentPan.panHandlers}>
+      <View style={styles.commentHandle} pointerEvents="none" />
+    </View>
 
 {commentsLoading ? (
   <View style={{ flex: 1, justifyContent: "center", alignItems: "center", marginTop: 20 }}>
@@ -3947,6 +4777,7 @@ translateY:commentAnim
   </View>
 ) : (
   <FlatList
+    ref={commentListRef}
     data={comments}
     renderItem={renderComment}
     keyExtractor={commentKeyExtractor}
@@ -3986,10 +4817,13 @@ translateY:Animated.multiply(keyboardHeight,-1)
 
 
 
-      <Image
-        source={{ uri: currentUserData.photo }}
-        style={styles.commentProfile}
-      />
+      <View style={{ width: 35, height: 35, marginRight: 10 }}>
+        <Image
+          source={{ uri: currentUserData.photo }}
+          style={[styles.commentProfile, { marginRight: 0 }]}
+        />
+        <AvatarFrame uid={auth.currentUser?.uid} size={35} animated={false} />
+      </View>
 
     <TextInput
     ref={commentInputRef}
@@ -4035,63 +4869,25 @@ translateY:Animated.multiply(keyboardHeight,-1)
 )}
 
 
-      <View style={styles.bottomSection}>
-        <VideoSeekBar />
-        <View style={styles.bottomNavContainer}>
-          <View style={styles.bottomNav}>
-            
-            {/* HOME */}
-            <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/')}>
-              <Ionicons name="home-outline" size={26} color={getIconColor('/')} />
-            </TouchableOpacity>
-
-            {/* SEARCH */}
-            <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/explore')}>
-              <Ionicons name="search" size={26} color={getIconColor('/explore')} />
-            </TouchableOpacity>
-
-            {/* CENTER PLUS BUTTON */}
-            <View style={styles.navItem}>
-              <TouchableOpacity style={styles.plusBtn} onPress={() => router.push('/camera')}>
-                <Text style={styles.plusText}>+</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* MESSAGES TAB (Synced Icon Style) */}
-            <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/messages')}>
-              <Ionicons name="chatbubble-ellipses" size={26} color={getIconColor('/messages')} />
-            </TouchableOpacity>
-
-            {/* PROFILE */}
-         <TouchableOpacity
-  style={styles.navItem}
-  onPress={() => {
-    const user = auth.currentUser;
-
-    if (!user) {
-      router.push('/login');
-      return;
-    }
-
-    router.replace('/profile');
-  }}
->
-  <Ionicons
-    name="person-outline"
-    size={26}
-    color={getIconColor('/profile')}
-  />
-</TouchableOpacity>
-
-          </View>
-        </View>
-        <View style={styles.bottomFill} />
-      </View>
+      <BottomBar pathname={pathname} onLayout={onNavLayout} />
     </View>
   );
 }
 
+const STATUS_BAR_H =
+  Platform.OS === 'android' ? (StatusBar.currentHeight || 28) : 50;
+
 const styles = StyleSheet.create({
+  statusBarBlack: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: STATUS_BAR_H,
+    backgroundColor: '#000000',
+    zIndex: 6,
+    elevation: 6,
+  },
   uploadBadge: {
     position: 'absolute',
     top: Platform.OS === 'ios' ? 55 : 40,
@@ -4131,8 +4927,7 @@ const styles = StyleSheet.create({
   loadingBox: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
   fullScreenOverlay: { flex: 1, backgroundColor: '#000' },
   video: {
-  width: '100%',
-  height: '89%',
+  ...StyleSheet.absoluteFillObject,
 },
   overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.1)' },
 
@@ -4223,6 +5018,8 @@ backgroundColor:"#fff",
   profileImage: { width: 50, height: 50, borderRadius: 18, borderWidth: 1.5, borderColor: '#ffffff' },
   profileImageLive: { borderWidth: 3, borderColor: '#FFD700' },
   liveTagFeed: {
+    zIndex: 30,        // frame (zIndex 5) ke UPAR dikhe
+    elevation: 30,     // Android me bhi upar
     position: 'absolute',
     top: -7,
     alignSelf: 'center',
@@ -4261,6 +5058,26 @@ zIndex:9999,
 
   starImage: { width: 65, height: 65, resizeMode: 'contain' },
   starUpText: { color: '#fffef7', fontSize: 13, fontWeight: 'bold', marginTop: 0, textShadowColor: 'rgba(0,0,0,0.6)', textShadowOffset: {width: 1, height: 1}, textShadowRadius: 2 },
+  gridRoot: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, backgroundColor: '#000', zIndex: 5 },
+  gridMeta: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', padding: 8, backgroundColor: 'rgba(0,0,0,0.35)' },
+  gridAvatar: { width: 26, height: 26, borderRadius: 13, marginRight: 6, backgroundColor: '#333' },
+  gridName: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  gridTime: { color: 'rgba(255,255,255,0.75)', fontSize: 10 },
+  gridCaption: { position: 'absolute', left: 8, bottom: 6, right: 8, color: '#fff', fontSize: 11, fontWeight: '600', textShadowColor: 'rgba(0,0,0,0.8)', textShadowRadius: 3 },
+  gridEmpty: { color: 'rgba(255,255,255,0.8)', fontSize: 15, textAlign: 'center', marginTop: 120, paddingHorizontal: 40 },
+  liveBubble: { alignItems: 'center', marginRight: 12, width: 70 },
+  liveRing: { width: 64, height: 64, borderRadius: 32, borderWidth: 2.5, borderColor: '#FFEB00', justifyContent: 'center', alignItems: 'center' },
+  liveImg: { width: 54, height: 54, borderRadius: 27, backgroundColor: '#333' },
+  liveBadge: { position: 'absolute', bottom: -6, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 8 },
+  liveBadgeText: { color: '#000', fontSize: 9, fontWeight: '800' },
+  liveName: { color: '#fff', fontSize: 11, marginTop: 8 },
+  topBar: { position: 'absolute', top: Platform.OS === 'ios' ? 62 : 42, left: 0, right: 0, height: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
+  topLiveBtn: { position: 'absolute', left: 16, top: 6, width: 30, height: 28, justifyContent: 'center', alignItems: 'center' },
+  topTabsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
+  topTabBtn: { marginHorizontal: 14, alignItems: 'center' },
+  topTabText: { color: 'rgba(255,255,255,0.75)', fontSize: 17, fontWeight: '700', textShadowColor: 'rgba(0,0,0,0.8)', textShadowRadius: 3, textShadowOffset: { width: 0, height: 1 } },
+  topTabTextActive: { color: '#ffffff' },
+  topTabUnderline: { width: 26, height: 3, backgroundColor: '#FFEB00', marginTop: 3, borderRadius: 2 },
   topTabsContainer: { position: 'absolute', top: Platform.OS === 'ios' ? 50 : 30, width: width, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', zIndex: 10 },
   tabText: { color: '#ffffff', fontSize: 18, marginHorizontal: 15, textShadowColor: 'rgba(0,0,0,0.8)', textShadowRadius: 3 },
   activeUnderline: { width: 30, height: 3, backgroundColor: '#ffffff', alignSelf: 'center', marginTop: 2, borderRadius: 2 },
@@ -4296,6 +5113,11 @@ borderTopLeftRadius:25,
 
 borderTopRightRadius:25,
 overflow:'hidden',
+},
+commentHandleArea: {
+  width: '100%',
+  paddingTop: 2,
+  paddingBottom: 12,
 },
 commentHandle: {
   alignSelf: 'center',

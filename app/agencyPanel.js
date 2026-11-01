@@ -40,6 +40,7 @@ import { callApi } from "../utils/api";
 import { Ionicons } from "@expo/vector-icons";
 
 import * as ImagePicker from "expo-image-picker";
+import { uploadImage } from "../utils/uploadImage";
 
 import useIsAdmin from "./useIsAdmin";
 
@@ -319,6 +320,11 @@ setShowCreate(true);
 
           try {
 
+            let logoUrl = logo;
+            if (logoUrl && !/^https?:\/\//i.test(logoUrl)) {
+              logoUrl = await uploadImage(logoUrl, "agency");
+            }
+
             if (editingAgency) {
 
               await updateDoc(
@@ -326,7 +332,8 @@ setShowCreate(true);
                 {
                   agencyName,
                   ownerName,
-                  logo,
+                  logo: logoUrl,
+                  agencyLogo: logoUrl,
                 }
               );
 
@@ -359,7 +366,8 @@ setShowCreate(true);
                   ownerName,
                   ownerUsername,
                   ownerUserId,
-                  logo,
+                  logo: logoUrl,
+                  agencyLogo: logoUrl,
                   totalMembers: 0,
                   totalStars: 0,
                   status: "active",

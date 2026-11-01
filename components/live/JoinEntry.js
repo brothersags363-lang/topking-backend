@@ -11,6 +11,8 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import LevelFrame from '../LevelFrame';
+import { useFrameInfo } from '../adminFrames';
+import { entryMinLevel } from './entryCatalog';
 import UserTick from '../UserTick';
 
 const { width, height } = Dimensions.get('window');
@@ -1028,26 +1030,52 @@ const ws = StyleSheet.create({
 // PUBLIC COMPONENT
 // ============================================================
 const JoinEntry = ({ data, variant = 'auto', onDone }) => {
-  if (!data) return null;
-  const v = pickVariant(variant, data.level || 1);
-  const k = data._k;
+  // User ki Settings wali pasand (entry hatani / doosri entry chuni) yahan lagti hai.
+  const uid = data ? data.senderId : undefined;
+  const info = useFrameInfo(uid);
+  const key = data ? data._k : undefined;
+
+  // User doc aane tak thoda ruko (warna entry shuru hoke beech me gayab ho sakti hai).
+  const [waited, setWaited] = useState(false);
+  useEffect(() => {
+    setWaited(false);
+    const t = setTimeout(() => setWaited(true), 1200);
+    return () => clearTimeout(t);
+  }, [key]);
+  const ready = !uid || info.loaded || waited;
+  const hidden = !!(data && ready && info.entryOff);
+
+  // entry band hai -> banner turant saaf (warna agli entry atak jati hai)
+  useEffect(() => {
+    if (hidden && onDone) onDone();
+  }, [hidden, key]);
+
+  if (!data || !ready || hidden) return null;
+
+  const lvl = Math.max(Number(data.level) || 1, Number(info.level) || 0);
+  let chosen = variant;
+  // variant 'auto' ho tabhi user ki choice chale; choice wahi jo uske level se mili ho
+  if ((!variant || variant === 'auto') && info.entryChoice && lvl >= entryMinLevel(info.entryChoice)) {
+    chosen = info.entryChoice;
+  }
+  const v = pickVariant(chosen, lvl);
 
   return (
     <View pointerEvents="none" style={styles.layer}>
       {ENTRY_CFG[v] ? (
-        <ImageEntry key={k} kind={v} data={data} onDone={onDone} />
+        <ImageEntry key={key} kind={v} data={data} onDone={onDone} />
       ) : v === 'lv10' ? (
-        <SilverEntry key={k} data={data} onDone={onDone} />
+        <SilverEntry key={key} data={data} onDone={onDone} />
       ) : v === 'lv20' ? (
-        <GoldEntry key={k} data={data} onDone={onDone} />
+        <GoldEntry key={key} data={data} onDone={onDone} />
       ) : v === 'lv30' ? (
-        <PinkEntry key={k} data={data} onDone={onDone} />
+        <PinkEntry key={key} data={data} onDone={onDone} />
       ) : v === 'lv40' ? (
-        <DiamondEntry key={k} data={data} onDone={onDone} />
+        <DiamondEntry key={key} data={data} onDone={onDone} />
       ) : v === 'lv50' ? (
-        <LegendEntry key={k} data={data} onDone={onDone} />
+        <LegendEntry key={key} data={data} onDone={onDone} />
       ) : (
-        <SlideEntry key={k} data={data} onDone={onDone} />
+        <SlideEntry key={key} data={data} onDone={onDone} />
       )}
     </View>
   );

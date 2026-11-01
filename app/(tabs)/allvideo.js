@@ -1,3 +1,5 @@
+import { blockIfProfane } from "../../utils/guardText";
+import { checkVideoAction } from "../../utils/videoLocks";
 import { notifyVideoLike } from "../../utils/pushNotify";
 import React, {
   useCallback,
@@ -59,6 +61,7 @@ import { videoLink } from '../../utils/shareLinks';
 
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import UserTick, { isFaceVerified } from '../../components/UserTick';
+import { AvatarFrame } from '../../components/FramedAvatar';
 
 import {
   useFocusEffect,
@@ -152,7 +155,7 @@ const DOUBLE_TAP_MS = 260;
 // Kitne aage ke videos ke thumbnails prefetch honge
 const PREFETCH_AHEAD = 3;
 
-const VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 70 };
+const VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 50, minimumViewTime: 0 };
 
 const keyExtractor = (item) => item.id;
 
@@ -487,6 +490,8 @@ const VideoItem = React.memo(
               source={{ uri: item.profile || DEFAULT_AVATAR }}
               style={styles.profileImage}
             />
+            {/* FRAME: video banane wale ka frame */}
+            <AvatarFrame uid={item.userId} size={50} animated={false} />
           </TouchableOpacity>
         </View>
 
@@ -1235,7 +1240,10 @@ export default function App() {
     [router]
   );
 
-  const openComments = useCallback((item) => {
+  const openComments = useCallback(async (item) => {
+    // Owner ne comments lock kiye hon to panel nahi khulega
+    const chk = await checkVideoAction(item.userId, 'comments');
+    if (!chk.ok) { Alert.alert('Comments Off', chk.message); return; }
     // Purana data hata do, loader dikhao
     setComments([]);
     setReplies({});
@@ -1247,7 +1255,10 @@ export default function App() {
     setShowComments(true);
   }, []);
 
-  const openShare = useCallback((item) => {
+  const openShare = useCallback(async (item) => {
+    // Owner ne share lock kiya ho to share popup nahi khulega
+    const chk = await checkVideoAction(item.userId, 'share');
+    if (!chk.ok) { Alert.alert('Share Off', chk.message); return; }
     setSelectedShareVideo(item);
     setShowSharePopup(true);
   }, []);
@@ -1394,6 +1405,7 @@ export default function App() {
 
     const text = commentText.trim();
 
+    if (blockIfProfane(text)) return;
     setCommentText('');
     Keyboard.dismiss();
 
@@ -1425,6 +1437,8 @@ export default function App() {
     if (!replyText.trim()) return;
 
     const text = replyText.trim();
+
+    if (blockIfProfane(text)) return;
     const targetCommentId = replyCommentId;
 
     setReplyText('');

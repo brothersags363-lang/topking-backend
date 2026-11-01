@@ -1,3 +1,4 @@
+import { blockIfProfane } from '../utils/guardText';
 import React, { useState, useEffect, useCallback, memo } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TextInput, 
@@ -15,6 +16,7 @@ import {
 } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 import UserTick from '../components/UserTick';
+import { AvatarFrame } from '../components/FramedAvatar';
 
 // PERF FIX: pehle renderComment component ke andar tha, isliye har render
 // (jaise TextInput me type karte waqt) par naya function ban raha tha aur
@@ -23,7 +25,10 @@ import UserTick from '../components/UserTick';
 const CommentRow = memo(function CommentRow({ item }) {
   return (
     <View style={styles.commentCard}>
-      <Image source={{ uri: item.profilePic }} style={styles.avatar} />
+      <View style={{ width: 38, height: 38, marginRight: 0 }}>
+        <Image source={{ uri: item.profilePic }} style={styles.avatar} />
+        <AvatarFrame uid={item.userId} size={38} animated={false} />
+      </View>
       <View style={styles.commentContent}>
         <View style={styles.commentHeader}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-start' }}>
@@ -86,6 +91,7 @@ export default function CommentsScreen() {
   const postComment = useCallback(async () => {
     const user = auth.currentUser;
     if (!user || !commentText.trim()) return;
+    if (blockIfProfane(commentText)) return;
     const textToSend = commentText;
     setCommentText(''); 
     Keyboard.dismiss();
@@ -191,7 +197,7 @@ commentSheet: {
   title: { color: 'white', fontSize: 16, fontWeight: 'bold' },
   commentCard: { flexDirection: 'row', marginTop: 20 },
   avatar: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#333' },
-  commentContent: { flex: 1, marginLeft: 12 },
+  commentContent: { flex: 1, marginLeft: 16 },
   commentHeader: { flexDirection: 'row', alignItems: 'center' },
   usernameText: { color: 'white', fontSize: 13, fontWeight: 'bold' },
   timeText: { color: '#666', fontSize: 11, marginLeft: 8 },

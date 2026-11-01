@@ -60,6 +60,7 @@ import TopKingLogo from "../assets/images/topking-logo.png";
 
 import BottomNav from "../components/BottomNav";
 import FamilyCell from "../components/FamilyCell";
+import { AvatarFrame } from "../components/FramedAvatar";
 import { useLiveHost, openLiveRoom } from "../components/liveHosts";
 
 /* ------------------------------------------------------------------ */
@@ -353,11 +354,14 @@ const FollowRow = memo(function FollowRow({
         style={styles.followUserTap}
         onPress={() => onOpenProfile(item.id)}
       >
-        <FastImage
-          uri={item.profileImg}
-          fallback={AVATAR_FALLBACK}
-          style={styles.followAvatar}
-        />
+        <View style={styles.followAvatarWrap}>
+          <FastImage
+            uri={item.profileImg}
+            fallback={AVATAR_FALLBACK}
+            style={styles.followAvatar}
+          />
+          <AvatarFrame uid={item.id} level={item.level} size={50} animated={false} />
+        </View>
 
         <View style={styles.followNameWrap}>
           <Text style={styles.followName} numberOfLines={1}>
@@ -1167,6 +1171,8 @@ export default function UserProfile() {
               fallback={AVATAR_FALLBACK}
               style={[styles.profileImage, liveRoom && styles.profileImageLive]}
             />
+            {/* FRAME: is user ka frame (level / agency / admin / uski apni choice) */}
+            <AvatarFrame uid={userId} level={userLevel} size={80} ratio={1.3} animated />
             {liveRoom && (
               <View style={styles.liveTagProfile} pointerEvents="none">
                 <Text style={styles.liveTagProfileText}>LIVE</Text>
@@ -1732,6 +1738,8 @@ const styles = StyleSheet.create({
   },
 
   liveTagProfile: {
+    zIndex: 30,          // frame (zIndex 5) ke UPAR dikhe
+    elevation: 30,       // Android me bhi upar
     position: "absolute",
     bottom: 25,
     alignSelf: "center",
@@ -2231,6 +2239,11 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
+  followAvatarWrap: {
+    width: 50,
+    height: 50,
+  },
+
   followAvatar: {
     width: 50,
     height: 50,
@@ -2238,7 +2251,7 @@ const styles = StyleSheet.create({
   },
 
   followNameWrap: {
-    marginLeft: 10,
+    marginLeft: 16,
     flex: 1,
     flexDirection: "row",
     alignItems: "center",

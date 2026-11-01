@@ -3,6 +3,7 @@ import {
   serverTimestamp, deleteField,
 } from "firebase/firestore";
 import { db } from "../app/firebaseConfig";
+import { uploadImage } from "./uploadImage";
 
 export const REVIEW_HOURS = 72;     // family request review time
 export const MAX_MEMBERS = 100;     // ek family me max members
@@ -80,46 +81,14 @@ export async function syncMyFamily(uid) {
     await updateDoc(uRef, {
       familyId: deleteField(), familyName: deleteField(), familyLogo: deleteField(), familyRole: deleteField(),
     });
+  } else if ((u.familyLogo || "") !== (fs.data().logo || "") || (u.familyName || "") !== (fs.data().name || "")) {
+    // leader ne logo / naam badla -> member ke users doc me bhi refresh
+    await updateDoc(uRef, { familyLogo: fs.data().logo || "", familyName: fs.data().name || "" });
   }
 }
 
 
-const withTimeout = (p, ms) =>
-  Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
-
-// Logo upload -> Cloudinary (wahi preset jo profile photo me chalta hai).
-// Firebase Storage bucket 404 de raha tha aur JS SDK React Native me blob error deta hai,
-// isliye server ya Firebase Storage ki zaroorat nahi.
-const CLOUD_NAME = "fzmrnrlz";
-const UPLOAD_PRESET = "topking_upload";
-
-async function cloudPost(body, headers) {
-  const res = await withTimeout(
-    fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, { method: "POST", headers, body }),
-    60000
-  );
-  const j = await res.json();
-  if (!res.ok || !j.secure_url) throw new Error(j?.error?.message || `http-${res.status}`);
-  return j.secure_url;
-}
-
-// base64 (ImagePicker base64:true) ho to wahi bhejta hai - file/FormData ke
-// "Network request failed" se bachne ke liye. Warna file FormData (profile jaisa).
-export async function uploadFamilyLogo(uri, uid, base64) {
-  const errors = [];
-  if (base64) {
-    try {
-      return await cloudPost(
-        JSON.stringify({ file: `data:image/jpeg;base64,${base64}`, upload_preset: UPLOAD_PRESET }),
-        { "Content-Type": "application/json" }
-      );
-    } catch (e) { errors.push("base64: " + (e?.message || "?")); console.log("LOGO UPLOAD FAIL base64", e?.message); }
-  }
-  try {
-    const data = new FormData();
-    data.append("file", { uri, type: "image/jpeg", name: "family_logo.jpg" });
-    data.append("upload_preset", UPLOAD_PRESET);
-    return await cloudPost(data);
-  } catch (e) { errors.push("file: " + (e?.message || "?")); console.log("LOGO UPLOAD FAIL file", e?.message); }
-  throw new Error("Logo upload nahi hua. Internet check karo.\n" + errors.join("\n"));
+// Logo upload -> apna server -> Cloudflare R2
+export async function uploadFamilyLogo(uri) {
+  return uploadImage(uri, "family");
 }

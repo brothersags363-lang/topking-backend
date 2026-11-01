@@ -25,6 +25,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import * as ScreenCapture from 'expo-screen-capture';
 import LottieView from 'lottie-react-native';
 import { WebView } from 'react-native-webview';
 import {
@@ -877,6 +878,20 @@ export default function MultiGuestRoom() {
   const hostId = room?.hostId || null;
   const isHost = !!myUid && hostId === myUid;
   useLiveBanGuard(isHost);
+
+  // ---------- Screenshot / screen-recording block (host ke alawa sab) ----------
+  // Android: FLAG_SECURE (screenshot fail, recording me black screen).
+  // iOS: screenshot / recording me content black.
+  useEffect(() => {
+    if (isHost) return;
+    const TAG = "multiguest-secure";
+    ScreenCapture.preventScreenCaptureAsync(TAG)
+      .then(() => console.log("SECURE: screen capture BLOCKED for viewer"))
+      .catch((e) => console.log("SECURE: block FAILED", e?.message || e));
+    return () => {
+      ScreenCapture.allowScreenCaptureAsync(TAG).catch(() => {});
+    };
+  }, [isHost]);
 
   const mods = room?.mods || {};
   const mutedUsers = room?.mutedUsers || {};

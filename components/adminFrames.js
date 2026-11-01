@@ -17,35 +17,68 @@ export const ADMIN_FRAMES = {
 
 export const ADMIN_FRAME_KEYS = Object.keys(ADMIN_FRAMES);
 
-// ---- uid -> adminFrame lookup (memory cache, har user ka 1 hi read) ----
+// ---- uid -> frame info lookup (memory cache, har user ka 1 hi read) ----
+// Ek hi read me user ka sab kuch aa jata hai: adminFrame, level, special/BD/agency,
+// aur user ki apni pasand (frameOff / frameChoice / entryOff / entryChoice).
+// Isse index, messages, profile, userProfile, live - sab jagah frame apne aap sahi lagta hai.
 const TTL_MS = 5 * 60 * 1000;
-const cache = new Map();      // uid -> { frame, t }
+const cache = new Map();      // uid -> { info, t }
 const inflight = new Map();   // uid -> Promise
 const listeners = new Map();  // uid -> Set<fn>
 
-function notify(uid, frame) {
+const EMPTY_INFO = Object.freeze({
+  loaded: false,   // true tab hota hai jab user doc padh liya gaya
+  adminFrame: null,
+  level: null,
+  special: null,
+  isBD: false,
+  agencyId: null,
+  frameOff: false,
+  frameChoice: null,
+  entryOff: false,
+  entryChoice: null,
+});
+
+const LOADED_EMPTY = Object.freeze({ ...EMPTY_INFO, loaded: true });
+
+function toInfo(data) {
+  if (!data) return LOADED_EMPTY;
+  const f = data.adminFrame;
+  return {
+    loaded: true,
+    adminFrame: f && ADMIN_FRAMES[f] ? f : null,
+    level: Number(data.level) || null,
+    special: data.special || null,
+    isBD: data.isBD === true,
+    agencyId: data.agencyId || null,
+    frameOff: data.frameOff === true,
+    frameChoice: data.frameChoice || null,
+    entryOff: data.entryOff === true,
+    entryChoice: data.entryChoice || null,
+  };
+}
+
+function notify(uid, info) {
   const set = listeners.get(uid);
-  if (set) set.forEach((fn) => fn(frame));
+  if (set) set.forEach((fn) => fn(info));
 }
 
 const MAX_RETRY = 3;
 
-function fetchFrame(uid, attempt = 0) {
+function fetchInfo(uid, attempt = 0) {
   if (inflight.has(uid)) return inflight.get(uid);
   const p = getDoc(doc(db, 'users', uid))
     .then((snap) => {
-      const f = snap.exists() ? snap.data()?.adminFrame : null;
-      const frame = f && ADMIN_FRAMES[f] ? f : null;
-      cache.set(uid, { frame, t: Date.now() });
-      notify(uid, frame);
-      return frame;
+      const info = snap.exists() ? toInfo(snap.data()) : LOADED_EMPTY;
+      cache.set(uid, { info, t: Date.now() });
+      notify(uid, info);
+      return info;
     })
     .catch(() => {
-      // FIX: fail hone par "frame nahi hai" cache NAHI karte (pehle null cache ho jata tha
-      // aur frame gayab rehta tha). Thodi der baad khud dobara try karte hain.
+      // fail hone par "frame nahi hai" cache NAHI karte; thodi der baad khud dobara try.
       if (attempt < MAX_RETRY) {
         setTimeout(() => {
-          if (listeners.has(uid)) fetchFrame(uid, attempt + 1);
+          if (listeners.has(uid)) fetchInfo(uid, attempt + 1);
         }, 1500 * (attempt + 1));
       }
       return undefined;
@@ -55,29 +88,51 @@ function fetchFrame(uid, attempt = 0) {
   return p;
 }
 
-// Admin panel se frame badalne par turant cache saaf karne ke liye
+// Admin panel / settings se frame badalne par turant cache saaf karne ke liye
 export function clearAdminFrameCache(uid) {
   if (uid) cache.delete(uid); else cache.clear();
 }
 
-// uid do -> us user ka admin frame key (ya null)
-export function useAdminFrame(uid) {
-  const [frame, setFrame] = useState(() => {
+// Settings screen kholte hi taaza info lao (cache ka 5 min wait nahi)
+export function refreshFrameInfo(uid) {
+  if (!uid) return Promise.resolve(undefined);
+  cache.delete(uid);
+  return fetchInfo(uid);
+}
+
+// Settings me user ne frame/entry badla -> cache turant update + sab screens ko khabar
+// (server ka jawab aane ke baad call karo, taaki sab jagah ek saath badal jaye)
+export function patchFrameInfo(uid, patch) {
+  if (!uid) return;
+  const c = cache.get(uid);
+  const info = { ...(c ? c.info : EMPTY_INFO), loaded: true, ...patch };
+  cache.set(uid, { info, t: Date.now() });
+  notify(uid, info);
+}
+
+// uid do -> us user ki poori frame info (ya EMPTY_INFO jab tak load ho raha ho)
+export function useFrameInfo(uid) {
+  const [info, setInfo] = useState(() => {
     const c = uid ? cache.get(uid) : null;
-    return c ? c.frame : null;
+    return c ? c.info : EMPTY_INFO;
   });
 
   useEffect(() => {
-    if (!uid || typeof uid !== 'string') { setFrame(null); return undefined; }
+    if (!uid || typeof uid !== 'string') { setInfo(EMPTY_INFO); return undefined; }
     const c = cache.get(uid);
-    // FIX: cache na ho to purane user ka frame mat rakho (seat par user badalne par galat frame dikhta tha)
-    setFrame(c ? c.frame : null);
-    if (!c || Date.now() - c.t > TTL_MS) fetchFrame(uid);
+    // cache na ho to purane user ka frame mat rakho (seat par user badalne par galat frame dikhta tha)
+    setInfo(c ? c.info : EMPTY_INFO);
+    if (!c || Date.now() - c.t > TTL_MS) fetchInfo(uid);
     let set = listeners.get(uid);
     if (!set) { set = new Set(); listeners.set(uid, set); }
-    set.add(setFrame);
-    return () => { set.delete(setFrame); if (!set.size) listeners.delete(uid); };
+    set.add(setInfo);
+    return () => { set.delete(setInfo); if (!set.size) listeners.delete(uid); };
   }, [uid]);
 
-  return frame;
+  return info;
+}
+
+// Purana naam (compat): sirf admin frame key chahiye ho to
+export function useAdminFrame(uid) {
+  return useFrameInfo(uid).adminFrame;
 }

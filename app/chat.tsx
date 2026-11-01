@@ -1,3 +1,4 @@
+import { blockIfProfane } from "../utils/guardText";
 // ============================================================================
 // chat.tsx  -  1-to-1 chat screen
 //
@@ -79,6 +80,7 @@ import {
   writeBatch,
 } from "firebase/firestore";
 import UserTick, { isFaceVerified } from '../components/UserTick';
+import { AvatarFrame } from '../components/FramedAvatar';
 
 // ==========================================
 // CONSTANTS
@@ -727,11 +729,15 @@ const MessageRow = memo(
             ]}
           >
             {!mine && (
-              <Image
-                source={{ uri: profileImg || DEFAULT_AVATAR }}
-                style={styles.chatAvatar}
-                resizeMethod="resize"
-              />
+              <View style={{ width: 35, height: 35, marginRight: 8 }}>
+                <Image
+                  source={{ uri: profileImg || DEFAULT_AVATAR }}
+                  style={[styles.chatAvatar, { marginRight: 0 }]}
+                  resizeMethod="resize"
+                />
+                {/* FRAME: samne wale ka frame */}
+                <AvatarFrame uid={item?.senderId} size={35} animated={false} />
+              </View>
             )}
 
             <View
@@ -1377,6 +1383,10 @@ export default function ChatScreen() {
 
     const outgoingText = String(text || "").trim();
     if (!outgoingText) return false;
+    if (blockIfProfane(outgoingText)) {
+      inputRef.current?.restore?.(outgoingText);
+      return false;
+    }
 
     const reply = replyingTo;
 
@@ -2288,6 +2298,10 @@ export default function ChatScreen() {
                 source={{ uri: profileImg || DEFAULT_AVATAR }}
                 style={styles.avatar}
               />
+              {/* avatar par marginLeft:10 hai, isliye frame ka box bhi 10 se shuru */}
+              <View pointerEvents="none" style={{ position: "absolute", left: 10, top: 0, width: 45, height: 45 }}>
+                <AvatarFrame uid={String(userId)} size={45} animated={false} />
+              </View>
             </TouchableOpacity>
 
             <View style={{ marginLeft: 10, flexShrink: 1 }}>

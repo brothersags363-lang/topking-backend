@@ -93,23 +93,40 @@ export async function uploadDpToR2(fileUri) {
   if (lower.endsWith(".png")) mime = "image/png";
   else if (lower.endsWith(".webp")) mime = "image/webp";
 
+  // 60 sec me jawab na aaye to rukna band (Render server soya ho / deploy chal raha ho
+  // to request latak jaati hai aur Save ka spinner hamesha ghoomta rehta tha)
+  const UPLOAD_TIMEOUT_MS = 60000;
+  let timer;
   let up;
   try {
-    up = await FileSystem.uploadAsync(API_BASE + "/upload-dp", fileUri, {
-      httpMethod: "POST",
-      uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-      fieldName: "media",
-      mimeType: mime,
-      headers: {
-        Authorization: "Bearer " + token,
-        ...(deviceId ? { "x-device-id": deviceId } : {}),
-      },
-    });
+    up = await Promise.race([
+      FileSystem.uploadAsync(API_BASE + "/upload-dp", fileUri, {
+        httpMethod: "POST",
+        uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+        fieldName: "media",
+        mimeType: mime,
+        headers: {
+          Authorization: "Bearer " + token,
+          ...(deviceId ? { "x-device-id": deviceId } : {}),
+        },
+      }),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("DP_TIMEOUT")), UPLOAD_TIMEOUT_MS);
+      }),
+    ]);
   } catch (err) {
+    console.log("DP upload failed:", err && err.message);
     const e = new Error("DP upload network error");
-    e.userMessage = "Internet check karo, photo upload nahi hui.";
+    e.userMessage =
+      err && err.message === "DP_TIMEOUT"
+        ? "Server jawab nahi de raha. Thodi der baad dobara try karo."
+        : "Internet check karo, photo upload nahi hui.";
     throw e;
+  } finally {
+    clearTimeout(timer);
   }
+
+  console.log("DP upload reply:", up.status, String(up.body).slice(0, 200));
 
   let data = null;
   try {

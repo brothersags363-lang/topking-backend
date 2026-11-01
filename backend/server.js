@@ -2002,6 +2002,72 @@ app.post(
 
 
 // =====================================================
+// DIRECT UPLOAD URL  (app -> R2 seedha, Render ke beech se nahi)
+//   POST /upload-url  -> { videoUploadUrl, videoUrl, thumbnailUploadUrl, thumbnailUrl }
+//   Client in URLs par PUT karta hai (Content-Type: video/mp4 / image/jpeg).
+//   Isse server par na video aati hai na ffmpeg chalta hai -> bahut tez.
+//   Zaroori: npm i @aws-sdk/s3-request-presigner
+// =====================================================
+let _presign = null;
+function getPresigner() {
+  if (_presign) return _presign;
+  try {
+    _presign = require("@aws-sdk/s3-request-presigner").getSignedUrl;
+  } catch (e) {
+    _presign = false;
+  }
+  return _presign;
+}
+
+app.post("/upload-url", uploadLimiter, verifyUser, async (req, res) => {
+  try {
+    const presign = getPresigner();
+    if (!presign) {
+      // package install nahi -> client purane /upload-video par chala jayega
+      return res.status(501).json({ success: false, error: "Direct upload not enabled" });
+    }
+
+    const base = String(process.env.R2_PUBLIC_URL || "").replace(/\/+$/, "");
+    const fileId = crypto.randomUUID();
+    const videoKey = `${fileId}.mp4`;
+    const thumbKey = `${fileId}.jpg`;
+    const EXPIRES = 2 * 60 * 60; // 2 ghante (badi video / dheemi net)
+
+    const [videoUploadUrl, thumbnailUploadUrl] = await Promise.all([
+      presign(
+        r2,
+        new PutObjectCommand({
+          Bucket: process.env.R2_BUCKET,
+          Key: videoKey,
+          ContentType: "video/mp4",
+        }),
+        { expiresIn: EXPIRES }
+      ),
+      presign(
+        r2,
+        new PutObjectCommand({
+          Bucket: process.env.R2_BUCKET,
+          Key: thumbKey,
+          ContentType: "image/jpeg",
+        }),
+        { expiresIn: EXPIRES }
+      ),
+    ]);
+
+    return res.json({
+      success: true,
+      videoUploadUrl,
+      videoUrl: `${base}/${videoKey}`,
+      thumbnailUploadUrl,
+      thumbnailUrl: `${base}/${thumbKey}`,
+    });
+  } catch (e) {
+    console.error("UPLOAD-URL ERROR:", e.message);
+    return res.status(500).json({ success: false, error: "Upload url nahi ban paya" });
+  }
+});
+
+// =====================================================
 // UPLOAD VIDEO
 // =====================================================
 
@@ -2060,7 +2126,8 @@ app.post(
 
 
       if (
-        userData.uploadStatus === true
+        userData.uploadStatus === true &&
+        Date.now() - Number(userData.uploadStartedAt || 0) < 15 * 60 * 1000
       ) {
 
         return res.status(409).json({
@@ -2091,6 +2158,8 @@ app.post(
       await userRef.update({
 
         uploadStatus: true,
+
+        uploadStartedAt: Date.now(),
 
       });
 
@@ -2964,6 +3033,61 @@ app.post(
       if (!res.headersSent) {
         return res.status(500).json({ success: false, error: "Photo upload nahi hui" });
       }
+    } finally {
+      if (file && file.path) fsp.unlink(file.path).catch(() => {});
+    }
+  }
+);
+
+// =====================================================
+// LOGO (agency / family) -> R2
+//   POST /upload-logo?kind=agency|family   (multipart, field name: "media")
+//   Key:  logos/{kind}/{uid}/{timestamp}_{uuid}.{jpg|png|webp}
+//   Har upload ka naya key -> cache me purani photo nahi atakti.
+// =====================================================
+const LOGO_KINDS = new Set(["agency", "family"]);
+
+app.post(
+  "/upload-logo",
+  uploadLimiter,
+  verifyUser,
+  runDpUpload,
+  async (req, res) => {
+    const file = req.file;
+    try {
+      if (!file) {
+        return res.status(400).json({ success: false, error: "Photo nahi mili" });
+      }
+      const kind = await sniffImageType(file.path);
+      if (!kind) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Sirf JPG, PNG ya WEBP photo chalegi." });
+      }
+      const folder = String((req.query && req.query.kind) || "");
+      if (!LOGO_KINDS.has(folder)) {
+        return res.status(400).json({ success: false, error: "Invalid kind" });
+      }
+
+      const uid = req.user.uid;
+      const key = `logos/${folder}/${uid}/${Date.now()}_${crypto.randomUUID()}${kind.ext}`;
+
+      await r2.send(
+        new PutObjectCommand({
+          Bucket: process.env.R2_BUCKET,
+          Key: key,
+          Body: fs.createReadStream(file.path),
+          ContentLength: file.size,
+          ContentType: kind.mime,
+          CacheControl: "public, max-age=31536000, immutable",
+        })
+      );
+
+      const base = String(process.env.R2_PUBLIC_URL).replace(/\/+$/, "");
+      return res.json({ success: true, key, url: `${base}/${key}` });
+    } catch (e) {
+      console.error("LOGO UPLOAD ERROR:", e);
+      return res.status(500).json({ success: false, error: "Photo upload nahi hui" });
     } finally {
       if (file && file.path) fsp.unlink(file.path).catch(() => {});
     }

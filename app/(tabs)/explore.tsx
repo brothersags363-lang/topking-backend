@@ -17,7 +17,7 @@ import {
   Dimensions,
   Platform,
   FlatList,
-  Image,
+  Image as RNImage,
   ActivityIndicator,
   BackHandler,
   RefreshControl,
@@ -47,10 +47,13 @@ import {
   runTransaction,
 } from 'firebase/firestore';
 import UserTick, { isFaceVerified } from '../../components/UserTick';
+import Image from '../../components/FastImage'; // disk+memory cache: avatars/thumbnails turant, flicker nahi
 
 const { width } = Dimensions.get('window');
 const BANNER_W = width - 32;
 const DEFAULT_AVATAR = 'https://avatar.iran.liara.run/public/65';
+// video thumbnail missing ho to avatar icon nahi, khali dark box dikhe
+const BLANK_THUMB = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
 /* ------------------------------------------------------------------ */
 /*  STATIC DATA (module level => never re-created on re-render)        */
@@ -652,7 +655,7 @@ const SearchVideoCard = memo(function SearchVideoCard({
       activeOpacity={0.85}
       onPress={() => onPress(item.id, index)}
     >
-      <Image source={{ uri: item.thumbnail }} style={styles.searchVideoImage} />
+      <Image source={{ uri: item.thumbnail }} fallback={BLANK_THUMB} style={styles.searchVideoImage} />
       <View style={styles.searchVideoShade} />
       <View style={styles.searchVideoMeta}>
         <Ionicons name="eye" size={11} color="#fff" />
@@ -682,7 +685,7 @@ const TopVideoCard = memo(function TopVideoCard({
       activeOpacity={0.85}
       onPress={() => onPress(item.id, index)}
     >
-      <Image source={{ uri: item.thumbnail }} style={styles.topVideoImage} />
+      <Image source={{ uri: item.thumbnail }} fallback={BLANK_THUMB} style={styles.topVideoImage} />
       <View style={styles.viewBox}>
         <Ionicons name="eye" size={11} color="#fff" />
         <Text style={styles.viewText}>{item.views || 0}</Text>
@@ -783,6 +786,10 @@ const AllVideosScreen = memo(function AllVideosScreen({
   );
 });
 
+// SPEED: har card par 512x512 / 40-frame animated WebP chalta tha (bahut bhaari).
+// false = static PNG frame (halka). Animation wapas chahiye to true kar do.
+const ANIMATE_FRAMES_IN_LIST = false;
+
 const GiftKingCard = memo(function GiftKingCard({
   item,
   index,
@@ -817,7 +824,7 @@ const GiftKingCard = memo(function GiftKingCard({
           <LevelFrame
             level={item.level}
             uid={item.id}
-            animated
+            animated={ANIMATE_FRAMES_IN_LIST}
             style={{ position: 'absolute', width: 110, height: 110, top: -15 }}
           />
         )}
@@ -939,7 +946,7 @@ const BannerSlider = memo(function BannerSlider({ paused }: { paused?: boolean }
       >
         {TRENDING_BANNERS_DATA.map((src, index) => (
           <View key={index} style={styles.pinkSliderBanner}>
-            <Image source={src} style={styles.bannerImageMainElement} resizeMode="cover" />
+            <RNImage source={src} style={styles.bannerImageMainElement} resizeMode="cover" />
           </View>
         ))}
       </ScrollView>

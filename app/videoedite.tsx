@@ -1,3 +1,4 @@
+import { blockIfProfane } from "../utils/guardText";
 import { notifyVideoLike } from "../utils/pushNotify";
 import React, { useEffect, useRef, useState } from 'react';
 
@@ -863,6 +864,7 @@ export default function App() {
 
     const text = commentText.trim();
 
+    if (blockIfProfane(text)) return;
     setCommentText('');
     Keyboard.dismiss();
 
@@ -894,6 +896,7 @@ export default function App() {
 
     const text = replyText.trim();
 
+    if (blockIfProfane(text)) return;
     setReplyText('');
     setReplyCommentId(null);
     Keyboard.dismiss();

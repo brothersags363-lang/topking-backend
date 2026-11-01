@@ -24,6 +24,7 @@ import {
 
 import { db } from "./firebaseConfig";
 import UserTick from "../components/UserTick";
+import { AvatarFrame } from "../components/FramedAvatar";
 
 const { width } = Dimensions.get("window");
 
@@ -174,6 +175,8 @@ const TopCard = memo(function TopCard({ user, rank, onPress }) {
             style={[styles.topAvatar, isFirst && styles.topAvatarBig]}
           />
         </LinearGradient>
+        {/* FRAME: is user ka frame (ring ke upar) */}
+        <AvatarFrame uid={user.uid} size={isFirst ? 70 : 60} ratio={1.3} animated={false} />
       </View>
 
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>

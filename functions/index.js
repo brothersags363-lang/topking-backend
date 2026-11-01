@@ -1,7 +1,8 @@
 'use strict';
 
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
-const { onDocumentWritten } = require('firebase-functions/v2/firestore');
+const { onDocumentCreated, onDocumentWritten } = require('firebase-functions/v2/firestore');
+const { findProfanity } = require('./profanity');
 const { initializeApp } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { randomInt, createHash } = require('node:crypto');
@@ -200,7 +201,7 @@ exports.settleLiveGame = onCall({ region: REGION, enforceAppCheck: false, maxIns
     if (balance < total) throw new HttpsError('failed-precondition', 'Not enough Stars for this bet.');
     const payout = payoutFor(game, bets, shared.winner);
     const balanceAfter = balance - total + payout;
-    tx.update(walletRef, { stars: balanceAfter, totalSpent: FieldValue.increment(total) });
+    tx.update(walletRef, { stars: balanceAfter });
     tx.create(settlementRef, {
       game, uid, roomId, roundId, bets, stake: total,
       winner: shared.winner, payout, round: shared.round || null,
@@ -210,38 +211,95 @@ exports.settleLiveGame = onCall({ region: REGION, enforceAppCheck: false, maxIns
   });
 });
 
-// ---------------- LEVEL = KHARCHE (spent) SE ----------------
-// Recharge / admin add-stars / balance se level NAHI badhta. Sirf totalSpent (gift + game me kharch hue stars).
-// Ye trigger wallet me kisi bhi write ke baad level ko sahi value par laa deta hai (koi aur code galat level
-// likh bhi de to yahi theek kar deta hai). Admin ne manual level diya ho (manualLevel) to usse neeche nahi jayega.
-const LEVEL_TABLE = [
-  [499000, 50], [440000, 49], [385000, 48], [310000, 47], [299000, 46],
-  [260000, 45], [210000, 44], [189000, 43], [155000, 42], [125000, 41],
-  [110000, 40], [101000, 39], [99000, 38], [89000, 37], [78000, 36],
-  [67000, 35], [51000, 34], [43000, 33], [31000, 32], [26000, 31],
-  [23000, 30], [19000, 29], [17000, 28], [14000, 27], [12300, 26],
-  [10500, 25], // <- purani table me 25 ka slot missing tha (level 25 kabhi nahi milta tha). Value apni marzi se badal sakte ho
-  [9000, 24], [8200, 23], [7200, 22], [6100, 21], [5050, 20],
-  [4000, 19], [3500, 18], [2800, 17], [2400, 16], [1900, 15],
-  [1600, 14], [1300, 13], [1150, 12], [1000, 11], [870, 10],
-  [670, 9], [540, 8], [360, 7], [280, 6], [200, 5], [160, 4],
-  [100, 3], [60, 2], [10, 1],
-];
-function spentToLevel(spent) {
-  for (const [min, lvl] of LEVEL_TABLE) if (spent >= min) return lvl;
-  return 0;
+// =====================================================================
+// GALI FILTER - SERVER BACKSTOP
+// App ke andar gali wala message pehle hi ruk jata hai (utils/profanity.js).
+// Ye functions un cases ke liye hain jahan koi modified/purani app se seedha Firestore me
+// gali likh de: aisa message/comment bante hi DELETE ho jata hai.
+//
+// NOTE: REGION wahi rakho jo aapke Firestore database ki location hai (Firestore trigger ke
+// liye zaroori). India (Mumbai) DB ho to REGION = 'asia-south1'.
+// Deploy:  firebase deploy --only functions
+// =====================================================================
+const MOD_OPTS = { region: REGION, maxInstances: 20 };
+
+async function removeIfProfane(event, field, { decrementVideoId } = {}) {
+  const snap = event.data;
+  if (!snap) return;
+  const d = snap.data() || {};
+  const text = d[field] || d.text || d.message || '';
+  if (typeof text !== 'string' || !text) return;
+  const hit = findProfanity(text);
+  if (!hit.found) return;
+  try {
+    await snap.ref.delete();
+    if (decrementVideoId) {
+      await db.collection('all_videos').doc(decrementVideoId)
+        .update({ commentsCount: FieldValue.increment(-1) }).catch(() => {});
+    }
+    if (d.senderId || d.userId) {
+      const uid = d.senderId || d.userId;
+      await db.collection('users').doc(uid)
+        .set({ profanityStrikes: FieldValue.increment(1), lastProfanityAt: Date.now() }, { merge: true })
+        .catch(() => {});
+    }
+    console.log('PROFANITY REMOVED:', snap.ref.path);
+  } catch (e) {
+    console.error('PROFANITY REMOVE FAILED:', snap.ref.path, e.message);
+  }
+}
+
+// Live room chat
+exports.moderateLiveChat = onDocumentCreated(
+  { ...MOD_OPTS, document: 'rooms/{roomId}/chats/{msgId}' },
+  (event) => removeIfProfane(event, 'message')
+);
+
+// Video comments
+exports.moderateComment = onDocumentCreated(
+  { ...MOD_OPTS, document: 'all_videos/{videoId}/comments/{commentId}' },
+  (event) => removeIfProfane(event, 'text', { decrementVideoId: event.params.videoId })
+);
+
+// Comment replies
+exports.moderateReply = onDocumentCreated(
+  { ...MOD_OPTS, document: 'all_videos/{videoId}/comments/{commentId}/replies/{replyId}' },
+  (event) => removeIfProfane(event, 'text', { decrementVideoId: event.params.videoId })
+);
+
+// Private chat (DM)
+exports.moderatePrivateChat = onDocumentCreated(
+  { ...MOD_OPTS, document: 'chats/{chatId}/messages/{msgId}' },
+  (event) => removeIfProfane(event, 'text')
+);
+
+// =====================================================================
+// LEVEL = KHARCH SE (wallets/{uid}.totalSpent)
+//  - Stars add / recharge / admin ne diye  -> level NAHI badhta
+//  - Stars kharch (gift, StarUp, etc.) hone par totalSpent badhta hai -> level badhta hai
+//  - Admin ne manualLevel diya ho to level uske neeche nahi girta
+// Client wallets.level likh nahi sakta (rules), sirf ye function likhta hai.
+// =====================================================================
+const LEVEL_STEPS = [10, 60, 100, 160, 200, 280, 360, 540, 670, 870, 1000, 1150, 1300, 1600, 1900, 2400, 2800, 3500, 4000, 5050, 6100, 7200, 8200, 9000, 10500, 12300, 14000, 17000, 19000, 23000, 26000, 31000, 43000, 51000, 67000, 78000, 89000, 99000, 101000, 110000, 125000, 155000, 189000, 210000, 260000, 299000, 310000, 385000, 440000, 499000]; // LEVEL_STEPS[i] = Level (i+1) ke liye kitna kharch chahiye
+
+function levelFromSpent(spent) {
+  const n = Number(spent) || 0;
+  let lv = 0;
+  for (let i = 0; i < LEVEL_STEPS.length; i++) {
+    if (n >= LEVEL_STEPS[i]) lv = i + 1; else break;
+  }
+  return lv;
 }
 
 exports.syncWalletLevel = onDocumentWritten(
-  { document: 'wallets/{uid}', region: REGION, maxInstances: 20 }, // region = apne Firestore database ki location jaisa rakho
+  { region: REGION, document: 'wallets/{uid}', maxInstances: 20 },
   async (event) => {
     const after = event.data && event.data.after;
     if (!after || !after.exists) return;
     const d = after.data() || {};
-    const spent = Number.isFinite(d.totalSpent) && d.totalSpent > 0 ? Math.floor(d.totalSpent) : 0;
-    const manual = Number.isFinite(d.manualLevel) ? Math.min(50, Math.max(0, Math.floor(d.manualLevel))) : 0;
-    const want = Math.max(spentToLevel(spent), manual);
-    if (d.level === want) return; // same hai -> dobara write nahi (loop nahi banega)
-    await after.ref.update({ level: want });
+    const manual = Math.min(50, Math.max(0, Math.floor(Number(d.manualLevel) || 0)));
+    const target = Math.max(levelFromSpent(d.totalSpent), manual);
+    if ((Number(d.level) || 0) === target) return; // koi change nahi -> dobara write nahi (loop nahi)
+    await after.ref.update({ level: target });
   }
 );

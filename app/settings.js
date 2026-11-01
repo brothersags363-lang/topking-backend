@@ -10,13 +10,15 @@ import {
   TouchableOpacity,
   BackHandler,
   Linking,
+  Switch,
 } from "react-native";
 
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
 import { onAuthStateChanged, signOut } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, updateDoc } from "firebase/firestore";
+import { patchMyVideoLocks } from "../utils/videoLocks";
 import { GoogleSignin } from "@react-native-google-signin/google-signin";
 
 // NOTE: settings.js app/ folder me hai to "./firebaseConfig" sahi hai,
@@ -47,6 +49,28 @@ function Row({ icon, label, onPress, color = "#fff", iconColor }) {
   );
 }
 
+// Ek toggle row (icon + title + switch)
+function ToggleRow({ icon, label, sub, value, onValueChange, disabled }) {
+  return (
+    <View style={styles.settingRow}>
+      <View style={styles.iconContainer}>
+        <Ionicons name={icon} size={25} color="#FFD700" />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.settingTitle, { color: "#fff" }]}>{label}</Text>
+        {!!sub && <Text style={{ color: "#888", fontSize: 12, marginTop: 2 }}>{sub}</Text>}
+      </View>
+      <Switch
+        value={value}
+        onValueChange={onValueChange}
+        disabled={disabled}
+        trackColor={{ false: "#333", true: "#b8860b" }}
+        thumbColor={value ? "#FFD700" : "#bbb"}
+      />
+    </View>
+  );
+}
+
 export default function Settings() {
 
   const router = useRouter();
@@ -55,6 +79,9 @@ export default function Settings() {
   const [isOfficial, setIsOfficial] = useState(false);
   const [hasAgency, setHasAgency] = useState(false);
   const [joinedAgency, setJoinedAgency] = useState(false);
+  const [commentsLocked, setCommentsLocked] = useState(false);
+  const [shareLocked, setShareLocked] = useState(false);
+  const [lockBusy, setLockBusy] = useState(false);
 
   // User ka role (BD / agency) padho
   useEffect(() => {
@@ -68,10 +95,30 @@ export default function Settings() {
         setIsOfficial(d.isOfficial === true);
         setHasAgency(d.agencyApproved === true);
         setJoinedAgency(!!d.agencyId);
+        setCommentsLocked(d.commentsLocked === true);
+        setShareLocked(d.shareLocked === true);
       } catch (e) {}
     });
     return () => unsub();
   }, []);
+
+  // Video Comments / Share lock (users/{uid}.commentsLocked / shareLocked)
+  const changeLock = async (field, value) => {
+    const uid = auth.currentUser && auth.currentUser.uid;
+    if (!uid || lockBusy) return;
+    const setLocal = field === "commentsLocked" ? setCommentsLocked : setShareLocked;
+    setLocal(value);            // turant dikhao (smooth)
+    setLockBusy(true);
+    try {
+      await updateDoc(doc(db, "users", uid), { [field]: value });
+      patchMyVideoLocks({ [field]: value });
+    } catch (e) {
+      setLocal(!value);         // fail hua to wapas
+      Alert.alert("Error", "Setting save nahi ho saki, dobara try karo");
+    } finally {
+      setLockBusy(false);
+    }
+  };
 
   // Logout
   const handleLogout = () => {
@@ -207,6 +254,13 @@ export default function Settings() {
           />
 
           <Row
+            icon="color-palette-outline"
+            iconColor="#FFD700"
+            label="Frames & Entries"
+            onPress={() => router.push("/framesEntries")}
+          />
+
+          <Row
             icon="gift-outline"
             iconColor="#FFD700"
             label="Rewards"
@@ -244,6 +298,24 @@ export default function Settings() {
             icon="business-outline"
             label="Agency Request"
             onPress={openAgencyRequest}
+          />
+
+          <ToggleRow
+            icon="chatbubble-outline"
+            label="Lock Comments"
+            sub="Aapke videos par koi comment nahi kar sakega"
+            value={commentsLocked}
+            disabled={lockBusy}
+            onValueChange={(v) => changeLock("commentsLocked", v)}
+          />
+
+          <ToggleRow
+            icon="arrow-redo-outline"
+            label="Lock Share"
+            sub="Aapke videos koi share nahi kar sakega"
+            value={shareLocked}
+            disabled={lockBusy}
+            onValueChange={(v) => changeLock("shareLocked", v)}
           />
 
           <Row

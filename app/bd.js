@@ -1,3 +1,4 @@
+import { uploadImage } from "../utils/uploadImage";
 import React, { useCallback, useEffect, useState } from "react";
 import {
   View,
@@ -90,19 +91,10 @@ export default function BDPage() {
     if (!result.canceled) setLogo(result.assets[0].uri);
   };
 
-  // Logo Cloudinary par upload (agency.js jaisa hi preset) -> https url
+  // Logo R2 par upload (apne server se) -> https url
   const uploadLogoIfNeeded = async () => {
-    if (!logo || !logo.startsWith("file://")) return logo;
-    const formData = new FormData();
-    formData.append("file", { uri: logo, type: "image/jpeg", name: "agency_logo.jpg" });
-    formData.append("upload_preset", "topking_upload");
-    const response = await fetch("https://api.cloudinary.com/v1_1/fzmrnrlz/image/upload", {
-      method: "POST",
-      body: formData,
-    });
-    const data = await response.json();
-    if (!response.ok || !data.secure_url) throw new Error("Logo upload nahi ho paya");
-    return data.secure_url;
+    if (!logo || /^https?:\/\//i.test(logo)) return logo;
+    return await uploadImage(logo, "agency");
   };
 
   const openCreate = () => {

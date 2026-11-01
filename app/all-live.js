@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, memo } from 'react';
 import { useBlockedIds } from '../utils/useBlockedIds';
 
 import {
@@ -21,7 +21,7 @@ import {
 
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRouter } from 'expo-router';
+import { useNavigation, useRouter } from 'expo-router';
 
 import BottomNav from "../components/BottomNav";
 
@@ -61,14 +61,20 @@ const STABLE_DEFAULT_BANNER = 'https://picsum.photos/seed/livecover/400/400';
 const STABLE_DEFAULT_AVATAR = 'https://avatar.iran.liara.run/public/65';
 
 // ------------------------------------
-// HEARTBEAT SETTINGS
+// SETTINGS
 // ------------------------------------
 
 // Host LiveRoom se har ~20 sec me `hostHeartbeat` likhta hai.
-// Timeout lamba hai taaki background/doze me live band na dikhe;
-// host live band kare to room doc delete hota hai.
 const HEARTBEAT_TIMEOUT = 10 * 60 * 1000;
 const HEARTBEAT_CHECK_INTERVAL = 30 * 1000;
+
+// List ko itni der me ek hi baar update karte hain (gifts ki barish me
+// har snapshot par re-render + re-sort nahi hota => taps turant chalte hain).
+const LIST_FLUSH_MS = 1500;
+
+// Ek tap ke baad itni der tak dusra tap ignore (4-5 baar tap = 4-5 LiveRoom
+// ek ke upar khul jate the, isi se app hang hota tha).
+const OPEN_LOCK_MS = 1500;
 
 // ------------------------------------
 // BANNERS
@@ -133,51 +139,142 @@ const isRoomAlive = (rawData) => {
 const validUrl = (v) =>
   typeof v === 'string' && v.trim().length > 10 ? v.trim() : null;
 
+// Sab se zyada star pane wala broadcaster upar; barabar ho to naya room pehle.
+const compareStreams = (a, b) => {
+  if (b.stars !== a.stars) return b.stars - a.stars;
+  return b.createdAt - a.createdAt;
+};
+
+const sameList = (a, b) => {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+};
+
+// Ek room doc -> card ka data (ya null agar dikhana nahi hai)
+const parseRoom = (docId, rawData, now) => {
+  if (!isRoomAlive(rawData)) return null;
+  if ((rawData.roomType || 'public') !== 'public') return null;
+
+  const roomTime = getTimeInMilliseconds(rawData.createdAt);
+  if (roomTime && now - roomTime > 24 * 60 * 60 * 1000) return null;
+
+  const hostImg = validUrl(rawData.hostImg) || validUrl(rawData.profileImg);
+  const cover =
+    validUrl(rawData.roomCover) ||
+    validUrl(rawData.cover) ||
+    validUrl(rawData.banner) ||
+    validUrl(rawData.roomImg) ||
+    hostImg ||
+    STABLE_DEFAULT_BANNER;
+
+  const hostId = rawData.hostId || rawData.seatsData?.seat_1?.userId || null;
+
+  // LiveRoom gift par `seatStars.{uid}` badhata hai -> host ke stars yahan se.
+  const stars = hostId ? Math.max(0, Number(rawData.seatStars?.[hostId]) || 0) : 0;
+
+  return {
+    id: docId,
+    hostId,
+    title: rawData.title || rawData.roomName || 'Live Broadcast',
+    host: rawData.hostName || rawData.host || 'User',
+    type: String(rawData.type || 'audio').toLowerCase(),
+    users: Math.max(0, Number(rawData.viewerCount) || 0),
+    stars,
+    roomCover: cover,
+    hostImg: hostImg || STABLE_DEFAULT_AVATAR,
+    createdAt: roomTime,
+    layout: String(rawData.roomLayout || 'chat').toLowerCase(),
+    seats: Object.keys(rawData.seatsData || {})
+      .sort((a, b) => Number(a.split('_')[1]) - Number(b.split('_')[1]))
+      .slice(0, 9)
+      .map((k) => {
+        const st = rawData.seatsData[k] || {};
+        return { img: validUrl(st.userImg), taken: !!st.userId, muted: !!st.isMuted };
+      }),
+  };
+};
+
+// Card ki "pehchan": sirf tab badalta hai jab card me kuch dikhne wala badle.
+const streamSig = (s) =>
+  [
+    s.id, s.hostId, s.title, s.host, s.type, s.users, s.stars, s.roomCover,
+    s.hostImg, s.createdAt, s.layout,
+    s.seats.map((x) => (x.taken ? '1' : '0') + (x.img || '')).join(','),
+  ].join('|');
+
+// ------------------------------------
+// SCREEN FOCUS (jab LiveRoom khula ho to ye screen kuch kaam na kare)
+// ------------------------------------
+
+const FocusContext = createContext(true);
+
+const useScreenFocused = () => {
+  const navigation = useNavigation();
+  const [focused, setFocused] = useState(() => {
+    try { return navigation.isFocused(); } catch (e) { return true; }
+  });
+
+  useEffect(() => {
+    const a = navigation.addListener('focus', () => setFocused(true));
+    const b = navigation.addListener('blur', () => setFocused(false));
+    return () => { a(); b(); };
+  }, [navigation]);
+
+  return focused;
+};
+
 // ------------------------------------
 // ONE SHARED "LIVE" PULSE
 // ------------------------------------
-// Har card ka apna animation loop banane ke bajay ek hi native-driver
-// loop sab cards share karte hain (kam CPU, smooth scroll).
 
 const livePulse = new Animated.Value(1);
 
 // ------------------------------------
-// LIVE CARD
+// VIEWER COUNT (video live = room ke andar ke log, real-time)
 // ------------------------------------
+// Sirf video cards ka apna chhota component: count badle to sirf ye pill
+// re-render hota hai, poora card nahi. Screen blur hone par listener band.
 
-// Video live: viewer count = jitne log abhi room ke andar hain (rooms/{id}/audience).
-// Viewer aaye -> +1, chala gaya -> -1, koi nahi -> 0. Sirf yahi card re-render hota hai.
-const useAudienceCount = (stream) => {
+const VideoViewerPill = memo(function VideoViewerPill({ roomId, hostId, fallback }) {
+  const focused = useContext(FocusContext);
   const [count, setCount] = useState(null);
-  const enabled = stream.type === 'video' && !!db;
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!db || !focused) return;
     const unsub = onSnapshot(
-      collection(db, 'rooms', stream.id, 'audience'),
+      collection(db, 'rooms', roomId, 'audience'),
       (snap) => {
         let n = 0;
         snap.forEach((d) => {
-          if (d.id !== stream.hostId) n++;
+          if (d.id !== hostId) n++;
         });
         setCount(n);
       },
       () => {}
     );
     return () => unsub();
-  }, [enabled, stream.id, stream.hostId]);
+  }, [focused, roomId, hostId]);
 
-  return count;
-};
+  return (
+    <View style={styles.viewerPill}>
+      <Ionicons name="people" size={12} color="#fff" />
+      <Text style={styles.viewerText}>{fmtCount(count === null ? fallback : count)}</Text>
+    </View>
+  );
+});
 
-const LiveCard = memo(function LiveCard({ stream, onPress }) {
+// ------------------------------------
+// LIVE CARD
+// ------------------------------------
+
+const LiveCard = memo(function LiveCard({ stream, onPress, opening, isTop }) {
   const handlePress = useCallback(() => onPress(stream), [onPress, stream]);
-  const audienceCount = useAudienceCount(stream);
-  const shownUsers = audienceCount === null ? stream.users : audienceCount;
 
   return (
     <TouchableOpacity
-      style={styles.liveCard}
+      style={[styles.liveCard, isTop && styles.liveCardTop]}
       activeOpacity={0.88}
       onPress={handlePress}
     >
@@ -186,6 +283,7 @@ const LiveCard = memo(function LiveCard({ stream, onPress }) {
         source={{ uri: stream.roomCover }}
         style={styles.cardImage}
         resizeMode="cover"
+        fadeDuration={0}
       />
 
       {/* Soft top shade so badges are readable on any image */}
@@ -202,7 +300,7 @@ const LiveCard = memo(function LiveCard({ stream, onPress }) {
         pointerEvents="none"
       />
 
-      {/* Multi-guest: 3x3 mini grid of seats (screenshot jaisa) */}
+      {/* Multi-guest: 3x3 mini grid of seats */}
       {stream.layout === 'multiguest' && (
         <View style={styles.seatGrid} pointerEvents="none">
           {Array.from({ length: 9 }).map((_, i) => {
@@ -226,11 +324,23 @@ const LiveCard = memo(function LiveCard({ stream, onPress }) {
         <Text style={styles.liveBadgeText}>LIVE</Text>
       </View>
 
-      {/* Viewer count (real time, = people inside the room) */}
-      <View style={styles.viewerPill}>
-        <Ionicons name="people" size={12} color="#fff" />
-        <Text style={styles.viewerText}>{fmtCount(shownUsers)}</Text>
-      </View>
+      {/* TOP broadcaster tag (sab se zyada stars) */}
+      {isTop && (
+        <View style={styles.topTag}>
+          <Ionicons name="trophy" size={10} color="#000" />
+          <Text style={styles.topTagText}>TOP</Text>
+        </View>
+      )}
+
+      {/* Viewer count */}
+      {stream.type === 'video' ? (
+        <VideoViewerPill roomId={stream.id} hostId={stream.hostId} fallback={stream.users} />
+      ) : (
+        <View style={styles.viewerPill}>
+          <Ionicons name="people" size={12} color="#fff" />
+          <Text style={styles.viewerText}>{fmtCount(stream.users)}</Text>
+        </View>
+      )}
 
       {/* Host info */}
       <View style={styles.bottomInfo}>
@@ -245,6 +355,12 @@ const LiveCard = memo(function LiveCard({ stream, onPress }) {
           <Text style={styles.roomTitle} numberOfLines={1}>
             {stream.title}
           </Text>
+          {stream.stars > 0 && (
+            <View style={styles.starRow}>
+              <Ionicons name="star" size={10} color="#ebd500" />
+              <Text style={styles.starText}>{fmtCount(stream.stars)}</Text>
+            </View>
+          )}
         </View>
 
         <View style={styles.typeBadge}>
@@ -255,6 +371,13 @@ const LiveCard = memo(function LiveCard({ stream, onPress }) {
           />
         </View>
       </View>
+
+      {/* Tap par turant feedback: room khul raha hai, dobara tap mat karo */}
+      {opening && (
+        <View style={styles.openingOverlay} pointerEvents="none">
+          <ActivityIndicator size="small" color="#ebd500" />
+        </View>
+      )}
     </TouchableOpacity>
   );
 });
@@ -264,11 +387,13 @@ const LiveCard = memo(function LiveCard({ stream, onPress }) {
 // ------------------------------------
 
 const TrendingBanner = memo(function TrendingBanner() {
+  const focused = useContext(FocusContext);
   const [activeIndex, setActiveIndex] = useState(0);
   const scrollRef = useRef(null);
   const indexRef = useRef(0);
 
   useEffect(() => {
+    if (!focused) return; // LiveRoom khula ho to banner timer band
     const timer = setInterval(() => {
       let next = indexRef.current + 1;
       if (next >= TRENDING_BANNERS_DATA.length) next = 0;
@@ -277,7 +402,7 @@ const TrendingBanner = memo(function TrendingBanner() {
       setActiveIndex(next);
     }, 3500);
     return () => clearInterval(timer);
-  }, []);
+  }, [focused]);
 
   const onScrollEnd = useCallback((e) => {
     const idx = Math.round(e.nativeEvent.contentOffset.x / BANNER_WIDTH);
@@ -355,14 +480,18 @@ const TabButton = memo(function TabButton({ label, icon, active, count, onPress 
 export default function AllLive() {
   const router = useRouter();
   const { blocked: blockedIds } = useBlockedIds(); // BLOCK
+  const focused = useScreenFocused();
 
   const [activeTab, setActiveTab] = useState('audio');
   const [liveStreams, setLiveStreams] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [openingId, setOpeningId] = useState(null);
 
-  // Heartbeat React state me nahi: har 20s ke heartbeat par re-render hota tha.
+  // Rooms React state me nahi, map me: snapshot aate hi sirf badle hue room update.
+  const streamMapRef = useRef(new Map()); // id -> {stream, sig}
   const heartbeatMapRef = useRef({});
-  const lastStreamsSigRef = useRef('');
+  const flushTimerRef = useRef(null);
+  const navLockRef = useRef(0);
 
   // ------------------------------------
   // BACK BUTTON
@@ -384,10 +513,11 @@ export default function AllLive() {
   }, [router]);
 
   // ------------------------------------
-  // SHARED LIVE-DOT PULSE (one loop for all cards)
+  // SHARED LIVE-DOT PULSE (one loop for all cards, focus me hi chale)
   // ------------------------------------
 
   useEffect(() => {
+    if (!focused) return;
     const loop = Animated.loop(
       Animated.sequence([
         Animated.timing(livePulse, {
@@ -406,17 +536,18 @@ export default function AllLive() {
     );
     loop.start();
     return () => loop.stop();
-  }, []);
+  }, [focused]);
 
   // ------------------------------------
-  // OPEN ROOM
+  // OPEN ROOM (double-tap guard + instant feedback)
   // ------------------------------------
-  // NOTE: pehle yahan `joinedUsers` me arrayUnion hota tha jo kabhi remove
-  // nahi hota tha (isi wajah se count sirf badhta tha). Ab LiveRoom khud
-  // `audience` me join/leave handle karta hai aur host real-time
-  // `viewerCount` likhta hai, isliye yahan koi write nahi chahiye.
 
   const openLiveRoom = useCallback((stream) => {
+    const now = Date.now();
+    if (now - navLockRef.current < OPEN_LOCK_MS) return; // pehle tap se room khul raha hai
+    navLockRef.current = now;
+    setOpeningId(stream.id);
+
     if (stream.type === 'video') {
       router.push({
         pathname: '/videolive',
@@ -436,8 +567,50 @@ export default function AllLive() {
     });
   }, [router]);
 
+  // Screen wapas aaye to lock + spinner saaf
+  useEffect(() => {
+    if (focused) {
+      navLockRef.current = 0;
+      setOpeningId(null);
+    }
+  }, [focused]);
+
+  // Agar push na ho paya to spinner atka na rahe
+  useEffect(() => {
+    if (!openingId) return;
+    const t = setTimeout(() => setOpeningId(null), 3500);
+    return () => clearTimeout(t);
+  }, [openingId]);
+
   // ------------------------------------
-  // FETCH LIVE ROOMS
+  // LIST FLUSH (throttled + sorted by stars)
+  // ------------------------------------
+
+  const flushNow = useCallback(() => {
+    if (flushTimerRef.current) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    const arr = [];
+    streamMapRef.current.forEach((v) => arr.push(v.stream));
+    arr.sort(compareStreams);
+    setLiveStreams((prev) => (sameList(prev, arr) ? prev : arr));
+  }, []);
+
+  const scheduleFlush = useCallback(() => {
+    if (flushTimerRef.current) return;
+    flushTimerRef.current = setTimeout(() => {
+      flushTimerRef.current = null;
+      flushNow();
+    }, LIST_FLUSH_MS);
+  }, [flushNow]);
+
+  useEffect(() => () => {
+    if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+  }, []);
+
+  // ------------------------------------
+  // FETCH LIVE ROOMS (sirf jab ye screen samne ho)
   // ------------------------------------
 
   useEffect(() => {
@@ -446,80 +619,82 @@ export default function AllLive() {
       setLoading(false);
       return;
     }
+    if (!focused) return; // LiveRoom khula hai -> listener band, CPU free
 
     let unsubscribe = () => {};
+    let firstSnap = true;
+
+    // Map me ek room daalo; purana object reuse (taaki card re-render na ho)
+    const upsert = (map, id, stream) => {
+      const sig = streamSig(stream);
+      const prev = streamMapRef.current.get(id);
+      if (prev && prev.sig === sig) {
+        map.set(id, prev);
+        return false;
+      }
+      map.set(id, { stream, sig });
+      return true;
+    };
 
     try {
       unsubscribe = onSnapshot(
         collection(db, 'rooms'),
         (snapshot) => {
-          const streams = [];
-          const heartbeatMap = {};
           const now = Date.now();
-          const oneDay = 24 * 60 * 60 * 1000;
+          let changed = false;
 
-          snapshot.forEach((docItem) => {
-            if (!docItem.exists()) return;
-
-            const rawData = docItem.data();
-
-            if (!isRoomAlive(rawData)) return;
-            if ((rawData.roomType || 'public') !== 'public') return;
-
-            const roomTime = getTimeInMilliseconds(rawData.createdAt);
-            if (roomTime && now - roomTime > oneDay) return;
-
-            const hostImg = validUrl(rawData.hostImg) || validUrl(rawData.profileImg);
-            const cover =
-              validUrl(rawData.roomCover) ||
-              validUrl(rawData.cover) ||
-              validUrl(rawData.banner) ||
-              validUrl(rawData.roomImg) ||
-              hostImg ||
-              STABLE_DEFAULT_BANNER;
-
-            heartbeatMap[docItem.id] = getHeartbeatMs(rawData);
-
-            streams.push({
-              id: docItem.id,
-              hostId: rawData.hostId || rawData.seatsData?.seat_1?.userId || null,
-              title: rawData.title || rawData.roomName || 'Live Broadcast',
-              host: rawData.hostName || rawData.host || 'User',
-              type: String(rawData.type || 'audio').toLowerCase(),
-              // REAL-TIME: host `viewerCount` me room ke andar ke log likhta hai
-              // (join -> badhta hai, leave -> ghatta hai).
-              users: Math.max(0, Number(rawData.viewerCount) || 0),
-              roomCover: cover,
-              hostImg: hostImg || STABLE_DEFAULT_AVATAR,
-              createdAt: roomTime,
-              layout: String(rawData.roomLayout || 'chat').toLowerCase(),
-              // Multi-guest card ke liye 9 seats ka mini grid (host + guests)
-              seats: Object.keys(rawData.seatsData || {})
-                .sort((a, b) => Number(a.split('_')[1]) - Number(b.split('_')[1]))
-                .slice(0, 9)
-                .map((k) => {
-                  const st = rawData.seatsData[k] || {};
-                  return { img: validUrl(st.userImg), taken: !!st.userId, muted: !!st.isMuted };
-                }),
+          if (firstSnap) {
+            // Pehla snapshot: poori list naye sire se (reuse ke saath)
+            firstSnap = false;
+            const next = new Map();
+            const hb = {};
+            snapshot.forEach((docItem) => {
+              if (!docItem.exists()) return;
+              const raw = docItem.data();
+              const s = parseRoom(docItem.id, raw, now);
+              if (!s) return;
+              hb[docItem.id] = getHeartbeatMs(raw);
+              if (upsert(next, docItem.id, s)) changed = true;
             });
+            if (next.size !== streamMapRef.current.size) changed = true;
+            streamMapRef.current = next;
+            heartbeatMapRef.current = hb;
+            flushNow(); // pehli baar turant dikhao
+            setLoading(false);
+            return;
+          }
+
+          // Baad ke snapshots: sirf badle hue docs
+          const map = streamMapRef.current;
+          snapshot.docChanges().forEach((change) => {
+            const id = change.doc.id;
+            if (change.type === 'removed') {
+              if (map.delete(id)) changed = true;
+              delete heartbeatMapRef.current[id];
+              return;
+            }
+            const raw = change.doc.data();
+            const s = parseRoom(id, raw, now);
+            if (!s) {
+              if (map.delete(id)) changed = true;
+              delete heartbeatMapRef.current[id];
+              return;
+            }
+            heartbeatMapRef.current[id] = getHeartbeatMs(raw);
+            const prev = map.get(id);
+            const sig = streamSig(s);
+            if (!prev || prev.sig !== sig) {
+              map.set(id, { stream: s, sig });
+              changed = true;
+            }
           });
 
-          // Newest first (stable order: count badalne par cards uchhalte nahi)
-          streams.sort((a, b) => b.createdAt - a.createdAt);
-
-          heartbeatMapRef.current = heartbeatMap;
-
-          // Heartbeat-only snapshot (list same) -> re-render skip.
-          let sig = '';
-          try { sig = JSON.stringify(streams); } catch (e) { sig = ''; }
-          if (!sig || sig !== lastStreamsSigRef.current) {
-            lastStreamsSigRef.current = sig;
-            setLiveStreams(streams);
-          }
-          setLoading(false);
+          // Heartbeat-only snapshot => changed=false => koi re-render nahi
+          if (changed) scheduleFlush();
         },
         (error) => {
           console.log('Firebase Sync Error:', error);
+          streamMapRef.current = new Map();
           setLiveStreams([]);
           setLoading(false);
         }
@@ -531,29 +706,29 @@ export default function AllLive() {
     }
 
     return () => unsubscribe();
-  }, []);
+  }, [focused, flushNow, scheduleFlush]);
 
   // ------------------------------------
   // LOCAL HEARTBEAT CLEANUP
   // ------------------------------------
 
   useEffect(() => {
+    if (!focused) return;
     const checkTimer = setInterval(() => {
-      setLiveStreams((current) => {
-        const now = Date.now();
-        const filtered = current.filter((stream) => {
-          const hb = heartbeatMapRef.current[stream.id];
-          if (!hb) return true;
-          return now - hb <= HEARTBEAT_TIMEOUT;
-        });
-        if (filtered.length === current.length) return current;
-        lastStreamsSigRef.current = '';
-        return filtered;
+      const now = Date.now();
+      let removed = false;
+      streamMapRef.current.forEach((_, id) => {
+        const hb = heartbeatMapRef.current[id];
+        if (hb && now - hb > HEARTBEAT_TIMEOUT) {
+          streamMapRef.current.delete(id);
+          removed = true;
+        }
       });
+      if (removed) flushNow();
     }, HEARTBEAT_CHECK_INTERVAL);
 
     return () => clearInterval(checkTimer);
-  }, []);
+  }, [focused, flushNow]);
 
   // ------------------------------------
   // DERIVED DATA
@@ -588,8 +763,15 @@ export default function AllLive() {
   // ------------------------------------
 
   const renderItem = useCallback(
-    ({ item }) => <LiveCard stream={item} onPress={openLiveRoom} />,
-    [openLiveRoom]
+    ({ item, index }) => (
+      <LiveCard
+        stream={item}
+        onPress={openLiveRoom}
+        opening={item.id === openingId}
+        isTop={index === 0 && item.stars > 0}
+      />
+    ),
+    [openLiveRoom, openingId]
   );
 
   const keyExtractor = useCallback((item) => item.id, []);
@@ -655,48 +837,51 @@ export default function AllLive() {
   // ------------------------------------
 
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar backgroundColor="#08080a" barStyle="light-content" translucent={false} />
+    <FocusContext.Provider value={focused}>
+      <SafeAreaView style={styles.container}>
+        <StatusBar backgroundColor="#08080a" barStyle="light-content" translucent={false} />
 
-      {/* HEADER */}
-      <View style={styles.headerBar}>
-        <View>
-          <Text style={styles.headerLogoText}>LIVES</Text>
-          <Text style={styles.headerSubLogoText}>audio & video rooms</Text>
+        {/* HEADER */}
+        <View style={styles.headerBar}>
+          <View>
+            <Text style={styles.headerLogoText}>LIVES</Text>
+            <Text style={styles.headerSubLogoText}>audio & video rooms</Text>
+          </View>
+
+          <View style={styles.headerRight}>
+            <TouchableOpacity style={styles.headerIconButton} activeOpacity={0.7}>
+              <Ionicons name="search-outline" size={18} color="#ffffff" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.headerIconButton} activeOpacity={0.7}>
+              <Ionicons name="notifications-outline" size={18} color="#ffffff" />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.headerIconButton} activeOpacity={0.7}>
+              <Ionicons name="options-outline" size={18} color="#ebd500" />
+            </TouchableOpacity>
+          </View>
         </View>
 
-        <View style={styles.headerRight}>
-          <TouchableOpacity style={styles.headerIconButton} activeOpacity={0.7}>
-            <Ionicons name="search-outline" size={18} color="#ffffff" />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.headerIconButton} activeOpacity={0.7}>
-            <Ionicons name="notifications-outline" size={18} color="#ffffff" />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.headerIconButton} activeOpacity={0.7}>
-            <Ionicons name="options-outline" size={18} color="#ebd500" />
-          </TouchableOpacity>
-        </View>
-      </View>
+        {/* FEED (virtualized grid: sirf screen par dikhne wale cards render) */}
+        <FlatList
+          data={filteredStreams}
+          renderItem={renderItem}
+          keyExtractor={keyExtractor}
+          numColumns={2}
+          columnWrapperStyle={styles.columnWrapper}
+          ListHeaderComponent={header}
+          ListEmptyComponent={emptyComponent}
+          contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
+          initialNumToRender={6}
+          maxToRenderPerBatch={4}
+          updateCellsBatchingPeriod={60}
+          windowSize={5}
+          removeClippedSubviews={false}
+        />
 
-      {/* FEED (virtualized grid: sirf screen par dikhne wale cards render) */}
-      <FlatList
-        data={filteredStreams}
-        renderItem={renderItem}
-        keyExtractor={keyExtractor}
-        numColumns={2}
-        columnWrapperStyle={styles.columnWrapper}
-        ListHeaderComponent={header}
-        ListEmptyComponent={emptyComponent}
-        contentContainerStyle={styles.listContent}
-        showsVerticalScrollIndicator={false}
-        initialNumToRender={6}
-        maxToRenderPerBatch={6}
-        windowSize={7}
-        removeClippedSubviews={false}
-      />
-
-      <BottomNav />
-    </SafeAreaView>
+        <BottomNav />
+      </SafeAreaView>
+    </FocusContext.Provider>
   );
 }
 
@@ -961,5 +1146,32 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginLeft: 6,
+  },
+
+  // NEW: top broadcaster (most stars), star count, opening feedback
+  liveCardTop: { borderColor: '#ebd500', borderWidth: 2 },
+  topTag: {
+    position: 'absolute',
+    top: 34,
+    left: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ebd500',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  topTagText: { color: '#000', fontSize: 9, fontWeight: '900', marginLeft: 3, letterSpacing: 0.6 },
+  starRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
+  starText: { color: '#ebd500', fontSize: 11, fontWeight: '800', marginLeft: 3 },
+  openingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });

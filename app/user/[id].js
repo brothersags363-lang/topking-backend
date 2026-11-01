@@ -24,6 +24,7 @@ import {
 
 // FIREBASE
 import { db } from '../firebaseConfig';
+import { AvatarFrame } from '../../components/FramedAvatar';
 import {
   doc,
   getDoc,
@@ -158,6 +159,10 @@ export default function UserPage() {
                     }}
                     style={styles.avatar}
                   />
+                  {/* FRAME: is user ka frame */}
+                  <View pointerEvents="none" style={{ position: 'absolute', top: -2, left: -2 }}>
+                    <AvatarFrame uid={id} size={90} ratio={1.3} animated />
+                  </View>
                 </View>
 
                 <View style={styles.statsContainer}>

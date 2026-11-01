@@ -697,9 +697,12 @@ export default function CameraPage() {
 
         const data = userSnap.exists() ? userSnap.data() : null;
 
+        // Live sirf inko: purane agency members (liveGranted), agency owner (agencyApproved),
+        // ya jinko tick mila (verified). Naya agency join karne se live NAHI milta -
+        // white tick milne ke baad hi live aayega.
         const allowed =
           !!data &&
-          (Boolean(data.agencyId) ||
+          (data.liveGranted === true ||
             data.agencyApproved === true ||
             data.verified === true);
 

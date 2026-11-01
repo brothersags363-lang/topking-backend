@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,13 +10,28 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, usePathname } from 'expo-router';
 import { auth } from "../app/firebaseConfig";
 
-export default function BottomNav() {
+const ACTIVE = '#3498db';
+const IDLE = '#ffffff';
+const HIT = { top: 8, bottom: 8, left: 8, right: 8 };
+
+function BottomNav() {
   const router = useRouter();
   const pathname = usePathname();
 
-  const getIconColor = (path) => {
-    return pathname === path ? '#3498db' : '#ffffff';
-  };
+  // Follow / Discover bhi Home ka hissa hain -> Home icon highlight rahe
+  const onHome = pathname === '/' || pathname === '/follow' || pathname === '/discover';
+
+  const goHome = useCallback(() => { if (pathname !== '/') router.replace('/'); }, [router, pathname]);
+  const goSearch = useCallback(() => router.replace('/explore'), [router]);
+  const goCamera = useCallback(() => router.push('/camera'), [router]);
+  const goMessages = useCallback(() => router.replace('/messages'), [router]);
+  const goProfile = useCallback(() => {
+    if (!auth.currentUser) {
+      router.push('/login');
+      return;
+    }
+    router.replace('/profile');
+  }, [router]);
 
   return (
     <View style={styles.bottomSection}>
@@ -24,70 +39,30 @@ export default function BottomNav() {
         <View style={styles.bottomNav}>
 
           {/* HOME */}
-          <TouchableOpacity
-            style={styles.navItem}
-            onPress={() => router.replace('/')}
-          >
-            <Ionicons
-              name="home-outline"
-              size={26}
-              color={getIconColor('/')}
-            />
+          <TouchableOpacity style={styles.navItem} onPress={goHome} hitSlop={HIT} activeOpacity={0.7}>
+            <Ionicons name="home-outline" size={26} color={onHome ? ACTIVE : IDLE} />
           </TouchableOpacity>
 
           {/* SEARCH */}
-          <TouchableOpacity
-            style={styles.navItem}
-            onPress={() => router.replace('/explore')}
-          >
-            <Ionicons
-              name="search"
-              size={26}
-              color={getIconColor('/explore')}
-            />
+          <TouchableOpacity style={styles.navItem} onPress={goSearch} hitSlop={HIT} activeOpacity={0.7}>
+            <Ionicons name="search" size={26} color={pathname === '/explore' ? ACTIVE : IDLE} />
           </TouchableOpacity>
 
           {/* PLUS BUTTON */}
           <View style={styles.navItem}>
-            <TouchableOpacity
-              style={styles.plusBtn}
-              onPress={() => router.push('/camera')}
-            >
+            <TouchableOpacity style={styles.plusBtn} onPress={goCamera} activeOpacity={0.8}>
               <Text style={styles.plusText}>+</Text>
             </TouchableOpacity>
           </View>
 
           {/* MESSAGES */}
-          <TouchableOpacity
-            style={styles.navItem}
-            onPress={() => router.replace('/messages')}
-          >
-            <Ionicons
-              name="chatbubble-ellipses"
-              size={26}
-              color={getIconColor('/messages')}
-            />
+          <TouchableOpacity style={styles.navItem} onPress={goMessages} hitSlop={HIT} activeOpacity={0.7}>
+            <Ionicons name="chatbubble-ellipses" size={26} color={pathname === '/messages' ? ACTIVE : IDLE} />
           </TouchableOpacity>
 
           {/* PROFILE */}
-          <TouchableOpacity
-            style={styles.navItem}
-            onPress={() => {
-              const user = auth.currentUser;
-
-              if (!user) {
-                router.push('/login');
-                return;
-              }
-
-              router.replace('/profile');
-            }}
-          >
-            <Ionicons
-              name="person-outline"
-              size={26}
-              color={getIconColor('/profile')}
-            />
+          <TouchableOpacity style={styles.navItem} onPress={goProfile} hitSlop={HIT} activeOpacity={0.7}>
+            <Ionicons name="person-outline" size={26} color={pathname === '/profile' ? ACTIVE : IDLE} />
           </TouchableOpacity>
 
         </View>
@@ -97,6 +72,8 @@ export default function BottomNav() {
     </View>
   );
 }
+
+export default memo(BottomNav);
 
 const styles = StyleSheet.create({
   bottomSection: {

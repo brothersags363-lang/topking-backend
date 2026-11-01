@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 
 import {
   View,
@@ -17,6 +17,38 @@ import {
 
 import { useLive } from "../context/LiveContext";
 
+
+
+// Sirf ye chhota text har second badalta hai (poori app/live room nahi)
+const toMs = (value) => {
+  if (typeof value === "number") return value;
+  if (value?.toMillis) return value.toMillis();
+  if (value?.seconds) return value.seconds * 1000;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : Date.now();
+};
+const fmtDuration = (startTime) => {
+  if (!startTime) return "00:00:00";
+  const d = Math.max(0, Date.now() - toMs(startTime));
+  const h = Math.floor(d / 3600000);
+  const m = Math.floor((d % 3600000) / 60000);
+  const sec = Math.floor((d % 60000) / 1000);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+};
+function LiveDurationText({ startTime, style }) {
+  const [text, setText] = useState(() => fmtDuration(startTime));
+  useEffect(() => {
+    setText(fmtDuration(startTime));
+    if (!startTime) return undefined;
+    const t = setInterval(() => setText(fmtDuration(startTime)), 1000);
+    return () => clearInterval(t);
+  }, [startTime]);
+  return (
+    <Text numberOfLines={1} style={style}>
+      {text}
+    </Text>
+  );
+}
 
 const DEFAULT_AVATAR =
   "https://avatar.iran.liara.run/public/65";
@@ -154,12 +186,7 @@ export default function LiveMiniPlayer() {
             </View>
 
 
-            <Text
-              numberOfLines={1}
-              style={styles.duration}
-            >
-              {liveDuration}
-            </Text>
+            <LiveDurationText startTime={activeLive.startTime} style={styles.duration} />
 
           </View>
 

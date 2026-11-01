@@ -129,47 +129,56 @@ async function putFileWithRetry(uploadUrl, fileUri, contentType, onProgress, max
   throw lastErr;
 }
 
+async function makeThumbnail(fileUri) {
+  try {
+    const t = await VideoThumbnails.getThumbnailAsync(fileUri, { time: 1000, quality: 0.7 });
+    return t?.uri || null;
+  } catch (e) {
+    console.log("thumbnail create failed:", e?.message);
+    return null;
+  }
+}
+
 async function uploadDirectToR2(videoUri, token) {
-  const urlRes = await postWithRetry(
-    `${API}/upload-url`,
-    {},
-    {
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      timeout: 60 * 1000,
-    },
-    { label: "upload url (/upload-url)" }
-  );
+  // Upload-url, file-ready aur thumbnail teeno ek saath (pehle ek-ek karke hote the)
+  const [urlRes, fileUri] = await Promise.all([
+    postWithRetry(
+      `${API}/upload-url`,
+      {},
+      {
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        timeout: 60 * 1000,
+      },
+      { label: "upload url (/upload-url)", maxRetries: 1 }
+    ),
+    ensureFileUri(videoUri),
+  ]);
+
   const urls = urlRes.data;
   if (!urls?.success || !urls.videoUploadUrl || !urls.videoUrl) {
     throw new Error(urls?.error || "Upload url missing");
   }
 
-  const fileUri = await ensureFileUri(videoUri);
-
-  // Thumbnail pehle bana lo (fail ho to video ka url hi thumbnail ban jayega)
-  let thumbUri = null;
-  try {
-    const t = await VideoThumbnails.getThumbnailAsync(fileUri, { time: 1000, quality: 0.7 });
-    thumbUri = t?.uri || null;
-  } catch (e) {
-    console.log("thumbnail create failed:", e?.message);
-  }
-
   setUploadState({ progress: 1 });
-  await putFileWithRetry(urls.videoUploadUrl, fileUri, "video/mp4", (frac) => {
-    setUploadState({ progress: Math.min(95, Math.max(1, Math.round(frac * 95))) });
-  });
 
-  let thumbnailUrl = "";
-  if (thumbUri && urls.thumbnailUploadUrl) {
+  // Thumbnail (chhota) video ke saath parallel upload hota hai -> extra wait nahi
+  const thumbTask = (async () => {
+    const thumbUri = await makeThumbnail(fileUri);
+    if (!thumbUri || !urls.thumbnailUploadUrl) return "";
     try {
       await putFileWithRetry(urls.thumbnailUploadUrl, thumbUri, "image/jpeg", null, 3);
-      thumbnailUrl = urls.thumbnailUrl || "";
+      return urls.thumbnailUrl || "";
     } catch (e) {
       console.log("thumbnail upload failed:", e?.message);
+      return "";
     }
-  }
+  })();
 
+  await putFileWithRetry(urls.videoUploadUrl, fileUri, "video/mp4", (frac) => {
+    setUploadState({ progress: Math.min(97, Math.max(1, Math.round(frac * 97))) });
+  });
+
+  const thumbnailUrl = await thumbTask;
   return { videoUrl: urls.videoUrl, thumbnailUrl };
 }
 
@@ -383,29 +392,31 @@ export async function startReelUpload(payload) {
 
       await addDoc(collection(db, "all_videos"), videoData);
 
-      await Promise.all(
-        usedHashtags.map((tag) =>
-          setDoc(
-            doc(db, "hashtags", tag),
-            { name: `#${tag}`, uses: increment(1), lastUsedAt: serverTimestamp() },
-            { merge: true }
-          )
+      // Hashtag count + original-audio song ek saath likho (post already save ho chuki hai,
+      // inme se kuch fail ho to bhi upload ko fail nahi dikhana)
+      const extraWrites = usedHashtags.map((tag) =>
+        setDoc(
+          doc(db, "hashtags", tag),
+          { name: `#${tag}`, uses: increment(1), lastUsedAt: serverTimestamp() },
+          { merge: true }
         )
       );
-
       if (!hasMusic || !musicId) {
-        await addDoc(collection(db, "songs"), {
-          title: musicName || `${userData?.name}'s Original Audio`,
-          artist: userData?.name,
-          audioUrl: audioUrl || originalAudioUrl,
-          image: userData?.profileImg,
-          videoUrl: uploadedVideo,
-          thumbnail: thumbnailUrl || uploadedVideo,
-          userId: user.uid,
-          uses: 0,
-          createdAt: serverTimestamp(),
-        });
+        extraWrites.push(
+          addDoc(collection(db, "songs"), {
+            title: musicName || `${userData?.name}'s Original Audio`,
+            artist: userData?.name,
+            audioUrl: audioUrl || originalAudioUrl,
+            image: userData?.profileImg,
+            videoUrl: uploadedVideo,
+            thumbnail: thumbnailUrl || uploadedVideo,
+            userId: user.uid,
+            uses: 0,
+            createdAt: serverTimestamp(),
+          })
+        );
       }
+      await Promise.allSettled(extraWrites);
     }
 
     // 100% ho gaya — feed (index.tsx) apne aap naya post onSnapshot se

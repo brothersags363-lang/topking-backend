@@ -252,7 +252,7 @@ router.replace('/profile');
 return ( <View style={styles.container}>
 
 <Text style={styles.appName}>
-  Tiki Max
+  TopKIng
 </Text>
 
 <Image

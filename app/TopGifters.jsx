@@ -21,6 +21,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Image as ExpoImage } from "expo-image";
 import { useRouter } from "expo-router";
 import UserTick from "../components/UserTick";
+import { AvatarFrame } from "../components/FramedAvatar";
 
 // Fast, cached avatar - memory-disk cache means an already-seen gifter's
 // photo shows up instantly instead of re-downloading, with a smooth
@@ -70,6 +71,10 @@ const GifterRow = memo(function GifterRow({ item, rank, onOpenProfile }) {
             <Ionicons name="person" size={18} color="#999" />
           </View>
         )}
+        {/* FRAME: gifter ka frame */}
+        <View pointerEvents="none" style={{ position: "absolute", top: -2, left: -2 }}>
+          <AvatarFrame uid={item.uid} size={40} ratio={1.3} animated={false} />
+        </View>
 
       </TouchableOpacity>
 

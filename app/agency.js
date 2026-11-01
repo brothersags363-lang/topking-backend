@@ -36,6 +36,7 @@ serverTimestamp,
 } from "firebase/firestore";
 
 import * as ImagePicker from "expo-image-picker";
+import { uploadImage } from "../utils/uploadImage";
 
 import {
   Ionicons,
@@ -293,7 +294,7 @@ allowsEditing:true,
 
 aspect:[1,1],
 
-quality:0.8,
+quality:0.5,
 
 });
 
@@ -575,34 +576,14 @@ const saveAgencyChanges = async () => {
 
     let logoUrl = agency.logo || agency.agencyLogo || "";
 
-    if (newLogo && newLogo.startsWith("file://")) {
-      const formData = new FormData();
-
-      formData.append("file", {
-        uri: newLogo,
-        type: "image/jpeg",
-        name: "agency_logo.jpg",
-      });
-
-      formData.append("upload_preset", "topking_upload");
-
-      const response = await fetch(
-        "https://api.cloudinary.com/v1_1/fzmrnrlz/image/upload",
-        {
-          method: "POST",
-          body: formData,
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok || !data.secure_url) {
-        console.log("AGENCY LOGO UPLOAD ERROR =", data);
-        Alert.alert("Upload Failed", "Agency photo upload nahi ho paya.");
+    if (newLogo) {
+      try {
+        logoUrl = await uploadImage(newLogo, "agency");
+      } catch (err) {
+        console.log("AGENCY LOGO UPLOAD ERROR =", err);
+        Alert.alert("Upload Failed", err?.message || "Agency photo upload nahi ho paya.");
         return;
       }
-
-      logoUrl = data.secure_url;
     }
 
     await updateDoc(doc(db, "agencies", agency.id), {

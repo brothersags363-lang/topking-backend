@@ -53,11 +53,12 @@ export function useLiveBanGuard(isHost, onKick) {
         if (until <= Date.now()) return;
 
         shownRef.current = true;
+        const why = d.reason ? `\n\nWajah: ${d.reason}` : "";
         Alert.alert(
           isHost ? "Live band hai" : "Live room entry band hai",
           isHost
-            ? `Aap ${formatBanUntil(until)} tak live nahi chala sakte.`
-            : `Aap ${formatBanUntil(until)} tak live room me nahi ja sakte.`
+            ? `Aap ${formatBanUntil(until)} tak live nahi chala sakte.${why}`
+            : `Aap ${formatBanUntil(until)} tak live room me nahi ja sakte.${why}`
         );
         try {
           if (typeof kickRef.current === "function") kickRef.current();

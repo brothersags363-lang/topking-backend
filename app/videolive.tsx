@@ -57,6 +57,7 @@ import {
 
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
+import * as ScreenCapture from "expo-screen-capture";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -951,6 +952,20 @@ export default function VideoLive() {
   // Official ne ban lagaya to turant bahar (host = live ban, viewer = entry ban)
   useLiveBanGuard(isHost);
 
+  // ---------- Screenshot / screen-recording block (host ke alawa sab) ----------
+  // Android: FLAG_SECURE (screenshot fail, recording me black screen).
+  // iOS: screenshot / recording me content black.
+  useEffect(() => {
+    if (isHost) return;
+    const TAG = "videolive-secure";
+    ScreenCapture.preventScreenCaptureAsync(TAG)
+      .then(() => console.log("SECURE: screen capture BLOCKED for viewer"))
+      .catch((e) => console.log("SECURE: block FAILED", e?.message || e));
+    return () => {
+      ScreenCapture.allowScreenCaptureAsync(TAG).catch(() => {});
+    };
+  }, [isHost]);
+
   // ---------- room doc ----------
   const [roomData, setRoomData] = useState<any>(null);
   const roomDataRef = useRef<any>(null);
@@ -1073,6 +1088,11 @@ export default function VideoLive() {
 
   const chatListRef = useRef<FlatList>(null);
   const heartbeatRef = useRef<any>(null);
+  // ---------- NO-FACE / BLACK SCREEN AUTO BAN (host) ----------
+  const lastFaceAtRef = useRef<number>(Date.now());   // aakhri baar kab face dikha
+  const faceCheckOnRef = useRef(false);                // device par face detection chalu hua?
+  const faceWarnedRef = useRef(false);                 // 4 min par warning ek hi baar
+  const faceBanFiredRef = useRef(false);               // ban ek hi baar lage
   const rewardPingRef = useRef<any>(null);
 
   // ---------- PREMIUM: follow / likes / viewers / moderation / summary ----------
@@ -2391,6 +2411,10 @@ export default function VideoLive() {
         agoraEngineRef.current = engine; // set early so cleanup + tools can always reach it
 
         engine.registerEventHandler({
+          // Agora face detection: face dikhte hi time update. Black screen / camera band / face hata -> update nahi hota.
+          onFacePositionChanged: (_w: number, _h: number, _rects: any, _dist: any, numFaces: number) => {
+            if (isHost && Number(numFaces) > 0) lastFaceAtRef.current = Date.now();
+          },
           onJoinChannelSuccess: (connection: any) => {
             if (connection?.channelId && connection.channelId !== roomId) return; // PK channel
             console.log("VIDEO LIVE: joined channel", roomId, "as", isHost ? "host" : "viewer");
@@ -2503,6 +2527,14 @@ export default function VideoLive() {
           } catch (_) {}
 
           engine.startPreview();
+          try {
+            // 0 = chalu ho gaya. Kisi device par na chale to ban nahi lagayenge (galat ban se bachne ke liye)
+            faceCheckOnRef.current = Number((engine as any).enableFaceDetection(true)) === 0;
+            lastFaceAtRef.current = Date.now();
+            console.log("FACE DETECTION:", faceCheckOnRef.current ? "ON" : "NOT SUPPORTED");
+          } catch (e) {
+            faceCheckOnRef.current = false;
+          }
           // Host sees his own camera right now — no need to wait for the token.
           if (mounted) setLocalReady(true);
         } else {
@@ -2722,6 +2754,43 @@ export default function VideoLive() {
       clearRoomSubcollection("audience");
     }
   };
+
+  // Host: 5 min se zyada face nahi dikha / black screen -> live end + 30 min live band.
+  // 4 min par ek warning. Timer Date.now() par chalta hai.
+  useEffect(() => {
+    if (!isHost || !roomId || !db) return;
+    const NO_FACE_LIMIT_MS = 5 * 60 * 1000;
+    const WARN_AT_MS = 4 * 60 * 1000;
+    const iv = setInterval(() => {
+      if (!faceCheckOnRef.current || faceBanFiredRef.current) return;
+      const idle = Date.now() - lastFaceAtRef.current;
+      if (idle < WARN_AT_MS) {
+        faceWarnedRef.current = false;
+        return;
+      }
+      if (idle < NO_FACE_LIMIT_MS) {
+        if (!faceWarnedRef.current) {
+          faceWarnedRef.current = true;
+          showToast("⚠️ Face nahi dikh raha! 1 minute me live band ho jayegi");
+        }
+        return;
+      }
+      faceBanFiredRef.current = true;
+      // 1) live end (viewers wapas bhej diye jayenge)
+      updateDoc(doc(db, "rooms", roomId), {
+        status: "ended",
+        endedAt: serverTimestamp(),
+        pk: deleteField(),
+        pkInvite: deleteField(),
+        guestReq: deleteField(),
+      }).catch(() => {});
+      // 2) 30 min ban. Server liveBans likhta hai -> useLiveBanGuard alert dikhakar bahar nikal deta hai
+      callApi("/live/auto-video-ban", { roomId }).catch(() => {
+        try { router.replace("/"); } catch (_) {}
+      });
+    }, 10000);
+    return () => clearInterval(iv);
+  }, [isHost, roomId]);
 
   const confirmExit = () => {
     setExitModalVisible(false);

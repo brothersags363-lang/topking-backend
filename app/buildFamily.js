@@ -17,7 +17,6 @@ export default function BuildFamily() {
   const router = useRouter();
   const insets = useSafeAreaInsets(); // navigation bar ke upar rakhne ke liye
   const [logo, setLogo] = useState("");
-  const [logoB64, setLogoB64] = useState("");
   const [name, setName] = useState("");
   const [slogan, setSlogan] = useState("");
   const [contact, setContact] = useState("");
@@ -25,8 +24,8 @@ export default function BuildFamily() {
   const [done, setDone] = useState(false);
 
   const pickLogo = async () => {
-    const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: true, aspect: [1, 1], quality: 0.5, base64: true });
-    if (!r.canceled) { setLogo(r.assets[0].uri); setLogoB64(r.assets[0].base64 || ""); }
+    const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: true, aspect: [1, 1], quality: 0.5 });
+    if (!r.canceled) { setLogo(r.assets[0].uri); }
   };
 
   const submit = async () => {
@@ -52,7 +51,7 @@ export default function BuildFamily() {
       const same = await getDocs(query(collection(db, "families"), where("nameLower", "==", lower)));
       if (same.docs.some((d) => d.data().status !== "rejected")) throw new Error("Ye family naam pehle se liya hua hai.");
 
-      const logoUrl = await uploadFamilyLogo(logo, uid, logoB64);
+      const logoUrl = await uploadFamilyLogo(logo);
 
       await addDoc(collection(db, "families"), {
         name: n, nameLower: lower, slogan: sl, contact: ct, logo: logoUrl,
