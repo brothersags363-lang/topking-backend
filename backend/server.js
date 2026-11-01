@@ -22,6 +22,8 @@ const {
   S3Client,
   PutObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
+  ListObjectsV2Command,
 } = require("@aws-sdk/client-s3");
 
 const {
@@ -2784,6 +2786,191 @@ app.post(
 );
 
 // =====================================================
+// DP (PROFILE PHOTO) -> R2
+//   POST /upload-dp   (multipart, field name: "media")
+//   Key:  dp/{uid}/{timestamp}_{uuid}.{jpg|png|webp}
+//   Har upload ka naya key -> CDN / app cache me purani photo nahi atakti.
+// =====================================================
+
+const DP_MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+
+// File ke asli bytes dekh ke type pakdo (client ke bheje mime/extension par bharosa nahi)
+async function sniffImageType(filePath) {
+  let fh;
+  try {
+    fh = await fsp.open(filePath, "r");
+    const buf = Buffer.alloc(12);
+    const { bytesRead } = await fh.read(buf, 0, 12, 0);
+    if (bytesRead < 12) return null;
+
+    // JPEG: FF D8 FF
+    if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+      return { ext: ".jpg", mime: "image/jpeg" };
+    }
+    // PNG: 89 50 4E 47 0D 0A 1A 0A
+    if (
+      buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 &&
+      buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a
+    ) {
+      return { ext: ".png", mime: "image/png" };
+    }
+    // WEBP: "RIFF" ???? "WEBP"
+    if (
+      buf.toString("ascii", 0, 4) === "RIFF" &&
+      buf.toString("ascii", 8, 12) === "WEBP"
+    ) {
+      return { ext: ".webp", mime: "image/webp" };
+    }
+    return null;
+  } catch (_) {
+    return null;
+  } finally {
+    if (fh) await fh.close().catch(() => {});
+  }
+}
+
+const dpUpload = multer({
+  dest: path.join(__dirname, "uploads"),
+  limits: { fileSize: DP_MAX_BYTES, files: 1, fields: 2 },
+  fileFilter: (req, file, cb) => {
+    if (["image/jpeg", "image/jpg", "image/png", "image/webp"].includes(file.mimetype)) {
+      return cb(null, true);
+    }
+    return cb(new Error("DP_BAD_TYPE"));
+  },
+});
+
+// multer ke errors ko JSON me badlo (warna Express HTML error bhej deta hai)
+function runDpUpload(req, res, next) {
+  dpUpload.single("media")(req, res, (err) => {
+    if (!err) return next();
+    const msg =
+      err.code === "LIMIT_FILE_SIZE"
+        ? "Photo 5MB se badi hai. Chhoti photo chuno."
+        : "Sirf JPG, PNG ya WEBP photo chalegi.";
+    return res.status(400).json({ success: false, error: msg });
+  });
+}
+
+// User ki purani DP R2 se hatao.
+// Rakhte hain: (1) abhi-abhi upload hui nayi, (2) jo Firestore me abhi laga hai.
+// Isse save beech me fail ho jaye to bhi user ki DP kabhi toot-ti nahi.
+async function cleanupOldDp(uid, keepKey) {
+  const prefix = `dp/${uid}/`;
+  const keep = new Set([keepKey]);
+
+  try {
+    const snap = await db.collection("users").doc(uid).get();
+    const currentKey = r2KeyFromUrl(snap.exists ? snap.data().profileImg : "");
+    if (currentKey && currentKey.startsWith(prefix)) keep.add(currentKey);
+  } catch (e) {
+    // current DP pata nahi chali -> kuch bhi delete mat karo
+    console.error("DP CLEANUP READ ERROR:", e.message);
+    return;
+  }
+
+  const listed = await r2.send(
+    new ListObjectsV2Command({
+      Bucket: process.env.R2_BUCKET,
+      Prefix: prefix,
+      MaxKeys: 100,
+    })
+  );
+
+  const stale = (listed.Contents || [])
+    .map((o) => o.Key)
+    .filter((k) => k && k.startsWith(prefix) && !keep.has(k));
+
+  if (!stale.length) return;
+
+  await r2.send(
+    new DeleteObjectsCommand({
+      Bucket: process.env.R2_BUCKET,
+      Delete: { Objects: stale.map((Key) => ({ Key })), Quiet: true },
+    })
+  );
+}
+
+// Kisi prefix ke neeche sab kuch hatao (account delete ke time)
+async function deleteR2Prefix(prefix) {
+  try {
+    let token;
+    do {
+      const listed = await r2.send(
+        new ListObjectsV2Command({
+          Bucket: process.env.R2_BUCKET,
+          Prefix: prefix,
+          ContinuationToken: token,
+        })
+      );
+      const keys = (listed.Contents || []).map((o) => o.Key).filter(Boolean);
+      if (keys.length) {
+        await r2.send(
+          new DeleteObjectsCommand({
+            Bucket: process.env.R2_BUCKET,
+            Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true },
+          })
+        );
+      }
+      token = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+    } while (token);
+  } catch (e) {
+    console.error("R2 PREFIX DELETE ERROR:", prefix, e.message);
+  }
+}
+
+app.post(
+  "/upload-dp",
+  uploadLimiter,
+  verifyUser,
+  runDpUpload,
+  async (req, res) => {
+    const file = req.file;
+    try {
+      if (!file) {
+        return res.status(400).json({ success: false, error: "Photo nahi mili" });
+      }
+
+      const kind = await sniffImageType(file.path);
+      if (!kind) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Sirf JPG, PNG ya WEBP photo chalegi." });
+      }
+
+      const uid = req.user.uid;
+      const key = `dp/${uid}/${Date.now()}_${crypto.randomUUID()}${kind.ext}`;
+
+      await r2.send(
+        new PutObjectCommand({
+          Bucket: process.env.R2_BUCKET,
+          Key: key,
+          Body: fs.createReadStream(file.path),
+          ContentLength: file.size,
+          ContentType: kind.mime,
+          CacheControl: "public, max-age=31536000, immutable",
+        })
+      );
+
+      const base = String(process.env.R2_PUBLIC_URL).replace(/\/+$/, "");
+      res.json({ success: true, key, url: `${base}/${key}` });
+
+      // Response de diya; ab peeche se purani DP saaf karo (fail ho to koi dikkat nahi)
+      cleanupOldDp(uid, key).catch((e) =>
+        console.error("DP CLEANUP ERROR:", e.message)
+      );
+    } catch (e) {
+      console.error("DP UPLOAD ERROR:", e);
+      if (!res.headersSent) {
+        return res.status(500).json({ success: false, error: "Photo upload nahi hui" });
+      }
+    } finally {
+      if (file && file.path) fsp.unlink(file.path).catch(() => {});
+    }
+  }
+);
+
+// =====================================================
 // ADMIN: USER KO STARS DENA (username search se)
 // =====================================================
 
@@ -3049,6 +3236,9 @@ app.post(
         await deleteR2Key(key);
         await d.ref.delete().catch(() => {});
       }
+
+      // 2b) User ki DP (R2: dp/{uid}/...)
+      await deleteR2Prefix(`dp/${uid}/`);
 
       // 3) Profile + wallet + baaki user docs
       await db.recursiveDelete(db.collection("users").doc(uid)).catch(async () => {

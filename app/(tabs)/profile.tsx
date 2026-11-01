@@ -33,7 +33,9 @@ import TopKingLogo from "../../assets/images/topking-logo.png";
 import { auth, db } from '../firebaseConfig';
 import FamilyCell from '../../components/FamilyCell';
 import { profileLink } from '../../utils/shareLinks';
+import { uploadDpToR2 } from '../../utils/api';
 import UserTick, { isFaceVerified } from '../../components/UserTick';
+import { AvatarFrame } from '../../components/FramedAvatar';
 
 
 
@@ -334,7 +336,10 @@ const FollowRow = memo(function FollowRow({
         activeOpacity={0.8}
         onPress={() => onOpenProfile(item.id)}
       >
-        <FastImage uri={item.profileImg} fallback={AVATAR_FALLBACK} style={styles.followAvatar} />
+        <View style={{ width: 46, height: 46 }}>
+          <FastImage uri={item.profileImg} fallback={AVATAR_FALLBACK} style={styles.followAvatar} />
+          <AvatarFrame uid={item.id} level={item.level} size={46} animated={false} />
+        </View>
 
         <View style={styles.followNameCol}>
           <View style={styles.followNameLine}>
@@ -1217,7 +1222,7 @@ const loadLikedVideos = async (uid) => {
   const pickImage = async () => {
     let result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true, aspect: [1, 1], quality: 1,
+      allowsEditing: true, aspect: [1, 1], quality: 0.8,
     });
     if (!result.canceled) {
       setTempProfileImg(result.assets[0].uri);
@@ -1401,56 +1406,16 @@ const renderVideoItem = useCallback(
 
   // PROFILE SAVE AND FORCE RE-RENDER FIXED LOGIC
 const uploadProfileImage = async (imageUri) => {
-
-  if (!imageUri.startsWith("file://")) {
+  // Photo badli hi nahi (pehle se https URL) -> jaisa hai waisa
+  if (!imageUri || !imageUri.startsWith("file://")) {
     return imageUri;
   }
 
-  const data = new FormData();
-
-  data.append("file", {
-    uri: imageUri,
-    type: "image/jpeg",
-    name: "profile.jpg",
-  });
-
-  data.append(
-    "upload_preset",
-   'topking_upload'
-  );
-
-  try {
-
-    const response = await fetch(
-      `https://api.cloudinary.com/v1_1/${'fzmrnrlz'}/image/upload`,
-      {
-        method: "POST",
-        body: data,
-      }
-    );
-
-    const result = await response.json();
-
-
-    return result.secure_url || profileData.profileImg;
-
-  } catch (error) {
-
-
-    Alert.alert(
-      "Error",
-      "Image upload failed"
-    );
-
-    return profileData.profileImg;
-  }
+  // Cloudflare R2 pe upload (server: POST /upload-dp).
+  // Fail hone par error upar jaata hai -> save ruk jaata hai, popup khula rehta hai,
+  // user dobara try kar sakta hai (pehle chup-chaap purani DP save ho jaati thi).
+  return await uploadDpToR2(imageUri);
 };
-
-
-
-
-
-
 
   // all_videos / comments / replies me jo username + dp save hai use naya karo
   const syncMyIdentity = async (uid, username, photo) => {
@@ -1584,7 +1549,7 @@ const uploadProfileImage = async (imageUri) => {
       // (background me, UI ko wait nahi karna padta)
       syncMyIdentity(user.uid, cleanUsername, imageUrl);
     } catch (error) {
-      Alert.alert('Error', 'Profile save nahi ho saki.');
+      Alert.alert('Error', (error && error.userMessage) || 'Profile save nahi ho saki.');
     } finally {
       setSaving(false);
     }
@@ -1875,6 +1840,10 @@ refreshControl={
                   fallback={AVATAR_FALLBACK}
                   style={styles.avatar}
                 />
+                {/* FRAME: mera frame (Settings > Frames & Entries se badal / hata sakte ho) */}
+                <View pointerEvents="none" style={{ position: 'absolute', top: -2, left: -2 }}>
+                  <AvatarFrame uid={auth.currentUser?.uid} size={90} ratio={1.3} animated />
+                </View>
               </View>
 
               <View style={styles.statsRow}>
@@ -3151,7 +3120,7 @@ angelWrap: {
   followRow: { flexDirection: 'row', alignItems: 'center', height: FOLLOW_ROW_HEIGHT, paddingHorizontal: 14 },
   followUserTap: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   followAvatar: { width: 46, height: 46, borderRadius: 23, backgroundColor: '#222' },
-  followNameCol: { flex: 1, marginLeft: 10, marginRight: 8 },
+  followNameCol: { flex: 1, marginLeft: 16, marginRight: 8 },
   followNameLine: { flexDirection: 'row', alignItems: 'center' },
   followUsername: { color: '#fff', fontSize: 14, fontWeight: 'bold', flexShrink: 1 },
   followRealName: { color: '#8e8e8e', fontSize: 12.5, marginTop: 2 },
