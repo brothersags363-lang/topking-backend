@@ -22,6 +22,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation, useRouter } from 'expo-router';
+import useSwipeTabs from '../utils/useSwipeTabs';
 
 import BottomNav from "../components/BottomNav";
 
@@ -35,11 +36,11 @@ try {
     const firebaseModuleFallback = require('../firebaseConfig');
     db = firebaseModuleFallback.db;
   } catch (err) {
-    console.log("Firebase config file not found.");
+    __DEV__ && console.log("Firebase config file not found.");
   }
 }
 
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, doc, onSnapshot } from 'firebase/firestore';
 
 const { width } = Dimensions.get('window');
 
@@ -139,6 +140,71 @@ const isRoomAlive = (rawData) => {
 const validUrl = (v) =>
   typeof v === 'string' && v.trim().length > 10 ? v.trim() : null;
 
+// Asli DP sirf wahi jo user ne khud lagayi ho. Default/random placeholder images "DP nahi" maani jaati hain
+// -> card par random photo ki jagah user (person) icon dikhega.
+const NO_DP_RE = /avatar\.iran\.liara\.run|ui-avatars\.com|picsum\.photos/i;
+const realDp = (v) => {
+  const u = validUrl(v);
+  return u && !NO_DP_RE.test(u) ? u : null;
+};
+
+// ------------------------------------
+// LIVE USER PROFILE (users/{uid}) - dp / naam badalte hi card turant badle
+// ------------------------------------
+// Ek uid ka ek hi listener (kai card/seat share karte hain). Koi sun-ne wala na bache to listener band.
+const profileStore = new Map(); // uid -> { data, subs:Set, unsub }
+
+const subscribeProfile = (uid, cb) => {
+  let entry = profileStore.get(uid);
+  if (!entry) {
+    entry = { data: null, subs: new Set(), unsub: null };
+    profileStore.set(uid, entry);
+    const e = entry;
+    try {
+      e.unsub = onSnapshot(
+        doc(db, 'users', uid),
+        (snap) => {
+          const d = snap.exists() ? snap.data() : {};
+          e.data = {
+            img: realDp(d.profileImg) || realDp(d.photoURL),
+            name: d.username || d.name || null,
+          };
+          e.subs.forEach((fn) => fn(e.data));
+        },
+        () => {}
+      );
+    } catch (err) {}
+  }
+  entry.subs.add(cb);
+  if (entry.data) cb(entry.data);
+  return () => {
+    entry.subs.delete(cb);
+    if (entry.subs.size === 0) {
+      try { entry.unsub && entry.unsub(); } catch (err) {}
+      if (profileStore.get(uid) === entry) profileStore.delete(uid);
+    }
+  };
+};
+
+const useUserProfile = (uid, enabled = true) => {
+  const [p, setP] = useState(() => (uid ? profileStore.get(uid)?.data || null : null));
+  useEffect(() => {
+    if (!uid || !db || !enabled) return undefined;
+    return subscribeProfile(uid, setP);
+  }, [uid, enabled]);
+  return p;
+};
+
+// DP ho to photo, nahi ho to user (account) icon
+const DpAvatar = memo(function DpAvatar({ uri, style, iconSize = 18 }) {
+  if (uri) return <Image source={{ uri }} style={style} fadeDuration={0} />;
+  return (
+    <View style={[style, { alignItems: 'center', justifyContent: 'center', backgroundColor: '#2b2b2b' }]}>
+      <Ionicons name="person" size={iconSize} color="rgba(255,255,255,0.6)" />
+    </View>
+  );
+});
+
 // Sab se zyada star pane wala broadcaster upar; barabar ho to naya room pehle.
 const compareStreams = (a, b) => {
   if (b.stars !== a.stars) return b.stars - a.stars;
@@ -160,14 +226,17 @@ const parseRoom = (docId, rawData, now) => {
   const roomTime = getTimeInMilliseconds(rawData.createdAt);
   if (roomTime && now - roomTime > 24 * 60 * 60 * 1000) return null;
 
-  const hostImg = validUrl(rawData.hostImg) || validUrl(rawData.profileImg);
-  const cover =
-    validUrl(rawData.roomCover) ||
-    validUrl(rawData.cover) ||
-    validUrl(rawData.banner) ||
-    validUrl(rawData.roomImg) ||
-    hostImg ||
-    STABLE_DEFAULT_BANNER;
+  const hostImg = realDp(rawData.hostImg) || realDp(rawData.profileImg);
+  // Room banner: host ne alag cover lagaya ho to wahi. Cover agar host ki (purani) DP ki copy hai
+  // (LiveStart me default cover = host DP) to use custom nahi maante -> card live DP dikhayega.
+  const rawCover =
+    realDp(rawData.roomCover) ||
+    realDp(rawData.cover) ||
+    realDp(rawData.banner) ||
+    realDp(rawData.roomImg);
+  const cover = rawCover && rawCover !== validUrl(rawData.hostImg) && rawCover !== validUrl(rawData.profileImg)
+    ? rawCover
+    : null;
 
   const hostId = rawData.hostId || rawData.seatsData?.seat_1?.userId || null;
 
@@ -183,7 +252,7 @@ const parseRoom = (docId, rawData, now) => {
     users: Math.max(0, Number(rawData.viewerCount) || 0),
     stars,
     roomCover: cover,
-    hostImg: hostImg || STABLE_DEFAULT_AVATAR,
+    hostImg: hostImg || null,
     createdAt: roomTime,
     layout: String(rawData.roomLayout || 'chat').toLowerCase(),
     seats: Object.keys(rawData.seatsData || {})
@@ -191,7 +260,7 @@ const parseRoom = (docId, rawData, now) => {
       .slice(0, 9)
       .map((k) => {
         const st = rawData.seatsData[k] || {};
-        return { img: validUrl(st.userImg), taken: !!st.userId, muted: !!st.isMuted };
+        return { uid: st.userId || null, img: realDp(st.userImg), taken: !!st.userId, muted: !!st.isMuted };
       }),
   };
 };
@@ -201,7 +270,7 @@ const streamSig = (s) =>
   [
     s.id, s.hostId, s.title, s.host, s.type, s.users, s.stars, s.roomCover,
     s.hostImg, s.createdAt, s.layout,
-    s.seats.map((x) => (x.taken ? '1' : '0') + (x.img || '')).join(','),
+    s.seats.map((x) => (x.taken ? '1' : '0') + (x.uid || '') + (x.img || '')).join(','),
   ].join('|');
 
 // ------------------------------------
@@ -230,6 +299,8 @@ const useScreenFocused = () => {
 // ------------------------------------
 
 const livePulse = new Animated.Value(1);
+const claimTouch = () => true;
+const noTerminate = () => false;
 
 // ------------------------------------
 // VIEWER COUNT (video live = room ke andar ke log, real-time)
@@ -269,8 +340,21 @@ const VideoViewerPill = memo(function VideoViewerPill({ roomId, hostId, fallback
 // LIVE CARD
 // ------------------------------------
 
+const SeatAvatar = memo(function SeatAvatar({ uid, fallbackImg }) {
+  const focused = useContext(FocusContext);
+  const prof = useUserProfile(uid, focused);
+  const img = prof ? prof.img : fallbackImg;   // profile aate hi wahi sach (DP hata di to icon)
+  return <DpAvatar uri={img} style={styles.seatImg} iconSize={12} />;
+});
+
 const LiveCard = memo(function LiveCard({ stream, onPress, opening, isTop }) {
   const handlePress = useCallback(() => onPress(stream), [onPress, stream]);
+  const focused = useContext(FocusContext);
+  // LIVE: host ne DP / naam badla to room doc ka wait nahi, users/{hostId} se turant
+  const prof = useUserProfile(stream.hostId, focused);
+  const liveHostImg = prof ? prof.img : stream.hostImg;
+  const liveHostName = (prof && prof.name) || stream.host;
+  const coverUri = stream.roomCover || liveHostImg;
 
   return (
     <TouchableOpacity
@@ -279,12 +363,19 @@ const LiveCard = memo(function LiveCard({ stream, onPress, opening, isTop }) {
       onPress={handlePress}
     >
       {/* Host / room banner */}
-      <Image
-        source={{ uri: stream.roomCover }}
-        style={styles.cardImage}
-        resizeMode="cover"
-        fadeDuration={0}
-      />
+      {coverUri ? (
+        <Image
+          source={{ uri: coverUri }}
+          style={styles.cardImage}
+          resizeMode="cover"
+          fadeDuration={0}
+        />
+      ) : (
+        // DP / cover dono nahi -> random photo nahi, user (account) icon
+        <View style={[styles.cardImage, { alignItems: 'center', justifyContent: 'center', backgroundColor: '#1d1d1d' }]}>
+          <Ionicons name="person" size={Math.round(CARD_WIDTH * 0.42)} color="rgba(255,255,255,0.22)" />
+        </View>
+      )}
 
       {/* Soft top shade so badges are readable on any image */}
       <LinearGradient
@@ -307,8 +398,8 @@ const LiveCard = memo(function LiveCard({ stream, onPress, opening, isTop }) {
             const st = stream.seats?.[i];
             return (
               <View key={i} style={[styles.seatCell, st?.taken && styles.seatCellTaken]}>
-                {st?.taken && st.img ? (
-                  <Image source={{ uri: st.img }} style={styles.seatImg} />
+                {st?.taken ? (
+                  <SeatAvatar uid={st.uid} fallbackImg={st.img} />
                 ) : (
                   <Ionicons name="person" size={12} color="rgba(255,255,255,0.25)" />
                 )}
@@ -345,12 +436,12 @@ const LiveCard = memo(function LiveCard({ stream, onPress, opening, isTop }) {
       {/* Host info */}
       <View style={styles.bottomInfo}>
         <View style={styles.avatarRing}>
-          <Image source={{ uri: stream.hostImg }} style={styles.profilePic} />
+          <DpAvatar uri={liveHostImg} style={styles.profilePic} iconSize={20} />
         </View>
 
         <View style={styles.bottomTextCol}>
           <Text style={styles.hostName} numberOfLines={1}>
-            {stream.host}
+            {liveHostName}
           </Text>
           <Text style={styles.roomTitle} numberOfLines={1}>
             {stream.title}
@@ -411,7 +502,8 @@ const TrendingBanner = memo(function TrendingBanner() {
   }, []);
 
   return (
-    <View style={styles.bannerContainer}>
+    // Banner par left/right swipe sirf banner badle, All Live band na ho (parent swipe yahan nahi chalega)
+    <View style={styles.bannerContainer} onStartShouldSetResponder={claimTouch} onResponderTerminationRequest={noTerminate}>
       <ScrollView
         ref={scrollRef}
         horizontal
@@ -481,6 +573,18 @@ export default function AllLive() {
   const router = useRouter();
   const { blocked: blockedIds } = useBlockedIds(); // BLOCK
   const focused = useScreenFocused();
+
+  // Swipe left -> wapas (Discover). Order: Live | Discover | Follow | For You
+  const swipe = useSwipeTabs({
+    onSwipeLeft: () => {
+      try {
+        if (router.canGoBack()) router.back();
+        else router.replace('/');
+      } catch (error) {
+        router.replace('/');
+      }
+    },
+  });
 
   const [activeTab, setActiveTab] = useState('audio');
   const [liveStreams, setLiveStreams] = useState([]);
@@ -693,14 +797,14 @@ export default function AllLive() {
           if (changed) scheduleFlush();
         },
         (error) => {
-          console.log('Firebase Sync Error:', error);
+          __DEV__ && console.log('Firebase Sync Error:', error);
           streamMapRef.current = new Map();
           setLiveStreams([]);
           setLoading(false);
         }
       );
     } catch (err) {
-      console.log('Firestore Connection Error:', err);
+      __DEV__ && console.log('Firestore Connection Error:', err);
       setLiveStreams([]);
       setLoading(false);
     }
@@ -838,7 +942,7 @@ export default function AllLive() {
 
   return (
     <FocusContext.Provider value={focused}>
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} {...swipe}>
         <StatusBar backgroundColor="#08080a" barStyle="light-content" translucent={false} />
 
         {/* HEADER */}

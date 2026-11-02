@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import {
@@ -46,6 +47,7 @@ const getItemLayout = (_d, index) => ({
  */
 export default function FollowListScreen({ mode }) {
   const router = useRouter();
+  useBackStep('/profile');
   const params = useLocalSearchParams();
 
   const myId = auth.currentUser?.uid;

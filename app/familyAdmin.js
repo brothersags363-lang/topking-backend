@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import React, { useEffect, useMemo, useState } from "react";
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet, Image, Alert, Modal, TextInput, ActivityIndicator,
@@ -18,6 +19,7 @@ const TABS = [
 
 export default function FamilyAdmin() {
   const router = useRouter();
+  useBackStep('/');
   const insets = useSafeAreaInsets(); // navigation bar ke upar rakhne ke liye
   const isAdmin = useIsAdmin();
   const [all, setAll] = useState([]);

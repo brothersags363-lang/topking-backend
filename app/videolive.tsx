@@ -27,6 +27,7 @@ import { blockIfProfane } from "../utils/guardText";
 // and livevideostart.tsx writes to.
 
 import { notifyNewFollower } from "../utils/pushNotify";
+import { fmtPoints } from "../utils/familyUtils";
 import React, { useEffect, useRef, useState, useCallback, memo, forwardRef, useImperativeHandle } from "react";
 import {
   View,
@@ -3272,6 +3273,52 @@ export default function VideoLive() {
     else if (t.uid === hostId) setIsFollowing(next);
   };
 
+  // ----- profile popup extras: followers / following / likes + FAMILY card -----
+  const [pcInfo, setPcInfo] = useState<any>(null);
+  useEffect(() => {
+    setPcInfo(null);
+    const uid = profileCard?.uid;
+    if (!db || !uid) return;
+    let alive = true;
+    (async () => {
+      try {
+        const u: any = (await getDoc(doc(db, "users", uid))).data() || {};
+        const info: any = {
+          followers: Number(u.followersCount || 0),
+          following: Number(u.followingCount || 0),
+          likes: Number(u.likesCount || u.totalLikes || 0),
+          familyId: u.familyId || "",
+          familyName: u.familyName || "",
+          familyLogo: u.familyLogo || "",
+          familyPoints: 0,
+          familyMembers: 0,
+        };
+        if (alive) setPcInfo(info);
+        if (info.familyId) {
+          const f: any = (await getDoc(doc(db, "families", info.familyId))).data();
+          if (f && f.status === "approved" && alive) {
+            setPcInfo({
+              ...info,
+              familyName: f.name || info.familyName,
+              familyLogo: f.logo || info.familyLogo,
+              familyPoints: Number(f.points || 0),
+              familyMembers: Number(f.memberCount || 1),
+            });
+          } else if (alive && f && f.status !== "approved") {
+            setPcInfo({ ...info, familyId: "" }); // family band/reject -> card mat dikhao
+          }
+        }
+      } catch (e) {}
+    })();
+    return () => { alive = false; };
+  }, [profileCard?.uid]);
+
+  const goUserProfile = (u: any) => {
+    if (!u?.uid) return;
+    setProfileCard(null);
+    router.push({ pathname: "/userProfile", params: { userId: u.uid, roomId } } as any);
+  };
+
   const openProfile = useCallback((u: any) => setProfileCard(u), []);
   const openHostCard = () => {
     if (!hostId) return;
@@ -4780,122 +4827,122 @@ export default function VideoLive() {
         </TouchableOpacity>
       </Modal>
 
-      {/* ================= USER PROFILE CARD ================= */}
-      <Modal transparent visible={!!profileCard} animationType="fade" onRequestClose={() => setProfileCard(null)}>
-        <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={() => setProfileCard(null)}>
-          <TouchableOpacity activeOpacity={1} style={styles.pcBox}>
-            {profileCard && (
-              <>
-                <View style={{ width: 96, height: 96, justifyContent: "center", alignItems: "center" }}>
-                  <Image source={{ uri: profileCard.img || STABLE_AVATAR }} style={styles.pcAva} />
-                  {(Number(profileCard.level) >= 10 || !!profileCard.uid) && (
-                    <LevelFrame
-                      level={Number(profileCard.level)}
-                      uid={profileCard.uid}
-                      animated
-                      style={{ position: "absolute", width: 110, height: 110 }}
-                    />
-                  )}
-                </View>
-                <View style={{ flexDirection: "row", alignItems: "center", marginTop: 10 }}>
-                  <Text style={styles.pcName} numberOfLines={1}>
-                    {profileCard.name || profileCard.username || "User"}
-                  </Text>
-                  <UserTick uid={profileCard.uid || profileCard.userId || profileCard.senderId || profileCard.id} verified={!!(!!profileCard.verified)} verifiedColor={profileCard.verifiedColor} size={17} />
-                </View>
-                <View style={{ flexDirection: "row", alignItems: "center", marginTop: 6 }}>
-                  {(() => {
-                    const th = getLevelTheme(Number(profileCard.level) || 1);
-                    return (
-                      <View style={[styles.levelBadge, { backgroundColor: th.bg, borderColor: th.border, marginLeft: 0 }]}>
-                        <MaterialCommunityIcons name="diamond-stone" size={10} color={th.icon} />
-                        <Text style={[styles.levelText, { color: th.text }]}>LV {profileCard.level || 1}</Text>
-                      </View>
-                    );
-                  })()}
-                  {profileCard.uid === hostId && (
-                    <View style={[styles.roleTag, { backgroundColor: "#F71084", marginLeft: 6 }]}>
-                      <Text style={styles.roleTagTxt}>HOST</Text>
-                    </View>
-                  )}
-                  {!!mods[profileCard.uid] && (
-                    <View style={[styles.roleTag, { backgroundColor: "#2D9CFF", marginLeft: 6 }]}>
-                      <Text style={styles.roleTagTxt}>MOD</Text>
-                    </View>
-                  )}
-                  {!!mutedUsers[profileCard.uid] && (
-                    <View style={[styles.roleTag, { backgroundColor: "#6b7280", marginLeft: 6 }]}>
-                      <Text style={styles.roleTagTxt}>MUTED</Text>
-                    </View>
-                  )}
-                </View>
-
-                {profileCard.uid !== currentUid && (
-                  <View style={styles.pcBtns}>
-                    <TouchableOpacity
-                      style={[styles.pcBtn, profileFollowing ? { backgroundColor: "#374151" } : { backgroundColor: "#F71084" }]}
-                      onPress={toggleProfileFollow}
-                    >
-                      <Text style={styles.pcBtnTxt}>{profileFollowing ? "Following" : "+ Follow"}</Text>
-                    </TouchableOpacity>
-
-                    {profileCard.isHostCard && !isHost && (
-                      <TouchableOpacity
-                        style={[styles.pcBtn, { backgroundColor: "#F59E0B" }]}
-                        onPress={() => {
-                          setProfileCard(null);
-                          openGiftModal();
-                        }}
-                      >
-                        <Text style={styles.pcBtnTxt}>🎁 Send Gift</Text>
-                      </TouchableOpacity>
-                    )}
-
-                    {canModerate(profileCard) && (
-                      <>
-                        <TouchableOpacity
-                          style={[styles.pcBtn, { backgroundColor: "#374151" }]}
-                          onPress={() => muteUser(profileCard, !mutedUsers[profileCard.uid])}
-                        >
-                          <Text style={styles.pcBtnTxt}>
-                            {mutedUsers[profileCard.uid] ? "🔊 Unmute chat" : "🔇 Mute chat"}
-                          </Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          style={[styles.pcBtn, { backgroundColor: "#DC2626" }]}
-                          onPress={() => kickUser(profileCard)}
-                        >
-                          <Text style={styles.pcBtnTxt}>🚫 Remove from live</Text>
-                        </TouchableOpacity>
-                      </>
-                    )}
-
-                    {isHost && profileCard.uid !== hostId && (
-                      <TouchableOpacity
-                        style={[styles.pcBtn, { backgroundColor: "#2D9CFF" }]}
-                        onPress={() => toggleMod(profileCard)}
-                      >
-                        <Text style={styles.pcBtnTxt}>
-                          {mods[profileCard.uid] ? "Remove moderator" : "🛡 Make moderator"}
-                        </Text>
-                      </TouchableOpacity>
-                    )}
-
-                    <TouchableOpacity
-                      style={[styles.pcBtn, { backgroundColor: "transparent", borderWidth: 1, borderColor: "#4b5563" }]}
-                      onPress={() => {
-                        setReportTarget(profileCard);
-                        setProfileCard(null);
-                      }}
-                    >
-                      <Text style={[styles.pcBtnTxt, { color: "#f87171" }]}>⚑ Report</Text>
-                    </TouchableOpacity>
-                  </View>
+      {/* ================= USER PROFILE CARD (bottom sheet) ================= */}
+      <Modal transparent visible={!!profileCard} animationType="slide" statusBarTranslucent onRequestClose={() => setProfileCard(null)}>
+        <View style={styles.pcOverlay}>
+          <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={() => setProfileCard(null)} />
+          {profileCard && (
+            <View style={[styles.pcSheet, { paddingBottom: 16 + insets.bottom }]}>
+              <View style={styles.pcAvaWrap}>
+                <Image source={{ uri: profileCard.img || STABLE_AVATAR }} style={styles.pcAva} />
+                {(Number(profileCard.level) >= 10 || !!profileCard.uid) && (
+                  <LevelFrame level={Number(profileCard.level)} uid={profileCard.uid} animated style={{ position: "absolute", width: 110, height: 110 }} />
                 )}
-              </>
-            )}
-          </TouchableOpacity>
-        </TouchableOpacity>
+              </View>
+
+              <View style={{ flexDirection: "row", alignItems: "center", marginTop: 10 }}>
+                <Text style={styles.pcName} numberOfLines={1}>{profileCard.name || profileCard.username || "User"}</Text>
+                <UserTick uid={profileCard.uid || profileCard.userId || profileCard.senderId || profileCard.id} verified={!!profileCard.verified} verifiedColor={profileCard.verifiedColor} size={17} />
+                {profileCard.uid === hostId && (
+                  <View style={[styles.roleTag, { backgroundColor: "#F71084", marginLeft: 6 }]}><Text style={styles.roleTagTxt}>HOST</Text></View>
+                )}
+                {!!mods[profileCard.uid] && (
+                  <View style={[styles.roleTag, { backgroundColor: "#2D9CFF", marginLeft: 6 }]}><Text style={styles.roleTagTxt}>MOD</Text></View>
+                )}
+                {!!mutedUsers[profileCard.uid] && (
+                  <View style={[styles.roleTag, { backgroundColor: "#6b7280", marginLeft: 6 }]}><Text style={styles.roleTagTxt}>MUTED</Text></View>
+                )}
+              </View>
+
+              {/* Followers / Following / Likes */}
+              <View style={styles.pcStats}>
+                <View style={styles.pcStat}><Text style={styles.pcStatN}>{pcInfo ? pcInfo.followers : "—"}</Text><Text style={styles.pcStatL}>Followers</Text></View>
+                <View style={styles.pcStat}><Text style={styles.pcStatN}>{pcInfo ? pcInfo.following : "—"}</Text><Text style={styles.pcStatL}>Following</Text></View>
+                <View style={styles.pcStat}><Text style={styles.pcStatN}>{pcInfo ? pcInfo.likes : "—"}</Text><Text style={styles.pcStatL}>Likes</Text></View>
+              </View>
+
+              {/* Level card  +  FAMILY card (sirf jab user family me ho) */}
+              <View style={styles.pcCards}>
+                {(() => {
+                  const lv = Number(profileCard.level) || 1;
+                  const th = getLevelTheme(lv);
+                  return (
+                    <TouchableOpacity activeOpacity={0.8} style={styles.pcCard} onPress={() => goUserProfile(profileCard)}>
+                      <View style={[styles.pcLvPill, { backgroundColor: th.bg, borderColor: th.border }]}>
+                        <MaterialCommunityIcons name="diamond-stone" size={13} color={th.icon} />
+                        <Text style={[styles.pcLvTxt, { color: th.text }]}>{lv}LV</Text>
+                      </View>
+                      <Text style={styles.pcLvMore}>Level &gt;</Text>
+                    </TouchableOpacity>
+                  );
+                })()}
+
+                {!!pcInfo?.familyId && (
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    style={[styles.pcCard, { marginLeft: 10 }]}
+                    onPress={() => { const fid = pcInfo.familyId; setProfileCard(null); router.push({ pathname: "/familyDetail", params: { id: fid } } as any); }}
+                  >
+                    <Image source={{ uri: pcInfo.familyLogo || STABLE_AVATAR }} style={styles.pcFamLogo} />
+                    <View style={{ flex: 1, marginLeft: 10 }}>
+                      <Text style={styles.pcFamName} numberOfLines={1}>{pcInfo.familyName}</Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", marginTop: 2 }}>
+                        <Ionicons name="people" size={12} color="#aaa" />
+                        <Text style={styles.pcFamSub}> {pcInfo.familyMembers || 1}</Text>
+                        <Ionicons name="flame-outline" size={12} color="#aaa" style={{ marginLeft: 8 }} />
+                        <Text style={styles.pcFamSub}> {fmtPoints(pcInfo.familyPoints)}</Text>
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {/* Profile + Follow */}
+              <View style={styles.pcMainBtns}>
+                <TouchableOpacity style={styles.pcProfileBtn} onPress={() => goUserProfile(profileCard)}>
+                  <Text style={styles.pcProfileTxt}>Profile</Text>
+                </TouchableOpacity>
+                {profileCard.uid !== currentUid && (
+                  <TouchableOpacity
+                    style={[styles.pcFollowBtn, profileFollowing && { backgroundColor: "#3a3a3a" }]}
+                    onPress={toggleProfileFollow}
+                  >
+                    <Text style={[styles.pcFollowTxt, profileFollowing && { color: "#fff" }]}>{profileFollowing ? "Following" : "Follow"}</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {/* Extra actions (gift / mod / mute / kick / report) */}
+              {profileCard.uid !== currentUid && (
+                <View style={styles.pcChips}>
+                  {profileCard.isHostCard && !isHost && (
+                    <TouchableOpacity style={[styles.pcChip, { backgroundColor: "#F59E0B" }]} onPress={() => { setProfileCard(null); openGiftModal(); }}>
+                      <Text style={styles.pcChipTxt}>🎁 Send Gift</Text>
+                    </TouchableOpacity>
+                  )}
+                  {canModerate(profileCard) && (
+                    <>
+                      <TouchableOpacity style={[styles.pcChip, { backgroundColor: "#374151" }]} onPress={() => muteUser(profileCard, !mutedUsers[profileCard.uid])}>
+                        <Text style={styles.pcChipTxt}>{mutedUsers[profileCard.uid] ? "🔊 Unmute chat" : "🔇 Mute chat"}</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.pcChip, { backgroundColor: "#DC2626" }]} onPress={() => kickUser(profileCard)}>
+                        <Text style={styles.pcChipTxt}>🚫 Remove</Text>
+                      </TouchableOpacity>
+                    </>
+                  )}
+                  {isHost && profileCard.uid !== hostId && (
+                    <TouchableOpacity style={[styles.pcChip, { backgroundColor: "#2D9CFF" }]} onPress={() => toggleMod(profileCard)}>
+                      <Text style={styles.pcChipTxt}>{mods[profileCard.uid] ? "Remove mod" : "🛡 Make mod"}</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity style={[styles.pcChip, { backgroundColor: "transparent", borderWidth: 1, borderColor: "#4b5563" }]} onPress={() => { setReportTarget(profileCard); setProfileCard(null); }}>
+                    <Text style={[styles.pcChipTxt, { color: "#f87171" }]}>⚑ Report</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+          )}
+        </View>
       </Modal>
 
       {/* ================= REPORT REASON ================= */}
@@ -5977,6 +6024,29 @@ const styles = StyleSheet.create({
   rankNum: { color: "#9aa0b4", width: 26, fontSize: 16, fontWeight: "800", textAlign: "center" },
   rankStars: { color: "#FFE600", fontWeight: "800", fontSize: 13 },
 
+  pcOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "flex-end" },
+  pcSheet: { backgroundColor: "#141414", borderTopLeftRadius: 32, borderTopRightRadius: 32, paddingHorizontal: 16, paddingTop: 22, alignItems: "center" },
+  pcAvaWrap: { width: 96, height: 96, justifyContent: "center", alignItems: "center" },
+  pcStats: { flexDirection: "row", width: "100%", marginTop: 16 },
+  pcStat: { flex: 1, alignItems: "center" },
+  pcStatN: { color: "#fff", fontSize: 20, fontWeight: "800" },
+  pcStatL: { color: "#cfcfcf", fontSize: 15, marginTop: 4 },
+  pcCards: { flexDirection: "row", width: "100%", marginTop: 18 },
+  pcCard: { flex: 1, flexDirection: "row", alignItems: "center", backgroundColor: "#2b2b2b", borderRadius: 12, paddingHorizontal: 10, paddingVertical: 10, minHeight: 56 },
+  pcLvPill: { flexDirection: "row", alignItems: "center", borderRadius: 14, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 3 },
+  pcLvTxt: { fontSize: 14, fontWeight: "800", marginLeft: 3 },
+  pcLvMore: { color: "#fff", fontSize: 16, marginLeft: "auto" },
+  pcFamLogo: { width: 40, height: 40, borderRadius: 20, backgroundColor: "#222" },
+  pcFamName: { color: "#fff", fontSize: 15, fontWeight: "800" },
+  pcFamSub: { color: "#ddd", fontSize: 12, fontWeight: "700" },
+  pcMainBtns: { flexDirection: "row", width: "100%", marginTop: 14 },
+  pcProfileBtn: { flex: 1, backgroundColor: "#2b2b2b", borderRadius: 10, paddingVertical: 16, alignItems: "center" },
+  pcProfileTxt: { color: "#fff", fontSize: 18, fontWeight: "800" },
+  pcFollowBtn: { flex: 2, marginLeft: 10, backgroundColor: "#FFE62B", borderRadius: 10, paddingVertical: 16, alignItems: "center" },
+  pcFollowTxt: { color: "#000", fontSize: 18, fontWeight: "800" },
+  pcChips: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", width: "100%", marginTop: 12 },
+  pcChip: { borderRadius: 16, paddingHorizontal: 12, paddingVertical: 7, margin: 4 },
+  pcChipTxt: { color: "#fff", fontWeight: "800", fontSize: 12 },
   pcBox: {
     width: "82%",
     backgroundColor: "#1C1E2E",

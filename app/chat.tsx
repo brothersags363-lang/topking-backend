@@ -1,3 +1,4 @@
+import useBackStep from "../utils/useBackStep";
 import { blockIfProfane } from "../utils/guardText";
 // ============================================================================
 // chat.tsx  -  1-to-1 chat screen
@@ -818,6 +819,20 @@ export default function ChatScreen() {
   const [otherTyping, setOtherTyping] = useState(false);
 
   const [headerMenuVisible, setHeaderMenuVisible] = useState(false);
+
+  // Mobile back: pehle search/menu band, phir ek step peeche (app band nahi hogi)
+  useBackStep('/messages', () => {
+    if (searchMode) {
+      setSearchMode(false);
+      setSearchText("");
+      return true;
+    }
+    if (headerMenuVisible) {
+      setHeaderMenuVisible(false);
+      return true;
+    }
+    return false;
+  });
   const [isBlocked, setIsBlocked] = useState(false);
   const [blockedByOther, setBlockedByOther] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(true);

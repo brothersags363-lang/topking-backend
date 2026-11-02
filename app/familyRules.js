@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import React, { useState } from "react";
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -16,6 +17,7 @@ const Section = ({ title, lines }) => (
 
 export default function FamilyRules() {
   const router = useRouter();
+  useBackStep('/family');
   const insets = useSafeAreaInsets(); // navigation bar ke upar rakhne ke liye
   const [busy, setBusy] = useState(false);
 

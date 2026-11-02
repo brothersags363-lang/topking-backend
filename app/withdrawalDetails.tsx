@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import React, { useEffect, useState } from "react";
 import {
   View,
@@ -33,6 +34,7 @@ function Row({ label, value }: { label: string; value: any }) {
 export default function WithdrawalDetails() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
+  useBackStep('/profile');
 
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);

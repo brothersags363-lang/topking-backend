@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import React, { useEffect, useState } from "react";
 import {
   View,
@@ -20,6 +21,7 @@ const statusColor = (s: string) =>
 
 export default function Withdrawals() {
   const router = useRouter();
+  useBackStep('/profile');
 
   const [loading, setLoading] = useState(true);
   const [denied, setDenied] = useState(false);

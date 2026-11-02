@@ -10,6 +10,7 @@ import {
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useBlockedIds } from '../../utils/useBlockedIds';
 import useTabBack from '../../utils/useTabBack';
+import useSwipeTabs from '../../utils/useSwipeTabs';
 import { loadDiscover, discoverCache } from '../../utils/homeData';
 import BottomNav from '../../components/BottomNav';
 import TopTabs from '../../components/TopTabs';
@@ -47,6 +48,12 @@ export default function DiscoverScreen() {
   const { blocked } = useBlockedIds();
 
   useTabBack();
+
+  // Swipe: left -> Follow, right -> All Live
+  const swipe = useSwipeTabs({
+    onSwipeLeft: () => router.replace('/follow'),
+    onSwipeRight: () => router.push('/all-live'),
+  });
 
   const [videos, setVideos] = useState(discoverCache.videos);
   const [loading, setLoading] = useState(!discoverCache.at);
@@ -123,7 +130,7 @@ export default function DiscoverScreen() {
   );
 
   return (
-    <View style={styles.root}>
+    <View style={styles.root} {...swipe}>
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
       <View style={styles.header}><TopTabs active="discover" /></View>
 

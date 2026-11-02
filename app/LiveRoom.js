@@ -82,6 +82,7 @@ import {
 import { gifts } from "../assets/giftsData";
 import { isGifReaction, gifSource } from '../assets/emojiGifs';
 import { Image as ExpoImage } from 'expo-image';
+import FastImage from '../components/FastImage';
 import LevelFrame, { getSpecialKey } from '../components/LevelFrame';
 import { useAdminFrame } from '../components/adminFrames';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
@@ -104,6 +105,7 @@ import { callApi } from '../utils/api';
 import { useLiveBanGuard } from '../utils/liveBan';
 import { useBlockedIds } from '../utils/useBlockedIds';
 import UserTick from '../components/UserTick';
+import ProfileSheet, { SheetChip } from '../components/live/ProfileSheet';
 
 // import LottieView from "lottie-react-native";
 // import { gifts } from "../assets/giftsData";
@@ -530,7 +532,7 @@ const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress, cellW
       <View style={[styles.seatSquare, occupied ? styles.seatSquareOccupied : (glowOn && styles.seatSquareSpeaking)]}>
         {occupied ? (
           <>
-            <ExpoImage source={{ uri: seat.userImg || STABLE_AVATAR }} style={styles.seatAvatarImg} contentFit="cover" cachePolicy="memory-disk" transition={0} recyclingKey={seat.userId} />
+            <FastImage uri={seat.userImg} fallback={STABLE_AVATAR} style={styles.seatAvatarImg} contentFit="cover" transition={0} />
             {glowOn ? <SpeakGlow /> : null}
             {SHOW_SEAT_FRAME && (seat.level >= 10 || !!seat.userId) && (
               <GuardedFrame
@@ -655,6 +657,7 @@ const LiveTimer = memo(({ startTime }) => {
 // ============================================================
 const GiftLayer = memo(forwardRef(function GiftLayer(_props, ref) {
   const [activeGift, setActiveGift] = useState(null);
+  const [activeMeta, setActiveMeta] = useState(null); // kisne bheja (animation ke upar dikhta hai)
   const [playKey, setPlayKey] = useState(0);
   const [combo, setCombo] = useState(null);
 
@@ -667,15 +670,36 @@ const GiftLayer = memo(forwardRef(function GiftLayer(_props, ref) {
   const shake = useRef(new Animated.Value(0)).current;
   const opacity = useRef(new Animated.Value(0)).current;
 
-  const doPlay = (animation, duration) => {
-    if (!animation) return;
-    setActiveGift(animation);
-    setPlayKey((k) => k + 1);
+  // FIX: pehle gift ka timer turant shuru ho jata tha. 3D (web:) gift me WebView + three.js
+  // load hone me 1-5 sec lagte hain (slow net par zyada) -> animation dikhne se pehle hi
+  // hide ho jati thi. Ab web gift ka timer WebView load hone (onLoadEnd) par shuru hota hai;
+  // load na bhi ho to bhi max WEB_LOAD_GRACE ke baad saaf ho jata hai.
+  const WEB_LOAD_GRACE = 9000;
+  const durationRef = useRef(5000);
+
+  const armHideTimer = (ms) => {
     if (giftTimerRef.current) clearTimeout(giftTimerRef.current);
     giftTimerRef.current = setTimeout(() => {
       giftTimerRef.current = null;
       setActiveGift(null);
-    }, duration || 5000);
+      setActiveMeta(null);
+    }, ms);
+  };
+
+  const doPlay = (animation, duration, meta) => {
+    if (!animation) return;
+    durationRef.current = duration || 5000;
+    setActiveGift(animation);
+    setActiveMeta(meta || null);
+    setPlayKey((k) => k + 1);
+    const isWeb = typeof animation === "string" && animation.startsWith("web:");
+    // web gift: load hone ka wait (grace + duration), onLoadEnd par asli duration se dobara set hoga
+    armHideTimer(isWeb ? WEB_LOAD_GRACE + durationRef.current : durationRef.current);
+  };
+
+  const onWebGiftLoaded = () => {
+    // page load ho gaya -> ab se poori duration tak chalne do
+    armHideTimer(durationRef.current);
   };
 
   useImperativeHandle(ref, () => ({
@@ -683,12 +707,12 @@ const GiftLayer = memo(forwardRef(function GiftLayer(_props, ref) {
     // Real-live behaviour: jab tak gift tap hote rahein / aate rahein,
     // full-screen animation nahi chalti (sirf combo banner x1, x2, x3...).
     // Tap ruke (delay ms koi naya gift nahi) -> SIRF last gift ki animation chalti hai.
-    playDeferred(animation, duration, delay = 600) {
+    playDeferred(animation, duration, delay = 600, meta) {
       if (!animation) return;
       if (deferTimerRef.current) clearTimeout(deferTimerRef.current);
       deferTimerRef.current = setTimeout(() => {
         deferTimerRef.current = null;
-        doPlay(animation, duration);
+        doPlay(animation, duration, meta);
       }, delay);
     },
     showCombo(data, onEnd, ms = 2200) {
@@ -806,6 +830,7 @@ const GiftLayer = memo(forwardRef(function GiftLayer(_props, ref) {
               androidLayerType="hardware"
               scrollEnabled={false}
               pointerEvents="none"
+              onLoadEnd={onWebGiftLoaded}
             />
           ) : (
             <LottieView
@@ -821,6 +846,51 @@ const GiftLayer = memo(forwardRef(function GiftLayer(_props, ref) {
               style={{ width: 350, height: 350, backgroundColor: "transparent" }}
             />
           )}
+        </View>
+      ) : null}
+
+      {activeGift && activeMeta && activeMeta.senderName ? (
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            top: height * 0.17,
+            alignSelf: "center",
+            left: 0,
+            right: 0,
+            alignItems: "center",
+            zIndex: 100000,
+            elevation: 100000,
+          }}
+        >
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              paddingVertical: 5,
+              paddingLeft: 5,
+              paddingRight: 14,
+              borderRadius: 24,
+              backgroundColor: "rgba(0,0,0,0.6)",
+              borderWidth: 1,
+              borderColor: "rgba(255,105,180,0.85)",
+              maxWidth: width * 0.9,
+            }}
+          >
+            <ExpoImage
+              source={{ uri: activeMeta.senderImg || STABLE_AVATAR }}
+              style={{ width: 30, height: 30, borderRadius: 15, marginRight: 8, backgroundColor: "#2a2b38" }}
+              contentFit="cover"
+              cachePolicy="memory-disk"
+              transition={0}
+            />
+            <Text numberOfLines={1} style={{ color: "#fff", fontSize: 13, flexShrink: 1 }}>
+              <Text style={{ fontWeight: "bold" }}>{activeMeta.senderName}</Text>
+              {" "}sent{" "}
+              {activeMeta.giftName ? <Text style={{ color: "#FFE600", fontWeight: "bold" }}>{activeMeta.giftName}</Text> : "a gift"}
+              {activeMeta.receiverName ? <Text>{" "}to <Text style={{ color: "#FFE600", fontWeight: "bold" }}>@{activeMeta.receiverName}</Text></Text> : null}
+            </Text>
+          </View>
         </View>
       ) : null}
 
@@ -853,14 +923,9 @@ const GiftLayer = memo(forwardRef(function GiftLayer(_props, ref) {
               maxWidth: width * 0.62,
             }}
           >
-            <Animated.Image
-              source={{ uri: combo.senderImg || STABLE_AVATAR }}
+            <Animated.View
               style={{
-                width: 44,
-                height: 44,
-                borderRadius: 22,
                 marginRight: 8,
-                backgroundColor: "#2a2b38",
                 transform: [
                   {
                     rotate: shake.interpolate({
@@ -870,7 +935,15 @@ const GiftLayer = memo(forwardRef(function GiftLayer(_props, ref) {
                   },
                 ],
               }}
-            />
+            >
+              <ExpoImage
+                source={{ uri: combo.senderImg || STABLE_AVATAR }}
+                style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: "#2a2b38" }}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                transition={0}
+              />
+            </Animated.View>
             <View style={{ flexShrink: 1 }}>
               <Text numberOfLines={1} style={{ color: "#fff", fontWeight: "bold", fontSize: 14 }}>
                 {combo.senderName}
@@ -2214,8 +2287,28 @@ const { blocked: blockedIds, ref: blockedRef } = useBlockedIds();
 const [rawChatMessages, setChatMessages] = useState([]);
 const [rawAudienceMap, setAudienceMap] = useState({});
 // BLOCK: blocked (dono taraf) users ke msgs / viewers hide
-const chatMessages = React.useMemo(() => rawChatMessages.filter(m => !(m && m.senderId && blockedIds.has(m.senderId))), [rawChatMessages, blockedIds]);
 const audienceMap = React.useMemo(() => { const o = {}; for (const k in rawAudienceMap) { if (!blockedIds.has(k)) o[k] = rawAudienceMap[k]; } return o; }, [rawAudienceMap, blockedIds]);
+// LIVE PROFILE: kisi ne naam/photo badli to purane chat messages me bhi turant nayi dikhe
+// (audience doc hi source of truth). Jo message badla nahi uska object same rehta hai -> row re-render nahi.
+const chatMessages = React.useMemo(() => {
+  const out = [];
+  for (const m of rawChatMessages) {
+    if (!m) continue;
+    if (m.senderId && blockedIds.has(m.senderId)) continue;
+    const a = m.senderId ? audienceMap[m.senderId] : null;
+    if (a && ((a.img && a.img !== m.userImg) || (a.name && a.name !== m.senderName) || (a.username && a.username !== m.username))) {
+      out.push({
+        ...m,
+        ...(a.img ? { userImg: a.img } : null),
+        ...(a.name ? { senderName: a.name } : null),
+        ...(a.username ? { username: a.username } : null),
+      });
+    } else {
+      out.push(m);
+    }
+  }
+  return out;
+}, [rawChatMessages, blockedIds, audienceMap]);
 
 const audiencePayloadRef = useRef(null);   // meri audience doc (heartbeat ke liye)
 const audSeenRef = useRef({});             // uid -> { v: lastSeen, at: LOCAL time jab value badli }
@@ -2317,6 +2410,15 @@ const resolvedSeats = useMemo(() => {
         ? { ...st, level: lvl, ...(reaction ? { reaction } : null) }
         : st;
       if (!out[k].special && aud?.special) out[k] = { ...out[k], special: aud.special };
+      // LIVE PROFILE: seat par naam/photo hamesha audience doc ki taza value se
+      if (aud && ((aud.img && aud.img !== out[k].userImg) || (aud.username && aud.username !== out[k].userName) || (aud.name && aud.name !== out[k].realName))) {
+        out[k] = {
+          ...out[k],
+          ...(aud.img ? { userImg: aud.img } : null),
+          ...(aud.username ? { userName: aud.username } : null),
+          ...(aud.name ? { realName: aud.name } : null),
+        };
+      }
     } else {
       out[k] = st;
     }
@@ -2930,6 +3032,44 @@ log(e);
 loadUser();
 
 }, []);
+
+// ===== LIVE PROFILE SYNC =====
+// Naam / photo kahin se bhi badle (edit profile) -> room me apni state, audience doc aur seat
+// turant update. Baaki sab log audience listener se 1 snapshot me nayi photo/naam dekhte hain.
+const seatsDataRef = useRef({});
+seatsDataRef.current = roomData?.seatsData || {};
+useEffect(() => {
+  if (!db || !currentUid) return;
+  const unsub = onSnapshot(doc(db, "users", currentUid), (snap) => {
+    if (!snap.exists() || exitingRef.current) return;
+    const d = snap.data();
+    const uname = d.username || d.name || auth?.currentUser?.displayName || "User";
+    const rname = d.name || auth?.currentUser?.displayName || "User";
+    const img = d.profileImg || d.photoURL || auth?.currentUser?.photoURL || STABLE_AVATAR;
+
+    setCurrentName((p) => (p === uname ? p : uname));
+    setCurrentRealName((p) => (p === rname ? p : rname));
+    setCurrentAvatar((p) => (p === img ? p : img));
+
+    const cur = audiencePayloadRef.current;
+    if (!cur || !isJoinedRef.current) return;   // abhi join nahi hua: joinRoom taza data hi likhega
+    if (cur.name === rname && cur.username === uname && cur.img === img) return;
+
+    audiencePayloadRef.current = { ...cur, name: rname, username: uname, img };
+    updateDoc(doc(db, "rooms", roomId, "audience", currentUid), { name: rname, username: uname, img }).catch(() => {});
+
+    const seats = seatsDataRef.current;
+    const key = Object.keys(seats).find((k) => seats[k]?.userId === currentUid);
+    if (key) {
+      updateDoc(doc(db, "rooms", roomId), {
+        ["seatsData." + key + ".userName"]: uname,
+        ["seatsData." + key + ".realName"]: rname,
+        ["seatsData." + key + ".userImg"]: img,
+      }).catch(() => {});
+    }
+  }, (e) => log("Profile listener error:", e));
+  return () => unsub();
+}, [currentUid, roomId]);
 
 
 
@@ -3598,10 +3738,21 @@ if (isFirstJoinThisSession && data?.hostId !== currentUid) {
       userImg: currentAvatar || STABLE_AVATAR,
       verified: isVerified(userData.verified),
       verifiedColor: normTickColor(userData.verifiedColor),
-      level: hostLevel,
+      level: currentLevel,
       createdAt: Date.now(),
     })
   );
+  // JOIN ENTRY: apni entry turant dikhao (Firestore echo ka wait nahi; wo echo neeche skip hota hai)
+  showJoinBanner({
+    senderId: currentUid,
+    type: "join",
+    senderName: currentRealName,
+    username: currentName,
+    userImg: currentAvatar || STABLE_AVATAR,
+    verified: isVerified(userData.verified),
+    verifiedColor: normTickColor(userData.verifiedColor),
+    level: currentLevel,
+  });
 }
 
 if (Object.keys(updates).length > 0) {
@@ -3675,6 +3826,13 @@ log("Audience Added =", audiencePayload);
           navigateBack();
           return;
         }
+
+        // DEBUG (seat ke neeche stars): seatStars ke keys aur seat ke userId yahan match hone chahiye.
+        // Problem solve hone ke baad ye 3 line hata dena.
+        try {
+          console.log("SEATSTARS_DEBUG", JSON.stringify(data?.seatStars || {}),
+            "SEAT_UIDS", JSON.stringify(Object.values(data?.seatsData || {}).map((x) => x && x.userId).filter(Boolean)));
+        } catch (_) {}
 
         setRoomData(data);
         setLoading(false);
@@ -3967,7 +4125,8 @@ useEffect(() => {
       snap.docChanges().forEach((ch) => {
         if (ch.type !== "added") return;
         const d = ch.doc.data();
-        if (d?.type === "join" && Date.now() - (d.createdAt || 0) < 15000) {
+        // apni entry upar local dikh chuki; doosron ki entry: phone ki clock alag ho tab bhi dikhe
+        if (d?.type === "join" && d.senderId !== currentUid && Date.now() - (d.createdAt || 0) < 120000) {
           showJoinBanner(d);
         }
       });
@@ -4004,6 +4163,7 @@ useEffect(() => {
   let latestMap = {};
   let flushTimer = null;
   let lastSig = null;
+  let lastCoreSig = null;
 
   const unsubAudience = onSnapshot(audienceQuery, (snap) => {
     if (exitingRef.current) return;   // EXIT SMOOTH
@@ -4011,10 +4171,12 @@ useEffect(() => {
     const nowLocal = Date.now();
     const seen = audSeenRef.current;
     let sig = '';
+    let coreSig = '';
     snap.forEach(d => {
       const dd = d.data();
       map[d.id] = cleanVerified({ uid: d.id, ...dd });
-      sig += d.id + ':' + (isVerified(dd.verified) ? 1 : 0) + ':' + (dd.verifiedColor === 'yellow' ? 'y' : 'w') + ':' + (dd.hearts || 0) + ':' + (dd.level || 0) + ':' + (dd.img || '') + ':' + (dd.name || '') + '|';
+      coreSig += d.id + ':' + (isVerified(dd.verified) ? 1 : 0) + ':' + (dd.verifiedColor === 'yellow' ? 'y' : 'w') + ':' + (dd.hearts || 0) + ':' + (dd.level || 0) + '|';
+      sig += d.id + ':' + (isVerified(dd.verified) ? 1 : 0) + ':' + (dd.verifiedColor === 'yellow' ? 'y' : 'w') + ':' + (dd.hearts || 0) + ':' + (dd.level || 0) + ':' + (dd.img || '') + ':' + (dd.name || '') + ':' + (dd.username || '') + '|';
       // heartbeat (lastSeen) sirf nayi app versions likhte hain; purane users ko kabhi stale nahi maante
       if (dd.lastSeen != null) {
         if (!seen[d.id] || seen[d.id].v !== dd.lastSeen) seen[d.id] = { v: dd.lastSeen, at: nowLocal };
@@ -4029,17 +4191,23 @@ useEffect(() => {
     if (sig === lastSig) return;
     lastSig = sig;
 
-    if (firstLoad) {
+    const profileOnly = lastCoreSig !== null && coreSig === lastCoreSig;
+    lastCoreSig = coreSig;
+
+    if (firstLoad || profileOnly) {
+      // pehli load ya sirf naam/photo badli -> TURANT (koi wait nahi)
       firstLoad = false;
+      if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
       setAudienceMap(map);
       return;
     }
 
+    // join/leave/hearts ki bheed: 400ms me ek hi render (pehle 1500ms tha -> late dikhta tha)
     if (!flushTimer) {
       flushTimer = setTimeout(() => {
         flushTimer = null;
         setAudienceMap(latestMap);
-      }, 1500);
+      }, 400);
     }
   }, (e) => log("Audience listener error:", e));
 
@@ -4091,7 +4259,12 @@ useEffect(() => {
 
   if (!giftData || !giftData.animation) return;
 
-  if (giftLayerRef.current) giftLayerRef.current.playDeferred(giftData.animation, giftData.duration, 1600);
+  if (giftLayerRef.current) giftLayerRef.current.playDeferred(giftData.animation, giftData.duration, 1600, {
+    senderName: gift.senderName,
+    senderImg: gift.senderImg,
+    receiverName: gift.receiverName,
+    giftName: gift.giftName || giftData.name,
+  });
 
 }, [roomData?.liveGift?.timestamp]);
 
@@ -5485,7 +5658,12 @@ const handleSendGift = (item) => {
 
     // 2) full-screen animation: tap ruke tab SIRF last gift ki chalegi
     if (item.animation) {
-      giftLayerRef.current.playDeferred(item.animation, item.duration, 600);
+      giftLayerRef.current.playDeferred(item.animation, item.duration, 600, {
+        senderName: _senderDisplay,
+        senderImg: currentAvatar || STABLE_AVATAR,
+        receiverName: _receiverName,
+        giftName: item.name,
+      });
     }
   }
 
@@ -5606,14 +5784,24 @@ const sendGiftInBackground = async ({
   roomUpdate[`topGifters.${currentUid}.profileImg`] = currentAvatar || "";
   roomUpdate[`topGifters.${currentUid}.stars`] = increment(total);
 
+  // FIX: PEHLE room write (liveGift + seatStars + topGifters). Agar ye fail ho (rules / net)
+  // to na stars kategi, na doosron ko kuch dikhega -> user ko batao aur wallet se paisa mat kaato.
+  // Pehle ye fail hota tha to chup-chap sender ke stars kat jate the aur receiver ko kuch nahi dikhta tha.
+  // seatStars + liveGift in ONE write -> every viewer gets ONE snapshot
+  // ALL me bhi ek hi liveGift => animation/banner sab ko SIRF EK baar
+  try {
+    await updateDoc(roomRef, roomUpdate);
+  } catch (e) {
+    console.log("GIFT ROOM WRITE FAILED:", e?.code, e?.message);
+    inflightSpendRef.current = Math.max(0, inflightSpendRef.current - total);
+    showToast("⚠️ Gift nahi gaya, dobara try karo");
+    return;
+  }
+
   const jobs = [
 
     // sender wallet (total kharcha)
     updateDoc(doc(db, "wallets", currentUid), { stars: increment(-total), totalSpent: increment(total) }),
-
-    // seatStars + liveGift in ONE write -> every viewer gets ONE snapshot
-    // ALL me bhi ek hi liveGift => animation/banner sab ko SIRF EK baar
-    updateDoc(roomRef, roomUpdate),
 
   ];
 
@@ -5663,8 +5851,10 @@ const sendGiftInBackground = async ({
   // one failing write must not cancel the others
   const results = await Promise.allSettled(jobs);
   results.forEach((r, idx) => {
-    if (r.status === "rejected" && __DEV__) {
-      log("GIFT WRITE FAILED #" + idx, r.reason);
+    // FIX: ab release build me bhi error dikhega (pehle sirf __DEV__ me). #0 = sender wallet,
+    // uske baad har receiver ke liye 2 writes: wallets/{id}, users/{id}, phir chat line.
+    if (r.status === "rejected") {
+      console.log("GIFT WRITE FAILED #" + idx, r.reason?.code, r.reason?.message);
     }
   });
 
@@ -6472,598 +6662,59 @@ user?.seatKey
 
 
 
-<SafeModal
-visible={speakerModalVisible}
-transparent
-animationType="slide"
-statusBarTranslucent
-hardwareAccelerated
-onRequestClose={() => setSpeakerModalVisible(false)}
->
-
-<View style={{
-flex:1,
-justifyContent:'flex-end',
-backgroundColor:'rgba(0,0,0,0.5)'
-}}>
-
-<TouchableOpacity style={{flex:1}} activeOpacity={1} onPress={() => setSpeakerModalVisible(false)} />
-
-<View style={{
-backgroundColor:'#000',
-height:height*0.55,
-borderTopLeftRadius:30,
-borderTopRightRadius:30,
-alignItems:'center',
-paddingBottom: navGap + 10,
-}}>
-
-<View style={{
-flexDirection:'row',
-justifyContent:'space-between',
-width:'100%',
-paddingHorizontal:30,
-marginTop:20
-}}>
-
-<TouchableOpacity
-onPress={()=>{
-removeSpeaker(selectedSeatKey);
-setSpeakerModalVisible(false);
-}}
->
-
-<Text style={{
-color:'red',
-fontSize:20,
-fontWeight:'bold'
-}}>
-❌ Remove
-</Text>
-
-</TouchableOpacity>
-
-
-<TouchableOpacity
-onPress={muteSpeaker}
->
-
-<Text style={{
-color:'#fff',
-fontSize:20,
-fontWeight:'bold'
-}}>
-{selectedSpeaker?.isMuted ? "🔇 Unmute" : "🔊 Mute"}
-</Text>
-
-</TouchableOpacity>
-
-</View>
-
-{!!selectedSpeaker?.userId && selectedSpeaker.userId !== currentUid && (
-  <View style={{ flexDirection: 'row', justifyContent: 'center', marginTop: 12 }}>
-    <TouchableOpacity activeOpacity={0.8} onPress={() => handleReportFromRoom(selectedSpeaker)}
-      style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6, paddingHorizontal: 14, borderRadius: 16, marginRight: 10, backgroundColor: 'rgba(255,90,90,0.12)', borderWidth: 1, borderColor: 'rgba(255,90,90,0.5)' }}>
-      <Ionicons name="flag" size={13} color="#ff5a5a" />
-      <Text allowFontScaling={false} style={{ color: '#ff5a5a', fontWeight: 'bold', fontSize: 12, marginLeft: 5 }}>Report</Text>
-    </TouchableOpacity>
-    <TouchableOpacity activeOpacity={0.8} onPress={() => handleBlockFromRoom(selectedSpeaker)}
-      style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6, paddingHorizontal: 14, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)' }}>
-      <Ionicons name="ban" size={13} color="#fff" />
-      <Text allowFontScaling={false} style={{ color: '#fff', fontWeight: 'bold', fontSize: 12, marginLeft: 5 }}>Block</Text>
-    </TouchableOpacity>
-  </View>
-)}
-
-
-<TouchableOpacity
-onPress={() => {
-
-setSpeakerModalVisible(false);
-
-if (agoraEngineRef.current) {
-
-agoraEngineRef.current.muteAllRemoteAudioStreams(true);
-
-}
-
-router.push({
-  pathname: "/userProfile",
-  params: {
-    userId: selectedSpeaker?.userId,
-    roomId: roomId
-  }
-});
-
-}}
->
-
-<ProfileAvatar uri={selectedSpeaker?.userImg} uid={selectedSpeaker?.userId} level={profileLevel} size={100} />
-
-</TouchableOpacity>
-
-
-
-<View
-  style={{
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 20,
+<ProfileSheet
+  db={db}
+  ModalComponent={SafeModal}
+  visible={speakerModalVisible || profileVisible}
+  onClose={() => { setSpeakerModalVisible(false); setProfileVisible(false); }}
+  user={{
+    uid: selectedSpeaker?.userId,
+    name: selectedSpeaker?.userName,
+    img: selectedSpeaker?.userImg,
+    level: profileLevel,
+    verified: !!(isVerified(selectedSpeaker?.verified)),
+    verifiedColor: selectedSpeaker?.verifiedColor,
+  }}
+  levelTheme={getLevelTheme(profileLevel)}
+  avatar={<ProfileAvatar uri={selectedSpeaker?.userImg} uid={selectedSpeaker?.userId} level={profileLevel} size={100} />}
+  stats={{ followers: previewFollowersCount, following: previewFollowingCount, likes: previewLikesCount, loading: previewStatsLoading }}
+  isMe={!selectedSpeaker?.userId || selectedSpeaker.userId === currentUid}
+  following={previewIsFollowing}
+  followBack={previewIsFollowBack}
+  followBusy={previewFollowBusy}
+  onFollow={() => handlePreviewFollow(selectedSpeaker)}
+  onProfile={() => {
+    setSpeakerModalVisible(false);
+    setProfileVisible(false);
+    if (agoraEngineRef.current) {
+      agoraEngineRef.current.muteAllRemoteAudioStreams(true);
+    }
+    router.push({ pathname: "/userProfile", params: { userId: selectedSpeaker?.userId, roomId: roomId } });
   }}
 >
-
-  <Text
-    style={{
-      color: "#fff",
-      fontSize: 24,
-      fontWeight: "bold",
-    }}
-  >
-    @{selectedSpeaker?.userName}
-  </Text>
-
-  {/* Verified Tick */}
- 
-<UserTick uid={selectedSpeaker?.uid || selectedSpeaker?.userId || selectedSpeaker?.senderId || selectedSpeaker?.id} verified={!!(isVerified(selectedSpeaker?.verified))} verifiedColor={selectedSpeaker?.verifiedColor} size={18} />
-
-  
-
-  {/* Level */}
-  <View
-    style={[
-      styles.levelBadge,
-      {
-        marginLeft: 8,
-        backgroundColor: getLevelTheme(
-          selectedSpeaker?.level || 1
-        ).bg,
-        borderColor: getLevelTheme(
-          selectedSpeaker?.level || 1
-        ).border,
-      },
-    ]}
-  >
-    <MaterialCommunityIcons
-      name="diamond-stone"
-      size={10}
-      color={
-        getLevelTheme(
-          selectedSpeaker?.level || 1
-        ).icon
-      }
+  {speakerModalVisible && (
+    <>
+      <SheetChip label="❌ Remove" color="#DC2626" onPress={() => { removeSpeaker(selectedSeatKey); setSpeakerModalVisible(false); }} />
+      <SheetChip label={selectedSpeaker?.isMuted ? "🔇 Unmute" : "🔊 Mute"} color="#374151" onPress={muteSpeaker} />
+    </>
+  )}
+  {canManage && !!selectedSpeaker?.userId && selectedSpeaker.userId !== currentUid && selectedSpeaker.userId !== roomData?.hostId && (
+    <SheetChip
+      label={roomData?.admins?.[selectedSpeaker.userId] ? "🛡 Remove Admin" : "🛡 Make Admin"}
+      color={roomData?.admins?.[selectedSpeaker.userId] ? "#ff5a5a" : "#f1c40f"}
+      textColor={roomData?.admins?.[selectedSpeaker.userId] ? "#ff5a5a" : "#f1c40f"}
+      outline
+      onPress={() => toggleAdmin(selectedSpeaker.userId, selectedSpeaker.userName)}
     />
-
-    <Text
-      style={{
-        color: getLevelTheme(
-          selectedSpeaker?.level || 1
-        ).text,
-        fontSize: 9,
-        fontWeight: "bold",
-        marginLeft: 2,
-      }}
-    >
-      LV {selectedSpeaker?.level || 1}
-    </Text>
-  </View>
-
-</View>
-
-{canManage && !!selectedSpeaker?.userId && selectedSpeaker.userId !== currentUid && selectedSpeaker.userId !== roomData?.hostId && (
-  <TouchableOpacity
-    activeOpacity={0.8}
-    onPress={() => toggleAdmin(selectedSpeaker.userId, selectedSpeaker.userName)}
-    style={{
-      marginTop: 10,
-      paddingVertical: 6,
-      paddingHorizontal: 16,
-      borderRadius: 16,
-      borderWidth: 1,
-      borderColor: roomData?.admins?.[selectedSpeaker.userId] ? '#ff5a5a' : '#f1c40f',
-      backgroundColor: roomData?.admins?.[selectedSpeaker.userId] ? 'rgba(255,90,90,0.12)' : 'rgba(241,196,15,0.12)',
-    }}
-  >
-    <Text allowFontScaling={false} style={{ color: roomData?.admins?.[selectedSpeaker.userId] ? '#ff5a5a' : '#f1c40f', fontWeight: 'bold', fontSize: 13 }}>
-      {roomData?.admins?.[selectedSpeaker.userId] ? '🛡 Remove Admin' : '🛡 Make Admin'}
-    </Text>
-  </TouchableOpacity>
-)}
-
-{/* Followers / Following / Likes — host can see this too, same as viewer popup */}
-<View
-  style={{
-    flexDirection: "row",
-    justifyContent: "center",
-    marginTop: 16,
-    width: "100%",
-  }}
->
-  <View style={{ alignItems: "center", paddingHorizontal: 18 }}>
-    <Text style={{ color: "#fff", fontSize: 16, fontWeight: "bold" }}>
-      {previewStatsLoading ? "—" : previewFollowersCount}
-    </Text>
-    <Text style={{ color: "#888", fontSize: 12, marginTop: 2 }}>
-      Followers
-    </Text>
-  </View>
-
-  <View style={{ width: 1, backgroundColor: "#222" }} />
-
-  <View style={{ alignItems: "center", paddingHorizontal: 18 }}>
-    <Text style={{ color: "#fff", fontSize: 16, fontWeight: "bold" }}>
-      {previewStatsLoading ? "—" : previewFollowingCount}
-    </Text>
-    <Text style={{ color: "#888", fontSize: 12, marginTop: 2 }}>
-      Following
-    </Text>
-  </View>
-
-  <View style={{ width: 1, backgroundColor: "#222" }} />
-
-  <View style={{ alignItems: "center", paddingHorizontal: 18 }}>
-    <Text style={{ color: "#fff", fontSize: 16, fontWeight: "bold" }}>
-      {previewStatsLoading ? "—" : previewLikesCount}
-    </Text>
-    <Text style={{ color: "#888", fontSize: 12, marginTop: 2 }}>
-      Likes
-    </Text>
-  </View>
-</View>
-
-{/* Follow / Like — host can follow/like a speaker right from this same panel */}
-{selectedSpeaker?.userId && selectedSpeaker.userId !== currentUid && (
-  <View
-    style={{
-      flexDirection: "row",
-      alignItems: "center",
-      marginTop: 18,
-      width: "88%",
-    }}
-  >
-    <TouchableOpacity
-      disabled={previewFollowBusy}
-      onPress={() => handlePreviewFollow(selectedSpeaker)}
-      style={{
-        flex: 1,
-        backgroundColor: previewIsFollowing ? "#1C1E2E" : "#f71084",
-        borderWidth: previewIsFollowing ? 1 : 0,
-        borderColor: "#3a3d52",
-        paddingVertical: 12,
-        borderRadius: 22,
-        alignItems: "center",
-        marginRight: 10,
-        opacity: previewFollowBusy ? 0.6 : 1,
-      }}
-    >
-      <Text style={{ color: "#fff", fontWeight: "bold", fontSize: 14 }}>
-        {previewIsFollowing
-          ? "Following"
-          : previewIsFollowBack
-          ? "Follow Back"
-          : "Follow"}
-      </Text>
-    </TouchableOpacity>
-
-    <TouchableOpacity
-      disabled={previewLikeBusy}
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "#1C1E2E",
-        paddingVertical: 12,
-        paddingHorizontal: 20,
-        borderRadius: 22,
-        opacity: previewLikeBusy ? 0.6 : 1,
-      }}
-      onPress={() => handlePreviewLike(selectedSpeaker)}
-    >
-      <Ionicons
-        name={previewHasLiked ? "heart" : "heart-outline"}
-        size={16}
-        color="#ff1493"
-      />
-      <Text
-        style={{
-          color: "#fff",
-          fontWeight: "bold",
-          fontSize: 14,
-          marginLeft: 6,
-        }}
-      >
-        {previewHasLiked ? "Liked" : "Like"}
-      </Text>
-    </TouchableOpacity>
-  </View>
-)}
-
-</View>
-
-</View>
-
-</SafeModal>
-
-
-
-<SafeModal
-visible={profileVisible}
-transparent
-animationType="slide"
-statusBarTranslucent
-hardwareAccelerated
-onRequestClose={() => setProfileVisible(false)}
->
-
-<View
-style={{
-flex:1,
-justifyContent:"flex-end",
-backgroundColor:"rgba(0,0,0,0.5)"
-}}
->
-
-<TouchableOpacity style={{flex:1}} activeOpacity={1} onPress={() => setProfileVisible(false)} />
-
-<View
-style={{
-backgroundColor:"#000",
-height:height*0.42,
-borderTopLeftRadius:30,
-borderTopRightRadius:30,
-alignItems:"center",
-paddingTop:5,
-paddingBottom: navGap + 10,
-}}
->
-
-{renderReportBlock(selectedSpeaker)}
-
-<TouchableOpacity
-onPress={() => {
-
-setProfileVisible(false);
-
-if (agoraEngineRef.current) {
-agoraEngineRef.current.muteAllRemoteAudioStreams(true);
-}
-
-router.push({
-pathname:"/userProfile",
-params:{
-userId:selectedSpeaker?.userId,
-roomId:roomId
-}
-});
-
-}}
->
-
-<ProfileAvatar uri={selectedSpeaker?.userImg} uid={selectedSpeaker?.userId} level={profileLevel} size={100} style={{ marginTop: 10 }} />
-
-</TouchableOpacity>
-
-
-<View
-  style={{
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 15,
-    justifyContent: "center",
-  }}
->
-  <Text
-    style={{
-      color: "#fff",
-      fontSize: 22,
-      fontWeight: "bold",
-    }}
-  >
-    @{selectedSpeaker?.userName}
-  </Text>
-
-  {/* Verified Tick - sirf verified user ko */}
-  <UserTick uid={selectedSpeaker?.uid || selectedSpeaker?.userId || selectedSpeaker?.senderId || selectedSpeaker?.id} verified={!!(isVerified(selectedSpeaker?.verified))} verifiedColor={selectedSpeaker?.verifiedColor} size={18} />
-
-  {/* Level Badge */}
-  <View
-    style={[
-      styles.levelBadge,
-      {
-        marginLeft: 8,
-        backgroundColor: getLevelTheme(
-          selectedSpeaker?.level || 1
-        ).bg,
-        borderColor: getLevelTheme(
-          selectedSpeaker?.level || 1
-        ).border,
-      },
-    ]}
-  >
-    <MaterialCommunityIcons
-      name="diamond-stone"
-      size={10}
-      color={
-        getLevelTheme(
-          selectedSpeaker?.level || 1
-        ).icon
-      }
-    />
-
-    <Text
-      style={{
-        color: getLevelTheme(
-          selectedSpeaker?.level || 1
-        ).text,
-        fontSize: 9,
-        fontWeight: "bold",
-        marginLeft: 2,
-      }}
-    >
-      LV {selectedSpeaker?.level || 1}
-    </Text>
-  </View>
-</View>
-
-{canManage && !!selectedSpeaker?.userId && selectedSpeaker.userId !== currentUid && selectedSpeaker.userId !== roomData?.hostId && (
-  <TouchableOpacity
-    activeOpacity={0.8}
-    onPress={() => toggleAdmin(selectedSpeaker.userId, selectedSpeaker.userName)}
-    style={{
-      marginTop: 10,
-      paddingVertical: 6,
-      paddingHorizontal: 16,
-      borderRadius: 16,
-      borderWidth: 1,
-      borderColor: roomData?.admins?.[selectedSpeaker.userId] ? '#ff5a5a' : '#f1c40f',
-      backgroundColor: roomData?.admins?.[selectedSpeaker.userId] ? 'rgba(255,90,90,0.12)' : 'rgba(241,196,15,0.12)',
-    }}
-  >
-    <Text allowFontScaling={false} style={{ color: roomData?.admins?.[selectedSpeaker.userId] ? '#ff5a5a' : '#f1c40f', fontWeight: 'bold', fontSize: 13 }}>
-      {roomData?.admins?.[selectedSpeaker.userId] ? '🛡 Remove Admin' : '🛡 Make Admin'}
-    </Text>
-  </TouchableOpacity>
-)}
-
-{/* Followers / Following / Likes — same numbers as the full profile */}
-<View
-  style={{
-    flexDirection: "row",
-    justifyContent: "center",
-    marginTop: 18,
-    width: "100%",
-  }}
->
-  <TouchableOpacity
-    style={{ alignItems: "center", paddingHorizontal: 18 }}
-    onPress={() => {
-      setProfileVisible(false);
-      router.push({
-        pathname: "/userProfile",
-        params: { userId: selectedSpeaker?.userId, roomId: roomId },
-      });
-    }}
-  >
-    <Text style={{ color: "#fff", fontSize: 16, fontWeight: "bold" }}>
-      {previewStatsLoading ? "—" : previewFollowersCount}
-    </Text>
-    <Text style={{ color: "#888", fontSize: 12, marginTop: 2 }}>
-      Followers
-    </Text>
-  </TouchableOpacity>
-
-  <View style={{ width: 1, backgroundColor: "#222" }} />
-
-  <TouchableOpacity
-    style={{ alignItems: "center", paddingHorizontal: 18 }}
-    onPress={() => {
-      setProfileVisible(false);
-      router.push({
-        pathname: "/userProfile",
-        params: { userId: selectedSpeaker?.userId, roomId: roomId },
-      });
-    }}
-  >
-    <Text style={{ color: "#fff", fontSize: 16, fontWeight: "bold" }}>
-      {previewStatsLoading ? "—" : previewFollowingCount}
-    </Text>
-    <Text style={{ color: "#888", fontSize: 12, marginTop: 2 }}>
-      Following
-    </Text>
-  </TouchableOpacity>
-
-  <View style={{ width: 1, backgroundColor: "#222" }} />
-
-  <View style={{ alignItems: "center", paddingHorizontal: 18 }}>
-    <Text style={{ color: "#fff", fontSize: 16, fontWeight: "bold" }}>
-      {previewStatsLoading ? "—" : previewLikesCount}
-    </Text>
-    <Text style={{ color: "#888", fontSize: 12, marginTop: 2 }}>
-      Likes
-    </Text>
-  </View>
-</View>
-
-{/* Follow / Following / Like — act on this person right from the room */}
-{selectedSpeaker?.userId && selectedSpeaker.userId !== currentUid && (
-  <View
-    style={{
-      flexDirection: "row",
-      alignItems: "center",
-      marginTop: 20,
-      width: "88%",
-    }}
-  >
-    <TouchableOpacity
-      disabled={previewFollowBusy}
-      onPress={() => handlePreviewFollow(selectedSpeaker)}
-      style={{
-        flex: 1,
-        backgroundColor: previewIsFollowing ? "#1C1E2E" : "#f71084",
-        borderWidth: previewIsFollowing ? 1 : 0,
-        borderColor: "#3a3d52",
-        paddingVertical: 12,
-        borderRadius: 22,
-        alignItems: "center",
-        marginRight: 10,
-        opacity: previewFollowBusy ? 0.6 : 1,
-      }}
-    >
-      <Text style={{ color: "#fff", fontWeight: "bold", fontSize: 14 }}>
-        {previewIsFollowing
-          ? "Following"
-          : previewIsFollowBack
-          ? "Follow Back"
-          : "Follow"}
-      </Text>
-    </TouchableOpacity>
-
-    <TouchableOpacity
-      disabled={previewLikeBusy}
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "#1C1E2E",
-        paddingVertical: 12,
-        paddingHorizontal: 20,
-        borderRadius: 22,
-        opacity: previewLikeBusy ? 0.6 : 1,
-      }}
-      onPress={() => handlePreviewLike(selectedSpeaker)}
-    >
-      <Ionicons
-        name={previewHasLiked ? "heart" : "heart-outline"}
-        size={16}
-        color="#ff1493"
-      />
-      <Text
-        style={{
-          color: "#fff",
-          fontWeight: "bold",
-          fontSize: 14,
-          marginLeft: 6,
-        }}
-      >
-        {previewHasLiked ? "Liked" : "Like"}
-      </Text>
-    </TouchableOpacity>
-  </View>
-)}
-
-</View>
-
-</View>
-
-</SafeModal>
-
-
-
-
-
-
-
-
-
+  )}
+  {!!selectedSpeaker?.userId && selectedSpeaker.userId !== currentUid && (
+    <>
+      <SheetChip label={previewHasLiked ? "Liked" : "Like"} icon={previewHasLiked ? "heart" : "heart-outline"} color="#ff1493" textColor="#fff" outline disabled={previewLikeBusy} onPress={() => handlePreviewLike(selectedSpeaker)} />
+      <SheetChip label="Report" icon="flag" color="#ff5a5a" textColor="#ff5a5a" outline onPress={() => handleReportFromRoom(selectedSpeaker)} />
+      <SheetChip label="Block" icon="ban" color="#777" textColor="#fff" outline onPress={() => handleBlockFromRoom(selectedSpeaker)} />
+    </>
+  )}
+</ProfileSheet>
 
 <SafeModal
 visible={selfSeatModalVisible}

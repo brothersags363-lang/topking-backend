@@ -1,4 +1,5 @@
 
+import useBackStep from '../utils/useBackStep';
 import React from "react";
 import {
   View,
@@ -28,6 +29,7 @@ import { db } from "./firebaseConfig";
 export default function ReportScreen() {
 
   const router = useRouter();
+  useBackStep('/');
 
   const auth = getAuth();
 

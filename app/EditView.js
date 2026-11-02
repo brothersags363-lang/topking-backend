@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import React, {
   useState,
   useEffect,
@@ -79,6 +80,7 @@ const toDurationSeconds = (value) => {
 export default function EditView() {
 
   const router = useRouter();
+  useBackStep('/');
 
   const params =
     useLocalSearchParams();

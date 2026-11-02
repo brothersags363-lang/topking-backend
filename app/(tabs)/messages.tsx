@@ -15,14 +15,24 @@ import MessagesHeader from '../../components/messages/MessagesHeader';
 import MessageTab from '../../components/messages/MessageTab';
 import NotifModal from '../../components/messages/NotifModal';
 import { BG } from '../../components/messages/theme';
+import useTabBack from '../../utils/useTabBack';
 import { useAuthUid } from '../../utils/messages/useAuthUid';
 import { useFriends } from '../../utils/messages/useFriends';
+import { useLiveProfiles } from '../../utils/messages/useLiveProfiles';
 import { useNotifications } from '../../utils/messages/useNotifications';
+
+// ---- helpers: friend / notification se uid nikalna ----
+const friendId = (f: any): string | undefined => f?.uid || f?.userId || f?.friendId || f?.id;
+const senderId = (n: any): string | undefined => n?.senderId || n?.fromUid || n?.fromId;
 
 export default function MessagesPage() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const uid = useAuthUid();
+
+  // Mobile back (Message + ChatRoom dono tab): app band nahi hogi, For You (Home) khulega.
+  // Popups (Notif/Info) apna back khud sambhalte hain.
+  useTabBack();
 
   const [tab, setTab] = useState<'chatroom' | 'message'>('chatroom');
   const [staticRows, setStaticRows] = useState<MessageRow[]>(STATIC_ROWS);
@@ -31,14 +41,66 @@ export default function MessagesPage() {
   const [selectedType, setSelectedType] = useState('follow');
 
   const { notifications, notifRows, unreadByType, markTypeRead } = useNotifications(uid);
-  const { friends, loadingMore, loadMore } = useFriends(uid);
+  const { friends: rawFriends, loadingMore, loadMore } = useFriends(uid);
+
+  // ---- LIVE dp + name (sabke liye) ----
+  const notifList: any[] = useMemo(
+    () => (Array.isArray(notifications) ? (notifications as any[]) : []),
+    [notifications]
+  );
+
+  const allIds = useMemo(
+    () =>
+      [...rawFriends.map((f: any) => friendId(f)), ...notifList.map((n) => senderId(n))].filter(
+        Boolean
+      ) as string[],
+    [rawFriends, notifList]
+  );
+
+  const live = useLiveProfiles(allIds);
+
+  const applyLive = useCallback(
+    (item: any, id?: string) => {
+      const p = id ? live[id] : undefined;
+      if (!p) return item;
+      return {
+        ...item,
+        ...(p.name ? { name: p.name, displayName: p.name, senderName: p.name } : {}),
+        ...(p.username ? { username: p.username } : {}),
+        ...(p.profileImg
+          ? {
+              profileImg: p.profileImg,
+              photo: p.profileImg,
+              photoURL: p.profileImg,
+              avatar: p.profileImg,
+              profile: p.profileImg,
+              senderPhoto: p.profileImg,
+              senderImg: p.profileImg,
+              senderProfileImg: p.profileImg,
+            }
+          : {}),
+      };
+    },
+    [live]
+  );
+
+  const friends = useMemo(
+    () => rawFriends.map((f: any) => applyLive(f, friendId(f))),
+    [rawFriends, applyLive]
+  );
+
+  const liveNotifications = useMemo(
+    () =>
+      Array.isArray(notifications) ? notifList.map((n) => applyLive(n, senderId(n))) : notifications,
+    [notifications, notifList, applyLive]
+  );
 
   const rows = useMemo(() => [...notifRows, ...staticRows], [notifRows, staticRows]);
 
   const totalUnread = useMemo(
     () =>
       rows.reduce((sum, r) => sum + r.unread, 0) +
-      friends.reduce((sum, f) => sum + (Number(f.unreadCount) > 0 ? Number(f.unreadCount) : 0), 0),
+      friends.reduce((sum: number, f: any) => sum + (Number(f.unreadCount) > 0 ? Number(f.unreadCount) : 0), 0),
     [rows, friends]
   );
 
@@ -90,9 +152,9 @@ export default function MessagesPage() {
   );
 
   const notifOpenProfile = useCallback(
-    (senderId: string) => {
+    (sid: string) => {
       setModalVisible(false);
-      router.push({ pathname: '/userProfile', params: { userId: senderId } } as any);
+      router.push({ pathname: '/userProfile', params: { userId: sid } } as any);
     },
     [router]
   );
@@ -118,7 +180,8 @@ export default function MessagesPage() {
     [router, uid]
   );
 
-  const addMessage = useCallback(() => router.push('/new-message' as any), [router]);
+  // "+" dabane par camera khulega
+  const addMessage = useCallback(() => router.push('/camera' as any), [router]);
 
   return (
     <View style={[s.container, { paddingTop: insets.top }]}>
@@ -145,7 +208,7 @@ export default function MessagesPage() {
       <NotifModal
         visible={modalVisible}
         selectedType={selectedType}
-        notifications={notifications}
+        notifications={liveNotifications}
         unreadByType={unreadByType}
         onClose={closeNotif}
         onSelectType={selectNotifType}

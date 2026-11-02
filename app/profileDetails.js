@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import React, { useEffect, useMemo, useState } from "react";
 import {
   View,
@@ -18,6 +19,7 @@ const PLACEHOLDER = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 
 export default function ProfileDetails() {
   const router = useRouter();
+  useBackStep('/profile');
   const isAdmin = useIsAdmin();
   const [users, setUsers] = useState([]);
   const [search, setSearch] = useState("");

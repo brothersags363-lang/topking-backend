@@ -35,6 +35,7 @@ import {
 } from 'firebase/firestore';
 
 import { db } from './firebaseConfig';
+import { callApi } from '../utils/api';
 
 import {
   getAuth
@@ -344,6 +345,12 @@ export default function ShareVideo() {
             ),
 
           ]);
+
+          // Receiver ko push (best-effort). Same route jo chat message ke liye chal raha hai.
+          callApi("/send-message-notification", {
+            receiverUid: uid,
+            message: type === "live" ? "🔴 Live room share kiya" : "🎥 Video bheja",
+          }).catch(() => {});
 
         })
       );

@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import React, { useState } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, Image, Alert, ActivityIndicator,
@@ -15,6 +16,7 @@ import { Y, REVIEW_HOURS, canCreateFamily, uploadFamilyLogo } from "../utils/fam
 
 export default function BuildFamily() {
   const router = useRouter();
+  useBackStep('/family');
   const insets = useSafeAreaInsets(); // navigation bar ke upar rakhne ke liye
   const [logo, setLogo] = useState("");
   const [name, setName] = useState("");

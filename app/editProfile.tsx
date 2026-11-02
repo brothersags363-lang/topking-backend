@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack, useRouter } from 'expo-router';
@@ -99,6 +100,7 @@ const Chip = ({ label, active, onPress }) => (
 
 export default function EditProfileScreen() {
   const router = useRouter();
+  useBackStep('/profile');
 
   const [ready, setReady] = useState(false);
   const [saving, setSaving] = useState(false);

@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import React, { useEffect, useState } from "react";
 
 import {
@@ -30,6 +31,7 @@ import { db } from "./firebaseConfig";
 export default function FeedbackAdmin() {
 
   const router = useRouter();
+  useBackStep('/');
 
   const [feedbacks, setFeedbacks] = useState([]);
 

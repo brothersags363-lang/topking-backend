@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import React, { useEffect, useState } from "react";
 import {
   View,
@@ -20,6 +21,7 @@ const PLACEHOLDER = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 export default function AdminUserProfile() {
   const { userId } = useLocalSearchParams();
   const router = useRouter();
+  useBackStep('/');
   const isAdmin = useIsAdmin();
   const [user, setUser] = useState(null);
   const [videos, setVideos] = useState([]);

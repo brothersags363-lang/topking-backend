@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../app/firebaseConfig';
 
@@ -63,27 +64,97 @@ function notify(uid, info) {
   if (set) set.forEach((fn) => fn(info));
 }
 
-const MAX_RETRY = 3;
+// FIX (frame kabhi dikhta kabhi nahi): pehle har seat/chat row alag getDoc chalata tha.
+// Live room me 20-50 user ek saath aate hain -> sab reads ek saath, slow net par timeout,
+// aur 3 retry ke baad frame hamesha ke liye "nahi hai" reh jata tha.
+// Ab: (1) ek saath max MAX_PARALLEL reads (queue), (2) retry zyada + lamba backoff,
+// (3) frame info phone me save (AsyncStorage) -> app dobara khulte hi frame turant,
+// (4) fail hone par purani saved info dikhti rehti hai, khali nahi hoti.
+const MAX_RETRY = 6;
+const MAX_PARALLEL = 4;
+const STORE_KEY = 'frameInfoCache:v1';
+const STORE_MAX = 300;
+
+const queue = [];
+let running = 0;
+
+function pump() {
+  while (running < MAX_PARALLEL && queue.length) {
+    const job = queue.shift();
+    running += 1;
+    job().finally(() => { running -= 1; pump(); });
+  }
+}
+
+// ---- disk cache (best effort, kabhi crash nahi karega) ----
+let diskLoaded = false;
+let diskLoading = null;
+let saveTimer = null;
+
+function loadDisk() {
+  if (diskLoaded) return Promise.resolve();
+  if (diskLoading) return diskLoading;
+  diskLoading = AsyncStorage.getItem(STORE_KEY)
+    .then((raw) => {
+      if (!raw) return;
+      const obj = JSON.parse(raw);
+      Object.keys(obj || {}).forEach((uid) => {
+        if (!cache.has(uid) && obj[uid]) {
+          // t: 0 => purana maana jayega, background me refresh hoga, par tab tak dikhega
+          cache.set(uid, { info: { ...EMPTY_INFO, ...obj[uid], loaded: true }, t: 0 });
+          notify(uid, cache.get(uid).info);
+        }
+      });
+    })
+    .catch(() => {})
+    .finally(() => { diskLoaded = true; });
+  return diskLoading;
+}
+
+function saveDiskSoon() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    try {
+      const entries = Array.from(cache.entries())
+        .filter(([, v]) => v && v.info && v.info.loaded)
+        .sort((a, b) => b[1].t - a[1].t)
+        .slice(0, STORE_MAX);
+      const obj = {};
+      entries.forEach(([uid, v]) => { obj[uid] = v.info; });
+      AsyncStorage.setItem(STORE_KEY, JSON.stringify(obj)).catch(() => {});
+    } catch (_) {}
+  }, 2500);
+}
 
 function fetchInfo(uid, attempt = 0) {
   if (inflight.has(uid)) return inflight.get(uid);
-  const p = getDoc(doc(db, 'users', uid))
-    .then((snap) => {
-      const info = snap.exists() ? toInfo(snap.data()) : LOADED_EMPTY;
-      cache.set(uid, { info, t: Date.now() });
-      notify(uid, info);
-      return info;
-    })
-    .catch(() => {
-      // fail hone par "frame nahi hai" cache NAHI karte; thodi der baad khud dobara try.
-      if (attempt < MAX_RETRY) {
-        setTimeout(() => {
-          if (listeners.has(uid)) fetchInfo(uid, attempt + 1);
-        }, 1500 * (attempt + 1));
-      }
-      return undefined;
-    })
-    .finally(() => inflight.delete(uid));
+  const p = new Promise((resolve) => {
+    queue.push(() =>
+      getDoc(doc(db, 'users', uid))
+        .then((snap) => {
+          const info = snap.exists() ? toInfo(snap.data()) : LOADED_EMPTY;
+          cache.set(uid, { info, t: Date.now() });
+          notify(uid, info);
+          saveDiskSoon();
+          resolve(info);
+        })
+        .catch(() => {
+          // fail hone par "frame nahi hai" cache NAHI karte; backoff ke saath dobara try.
+          if (attempt < MAX_RETRY) {
+            setTimeout(() => {
+              inflight.delete(uid);
+              if (listeners.has(uid)) fetchInfo(uid, attempt + 1);
+            }, Math.min(1500 * 2 ** attempt, 20000));
+          }
+          resolve(undefined);
+        })
+    );
+    pump();
+  }).finally(() => {
+    // retry wala case upar khud inflight saaf karta hai; normal case me yahan.
+    if (inflight.get(uid) === p) inflight.delete(uid);
+  });
   inflight.set(uid, p);
   return p;
 }
@@ -119,14 +190,24 @@ export function useFrameInfo(uid) {
 
   useEffect(() => {
     if (!uid || typeof uid !== 'string') { setInfo(EMPTY_INFO); return undefined; }
-    const c = cache.get(uid);
+    let dead = false;
+    const c0 = cache.get(uid);
     // cache na ho to purane user ka frame mat rakho (seat par user badalne par galat frame dikhta tha)
-    setInfo(c ? c.info : EMPTY_INFO);
-    if (!c || Date.now() - c.t > TTL_MS) fetchInfo(uid);
+    setInfo(c0 ? c0.info : EMPTY_INFO);
+
     let set = listeners.get(uid);
     if (!set) { set = new Set(); listeners.set(uid, set); }
     set.add(setInfo);
-    return () => { set.delete(setInfo); if (!set.size) listeners.delete(uid); };
+
+    // pehle phone me saved info (turant frame), phir zarurat ho to server se taaza
+    loadDisk().then(() => {
+      if (dead) return;
+      const c = cache.get(uid);
+      if (c) setInfo(c.info);
+      if (!c || Date.now() - c.t > TTL_MS) fetchInfo(uid);
+    });
+
+    return () => { dead = true; set.delete(setInfo); if (!set.size) listeners.delete(uid); };
   }, [uid]);
 
   return info;

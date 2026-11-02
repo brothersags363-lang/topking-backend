@@ -78,6 +78,7 @@ import { useLiveHost } from '../../components/liveHosts';
 import { callApi } from '../../utils/api';
 import { loadDiscover, loadFollow } from '../../utils/homeData';
 import { videoLink } from '../../utils/shareLinks';
+import useSwipeTabs from '../../utils/useSwipeTabs';
 
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
 
@@ -588,7 +589,7 @@ const VideoSeekBar = memo(function VideoSeekBar() {
       } catch (e) {}
     };
     tick();
-    const t = setInterval(tick, 250); // PERF: 100ms -> 250ms (JS thread halka)
+    const t = setInterval(tick, 250);
     return () => clearInterval(t);
   }, [target]);
 
@@ -974,10 +975,62 @@ const LiveBubble = memo(function LiveBubble({ st, onPress }) {
   );
 });
 
+// SPEED: grid ke saare style / key / render function module-level -> har render par naye
+// object/function nahi bante, isliye memo GridTile / FlatList bina wajah re-render nahi hote.
+const TILE_W = (width - GRID_PAD * 2 - GRID_GAP) / 2;
+const gridKey = (v) => String(v.id);
+const FOLLOW_COL_STYLE = { justifyContent: 'space-between', paddingHorizontal: GRID_PAD };
+const FOLLOW_LIST_STYLE = { paddingTop: GRID_TOP, paddingBottom: GRID_BOTTOM };
+const LIVE_ROW_STYLE = { paddingHorizontal: GRID_PAD, paddingBottom: 10 };
+const DISC_SCROLL_STYLE = { paddingTop: GRID_TOP, paddingBottom: GRID_BOTTOM, paddingHorizontal: GRID_PAD };
+const DISC_ROW_STYLE = { flexDirection: 'row', justifyContent: 'space-between' };
+const DISC_COL_STYLE = { width: TILE_W };
+const FOLLOW_TILE_H = TILE_W * 1.55;
+
 const TabGrid = memo(function TabGrid({ mode, data, live, loading, onOpen, onLive }) {
   const isFollow = mode === 'follow';
-  const tileW = (width - GRID_PAD * 2 - GRID_GAP) / 2;
-  const open = useCallback((idx) => onOpen(data, idx), [onOpen, data]);
+  // data ref me rakha -> `open` ka function har data update par naya nahi banta
+  const dataRef = useRef(data);
+  dataRef.current = data;
+  const open = useCallback((idx) => onOpen(dataRef.current, idx), [onOpen]);
+
+  const renderLive = useCallback(({ item }) => <LiveBubble st={item} onPress={onLive} />, [onLive]);
+  const renderFollowItem = useCallback(
+    ({ item, index }) => (
+      <GridTile item={item} idx={index} w={TILE_W} h={FOLLOW_TILE_H} meta onPress={open} />
+    ),
+    [open]
+  );
+
+  const liveRow = useMemo(
+    () =>
+      live && live.length > 0 ? (
+        <FlatList
+          data={live}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          keyExtractor={gridKey}
+          renderItem={renderLive}
+          contentContainerStyle={LIVE_ROW_STYLE}
+          initialNumToRender={6}
+          windowSize={3}
+          overScrollMode="never"
+        />
+      ) : null,
+    [live, renderLive]
+  );
+  const header = useMemo(() => <View>{liveRow}</View>, [liveRow]);
+
+  // DISCOVER: 2 column masonry (alag-alag height). Max 30 tile = halka. useMemo -> sirf data badalne par banta hai.
+  const cols = useMemo(() => {
+    if (isFollow) return null;
+    const c = [[], []];
+    data.slice(0, 30).forEach((it, i) => {
+      const ratio = DISC_RATIOS[i % DISC_RATIOS.length];
+      c[i % 2].push({ it, i, h: TILE_W * ratio });
+    });
+    return c;
+  }, [isFollow, data]);
 
   const empty = !loading && data.length === 0;
   const emptyView = empty ? (
@@ -988,62 +1041,43 @@ const TabGrid = memo(function TabGrid({ mode, data, live, loading, onOpen, onLiv
     <ActivityIndicator size="large" color="#FFEB00" style={{ marginTop: 60 }} />
   ) : null;
 
-  const liveRow = live && live.length > 0 ? (
-    <FlatList
-      data={live}
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      keyExtractor={(l) => l.id}
-      renderItem={({ item }) => <LiveBubble st={item} onPress={onLive} />}
-      contentContainerStyle={{ paddingHorizontal: GRID_PAD, paddingBottom: 10 }}
-      initialNumToRender={6}
-      windowSize={3}
-    />
-  ) : null;
-
   if (isFollow) {
     return (
       <View style={styles.gridRoot}>
         <FlatList
           data={data}
           numColumns={2}
-          keyExtractor={(v) => v.id}
-          renderItem={({ item, index }) => (
-            <GridTile item={item} idx={index} w={tileW} h={tileW * 1.55} meta onPress={open} />
-          )}
-          columnWrapperStyle={{ justifyContent: 'space-between', paddingHorizontal: GRID_PAD }}
-          ListHeaderComponent={<View>{liveRow}</View>}
+          keyExtractor={gridKey}
+          renderItem={renderFollowItem}
+          columnWrapperStyle={FOLLOW_COL_STYLE}
+          ListHeaderComponent={header}
           ListEmptyComponent={emptyView}
-          contentContainerStyle={{ paddingTop: GRID_TOP, paddingBottom: GRID_BOTTOM }}
+          contentContainerStyle={FOLLOW_LIST_STYLE}
           showsVerticalScrollIndicator={false}
           initialNumToRender={6}
           maxToRenderPerBatch={4}
+          updateCellsBatchingPeriod={40}
           windowSize={5}
+          overScrollMode="never"
           removeClippedSubviews
         />
       </View>
     );
   }
 
-  // DISCOVER: 2 column masonry (alag-alag height). Max 30 tile = halka.
-  const cols = [[], []];
-  const items = data.slice(0, 30);
-  items.forEach((it, i) => {
-    const ratio = DISC_RATIOS[i % DISC_RATIOS.length];
-    cols[i % 2].push({ it, i, h: tileW * ratio });
-  });
   return (
     <View style={styles.gridRoot}>
       <ScrollView
-        contentContainerStyle={{ paddingTop: GRID_TOP, paddingBottom: GRID_BOTTOM, paddingHorizontal: GRID_PAD }}
+        contentContainerStyle={DISC_SCROLL_STYLE}
         showsVerticalScrollIndicator={false}
+        overScrollMode="never"
       >
         {emptyView}
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+        <View style={DISC_ROW_STYLE}>
           {cols.map((col, ci) => (
-            <View key={ci} style={{ width: tileW }}>
+            <View key={ci} style={DISC_COL_STYLE}>
               {col.map(({ it, i, h }) => (
-                <GridTile key={it.id} item={it} idx={i} w={tileW} h={h} meta={false} onPress={open} />
+                <GridTile key={it.id} item={it} idx={i} w={TILE_W} h={h} meta={false} onPress={open} />
               ))}
             </View>
           ))}
@@ -1281,6 +1315,12 @@ const VideoItem = memo(function VideoItem({
   // Is video ka creator abhi live hai? (shared single listener)
   const hostLive = useLiveHost(item.userId);
 
+  // SMOOTH: interpolate har render par naya native node banata tha -> ek baar banao
+  const discRotate = useMemo(
+    () => rotateAnim.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] }),
+    [rotateAnim]
+  );
+
   return (
     <TouchableOpacity
       activeOpacity={1}
@@ -1405,14 +1445,7 @@ const VideoItem = memo(function VideoItem({
             style={[
               styles.musicDiscOuter,
               {
-                transform: [
-                  {
-                    rotate: rotateAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: ["0deg", "360deg"],
-                    }),
-                  },
-                ],
+                transform: [{ rotate: discRotate }],
               },
             ]}
           >
@@ -1756,6 +1789,7 @@ const [selectedShareVideo, setSelectedShareVideo] = useState(null);
   // swipe rukne ke baad mount hote hain -> scroll animation me jhatka nahi.
   const [mountIndex, setMountIndex] = useState(0);
   const mountTimeoutRef = useRef(null);
+  const mountInteractionRef = useRef<any>(null);
   const [pausedVideoId, setPausedVideoId] = useState(null);
 
 const [loadingMoreVideos, setLoadingMoreVideos] = useState(false);
@@ -1976,7 +2010,7 @@ useEffect(() => {
         checkedLikesRef.current.delete(v.id);
         checkedFollowRef.current.delete(v.userId);
       });
-      console.log(
+      __DEV__ && console.log(
         "Nearby Like/Following Error:",
         error
       );
@@ -2017,6 +2051,7 @@ useEffect(() => {
   return () => {
     if (tapTimeout.current) clearTimeout(tapTimeout.current);
     if (mountTimeoutRef.current) clearTimeout(mountTimeoutRef.current);
+    mountInteractionRef.current?.cancel?.();
     if (viewTimeout.current) clearTimeout(viewTimeout.current);
     if (heartTimeout.current) clearTimeout(heartTimeout.current);
   };
@@ -2218,6 +2253,7 @@ useEffect(() => {
         toValue: 1,
         duration: 2200,
         useNativeDriver: true,
+        isInteraction: false,
       }
     )
 
@@ -2235,12 +2271,14 @@ useEffect(() => {
         toValue:-180,
         duration:5000,
         useNativeDriver:true,
+        isInteraction:false,
       }),
 
       Animated.timing(textAnim,{
         toValue:0,
         duration:0,
         useNativeDriver:true,
+        isInteraction:false,
       }),
 
     ])
@@ -2684,7 +2722,7 @@ useEffect(() => {
       // Background me agla batch taiyar rakho
       ensurePool(NEXT_BATCH_WANT * 2, session).catch(() => {});
     } catch (error) {
-      console.log("Firebase Video Error:", error);
+      __DEV__ && console.log("Firebase Video Error:", error);
     } finally {
       if (!cancelled) setLoading(false);
     }
@@ -2733,7 +2771,7 @@ const refreshVideos = useCallback(async () => {
 
     ensurePool(NEXT_BATCH_WANT * 2, session).catch(() => {});
   } catch (error) {
-    console.log("Refresh Videos Error:", error);
+    __DEV__ && console.log("Refresh Videos Error:", error);
   } finally {
     setRefreshing(false);
   }
@@ -2791,7 +2829,7 @@ const loadMoreVideos = useCallback(async () => {
 
     syncHasMore();
   } catch (error) {
-    console.log("Load More Videos Error:", error);
+    __DEV__ && console.log("Load More Videos Error:", error);
   } finally {
     loadingMoreRef.current = false;
   }
@@ -2889,7 +2927,7 @@ useEffect(() => {
         }
       })
       .catch((error) => {
-        console.log("Wallet Stars Load Error:", error);
+        __DEV__ && console.log("Wallet Stars Load Error:", error);
       });
 
     if (unsubscribeWallet) {
@@ -2906,7 +2944,7 @@ useEffect(() => {
         }
       },
       (error) => {
-        console.log("Wallet Stars Realtime Error:", error);
+        __DEV__ && console.log("Wallet Stars Realtime Error:", error);
       }
     );
   });
@@ -3123,7 +3161,7 @@ useEffect(() => {
       });
     },
     (error) => {
-      console.log("Comment Load Error", error);
+      __DEV__ && console.log("Comment Load Error", error);
       if (!cancelled) setCommentsLoading(false);
     }
   );
@@ -3283,7 +3321,7 @@ useEffect(() => {
     .catch((e) => {
       // UI ko rollback nahi karte:
       // user ko slow network me bhi latest tap state dikhti rahe.
-      console.log("Like Firebase Error:", e);
+      __DEV__ && console.log("Like Firebase Error:", e);
     })
     .finally(() => {
       if (likeQueueRef.current[videoId] === operation) {
@@ -3333,7 +3371,7 @@ const handleFollow = async (targetUserId) => {
   } catch (e) {
     // fail hua to wapas purani state
     setFollowingUsers(prev => ({ ...prev, [targetUserId]: isFollowing }));
-    console.log("Follow Error:", e);
+    __DEV__ && console.log("Follow Error:", e);
     Alert.alert("Error", "Follow nahi ho paya, dobara try karo.");
   } finally {
     pendingFollowRef.current[targetUserId] =
@@ -3474,7 +3512,7 @@ const loadFollowGrid = useCallback(async (force) => {
     }
     setLiveList(lives);
   } catch (e) {
-    console.log("Follow grid error:", e);
+    __DEV__ && console.log("Follow grid error:", e);
     gridTimeRef.current.follow = 0;
   } finally {
     setGridLoading(false);
@@ -3499,7 +3537,7 @@ const loadDiscoverGrid = useCallback(async (force) => {
     }
     setDiscoverList(list);
   } catch (e) {
-    console.log("Discover grid error:", e);
+    __DEV__ && console.log("Discover grid error:", e);
     gridTimeRef.current.discover = 0;
   } finally {
     setGridLoading(false);
@@ -3574,6 +3612,19 @@ const onTopForYou = useCallback(() => {
     refreshRef.current?.();
   }
 }, []);
+
+// Left/Right swipe se tab badlo: Discover | Follow | For You
+const swipeTabs = useSwipeTabs({
+  onSwipeRight: () => {
+    if (feedTabRef.current === 'foryou') onTopFollow();
+    else if (feedTabRef.current === 'follow') onTopDiscover();
+    else if (feedTabRef.current === 'discover') onTopLive();   // Discover ke baad All Live
+  },
+  onSwipeLeft: () => {
+    if (feedTabRef.current === 'discover') onTopFollow();
+    else if (feedTabRef.current === 'follow') onTopForYou();
+  },
+});
 
 // Grid ka koi video tap kiya -> wahi list full-screen feed me, usi video se
 const onGridOpen = useCallback((list, idx) => {
@@ -3776,7 +3827,7 @@ const playStarAnimation = () => {
         ));
         await updateDoc(doc(db, 'all_videos', videoId), { shares: increment(1), engagementScore: increment(10) });
       }
-    } catch (e) { console.log("Share Error", e); }
+    } catch (e) { __DEV__ && console.log("Share Error", e); }
   };
 
   const trackView = async (videoId) => {
@@ -3836,7 +3887,7 @@ const deleteComment = async (commentId) => {
 
           } catch (error) {
 
-            console.log(error);
+            __DEV__ && console.log(error);
 
             // fail hua -> feed ka count wapas
             setVideos((prev) => prev.map((video) =>
@@ -3912,7 +3963,7 @@ const deleteReply = async (commentId, replyId) => {
 
           }catch(e){
 
-            console.log("Reply delete error",e);
+            __DEV__ && console.log("Reply delete error",e);
 
           }
 
@@ -3992,7 +4043,7 @@ const postComment = async () => {
         ? { ...video, commentsCount: Math.max(0, (video.commentsCount || 1) - 1) }
         : video
     ));
-    console.log('Comment Error:', error);
+    __DEV__ && console.log('Comment Error:', error);
     return;
   }
 
@@ -4019,7 +4070,7 @@ const postComment = async () => {
         createdAt: serverTimestamp(),
       });
     } catch (e) {
-      console.log('Notification Error:', e);
+      __DEV__ && console.log('Notification Error:', e);
     }
   })();
 };
@@ -4082,7 +4133,7 @@ const postReply = async () => {
         ? { ...video, commentsCount: Math.max(0, (video.commentsCount || 1) - 1) }
         : video
     ));
-    console.log("Reply Error:", error);
+    __DEV__ && console.log("Reply Error:", error);
   }
 };
 
@@ -4170,10 +4221,12 @@ const renderComment = useCallback(({ item: rawItem }) => {
     setPausedVideoId(null);
 
     // Players ka window swipe settle hone ke baad badlo (heavy mount scroll me nahi)
+    // SMOOTH: naye players (decoder) swipe animation khatam hone ke BAAD mount hon.
+    // Pehle 60ms me mount hota tha -> scroll ke beech JS/native thread busy -> jhatka.
     if (mountTimeoutRef.current) clearTimeout(mountTimeoutRef.current);
     mountTimeoutRef.current = setTimeout(() => {
       setMountIndex(index);
-    }, 60); // SPEED: 120 -> 60, agle 2 videos jaldi preload shuru
+    }, 80);
 
     const currentItem = viewableItems[0].item;
 
@@ -4300,6 +4353,9 @@ const renderItem = useCallback(({ item, index }) => {
     isFocused &&
     !showGrid &&
     (index === currentIndex ||
+      // agla + pichla video HAMESHA ready (mountIndex ka wait nahi) -> swipe par atakna nahi
+      index === currentIndex + 1 ||
+      index === currentIndex - 1 ||
       (index >= mountIndex - PRELOAD_BEHIND && index <= mountIndex + PRELOAD_AHEAD));
   const nearVideo = index === currentIndex + 1;
   const isCurrent = activeVideo === index;
@@ -4366,7 +4422,7 @@ const renderItem = useCallback(({ item, index }) => {
   if (loading) return <View style={styles.loadingBox}><ActivityIndicator size="large" color="#f1c40f" /></View>;
 
   return (
-    <View style={styles.fullScreenOverlay} onLayout={onRootLayout}>
+    <View style={styles.fullScreenOverlay} onLayout={onRootLayout} {...swipeTabs}>
       {/* STATUS BAR BLACK: charging / time / date wali top patti black.
           translucent rakha taaki layout (top bar, icons) ki jagah na badle;
           upar ek black strip status bar ki height ki lagayi hai. */}
@@ -4399,10 +4455,12 @@ disableIntervalMomentum={true}
         /* removeClippedSubviews video surface ko baar-baar detach/attach
            karta tha (black flash + atakna) -> band. */
         removeClippedSubviews={false}
-        windowSize={3}
+        windowSize={5}
         initialNumToRender={2}
-        maxToRenderPerBatch={2}
-        updateCellsBatchingPeriod={50}
+        maxToRenderPerBatch={3}
+        updateCellsBatchingPeriod={30}
+        scrollEventThrottle={16}
+        bounces={false}
         overScrollMode="never"
         directionalLockEnabled
 
@@ -4577,7 +4635,7 @@ stars:giftAmount
 
 }catch(e){
 
-console.log(e);
+__DEV__ && console.log(e);
 Alert.alert("Star", (e as any)?.message || "Could not send star");
 
 }finally{

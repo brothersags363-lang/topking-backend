@@ -1,6 +1,6 @@
 import { Stack, useRouter, usePathname, useGlobalSearchParams } from 'expo-router';
 import { useEffect, useRef } from 'react';
-import { Alert, AppState, Platform, View, Text, TouchableOpacity } from 'react-native';
+import { Alert, AppState, BackHandler, Platform, View, Text, TouchableOpacity } from 'react-native';
 
 import { getApp } from '@react-native-firebase/app';
 import {
@@ -100,6 +100,27 @@ export default function RootLayout() {
   }, []);
 
 
+  // SAFETY NET: kisi bhi screen par back dabane se app band na ho.
+  // History hai to normal back (return false), history nahi hai to Home par jao.
+  // Screen ka apna handler (wallet jaisa) pehle chalta hai; ye sabse last me.
+  const pathRef = useRef(pathname);
+  pathRef.current = pathname;
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      try {
+        if (router.canGoBack()) return false;
+        const p = pathRef.current || '/';
+        if (p === '/' || p === '/index') return false; // Home par hi ho to app band hone do
+        router.replace('/' as any);
+        return true;
+      } catch (e) {
+        return false;
+      }
+    });
+    return () => sub.remove();
+  }, [router]);
+
+
   // Notification dabane par Messages screen (messages.tsx) khule
   const openFromData = (data: any) => {
     if (!data || !data.type) return;
@@ -111,8 +132,15 @@ export default function RootLayout() {
         } else if (data.type === 'live' && data.roomId) {
           // live room kholo (openLive.js khud check karta hai ki live chal rahi hai ya nahi)
           router.push({ pathname: '/openLive', params: { id: String(data.roomId) } } as any);
-        } else if (data.type === 'video_like' && data.videoId) {
+        } else if (
+          (data.type === 'video_like' || data.type === 'comment' || data.type === 'video_share') &&
+          data.videoId
+        ) {
+          // like / comment / bheja hua video -> wahi video kholo
           router.push({ pathname: '/openVideo', params: { id: String(data.videoId) } } as any);
+        } else if (data.type === 'live_share' && data.roomId) {
+          // dost ne live room share kiya -> live kholo
+          router.push({ pathname: '/openLive', params: { id: String(data.roomId) } } as any);
         } else if (data.type === 'follow' && data.senderUid) {
           router.push({ pathname: '/userProfile', params: { userId: String(data.senderUid) } } as any);
         }
@@ -129,12 +157,12 @@ export default function RootLayout() {
     const unsubForeground = onMessage(messaging, async (remoteMessage: any) => {
 
       const data = remoteMessage?.data || {};
-      if (!['chat', 'live', 'video_like', 'follow'].includes(data.type)) return;
+      if (!['chat', 'live', 'video_like', 'follow', 'comment', 'video_share', 'live_share'].includes(data.type)) return;
 
       const cur = currentRef.current;
       // jis chat/live me pehle se ho uska banner nahi
       if (data.type === 'chat' && cur.pathname === '/chat' && cur.userId === data.senderUid) return;
-      if (data.type === 'live' && cur.id && cur.id === data.roomId) return;
+      if ((data.type === 'live' || data.type === 'live_share') && cur.id && cur.id === data.roomId) return;
 
       try {
         await Notifications.scheduleNotificationAsync({
@@ -146,7 +174,7 @@ export default function RootLayout() {
           },
           trigger:
             Platform.OS === 'android'
-              ? ({ channelId: data.type === 'chat' ? 'messages' : data.type === 'live' ? 'live' : 'activity' } as any)
+              ? ({ channelId: data.type === 'chat' || data.type === 'video_share' ? 'messages' : data.type === 'live' || data.type === 'live_share' ? 'live' : 'activity' } as any)
               : null,
         });
       } catch (e) {}

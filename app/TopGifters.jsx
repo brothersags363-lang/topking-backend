@@ -12,14 +12,16 @@ import {
 
 import {
   doc,
+  getDoc,
   onSnapshot,
 } from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
 
 import { auth, db } from "./firebaseConfig";
 
 import { Ionicons } from "@expo/vector-icons";
 import { Image as ExpoImage } from "expo-image";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import UserTick from "../components/UserTick";
 import { AvatarFrame } from "../components/FramedAvatar";
 
@@ -104,6 +106,27 @@ export default function TopGifters() {
 
   const router = useRouter();
 
+  // Jis user ki profile se aaye uski Angels list dikhao.
+  // userId nahi mili (apni profile se aaye) to logged-in user ki list.
+  const params = useLocalSearchParams();
+  const paramUserId = Array.isArray(params?.userId)
+    ? params.userId[0]
+    : params?.userId;
+
+  const [authUid, setAuthUid] = useState(auth.currentUser?.uid || null);
+  const [authReady, setAuthReady] = useState(!!auth.currentUser);
+
+  // auth.currentUser shuru me null ho sakta hai -> pehle auth ready hone ka wait
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setAuthUid(u?.uid || null);
+      setAuthReady(true);
+    });
+    return unsub;
+  }, []);
+
+  const targetUid = paramUserId || authUid;
+
   const [topGifters, setTopGifters] = useState([]);
   const [giftUserCount, setGiftUserCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -143,12 +166,15 @@ export default function TopGifters() {
 
   useEffect(() => {
 
-    const uid = auth.currentUser?.uid;
+    const uid = targetUid;
 
     if (!uid) {
-      setLoading(false);
+      // auth abhi ready nahi hai to loading hi rakho, warna khali list
+      if (authReady) setLoading(false);
       return;
     }
+
+    setLoading(true);
 
     const userRef = doc(db, "users", uid);
 
@@ -206,6 +232,27 @@ export default function TopGifters() {
         setTopGifters(gifters);
         setLoading(false);
 
+        // Gift ke time save hui photo purani/default ho sakti hai ->
+        // har gifter ki LIVE profile photo users/{uid} se le lo.
+        gifters.forEach((g) => {
+          if (!g.uid) return;
+          getDoc(doc(db, "users", g.uid))
+            .then((s) => {
+              if (!s.exists()) return;
+              const d = s.data();
+              const img = d.profileImg || d.photoURL;
+              if (!img) return;
+              setTopGifters((prev) =>
+                prev.map((x) =>
+                  x.uid === g.uid && x.profileImg !== img
+                    ? { ...x, profileImg: img, photo: img }
+                    : x
+                )
+              );
+            })
+            .catch(() => {});
+        });
+
       },
 
       (error) => {
@@ -222,7 +269,7 @@ export default function TopGifters() {
 
     return () => unsubscribe();
 
-  }, []);
+  }, [targetUid, authReady]);
 
 
   const openGifterProfile = useCallback(
@@ -260,8 +307,16 @@ export default function TopGifters() {
 
     <View style={styles.container}>
 
-      {/* TITLE */}
-      <Text style={styles.title}>Angels</Text>
+      {/* TITLE + BACK */}
+      <View style={styles.headerRow}>
+        <TouchableOpacity
+          onPress={() => (router.canGoBack() ? router.back() : router.replace("/"))}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Ionicons name="chevron-back" size={26} color="#fff" />
+        </TouchableOpacity>
+        <Text style={styles.title}>Angels</Text>
+      </View>
 
       {/* TOTAL GIFTER COUNT */}
       <View style={styles.totalRow}>
@@ -315,12 +370,18 @@ const styles = StyleSheet.create({
     padding: 10,
   },
 
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 29,
+    marginBottom: 15,
+  },
+
   title: {
     color: "#fff",
     fontSize: 18,
     fontWeight: "bold",
-    marginTop: 29,
-    marginBottom: 15,
+    marginLeft: 6,
   },
 
   totalRow: {

@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import React, { useEffect, useMemo, useState } from "react";
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet, Image, TextInput, ActivityIndicator,
@@ -16,6 +17,7 @@ const RANK_COLORS = { 1: "#FFE500", 2: "#C9CCE8", 3: "#B7A6E8" };
 
 export default function Family() {
   const router = useRouter();
+  useBackStep('/');
   const insets = useSafeAreaInsets(); // navigation bar ke upar rakhne ke liye
   const uid = auth.currentUser?.uid;
   const [families, setFamilies] = useState([]);

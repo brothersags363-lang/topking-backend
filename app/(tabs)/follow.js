@@ -10,6 +10,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { auth } from '../firebaseConfig';
 import { useBlockedIds } from '../../utils/useBlockedIds';
 import useTabBack from '../../utils/useTabBack';
+import useSwipeTabs from '../../utils/useSwipeTabs';
 import { loadFollow, followCache } from '../../utils/homeData';
 import BottomNav from '../../components/BottomNav';
 import TopTabs from '../../components/TopTabs';
@@ -46,6 +47,12 @@ export default function FollowScreen() {
   const uid = auth.currentUser?.uid || null;
 
   useTabBack();
+
+  // Swipe: right -> Discover, left -> For You (home)
+  const swipe = useSwipeTabs({
+    onSwipeRight: () => router.replace('/discover'),
+    onSwipeLeft: () => router.replace('/'),
+  });
 
   const fresh = followCache.uid === uid;
   const [videos, setVideos] = useState(fresh ? followCache.videos : []);
@@ -129,7 +136,7 @@ export default function FollowScreen() {
   );
 
   return (
-    <View style={styles.root}>
+    <View style={styles.root} {...swipe}>
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
       <View style={styles.header}><TopTabs active="follow" /></View>
 

@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
@@ -275,6 +276,7 @@ const LeaderRow = memo(function LeaderRow({ item, index, onPress }) {
 
 export default function TopFollowersPage() {
   const router = useRouter();
+  useBackStep('/');
 
   const [leaders, setLeaders] = useState([]);
   const [loading, setLoading] = useState(true);

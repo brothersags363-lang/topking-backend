@@ -2533,6 +2533,301 @@ app.post(
 
 
 // =====================================================
+// PUSH NOTIFICATIONS: LIVE START / SHARE / FOLLOW / LIKE MILESTONE
+// App ye routes pehle se call karta hai (utils/pushNotify.js, ShareVideo.js)
+// =====================================================
+
+const NOTIFY_MAX_FOLLOWERS = 5000;
+const NOTIFY_LIKE_MILESTONES = [10, 50, 100, 1000, 10000, 50000];
+
+function notifyClip(s, n) {
+  const t = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+  return t.length > n ? t.slice(0, n - 1) + "…" : t;
+}
+
+function notifyIsId(v) {
+  return typeof v === "string" && v.length >= 1 && v.length <= 256 && /^[A-Za-z0-9_-]+$/.test(v);
+}
+
+async function notifyUserInfo(uid) {
+  try {
+    const snap = await db.collection("users").doc(uid).get();
+    const d = snap.exists ? snap.data() || {} : {};
+    const name =
+      (typeof d.name === "string" && d.name.trim()) ||
+      (typeof d.username === "string" && d.username.trim()) ||
+      "Someone";
+    return { name: notifyClip(name, 40), img: typeof d.profileImg === "string" ? d.profileImg : "" };
+  } catch (e) {
+    return { name: "Someone", img: "" };
+  }
+}
+
+// uids -> FCM push (batch). msg: { title, body, data, channelId, tag, ttlMs }
+async function notifyPushMany(uids, msg) {
+  try {
+    const unique = [...new Set((uids || []).filter(isValidUid))];
+    if (!unique.length) return { sent: 0, failed: 0 };
+
+    const entries = [];
+    for (let i = 0; i < unique.length; i += 300) {
+      const refs = unique.slice(i, i + 300).map((u) => db.collection("users").doc(u));
+      const snaps = await db.getAll(...refs, { fieldMask: ["fcmToken"] });
+      for (const s of snaps) {
+        const t = s.exists ? s.get("fcmToken") : null;
+        if (typeof t === "string" && t.length > 0 && t.length < 5000) {
+          entries.push({ uid: s.id, token: t });
+        }
+      }
+    }
+
+    const seen = new Set();
+    const list = entries.filter((e) => !seen.has(e.token) && seen.add(e.token));
+    if (!list.length) {
+      console.log("PUSH " + (msg.data && msg.data.type) + ": no tokens");
+      return { sent: 0, failed: 0 };
+    }
+
+    const data = {};
+    for (const [k, v] of Object.entries(msg.data || {})) {
+      if (v === undefined || v === null) continue;
+      data[k] = String(v).slice(0, 500);
+    }
+
+    const payload = {
+      notification: { title: notifyClip(msg.title, 100), body: notifyClip(msg.body, 160) },
+      data,
+      android: {
+        priority: "high",
+        ttl: msg.ttlMs || 24 * 60 * 60 * 1000,
+        notification: {
+          channelId: msg.channelId || "activity",
+          sound: "default",
+          tag: msg.tag || undefined,
+          defaultVibrateTimings: true,
+          notificationPriority: "PRIORITY_MAX",
+          visibility: "PRIVATE",
+        },
+      },
+      apns: {
+        headers: { "apns-priority": "10" },
+        payload: { aps: { sound: "default", ...(msg.tag ? { "thread-id": msg.tag } : {}) } },
+      },
+    };
+
+    let sent = 0;
+    let failed = 0;
+    for (let i = 0; i < list.length; i += 500) {
+      const chunk = list.slice(i, i + 500);
+      try {
+        const r = await admin.messaging().sendEachForMulticast({ ...payload, tokens: chunk.map((e) => e.token) });
+        sent += r.successCount;
+        failed += r.failureCount;
+        await Promise.all(
+          r.responses.map((x, idx) => {
+            if (x.success) return null;
+            const code = x.error && x.error.code;
+            console.error("FCM ERROR:", code || "unknown");
+            if (
+              code === "messaging/registration-token-not-registered" ||
+              code === "messaging/invalid-registration-token"
+            ) {
+              return db
+                .collection("users")
+                .doc(chunk[idx].uid)
+                .update({ fcmToken: admin.firestore.FieldValue.delete() })
+                .catch(() => {});
+            }
+            return null;
+          })
+        );
+      } catch (e) {
+        failed += chunk.length;
+        console.error("PUSH BATCH FAILED:", e && (e.code || e.message));
+      }
+    }
+    console.log("PUSH " + (msg.data && msg.data.type) + ": sent=" + sent + " failed=" + failed);
+    return { sent, failed };
+  } catch (e) {
+    console.error("PUSH MANY ERROR:", e && e.message);
+    return { sent: 0, failed: 0 };
+  }
+}
+
+// Ek hi event ka push dobara na jaye (create() doc pehle se ho to fail hota hai)
+async function notifyOnce(key) {
+  try {
+    await db.collection("pushLog").doc(key).create({ at: admin.firestore.FieldValue.serverTimestamp() });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// ---- Host live start kare -> uske followers ko push ----
+app.post("/notify/live-started", notificationLimiter, verifyUser, async (req, res) => {
+  try {
+    const roomId = req.body && req.body.roomId;
+    if (!notifyIsId(roomId)) return res.status(400).json({ success: false, error: "Invalid room" });
+    const uid = req.user.uid;
+
+    const roomSnap = await db.collection("rooms").doc(roomId).get();
+    if (!roomSnap.exists) return res.status(404).json({ success: false, error: "Room not found" });
+    const room = roomSnap.data() || {};
+
+    // Sirf host hi apni live ka push chala sakta hai
+    if (room.hostId !== uid) return res.status(403).json({ success: false, error: "Not allowed" });
+    if (String(room.status || "active").toLowerCase() !== "active") return res.json({ success: true, skipped: "inactive" });
+    if (room.roomType === "private" || room.isPrivate === true) return res.json({ success: true, skipped: "private" });
+
+    res.json({ success: true });
+
+    if (!(await notifyOnce("live_" + roomId))) return;
+
+    const fs = await db
+      .collection("follows")
+      .where("followingId", "==", uid)
+      .select("followerId")
+      .limit(NOTIFY_MAX_FOLLOWERS)
+      .get();
+    const followerIds = fs.docs.map((d) => d.get("followerId")).filter((x) => isValidUid(x) && x !== uid);
+    if (!followerIds.length) return;
+
+    const hostName = notifyClip(room.hostName || (await notifyUserInfo(uid)).name, 40);
+    await notifyPushMany(followerIds, {
+      title: hostName + " is LIVE now 🔴",
+      body: notifyClip(room.title, 80) || "Tap to join the live room",
+      channelId: "live",
+      tag: "live_" + roomId,
+      ttlMs: 10 * 60 * 1000,
+      data: { type: "live", roomId, hostId: uid, senderUid: uid, senderName: hostName },
+    });
+  } catch (e) {
+    console.error("NOTIFY LIVE ERROR:", e && e.message);
+    if (!res.headersSent) return res.status(500).json({ success: false, error: "Notification failed" });
+  }
+});
+
+// ---- Video / live room share -> receivers ko push ----
+app.post("/notify/share", notificationLimiter, verifyUser, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const uid = req.user.uid;
+    const kind = body.type === "live" ? "live" : "video";
+
+    let receivers = Array.isArray(body.receiverUids) ? body.receiverUids : body.receiverUid ? [body.receiverUid] : [];
+    receivers = [...new Set(receivers.filter((x) => isValidUid(x) && x !== uid))].slice(0, 50);
+    if (!receivers.length) return res.status(400).json({ success: false, error: "Invalid receiver" });
+
+    let videoId = "";
+    let roomId = "";
+    let caption = "";
+
+    if (kind === "live") {
+      roomId = body.roomId;
+      if (!notifyIsId(roomId)) return res.status(400).json({ success: false, error: "Invalid room" });
+    } else {
+      videoId = body.videoId;
+      if (!notifyIsId(videoId)) return res.status(400).json({ success: false, error: "Invalid video" });
+      const vs = await db.collection("all_videos").doc(videoId).get();
+      if (!vs.exists) return res.status(404).json({ success: false, error: "Video not found" });
+      caption = notifyClip((vs.data() || {}).caption, 80);
+    }
+
+    res.json({ success: true });
+
+    const me = await notifyUserInfo(uid);
+    if (kind === "live") {
+      await notifyPushMany(receivers, {
+        title: me.name + " shared a live room 🔴",
+        body: "Tap to join the live now",
+        channelId: "live",
+        tag: "share_" + uid,
+        ttlMs: 30 * 60 * 1000,
+        data: { type: "live_share", roomId, senderUid: uid, senderName: me.name, senderImg: me.img },
+      });
+    } else {
+      await notifyPushMany(receivers, {
+        title: me.name + " sent you a video 🎥",
+        body: caption || "Tap to watch",
+        channelId: "messages",
+        tag: "share_" + uid,
+        data: { type: "video_share", videoId, senderUid: uid, senderName: me.name, senderImg: me.img },
+      });
+    }
+  } catch (e) {
+    console.error("NOTIFY SHARE ERROR:", e && e.message);
+    if (!res.headersSent) return res.status(500).json({ success: false, error: "Notification failed" });
+  }
+});
+
+// ---- Kisi ko follow kiya -> us user ko push ----
+app.post("/notify/new-follower", notificationLimiter, verifyUser, async (req, res) => {
+  try {
+    const targetUid = req.body && req.body.targetUid;
+    const uid = req.user.uid;
+    if (!isValidUid(targetUid) || targetUid === uid) {
+      return res.status(400).json({ success: false, error: "Invalid target" });
+    }
+
+    // Follow sach me hua hai ya nahi (client par bharosa nahi)
+    const fSnap = await db.collection("follows").doc(uid + "_" + targetUid).get();
+    if (!fSnap.exists) return res.json({ success: true, skipped: "not-following" });
+
+    res.json({ success: true });
+
+    // Follow/unfollow baar-baar karke spam na ho: ek jodi ka ek hi push
+    if (!(await notifyOnce("follow_" + uid + "_" + targetUid))) return;
+
+    const me = await notifyUserInfo(uid);
+    await notifyPushMany([targetUid], {
+      title: "New follower 👤",
+      body: me.name + " started following you",
+      channelId: "activity",
+      tag: "follow_" + uid,
+      data: { type: "follow", senderUid: uid, senderName: me.name, senderImg: me.img },
+    });
+  } catch (e) {
+    console.error("NOTIFY FOLLOW ERROR:", e && e.message);
+    if (!res.headersSent) return res.status(500).json({ success: false, error: "Notification failed" });
+  }
+});
+
+// ---- Video like milestone (10, 50, 100, 1000...) -> video owner ----
+app.post("/notify/video-like", notificationLimiter, verifyUser, async (req, res) => {
+  try {
+    const videoId = req.body && req.body.videoId;
+    if (!notifyIsId(videoId)) return res.status(400).json({ success: false, error: "Invalid video" });
+
+    const vs = await db.collection("all_videos").doc(videoId).get();
+    if (!vs.exists) return res.json({ success: true, skipped: "no-video" });
+    const v = vs.data() || {};
+    const ownerId = v.userId;
+    const likes = Number(v.likes) || 0;
+
+    res.json({ success: true });
+
+    if (!isValidUid(ownerId) || ownerId === req.user.uid) return;
+    let hit = 0;
+    for (const m of NOTIFY_LIKE_MILESTONES) if (likes >= m) hit = m;
+    if (!hit) return;
+    if (!(await notifyOnce("like_" + videoId + "_" + hit))) return;
+
+    await notifyPushMany([ownerId], {
+      title: "Your video is trending ❤️",
+      body: "Your video reached " + hit + " likes",
+      channelId: "activity",
+      tag: "like_" + videoId,
+      data: { type: "video_like", videoId, senderUid: req.user.uid },
+    });
+  } catch (e) {
+    console.error("NOTIFY LIKE ERROR:", e && e.message);
+    if (!res.headersSent) return res.status(500).json({ success: false, error: "Notification failed" });
+  }
+});
+
+
+// =====================================================
 // FILE CLEANUP
 // =====================================================
 

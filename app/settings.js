@@ -267,6 +267,13 @@ export default function Settings() {
             onPress={() => router.push("../reward")}
           />
 
+          <Row
+            icon="trophy-outline"
+            iconColor="#FFD700"
+            label="TopKing Event"
+            onPress={() => router.push("/event")}
+          />
+
           {isBD && (
             <Row
               icon="briefcase-outline"

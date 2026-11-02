@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import React, { useEffect, useState } from "react";
 import {
   View,
@@ -26,6 +27,7 @@ const PLACEHOLDER = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 
 export default function ReportsAdmin() {
   const router = useRouter();
+  useBackStep('/');
   const isAdmin = useIsAdmin();
   const [tab, setTab] = useState("videos"); // "videos" | "users"
   const [videos, setVideos] = useState([]);

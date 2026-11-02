@@ -8,6 +8,10 @@ const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { randomInt, createHash } = require('node:crypto');
 
 initializeApp();
+
+// PUSH NOTIFICATIONS (live start, share, like, comment, reply, follow) - notifications.js ke sab triggers yahan se deploy hote hain
+Object.assign(exports, require('./notifications'));
+
 const db = getFirestore();
 const REGION = 'us-central1'; // user India me hai -> 'asia-south1' (Mumbai) se kam latency milegi; client me bhi same region set karna
 const MAX_BET = 10000;

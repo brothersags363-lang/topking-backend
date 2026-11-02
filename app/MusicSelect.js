@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import React, {
   useState,
   useEffect,
@@ -39,6 +40,7 @@ const { width } = Dimensions.get("window");
 export default function MusicSelect() {
 
   const router = useRouter();
+  useBackStep('/');
 
 const params = useLocalSearchParams();
 

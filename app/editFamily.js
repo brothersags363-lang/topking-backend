@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import React, { useEffect, useState } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, Image, Alert, ActivityIndicator, ScrollView,
@@ -14,6 +15,7 @@ import { uploadImage } from "../utils/uploadImage";
 // Family leader apni family ka logo / slogan / contact badal sakta hai.
 export default function EditFamily() {
   const router = useRouter();
+  useBackStep('/family');
   const { fid } = useLocalSearchParams();
   const uid = auth.currentUser?.uid;
 

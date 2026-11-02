@@ -1,3 +1,4 @@
+import useBackStep from "../utils/useBackStep";
 import React, { useEffect, useState } from "react";
 
 import {
@@ -25,6 +26,8 @@ import {
 import { auth, db } from "./firebaseConfig";
 
 export default function AgencyRequest() {
+
+  useBackStep("/"); // mobile back: ek step peeche, app band nahi hogi
 
   const [requests, setRequests] = useState([]);
 

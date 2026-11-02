@@ -45,6 +45,7 @@ import { giftHtml } from '../assets/giftWeb';
 import LevelFrame, { getSpecialKey } from '../components/LevelFrame';
 import JoinEntry from '../components/live/JoinEntry';
 import UserTick from '../components/UserTick';
+import ProfileSheet, { SheetChip } from '../components/live/ProfileSheet';
 
 let db = null;
 let auth = null;
@@ -2510,85 +2511,55 @@ export default function MultiGuestRoom() {
         </TouchableOpacity>
       </Modal>
 
-      {/* ===== profile card ===== */}
-      <Modal transparent visible={!!profileCard} animationType="fade" onRequestClose={() => setProfileCard(null)}>
-        <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={() => setProfileCard(null)}>
-          <TouchableOpacity activeOpacity={1} style={styles.pcBox}>
-            {profileCard && (
+      {/* ===== profile card (same popup as every live room) ===== */}
+      <ProfileSheet
+        db={db}
+        visible={!!profileCard}
+        onClose={() => setProfileCard(null)}
+        bottomInset={insets.bottom}
+        user={profileCard ? {
+          uid: profileCard.uid,
+          name: profileCard.name || profileCard.username,
+          img: profileCard.img,
+          level: profileCard.level,
+          verified: !!profileCard.verified,
+          verifiedColor: profileCard.verifiedColor,
+        } : null}
+        levelTheme={getLevelTheme(Number(profileCard?.level) || 1)}
+        isMe={!profileCard || profileCard.uid === myUid}
+        following={profileFollowing}
+        onFollow={toggleProfileFollow}
+        onProfile={() => {
+          const u = profileCard?.uid;
+          setProfileCard(null);
+          if (u) router.push({ pathname: '/userProfile', params: { userId: u, roomId } });
+        }}
+        tags={profileCard ? (
+          <>
+            {profileCard.uid === hostId && <View style={[styles.roleTag, { backgroundColor: '#F71084', marginLeft: 6 }]}><Text style={styles.roleTagTxt}>HOST</Text></View>}
+            {!!mods[profileCard.uid] && <View style={[styles.roleTag, { backgroundColor: '#2D9CFF', marginLeft: 6 }]}><Text style={styles.roleTagTxt}>MOD</Text></View>}
+            {!!mutedUsers[profileCard.uid] && <View style={[styles.roleTag, { backgroundColor: '#6b7280', marginLeft: 6 }]}><Text style={styles.roleTagTxt}>MUTED</Text></View>}
+          </>
+        ) : null}
+      >
+        {!!profileCard && profileCard.uid !== myUid && (
+          <>
+            {giftUsers.some((u) => u.uid === profileCard.uid) && (
+              <SheetChip label="🎁 Send Gift" color="#F59E0B" onPress={() => { const u = profileCard.uid; setProfileCard(null); openGiftModal(u); }} />
+            )}
+            {canModerate(profileCard) && (
               <>
-                <View style={{ width: 96, height: 96, justifyContent: 'center', alignItems: 'center' }}>
-                  <Image source={{ uri: profileCard.img || DEFAULT_AVATAR }} style={styles.pcAva} />
-                  {(Number(profileCard.level) >= 10 || !!profileCard.uid) && (
-                    <LevelFrame level={Number(profileCard.level)} uid={profileCard.uid} animated style={{ position: 'absolute', width: 110, height: 110 }} />
-                  )}
-                </View>
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10 }}>
-                  <Text style={styles.pcName} numberOfLines={1}>{profileCard.name || profileCard.username || 'User'}</Text>
-                  <UserTick uid={profileCard.uid || profileCard.userId || profileCard.senderId || profileCard.id} verified={!!(!!profileCard.verified)} verifiedColor={profileCard.verifiedColor} size={17} />
-                </View>
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6 }}>
-                  {(() => {
-                    const th = getLevelTheme(Number(profileCard.level) || 1);
-                    return (
-                      <View style={[styles.levelBadge, { backgroundColor: th.bg, borderColor: th.border, marginLeft: 0 }]}>
-                        <MaterialCommunityIcons name="diamond-stone" size={10} color={th.icon} />
-                        <Text style={[styles.levelText, { color: th.text }]}>LV {profileCard.level || 1}</Text>
-                      </View>
-                    );
-                  })()}
-                  {profileCard.uid === hostId && <View style={[styles.roleTag, { backgroundColor: '#F71084', marginLeft: 6 }]}><Text style={styles.roleTagTxt}>HOST</Text></View>}
-                  {!!mods[profileCard.uid] && <View style={[styles.roleTag, { backgroundColor: '#2D9CFF', marginLeft: 6 }]}><Text style={styles.roleTagTxt}>MOD</Text></View>}
-                  {!!mutedUsers[profileCard.uid] && <View style={[styles.roleTag, { backgroundColor: '#6b7280', marginLeft: 6 }]}><Text style={styles.roleTagTxt}>MUTED</Text></View>}
-                </View>
-
-                {profileCard.uid !== myUid && (
-                  <View style={styles.pcBtns}>
-                    <TouchableOpacity
-                      style={[styles.pcBtn, profileFollowing ? { backgroundColor: '#374151' } : { backgroundColor: '#F71084' }]}
-                      onPress={toggleProfileFollow}
-                    >
-                      <Text style={styles.pcBtnTxt}>{profileFollowing ? 'Following' : '+ Follow'}</Text>
-                    </TouchableOpacity>
-
-                    {giftUsers.some((u) => u.uid === profileCard.uid) && (
-                      <TouchableOpacity
-                        style={[styles.pcBtn, { backgroundColor: '#F59E0B' }]}
-                        onPress={() => { const u = profileCard.uid; setProfileCard(null); openGiftModal(u); }}
-                      >
-                        <Text style={styles.pcBtnTxt}>🎁 Send Gift</Text>
-                      </TouchableOpacity>
-                    )}
-
-                    {canModerate(profileCard) && (
-                      <>
-                        <TouchableOpacity style={[styles.pcBtn, { backgroundColor: '#374151' }]} onPress={() => muteUserChat(profileCard, !mutedUsers[profileCard.uid])}>
-                          <Text style={styles.pcBtnTxt}>{mutedUsers[profileCard.uid] ? '🔊 Unmute chat' : '🔇 Mute chat'}</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity style={[styles.pcBtn, { backgroundColor: '#DC2626' }]} onPress={() => kickUser(profileCard)}>
-                          <Text style={styles.pcBtnTxt}>🚫 Remove from live</Text>
-                        </TouchableOpacity>
-                      </>
-                    )}
-
-                    {isHost && profileCard.uid !== hostId && (
-                      <TouchableOpacity style={[styles.pcBtn, { backgroundColor: '#2D9CFF' }]} onPress={() => toggleMod(profileCard)}>
-                        <Text style={styles.pcBtnTxt}>{mods[profileCard.uid] ? 'Remove moderator' : '🛡 Make moderator'}</Text>
-                      </TouchableOpacity>
-                    )}
-
-                    <TouchableOpacity
-                      style={[styles.pcBtn, { backgroundColor: 'transparent', borderWidth: 1, borderColor: '#4b5563' }]}
-                      onPress={() => { setReportTarget(profileCard); setProfileCard(null); }}
-                    >
-                      <Text style={[styles.pcBtnTxt, { color: '#f87171' }]}>⚑ Report</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
+                <SheetChip label={mutedUsers[profileCard.uid] ? '🔊 Unmute chat' : '🔇 Mute chat'} color="#374151" onPress={() => muteUserChat(profileCard, !mutedUsers[profileCard.uid])} />
+                <SheetChip label="🚫 Remove" color="#DC2626" onPress={() => kickUser(profileCard)} />
               </>
             )}
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+            {isHost && profileCard.uid !== hostId && (
+              <SheetChip label={mods[profileCard.uid] ? 'Remove mod' : '🛡 Make mod'} color="#2D9CFF" onPress={() => toggleMod(profileCard)} />
+            )}
+            <SheetChip label="⚑ Report" color="#4b5563" textColor="#f87171" outline onPress={() => { setReportTarget(profileCard); setProfileCard(null); }} />
+          </>
+        )}
+      </ProfileSheet>
 
       {/* ===== report ===== */}
       <Modal transparent visible={!!reportTarget} animationType="slide" onRequestClose={() => setReportTarget(null)}>

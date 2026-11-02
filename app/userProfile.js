@@ -74,9 +74,6 @@ const AVATAR_FALLBACK = "https://avatar.iran.liara.run/public/65";
 const THUMB_FALLBACK =
   "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 
-// Followers / following modal loads at most this many people at once
-// (each person = 5 Firestore reads). Raise it if you need more.
-const FOLLOW_LIST_LIMIT = 100;
 
 // Batched "get many docs by id": 30 ids per query instead of 1 read round-trip
 // per doc. Falls back to individual getDoc() if rules don't allow list queries.
@@ -178,7 +175,6 @@ const sortNewest = (arr) =>
   );
 
 const videoKeyExtractor = (item, index) => item.id || String(index);
-const followKeyExtractor = (item) => item.id;
 
 // topGifters can be an array or an object map; normalise + sort by stars
 const normalizeGifters = (raw) => {
@@ -302,100 +298,6 @@ const LiveTile = memo(function LiveTile({ live, fallbackImg, onPress }) {
   );
 });
 
-// One row inside the followers / following modal
-const FollowRow = memo(function FollowRow({
-  item,
-  onOpenProfile,
-  onMessage,
-  onFollowBack,
-}) {
-  const theme = getLevelTheme(item.level);
-
-  let action;
-
-  if (item.iFollow && item.followsMe) {
-    action = (
-      <TouchableOpacity
-        style={[styles.rowBtn, styles.rowBtnDark]}
-        onPress={() => onMessage(item)}
-      >
-        <Text style={styles.rowBtnTextLight}>Message</Text>
-      </TouchableOpacity>
-    );
-  } else if (item.followsMe) {
-    action = (
-      <TouchableOpacity
-        style={[styles.rowBtn, styles.rowBtnYellow]}
-        onPress={() => onFollowBack(item)}
-      >
-        <Text style={styles.rowBtnTextDark}>Follow Back</Text>
-      </TouchableOpacity>
-    );
-  } else if (item.iFollow) {
-    action = (
-      <TouchableOpacity style={[styles.rowBtn, styles.rowBtnDark]}>
-        <Text style={styles.rowBtnTextLight}>Following</Text>
-      </TouchableOpacity>
-    );
-  } else {
-    action = (
-      <TouchableOpacity
-        style={[styles.rowBtn, styles.rowBtnYellow]}
-        onPress={() => onFollowBack(item)}
-      >
-        <Text style={styles.rowBtnTextDark}>Follow</Text>
-      </TouchableOpacity>
-    );
-  }
-
-  return (
-    <View style={styles.followRow}>
-      <TouchableOpacity
-        style={styles.followUserTap}
-        onPress={() => onOpenProfile(item.id)}
-      >
-        <View style={styles.followAvatarWrap}>
-          <FastImage
-            uri={item.profileImg}
-            fallback={AVATAR_FALLBACK}
-            style={styles.followAvatar}
-          />
-          <AvatarFrame uid={item.id} level={item.level} size={50} animated={false} />
-        </View>
-
-        <View style={styles.followNameWrap}>
-          <Text style={styles.followName} numberOfLines={1}>
-            {item.username}
-          </Text>
-
-          <View style={styles.followTick}>
-              <UserTick uid={item.id} verified={item.verified} verifiedColor={item.verifiedColor} faceVerified={isFaceVerified(item)} size={14} style={{ marginLeft: 0 }} />
-            </View>
-
-          <View
-            style={[
-              styles.levelBadge,
-              { backgroundColor: theme.bg, borderColor: theme.border },
-            ]}
-          >
-            <MaterialCommunityIcons
-              name="diamond-stone"
-              size={9}
-              color={theme.icon}
-            />
-
-            <Text style={[styles.levelBadgeText, { color: theme.text }]}>
-              LV {item.level}
-            </Text>
-          </View>
-        </View>
-      </TouchableOpacity>
-
-      {action}
-    </View>
-  );
-});
-
 /* ------------------------------------------------------------------ */
 /* Screen                                                              */
 /* ------------------------------------------------------------------ */
@@ -405,9 +307,7 @@ export default function UserProfile() {
   const { userId } = useLocalSearchParams();
 
   const [videos, setVideos] = useState([]);
-  const [likedVideos, setLikedVideos] = useState([]);
   const [likedCount, setLikedCount] = useState(0);
-  const [likedLoading, setLikedLoading] = useState(false);
   const [activeTab, setActiveTab] = useState("Videos");
 
   const [userData, setUserData] = useState(null);
@@ -427,12 +327,6 @@ export default function UserProfile() {
 
   const [menuVisible, setMenuVisible] = useState(false);
 
-  const [followersModalVisible, setFollowersModalVisible] = useState(false);
-  const [activeFollowTab, setActiveFollowTab] = useState("followers");
-  const [followersList, setFollowersList] = useState([]);
-  const [followingList, setFollowingList] = useState([]);
-  const [followersLoading, setFollowersLoading] = useState(false);
-  const [followingLoading, setFollowingLoading] = useState(false);
 
   const [topGifters, setTopGifters] = useState([]);
   const [giftUserCount, setGiftUserCount] = useState(0);
@@ -441,15 +335,12 @@ export default function UserProfile() {
   const [refreshing, setRefreshing] = useState(false);
 
   // "already loaded once" flags => reopening the modal / Likes tab is instant
-  const followersLoadedRef = useRef(false);
-  const followingLoadedRef = useRef(false);
-  const likedLoadedRef = useRef(false);
   const followBusyRef = useRef(false);
   const lastFocusFetchRef = useRef({ userId: null, t: 0 });
 
   // Always-current values for stable callbacks (no re-created handlers)
   const latest = useRef({});
-  latest.current = { activeTab, videos, likedVideos, userData };
+  latest.current = { activeTab, videos, userData };
 
   // Kya ye user abhi live hai? (all-live jaisa hi data, real time)
   const liveRoom = useLiveHost(userId);
@@ -465,13 +356,7 @@ export default function UserProfile() {
 
   // Reset cached lists when the profile being viewed changes
   useEffect(() => {
-    followersLoadedRef.current = false;
-    followingLoadedRef.current = false;
-    likedLoadedRef.current = false;
 
-    setFollowersList([]);
-    setFollowingList([]);
-    setLikedVideos([]);
     setLikedCount(0);
   }, [userId]);
 
@@ -497,7 +382,23 @@ export default function UserProfile() {
         setUserData(data);
         setIsVerified(data.verified === true);
         setGiftUserCount(gifters.length);
-        setTopGifters(gifters.slice(0, ANGEL_SHOW));
+        const top = gifters.slice(0, ANGEL_SHOW);
+        setTopGifters(top);
+
+        // Angels ki photo: topGifters me gift ke time ki purani/fallback photo
+        // save hoti hai. Isliye har gifter ki LIVE profile photo users/{uid}
+        // se laakar badal do (wahi photo jo unki profile me dikhti hai).
+        fetchDocsByIds("users", top.map((g) => g.uid))
+          .then((map) => {
+            setTopGifters((prev) =>
+              prev.map((g) => {
+                const d = map.get(g.uid)?.data();
+                const img = d?.profileImg || d?.photoURL;
+                return img ? { ...g, profileImg: img } : g;
+              })
+            );
+          })
+          .catch(() => {});
       },
       () => {}
     );
@@ -631,36 +532,6 @@ export default function UserProfile() {
     }
   }, [userId]);
 
-  // Full liked-videos list: only loaded when the Likes tab is opened
-  const loadLikedVideos = useCallback(async () => {
-    if (!userId) return;
-
-    try {
-      setLikedLoading(true);
-
-      const likedSnap = await getDocs(
-        collection(db, "userLikes", userId, "likedVideos")
-      );
-
-      const videoMap = await fetchDocsByIds(
-        "all_videos",
-        likedSnap.docs.map((like) => like.id)
-      );
-
-      const arr = [...videoMap.values()].map((s) => ({ id: s.id, ...s.data() }));
-
-      sortNewest(arr);
-
-      setLikedVideos(arr);
-      setLikedCount(arr.length);
-      likedLoadedRef.current = true;
-    } catch (error) {
-      if (__DEV__) console.log("LOAD LIKED VIDEOS ERROR =", error);
-    } finally {
-      setLikedLoading(false);
-    }
-  }, [userId]);
-
   const fetchFollowCounts = useCallback(async () => {
     if (!userId) return;
 
@@ -708,78 +579,6 @@ export default function UserProfile() {
     }
   }, [userId]);
 
-  // Single loader for both followers and following
-  const loadFollowList = useCallback(
-    async (kind) => {
-      if (!userId) return;
-
-      const isFollowers = kind === "followers";
-      const loadedRef = isFollowers ? followersLoadedRef : followingLoadedRef;
-      const setList = isFollowers ? setFollowersList : setFollowingList;
-      const setListLoading = isFollowers
-        ? setFollowersLoading
-        : setFollowingLoading;
-
-      try {
-        // Spinner only the first time; after that show cached list instantly
-        // and refresh silently in the background.
-        if (!loadedRef.current) setListLoading(true);
-
-        const snap = await getDocs(
-          query(
-            collection(db, "follows"),
-            where(isFollowers ? "followingId" : "followerId", "==", userId),
-            limit(FOLLOW_LIST_LIMIT)
-          )
-        );
-
-        const myId = auth.currentUser?.uid;
-        const otherKey = isFollowers ? "followerId" : "followingId";
-
-        const otherIds = snap.docs.map((d) => d.data()[otherKey]);
-
-        const [users, wallets, verified, iFollowMap, followsMeMap] =
-          await Promise.all([
-            fetchDocsByIds("users", otherIds),
-            fetchDocsByIds("wallets", otherIds),
-            fetchDocsByIds("verifiedUsers", otherIds),
-            myId
-              ? fetchDocsByIds("follows", otherIds.map((id) => `${myId}_${id}`))
-              : new Map(),
-            myId
-              ? fetchDocsByIds("follows", otherIds.map((id) => `${id}_${myId}`))
-              : new Map(),
-          ]);
-
-        const results = otherIds.map((otherId) => {
-          const userSnap = users.get(otherId);
-          if (!userSnap) return null;
-
-          const user = userSnap.data();
-          const walletSnap = wallets.get(otherId);
-
-          return {
-            id: otherId,
-            ...user,
-            iFollow: iFollowMap.has(`${myId}_${otherId}`),
-            followsMe: followsMeMap.has(`${otherId}_${myId}`),
-            level: walletSnap ? walletSnap.data().level || 1 : 1,
-            verified: verified.has(otherId),
-            verifiedColor: user.verifiedColor || "",
-          };
-        });
-
-        setList(results.filter(Boolean));
-        loadedRef.current = true;
-      } catch (error) {
-        console.log("LOAD FOLLOW LIST ERROR =", error?.code, error?.message);
-      } finally {
-        setListLoading(false);
-      }
-    },
-    [userId]
-  );
-
   /* ---------------- Focus + refresh ---------------- */
 
   useFocusEffect(
@@ -796,14 +595,12 @@ export default function UserProfile() {
       fetchVideos();
       fetchFollowCounts();
 
-      if (likedLoadedRef.current) loadLikedVideos();
-      else fetchLikedCount();
+      fetchLikedCount();
     }, [
       userId,
       fetchProfileExtras,
       fetchVideos,
       fetchFollowCounts,
-      loadLikedVideos,
       fetchLikedCount,
     ])
   );
@@ -819,7 +616,7 @@ export default function UserProfile() {
         fetchProfileExtras(),
         fetchVideos(),
         fetchFollowCounts(),
-        likedLoadedRef.current ? loadLikedVideos() : fetchLikedCount(),
+        fetchLikedCount(),
       ]);
     } finally {
       setRefreshing(false);
@@ -828,7 +625,6 @@ export default function UserProfile() {
     fetchProfileExtras,
     fetchVideos,
     fetchFollowCounts,
-    loadLikedVideos,
     fetchLikedCount,
   ]);
 
@@ -884,41 +680,6 @@ export default function UserProfile() {
       followBusyRef.current = false;
     }
   }, [currentUserId, userId, isFollowing, sendFollowNotification]);
-
-  // "Follow / Follow Back" from inside the followers/following modal
-  const handleFollowBack = useCallback(
-    async (target) => {
-      const myId = auth.currentUser?.uid;
-      if (!myId) return;
-
-      const mark = (value) => (list) =>
-        list.map((u) => (u.id === target.id ? { ...u, iFollow: value } : u));
-
-      const viewingMyself = myId === userId;
-
-      setFollowersList(mark(true));
-      setFollowingList(mark(true));
-
-      if (viewingMyself) {
-        setFollowingCount((c) => c + 1);
-        followingLoadedRef.current = false; // my following list changed
-      }
-
-      try {
-        await setDoc(doc(db, "follows", `${myId}_${target.id}`), {
-          followerId: myId,
-          followingId: target.id,
-        });
-        notifyNewFollower(target.id);
-      } catch (error) {
-        setFollowersList(mark(false));
-        setFollowingList(mark(false));
-
-        if (viewingMyself) setFollowingCount((c) => Math.max(0, c - 1));
-      }
-    },
-    [userId]
-  );
 
   const handleBlockUser = useCallback(() => {
     Alert.alert("Block User", "Do you want to block this user?", [
@@ -1011,10 +772,9 @@ export default function UserProfile() {
 
   const openVideo = useCallback(
     (item) => {
-      const { activeTab: tab, videos: v, likedVideos: lv, userData: ud } =
-        latest.current;
+      const { videos: v, userData: ud } = latest.current;
 
-      const fullList = tab === "Videos" ? v : lv;
+      const fullList = v;
       const fullIndex = fullList.findIndex((x) => x.id === item.id);
       // Send a window around the tapped video, not the entire list
       const winStart = Math.max(0, fullIndex - 10);
@@ -1043,64 +803,33 @@ export default function UserProfile() {
     [router, userId]
   );
 
+  // Video tab profile me hi rehta hai; "Like" dabane par alag Like page khulta hai
   const handleTabPress = useCallback(
     (tab) => {
-      setActiveTab(tab);
-
-      if (tab === "Likes" && !likedLoadedRef.current) {
-        loadLikedVideos();
+      if (tab === "Likes") {
+        router.push({
+          pathname: "/likes",
+          params: { userId, username: latest.current.userData?.username },
+        });
+        return;
       }
+      setActiveTab("Videos");
     },
-    [loadLikedVideos]
+    [router, userId]
   );
 
-  const openFollowModal = useCallback(
-    (tab) => {
-      setActiveFollowTab(tab);
-      setFollowersModalVisible(true); // modal opens immediately
-      loadFollowList(tab); // data loads in background (cached list shows first)
-    },
-    [loadFollowList]
-  );
-
-  const switchFollowTab = useCallback(
-    (tab) => {
-      setActiveFollowTab(tab);
-
-      const loadedRef =
-        tab === "followers" ? followersLoadedRef : followingLoadedRef;
-
-      if (!loadedRef.current) loadFollowList(tab);
-    },
-    [loadFollowList]
-  );
-
-  const closeFollowModal = useCallback(
-    () => setFollowersModalVisible(false),
-    []
-  );
-
-  const openFollowUserProfile = useCallback(
-    (id) => {
-      setFollowersModalVisible(false);
-      router.push({ pathname: "/userProfile", params: { userId: id } });
-    },
-    [router]
-  );
-
-  const openFollowUserChat = useCallback(
-    (item) => {
-      setFollowersModalVisible(false);
+  // Followers / Following ab alag page me khulte hain (profile.tsx jaisa) - modal nahi
+  const openFollowPage = useCallback(
+    (kind) => {
       router.push({
-        pathname: "/chat",
+        pathname: kind === "followers" ? "/followers" : "/following",
         params: {
-          userId: item.id,
-          username: item.username,
-          profileImg: item.profileImg,
+          userId,
+          username: latest.current.userData?.username,
         },
       });
     },
-    [router]
+    [router, userId]
   );
 
   /* ---------------- Render pieces ---------------- */
@@ -1117,18 +846,6 @@ export default function UserProfile() {
         <VideoItem item={item} onPress={openVideo} />
       ),
     [openVideo, openLive]
-  );
-
-  const renderFollowItem = useCallback(
-    ({ item }) => (
-      <FollowRow
-        item={item}
-        onOpenProfile={openFollowUserProfile}
-        onMessage={openFollowUserChat}
-        onFollowBack={handleFollowBack}
-      />
-    ),
-    [openFollowUserProfile, openFollowUserChat, handleFollowBack]
   );
 
   const profileImg = userData?.profileImg;
@@ -1220,7 +937,8 @@ export default function UserProfile() {
             <View style={styles.statsRow}>
               <TouchableOpacity
                 style={styles.statBox}
-                onPress={() => openFollowModal("followers")}
+                activeOpacity={0.7}
+                onPress={() => openFollowPage("followers")}
               >
                 <Text style={styles.statNumber}>{followersCount}</Text>
                 <Text style={styles.statLabel}>Followers</Text>
@@ -1228,7 +946,8 @@ export default function UserProfile() {
 
               <TouchableOpacity
                 style={styles.statBox}
-                onPress={() => openFollowModal("following")}
+                activeOpacity={0.7}
+                onPress={() => openFollowPage("following")}
               >
                 <Text style={styles.statNumber}>{followingCount}</Text>
                 <Text style={styles.statLabel}>Following</Text>
@@ -1381,13 +1100,10 @@ export default function UserProfile() {
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={activeTab === "Likes" ? styles.activeTab : null}
             onPress={() => handleTabPress("Likes")}
           >
             <Text
-              style={
-                activeTab === "Likes" ? styles.activeTabText : styles.tabText
-              }
+              style={styles.tabText}
             >
               Like ({likedCount})
             </Text>
@@ -1421,35 +1137,19 @@ export default function UserProfile() {
     handleFollow,
     openChat,
     handleShareProfile,
-    openFollowModal,
+    openFollowPage,
     handleTabPress,
   ]);
 
   // Videos tab me live tile sabse pehle; `videos` state untouched rehta hai
   // (openVideo ka index/list calculation isse kharab na ho).
   const gridData = useMemo(() => {
-    if (activeTab !== "Videos") return likedVideos;
     if (!liveRoom) return videos;
     return [
       { id: "__live__", isLiveTile: true, live: liveRoom },
       ...videos,
     ];
-  }, [activeTab, videos, likedVideos, liveRoom]);
-
-  const listEmpty = useMemo(
-    () =>
-      activeTab === "Likes" && likedLoading ? (
-        <ActivityIndicator
-          size="large"
-          color="#FFD700"
-          style={styles.likedSpinner}
-        />
-      ) : null,
-    [activeTab, likedLoading]
-  );
-
-  const followListLoading =
-    activeFollowTab === "followers" ? followersLoading : followingLoading;
+  }, [videos, liveRoom]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -1482,7 +1182,6 @@ export default function UserProfile() {
         renderItem={renderVideoItem}
         numColumns={3}
         ListHeaderComponent={listHeader}
-        ListEmptyComponent={listEmpty}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -1570,86 +1269,6 @@ export default function UserProfile() {
             </TouchableOpacity>
           </View>
         </View>
-      </Modal>
-
-      {/* Followers / Following modal */}
-      <Modal
-        visible={followersModalVisible}
-        animationType="slide"
-        onRequestClose={closeFollowModal}
-      >
-        <SafeAreaView style={styles.followModal}>
-          <TouchableOpacity onPress={closeFollowModal} style={styles.closeBtn}>
-            <Text style={styles.closeText}>Close</Text>
-          </TouchableOpacity>
-
-          <View style={styles.followTabs}>
-            <TouchableOpacity
-              onPress={() => switchFollowTab("followers")}
-              style={[
-                styles.followTabBtn,
-                styles.followTabBtnGap,
-                activeFollowTab === "followers"
-                  ? styles.followTabOn
-                  : styles.followTabOff,
-              ]}
-            >
-              <Text
-                style={
-                  activeFollowTab === "followers"
-                    ? styles.followTabTextOn
-                    : styles.followTabTextOff
-                }
-              >
-                Followers
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={() => switchFollowTab("following")}
-              style={[
-                styles.followTabBtn,
-                activeFollowTab === "following"
-                  ? styles.followTabOn
-                  : styles.followTabOff,
-              ]}
-            >
-              <Text
-                style={
-                  activeFollowTab === "following"
-                    ? styles.followTabTextOn
-                    : styles.followTabTextOff
-                }
-              >
-                Following
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          {followListLoading ? (
-            <View style={styles.followLoading}>
-              <ActivityIndicator size="large" color="#FFD700" />
-
-              <Text style={styles.followLoadingText}>
-                {activeFollowTab === "followers"
-                  ? "Loading followers..."
-                  : "Loading following..."}
-              </Text>
-            </View>
-          ) : (
-            <FlatList
-              data={
-                activeFollowTab === "followers" ? followersList : followingList
-              }
-              keyExtractor={followKeyExtractor}
-              renderItem={renderFollowItem}
-              initialNumToRender={10}
-              maxToRenderPerBatch={8}
-              windowSize={7}
-              removeClippedSubviews={false}
-            />
-          )}
-        </SafeAreaView>
       </Modal>
 
       {/* Bottom Navigation */}

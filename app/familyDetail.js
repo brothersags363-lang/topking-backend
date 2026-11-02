@@ -1,3 +1,4 @@
+import useBackStep from '../utils/useBackStep';
 import React, { useEffect, useState } from "react";
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet, Image, Alert, ActivityIndicator, Linking,
@@ -138,6 +139,7 @@ function useFamilyRank(fid, enabled) {
 
 export default function FamilyDetail() {
   const router = useRouter();
+  useBackStep('/family');
   const insets = useSafeAreaInsets(); // navigation bar ke upar rakhne ke liye
   const { id } = useLocalSearchParams();
   const fid = Array.isArray(id) ? id[0] : id;

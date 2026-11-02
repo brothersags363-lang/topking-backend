@@ -133,8 +133,7 @@ export default function ProfileScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [videos, setVideos] = useState([]);
-  const [likedVideos, setLikedVideos] = useState([]);
-  const [likedLoaded, setLikedLoaded] = useState(false);
+  const [likedCount, setLikedCount] = useState(0);
   const [likedMeCount, setLikedMeCount] = useState(0);
   const [userRank, setUserRank] = useState(null);
   const [activeTab, setActiveTab] = useState('Videos');
@@ -144,7 +143,6 @@ export default function ProfileScreen() {
   const [topGifters, setTopGifters] = useState([]);
   const [giftUserCount, setGiftUserCount] = useState(0);
 
-  const likedLoadedRef = useRef(false);
   const firstFocusRef = useRef(true);
 
   const [profileData, setProfileData] = useState({
@@ -202,10 +200,12 @@ export default function ProfileScreen() {
   // Followers/following ki puri list download karne ki jagah sirf COUNT (bahut halka)
   const fetchProfileStats = async (uid, totalLikes) => {
     try {
-      const [f, g] = await Promise.all([
+      const [f, g, l] = await Promise.all([
         getCountFromServer(query(collection(db, 'follows'), where('followingId', '==', uid))),
         getCountFromServer(query(collection(db, 'follows'), where('followerId', '==', uid))),
+        getCountFromServer(collection(db, 'userLikes', uid, 'likedVideos')).catch(() => null),
       ]);
+      if (l) setLikedCount(l.data().count);
 
       setProfileData((prev) => ({
         ...prev,
@@ -239,23 +239,6 @@ export default function ProfileScreen() {
     } catch (e) {
       if (__DEV__) console.log(e);
       return { videos: [], totalLikes: 0, totalViews: 0 };
-    }
-  };
-
-  // Liked videos ab sirf "Like" tab kholne par load hote hain (startup halka)
-  const loadLikedVideos = async (uid) => {
-    try {
-      const likedSnap = await getDocs(collection(db, 'userLikes', uid, 'likedVideos'));
-      const map = await fetchDocsByIds('all_videos', likedSnap.docs.map((l) => l.id));
-
-      const list = [...map.values()].map((s) => ({ id: s.id, ...s.data() }));
-      list.sort((a, b) => getCreatedTime(b.createdAt) - getCreatedTime(a.createdAt));
-
-      setLikedVideos(list);
-      setLikedLoaded(true);
-    } catch (e) {
-      likedLoadedRef.current = false;
-      if (__DEV__) console.log(e);
     }
   };
 
@@ -315,8 +298,26 @@ export default function ProfileScreen() {
             .map((g) => ({ ...g, stars: Number(g.stars || 0) }))
             .sort((a, b) => b.stars - a.stars);
 
-          setTopGifters(gifters.slice(0, ANGEL_SHOW));
+          const top = gifters.slice(0, ANGEL_SHOW);
+          setTopGifters(top);
           setGiftUserCount(gifters.length);
+
+          // Angels ki photo: gifter ki LIVE profile photo users/{uid} se lo
+          Promise.all(
+            top.map((g) =>
+              (g.uid || g.userId) ? getDoc(doc(db, 'users', g.uid || g.userId)).catch(() => null) : null
+            )
+          )
+            .then((snaps) => {
+              setTopGifters((prev) =>
+                prev.map((g, i) => {
+                  const d = snaps[i] && snaps[i].exists() ? snaps[i].data() : null;
+                  const img = d?.profileImg || d?.photoURL;
+                  return img ? { ...g, profileImg: img, photo: img } : g;
+                })
+              );
+            })
+            .catch(() => {});
         },
         () => {}
       );
@@ -421,7 +422,6 @@ export default function ProfileScreen() {
         fetchProfileStats(uid, videoData.totalLikes),
         checkAdmin(uid),
         loadUserRank(uid, core?.receivedStars || 0),
-        likedLoadedRef.current ? loadLikedVideos(uid) : Promise.resolve(),
       ]);
     } catch (e) {
       if (__DEV__) console.log('REFRESH ERROR =', e);
@@ -465,22 +465,28 @@ export default function ProfileScreen() {
     ]);
   };
 
-  const onTabChange = useCallback((tab) => {
-    setActiveTab(tab);
-    if (tab === 'Likes' && !likedLoadedRef.current) {
-      likedLoadedRef.current = true;
-      const uid = auth.currentUser?.uid;
-      if (uid) loadLikedVideos(uid);
-    }
-  }, []);
+  // Video tab profile me hi rehta hai; "Like" dabane par alag Like page khulta hai
+  const onTabChange = useCallback(
+    (tab) => {
+      if (tab === 'Likes') {
+        router.push({
+          pathname: '/likes',
+          params: { userId: auth.currentUser?.uid, username: profileData.username },
+        });
+        return;
+      }
+      setActiveTab('Videos');
+    },
+    [router, profileData.username]
+  );
 
   const onVideoPress = useCallback(
     (item) => {
-      const current = activeTab === 'Videos' ? videos : likedVideos;
+      const current = videos;
       const index = current.findIndex((v) => v.id === item.id);
 
       router.push({
-        pathname: activeTab === 'Videos' ? '/videoedite' : '/allvideo',
+        pathname: '/videoedite',
         params: {
           videos: JSON.stringify(current),
           index,
@@ -488,7 +494,7 @@ export default function ProfileScreen() {
         },
       });
     },
-    [activeTab, videos, likedVideos, router]
+    [videos, router]
   );
 
   const renderVideoItem = useCallback(
@@ -657,17 +663,17 @@ export default function ProfileScreen() {
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={activeTab === 'Likes' ? styles.activeTab : styles.tab}
+            style={styles.tab}
             onPress={() => onTabChange('Likes')}
           >
-            <Text style={activeTab === 'Likes' ? styles.activeTabText : styles.tabText}>
-              Like{likedLoaded ? ` (${likedVideos.length})` : ''}
+            <Text style={styles.tabText}>
+              Like ({likedCount})
             </Text>
           </TouchableOpacity>
         </View>
       </View>
     );
-  }, [profileData, likedMeCount, userRank, topGifters, giftUserCount, activeTab, videos.length, likedVideos.length, likedLoaded, router, onTabChange]);
+  }, [profileData, likedMeCount, userRank, topGifters, giftUserCount, activeTab, videos.length, likedCount, router, onTabChange]);
 
   if (loading) {
     return (
@@ -728,7 +734,7 @@ export default function ProfileScreen() {
 
       {/* Videos grid */}
       <FlatList
-        data={activeTab === 'Videos' ? videos : likedVideos}
+        data={videos}
         keyExtractor={videoKey}
         renderItem={renderVideoItem}
         numColumns={3}

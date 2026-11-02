@@ -1,3 +1,4 @@
+import useBackStep from '../../utils/useBackStep';
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -57,6 +58,7 @@ export default function UserPage() {
   const { id } = useLocalSearchParams();
 
   const router = useRouter();
+  useBackStep('/');
   const pathname = usePathname();
 
   const [loading, setLoading] = useState(true);
