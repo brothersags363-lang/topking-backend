@@ -3695,7 +3695,7 @@ async function setUserBan(req, res, ban) {
     }
     await admin.auth().updateUser(uid, { disabled: ban });
     if (ban) await admin.auth().revokeRefreshTokens(uid);
-    await db.collection("users").doc(uid).set({ banned: ban }, { merge: true });
+    await db.collection("users").doc(uid).set({ banned: ban, banBy: admin.firestore.FieldValue.delete() }, { merge: true });
     return res.json({ success: true });
   } catch (e) {
     console.error("ADMIN BAN ERROR:", e);
@@ -4788,7 +4788,11 @@ async function officialSetBan(req, res, ban) {
     }
     await admin.auth().updateUser(uid, { disabled: ban });
     if (ban) await admin.auth().revokeRefreshTokens(uid);
-    await db.collection("users").doc(uid).set({ banned: ban }, { merge: true });
+    // banBy: sirf BD ne lagayi ban par BD uid; Official / Admin ki ban par hata deta hai (BD wo hata na sake)
+    await db.collection("users").doc(uid).set(
+      { banned: ban, banBy: ban && req.bdActor ? req.bdActor : admin.firestore.FieldValue.delete() },
+      { merge: true }
+    );
     console.log(`OFFICIAL ${ban ? "BAN" : "UNBAN"}: by=${req.user.uid} user=${uid}`);
     logModeration(req, ban ? "user_ban" : "user_unban", uid);
     return res.json({ success: true });
@@ -4807,7 +4811,7 @@ app.post("/official/unban-user", generalLimiter, verifyUser, requireOfficialOrAd
 // body: { uid, entryDays?, liveDays? }  days: 1/3/7/15/30, 0 = ban hatao
 // users/{uid}.entryBanUntil / liveBanUntil (firestore rules yahi padhte hain)
 // + liveBans/{uid} (app ka useLiveBanGuard yahi sunta hai)
-app.post("/official/live-restrict", generalLimiter, verifyUser, requireOfficialOrAdmin, async (req, res) => {
+const officialLiveRestrict = async (req, res) => {
   try {
     const uid = String((req.body && req.body.uid) || "");
     if (!isValidUid(uid)) return res.status(400).json({ success: false, error: "Invalid user" });
@@ -4820,9 +4824,12 @@ app.post("/official/live-restrict", generalLimiter, verifyUser, requireOfficialO
     const banUpd = { uid };
     const del = admin.firestore.FieldValue.delete();
 
+    const wanted = [];
     const apply = (field, days) => {
       const d = Number(days);
       if (!ALLOWED.includes(d)) throw Object.assign(new Error("Invalid days"), { code: 400 });
+      wanted.push({ field, d });
+      banUpd[field.replace("Until", "By")] = req.bdActor ? "bd:" + req.bdActor : "staff";
       if (d === 0) {
         userUpd[field] = del;
         banUpd[field] = 0;
@@ -4839,6 +4846,22 @@ app.post("/official/live-restrict", generalLimiter, verifyUser, requireOfficialO
     const uSnap = await uRef.get();
     if (!uSnap.exists) return res.status(404).json({ success: false, error: "User not found" });
 
+    // BD ki hadd: Official / Admin / auto ki pabandi BD hata ya chhoti nahi kar sakta (badha sakta hai)
+    if (req.bdActor) {
+      const lb = await db.collection("liveBans").doc(uid).get();
+      const lbd = lb.exists ? lb.data() : {};
+      const ud = uSnap.data() || {};
+      for (const { field, d } of wanted) {
+        const cur = Number(ud[field]) || 0;
+        if (cur <= Date.now()) continue; // koi chalu pabandi nahi
+        const byBd = typeof lbd[field.replace("Until", "By")] === "string" && lbd[field.replace("Until", "By")].startsWith("bd:");
+        if (byBd) continue; // BD ki apni lagayi pabandi, badal sakta hai
+        if (d === 0 || Date.now() + d * DAY_MS < cur) {
+          return res.status(403).json({ success: false, error: "Ye pabandi Official / Admin ne lagayi hai, BD ise hata ya kam nahi kar sakta" });
+        }
+      }
+    }
+
     banUpd.updatedBy = req.user.uid;
     banUpd.updatedAt = admin.firestore.FieldValue.serverTimestamp();
     await uRef.set(userUpd, { merge: true });
@@ -4851,7 +4874,8 @@ app.post("/official/live-restrict", generalLimiter, verifyUser, requireOfficialO
     console.error("OFFICIAL LIVE RESTRICT ERROR:", e);
     return res.status(500).json({ success: false, error: "Server error" });
   }
-});
+};
+app.post("/official/live-restrict", generalLimiter, verifyUser, requireOfficialOrAdmin, officialLiveRestrict);
 
 // VIDEO LIVE AUTO BAN: host ka face 5 min se zyada nahi dikha / black screen raha -> 30 min live band.
 // App (videolive.tsx) khud call karta hai. Sirf apni hi uid par lagta hai, aur pehle se bada ban ho to chhota nahi karta.
@@ -4939,7 +4963,7 @@ app.post("/official/unban-device", generalLimiter, verifyUser, requireOfficialOr
 );
 
 // body: { q } -> username prefix YA exact uid. Result me live status + device ban status bhi.
-app.post("/official/live-search", generalLimiter, verifyUser, requireOfficialOrAdmin, async (req, res) => {
+const officialLiveSearch = async (req, res) => {
   try {
     const raw = cleanText(req.body && req.body.q, 60).replace(/^@/, "");
     if (raw.length < 1) return res.json({ success: true, users: [] });
@@ -4990,11 +5014,12 @@ app.post("/official/live-search", generalLimiter, verifyUser, requireOfficialOrA
     console.error("OFFICIAL LIVE SEARCH ERROR:", e);
     return res.status(500).json({ success: false, error: "Server error" });
   }
-});
+};
+app.post("/official/live-search", generalLimiter, verifyUser, requireOfficialOrAdmin, officialLiveSearch);
 
 // body: { roomId } YA { uid }  -> us live ko sabke liye zabardasti band (host + sab viewers bahar).
 // Room doc delete hote hi app ka handleRoomEnded sabko nikal deta hai.
-app.post("/official/end-live", generalLimiter, verifyUser, requireOfficialOrAdmin, async (req, res) => {
+const officialEndLive = async (req, res) => {
   try {
     const roomId = String((req.body && req.body.roomId) || "");
     const uid = String((req.body && req.body.uid) || "");
@@ -5030,6 +5055,68 @@ app.post("/official/end-live", generalLimiter, verifyUser, requireOfficialOrAdmi
     return res.json({ success: true, ended });
   } catch (e) {
     console.error("OFFICIAL END LIVE ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+};
+app.post("/official/end-live", generalLimiter, verifyUser, requireOfficialOrAdmin, officialEndLive);
+
+// =====================================================================
+// BD: live room ke andar moderation (Official jaisa, par DEVICE BAN NAHI)
+//  - search, ID ban/unban, live-chalane / live-dekhne par pabandi (sirf 3/7/30 din), live band
+//  - Official / Admin par kuch nahi chalta, apne aap par bhi nahi
+//  - Asli check yahin: bds/{uid} doc active (requireBD jaisa)
+// =====================================================================
+const BD_LIVE_DAYS = [0, 3, 7, 30]; // 0 = pabandi hatao
+async function bdLiveGuard(req, res, next) {
+  try {
+    const snap = await db.collection("bds").doc(req.user.uid).get();
+    if (snap.exists && snap.data().active !== false) return next();
+  } catch (_) {}
+  return res.status(403).json({ success: false, error: "BD access required" });
+}
+app.post("/bdlive/live-search", generalLimiter, verifyUser, bdLiveGuard, officialLiveSearch);
+app.post("/bdlive/end-live", generalLimiter, verifyUser, bdLiveGuard, officialEndLive);
+app.post("/bdlive/ban-user", generalLimiter, verifyUser, bdLiveGuard, (req, res) => {
+  req.bdActor = req.user.uid;
+  return officialSetBan(req, res, true);
+});
+app.post("/bdlive/unban-user", generalLimiter, verifyUser, bdLiveGuard, async (req, res) => {
+  try {
+    const uid = String((req.body && req.body.uid) || "");
+    if (!isValidUid(uid)) return res.status(400).json({ success: false, error: "Invalid user" });
+    const d = (await db.collection("users").doc(uid).get()).data() || {};
+    // BD sirf apni (kisi BD ki) lagayi ID ban hata sakta hai; Official / Admin / device ban nahi
+    if (d.deviceBanned === true || !(typeof d.banBy === "string" && d.banBy)) {
+      return res.status(403).json({ success: false, error: "Ye ban Official / Admin ne lagayi hai, BD hata nahi sakta" });
+    }
+    if (!(await db.collection("bds").doc(d.banBy).get()).exists) {
+      return res.status(403).json({ success: false, error: "Ye ban Official / Admin ne lagayi hai, BD hata nahi sakta" });
+    }
+    req.bdActor = req.user.uid;
+    return officialSetBan(req, res, false);
+  } catch (e) {
+    console.error("BD UNBAN ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+app.post("/bdlive/live-restrict", generalLimiter, verifyUser, bdLiveGuard, async (req, res) => {
+  try {
+    const b = req.body || {};
+    for (const k of ["entryDays", "liveDays"]) {
+      if (b[k] !== undefined && !BD_LIVE_DAYS.includes(Number(b[k]))) {
+        return res.status(400).json({ success: false, error: "BD sirf 3, 7 ya 30 din laga sakta hai" });
+      }
+    }
+    const uid = String(b.uid || "");
+    if (!isValidUid(uid)) return res.status(400).json({ success: false, error: "Invalid user" });
+    if (uid === req.user.uid) return res.status(400).json({ success: false, error: "Apne aap par nahi laga sakte" });
+    if (await isStaffUser(uid)) {
+      return res.status(403).json({ success: false, error: "Admin / Official par pabandi nahi laga sakte" });
+    }
+    req.bdActor = req.user.uid;
+    return officialLiveRestrict(req, res);
+  } catch (e) {
+    console.error("BD LIVE RESTRICT ERROR:", e);
     return res.status(500).json({ success: false, error: "Server error" });
   }
 });

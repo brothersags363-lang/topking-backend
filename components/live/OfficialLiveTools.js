@@ -30,9 +30,29 @@ import { auth } from "../../app/firebaseConfig";
 import useIsOfficial from "../../app/useIsOfficial";
 import useIsAdmin from "../../app/useIsAdmin";
 import { callApi } from "../../utils/api";
+import { doc, getDoc } from "firebase/firestore";
+import { db } from "../../app/firebaseConfig";
 
 const AVATAR = "https://cdn-icons-png.flaticon.com/512/149/149071.png";
-const DAYS = [1, 3, 7, 15, 30];
+const DAYS = [1, 3, 7, 15, 30]; // Official / Admin
+const BD_DAYS = [3, 7, 30]; // BD sirf itne din laga sakta hai
+
+// BD ke liye: users/{uid}.isBD (asli check server par /bdlive/* me hota hai)
+function useIsBD() {
+  const [isBD, setIsBD] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const uid = auth && auth.currentUser ? auth.currentUser.uid : "";
+    if (!uid) return undefined;
+    getDoc(doc(db, "users", uid))
+      .then((s) => active && setIsBD(s.exists() && s.data().isBD === true))
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+  return isBD;
+}
 
 // ---------- chhote UI parts ----------
 function Chip({ label, onPress, color = "#2a2a2a", textColor = "#fff", disabled, busy }) {
@@ -70,12 +90,12 @@ function Badge({ text, color }) {
   );
 }
 
-function RestrictRow({ title, onPick, busy }) {
+function RestrictRow({ title, onPick, busy, days = DAYS }) {
   return (
     <View style={{ marginTop: 6 }}>
       <Text style={{ color: "#aaa", fontSize: 11.5, marginBottom: 4 }}>{title}</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-        {DAYS.map((d) => (
+        {days.map((d) => (
           <Chip key={d} label={`${d}d`} onPress={() => onPick(d)} busy={busy} color="#3a2a1a" />
         ))}
         <Chip label="Hatao" onPress={() => onPick(0)} busy={busy} color="#1d3a28" />
@@ -85,7 +105,7 @@ function RestrictRow({ title, onPick, busy }) {
 }
 
 // ---------- ek user ka card ----------
-function UserCard({ u, myUid, currentRoomId, onChanged, onEndedCurrent }) {
+function UserCard({ u, myUid, currentRoomId, onChanged, onEndedCurrent, bdMode, api }) {
   const [busy, setBusy] = useState("");
   const [showRestrict, setShowRestrict] = useState(false);
 
@@ -99,7 +119,7 @@ function UserCard({ u, myUid, currentRoomId, onChanged, onEndedCurrent }) {
       if (busy) return;
       setBusy(key);
       try {
-        const res = await callApi(path, body);
+        const res = await callApi(path.replace("/official/", api + "/"), body);
         if (key === "end" && res && res.ended && currentRoomId && u.liveRoomId === currentRoomId) {
           onEndedCurrent && onEndedCurrent();
         }
@@ -111,7 +131,7 @@ function UserCard({ u, myUid, currentRoomId, onChanged, onEndedCurrent }) {
         setBusy("");
       }
     },
-    [busy, u.uid, u.liveRoomId, currentRoomId, onChanged, onEndedCurrent]
+    [busy, u.uid, u.liveRoomId, currentRoomId, onChanged, onEndedCurrent, api]
   );
 
   const confirm = (title, msg, destructive, onYes) =>
@@ -205,6 +225,7 @@ function UserCard({ u, myUid, currentRoomId, onChanged, onEndedCurrent }) {
               busy={busy === "id"}
               color={u.banned ? "#166534" : "#991b1b"}
             />
+            {!bdMode && (
             <Chip
               label={u.deviceBanned ? "✅ Device Unban" : "📵 Device Ban"}
               onPress={toggleDeviceBan}
@@ -212,18 +233,19 @@ function UserCard({ u, myUid, currentRoomId, onChanged, onEndedCurrent }) {
               disabled={!u.deviceKnown && !u.deviceBanned}
               color={u.deviceBanned ? "#166534" : "#7c2d12"}
             />
+            )}
             {!!u.liveRoomId && <Chip label="🔴 Live band" onPress={endLive} busy={busy === "end"} color="#be123c" />}
             <Chip label={showRestrict ? "▲ Pabandi" : "⏱ Pabandi"} onPress={() => setShowRestrict((v) => !v)} />
           </View>
-          {!u.deviceKnown && !u.deviceBanned && (
+          {!bdMode && !u.deviceKnown && !u.deviceBanned && (
             <Text style={{ color: "#777", fontSize: 11, marginTop: 2 }}>
               Device ban tab hoga jab user ne updated app ek baar khol li ho.
             </Text>
           )}
           {showRestrict && (
             <View>
-              <RestrictRow title="Live CHALANE par pabandi" onPick={(d) => restrict("liveDays", d)} busy={busy === "res"} />
-              <RestrictRow title="Live DEKHNE (entry) par pabandi" onPick={(d) => restrict("entryDays", d)} busy={busy === "res"} />
+              <RestrictRow title="Live CHALANE par pabandi" onPick={(d) => restrict("liveDays", d)} busy={busy === "res"} days={bdMode ? BD_DAYS : DAYS} />
+              <RestrictRow title="Live DEKHNE (entry) par pabandi" onPick={(d) => restrict("entryDays", d)} busy={busy === "res"} days={bdMode ? BD_DAYS : DAYS} />
             </View>
           )}
         </View>
@@ -236,7 +258,11 @@ function UserCard({ u, myUid, currentRoomId, onChanged, onEndedCurrent }) {
 export default function OfficialLiveTools({ roomId, hostId, onLiveEnded }) {
   const isOfficial = useIsOfficial();
   const isAdmin = useIsAdmin();
-  const allowed = isOfficial === true || isAdmin === true;
+  const isBD = useIsBD();
+  const staff = isOfficial === true || isAdmin === true;
+  const bdMode = isBD && !staff; // BD: device ban nahi, sirf 3/7/30 din
+  const api = bdMode ? "/bdlive" : "/official";
+  const allowed = staff || isBD;
 
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -259,7 +285,7 @@ export default function OfficialLiveTools({ roomId, hostId, onLiveEnded }) {
     }
     setLoading(true);
     try {
-      const res = await callApi("/official/live-search", { q: term });
+      const res = await callApi(api + "/live-search", { q: term });
       if (seq !== seqRef.current) return [];
       setUsers(res.users || []);
       setSearchErr(res.users && res.users.length ? "" : "Koi user nahi mila");
@@ -270,7 +296,7 @@ export default function OfficialLiveTools({ roomId, hostId, onLiveEnded }) {
     } finally {
       if (seq === seqRef.current) setLoading(false);
     }
-  }, []);
+  }, [api]);
 
   // typing ke 400ms baad search
   useEffect(() => {
@@ -282,12 +308,12 @@ export default function OfficialLiveTools({ roomId, hostId, onLiveEnded }) {
   const loadHost = useCallback(async () => {
     if (!hostId) return setHostUser(null);
     try {
-      const res = await callApi("/official/live-search", { q: hostId });
+      const res = await callApi(api + "/live-search", { q: hostId });
       setHostUser((res.users || []).find((x) => x.uid === hostId) || null);
     } catch (_) {
       setHostUser(null);
     }
-  }, [hostId]);
+  }, [hostId, api]);
 
   useEffect(() => {
     if (open) loadHost();
@@ -297,14 +323,14 @@ export default function OfficialLiveTools({ roomId, hostId, onLiveEnded }) {
   const refreshOne = useCallback(
     async (uid) => {
       try {
-        const res = await callApi("/official/live-search", { q: uid });
+        const res = await callApi(api + "/live-search", { q: uid });
         const fresh = (res.users || []).find((x) => x.uid === uid);
         if (!fresh) return;
         setUsers((list) => list.map((x) => (x.uid === uid ? fresh : x)));
         setHostUser((h) => (h && h.uid === uid ? fresh : h));
       } catch (_) {}
     },
-    []
+    [api]
   );
 
   const endThisLive = () =>
@@ -317,7 +343,7 @@ export default function OfficialLiveTools({ roomId, hostId, onLiveEnded }) {
           if (endingRoom) return;
           setEndingRoom(true);
           try {
-            await callApi("/official/end-live", { roomId });
+            await callApi(api + "/end-live", { roomId });
             setOpen(false);
             onLiveEnded && onLiveEnded();
           } catch (e) {
@@ -422,6 +448,8 @@ export default function OfficialLiveTools({ roomId, hostId, onLiveEnded }) {
                         u={hostUser}
                         myUid={myUid}
                         currentRoomId={roomId}
+                        bdMode={bdMode}
+                        api={api}
                         onChanged={refreshOne}
                         onEndedCurrent={() => {
                           setOpen(false);
@@ -468,6 +496,8 @@ export default function OfficialLiveTools({ roomId, hostId, onLiveEnded }) {
                   u={item}
                   myUid={myUid}
                   currentRoomId={roomId}
+                  bdMode={bdMode}
+                  api={api}
                   onChanged={refreshOne}
                   onEndedCurrent={() => {
                     setOpen(false);
