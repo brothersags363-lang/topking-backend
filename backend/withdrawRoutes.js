@@ -192,6 +192,8 @@ module.exports = function mountWithdraw({ app, db, admin, verifyUser, rateLimit 
         const histRef = walletRef.collection("withdrawHistory").doc(id);
         const giftStars = num(d.giftStars);
         let received = null;
+        // history doc na ho (purani request) to tx me pehle hi padh lo
+        const histSnap = await tx.get(histRef);
 
         if (status === "Success") {
           const wSnap = await tx.get(walletRef);
@@ -216,6 +218,13 @@ module.exports = function mountWithdraw({ app, db, admin, verifyUser, rateLimit 
           {
             status: status === "Success" ? "Completed" : "Failed",
             processedAt: FieldValue.serverTimestamp(),
+            ...(histSnap.exists ? {} : {
+              userId: uid, tk: num(d.tk), giftStars, method: d.method || "UPI",
+              accountName: d.accountName || "", mobileNumber: d.mobileNumber || "",
+              payout: d.payout || {}, amount: num(d.amount),
+              upiId: (d.payout && d.payout.upiId) || "",
+              createdAt: d.createdAt || FieldValue.serverTimestamp(),
+            }),
             ...(status === "Success" ? { starsDeducted: giftStars } : {}),
           },
           { merge: true }
