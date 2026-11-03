@@ -5480,6 +5480,15 @@ require("./rewards")({
   rateLimit,
 });
 
+// Withdrawal (request + admin Success/Failed). Success par user ke Gift Stars katte hain.
+require("./withdrawRoutes")({
+  app,
+  db,
+  admin,
+  verifyUser,
+  rateLimit,
+});
+
 // payments module is optional: server still starts if ./payments.js is absent
 try {
   require("./payments")({
