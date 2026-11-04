@@ -3695,7 +3695,7 @@ async function setUserBan(req, res, ban) {
     }
     await admin.auth().updateUser(uid, { disabled: ban });
     if (ban) await admin.auth().revokeRefreshTokens(uid);
-    await db.collection("users").doc(uid).set({ banned: ban, banBy: admin.firestore.FieldValue.delete() }, { merge: true });
+    await db.collection("users").doc(uid).set({ banned: ban }, { merge: true });
     return res.json({ success: true });
   } catch (e) {
     console.error("ADMIN BAN ERROR:", e);
@@ -4788,11 +4788,7 @@ async function officialSetBan(req, res, ban) {
     }
     await admin.auth().updateUser(uid, { disabled: ban });
     if (ban) await admin.auth().revokeRefreshTokens(uid);
-    // banBy: sirf BD ne lagayi ban par BD uid; Official / Admin ki ban par hata deta hai (BD wo hata na sake)
-    await db.collection("users").doc(uid).set(
-      { banned: ban, banBy: ban && req.bdActor ? req.bdActor : admin.firestore.FieldValue.delete() },
-      { merge: true }
-    );
+    await db.collection("users").doc(uid).set({ banned: ban }, { merge: true });
     console.log(`OFFICIAL ${ban ? "BAN" : "UNBAN"}: by=${req.user.uid} user=${uid}`);
     logModeration(req, ban ? "user_ban" : "user_unban", uid);
     return res.json({ success: true });
@@ -4824,12 +4820,9 @@ const officialLiveRestrict = async (req, res) => {
     const banUpd = { uid };
     const del = admin.firestore.FieldValue.delete();
 
-    const wanted = [];
     const apply = (field, days) => {
       const d = Number(days);
       if (!ALLOWED.includes(d)) throw Object.assign(new Error("Invalid days"), { code: 400 });
-      wanted.push({ field, d });
-      banUpd[field.replace("Until", "By")] = req.bdActor ? "bd:" + req.bdActor : "staff";
       if (d === 0) {
         userUpd[field] = del;
         banUpd[field] = 0;
@@ -4845,22 +4838,6 @@ const officialLiveRestrict = async (req, res) => {
     const uRef = db.collection("users").doc(uid);
     const uSnap = await uRef.get();
     if (!uSnap.exists) return res.status(404).json({ success: false, error: "User not found" });
-
-    // BD ki hadd: Official / Admin / auto ki pabandi BD hata ya chhoti nahi kar sakta (badha sakta hai)
-    if (req.bdActor) {
-      const lb = await db.collection("liveBans").doc(uid).get();
-      const lbd = lb.exists ? lb.data() : {};
-      const ud = uSnap.data() || {};
-      for (const { field, d } of wanted) {
-        const cur = Number(ud[field]) || 0;
-        if (cur <= Date.now()) continue; // koi chalu pabandi nahi
-        const byBd = typeof lbd[field.replace("Until", "By")] === "string" && lbd[field.replace("Until", "By")].startsWith("bd:");
-        if (byBd) continue; // BD ki apni lagayi pabandi, badal sakta hai
-        if (d === 0 || Date.now() + d * DAY_MS < cur) {
-          return res.status(403).json({ success: false, error: "Ye pabandi Official / Admin ne lagayi hai, BD ise hata ya kam nahi kar sakta" });
-        }
-      }
-    }
 
     banUpd.updatedBy = req.user.uid;
     banUpd.updatedAt = admin.firestore.FieldValue.serverTimestamp();
@@ -5076,29 +5053,8 @@ async function bdLiveGuard(req, res, next) {
 }
 app.post("/bdlive/live-search", generalLimiter, verifyUser, bdLiveGuard, officialLiveSearch);
 app.post("/bdlive/end-live", generalLimiter, verifyUser, bdLiveGuard, officialEndLive);
-app.post("/bdlive/ban-user", generalLimiter, verifyUser, bdLiveGuard, (req, res) => {
-  req.bdActor = req.user.uid;
-  return officialSetBan(req, res, true);
-});
-app.post("/bdlive/unban-user", generalLimiter, verifyUser, bdLiveGuard, async (req, res) => {
-  try {
-    const uid = String((req.body && req.body.uid) || "");
-    if (!isValidUid(uid)) return res.status(400).json({ success: false, error: "Invalid user" });
-    const d = (await db.collection("users").doc(uid).get()).data() || {};
-    // BD sirf apni (kisi BD ki) lagayi ID ban hata sakta hai; Official / Admin / device ban nahi
-    if (d.deviceBanned === true || !(typeof d.banBy === "string" && d.banBy)) {
-      return res.status(403).json({ success: false, error: "Ye ban Official / Admin ne lagayi hai, BD hata nahi sakta" });
-    }
-    if (!(await db.collection("bds").doc(d.banBy).get()).exists) {
-      return res.status(403).json({ success: false, error: "Ye ban Official / Admin ne lagayi hai, BD hata nahi sakta" });
-    }
-    req.bdActor = req.user.uid;
-    return officialSetBan(req, res, false);
-  } catch (e) {
-    console.error("BD UNBAN ERROR:", e);
-    return res.status(500).json({ success: false, error: "Server error" });
-  }
-});
+app.post("/bdlive/ban-user", generalLimiter, verifyUser, bdLiveGuard, (req, res) => officialSetBan(req, res, true));
+app.post("/bdlive/unban-user", generalLimiter, verifyUser, bdLiveGuard, (req, res) => officialSetBan(req, res, false));
 app.post("/bdlive/live-restrict", generalLimiter, verifyUser, bdLiveGuard, async (req, res) => {
   try {
     const b = req.body || {};
@@ -5113,7 +5069,6 @@ app.post("/bdlive/live-restrict", generalLimiter, verifyUser, bdLiveGuard, async
     if (await isStaffUser(uid)) {
       return res.status(403).json({ success: false, error: "Admin / Official par pabandi nahi laga sakte" });
     }
-    req.bdActor = req.user.uid;
     return officialLiveRestrict(req, res);
   } catch (e) {
     console.error("BD LIVE RESTRICT ERROR:", e);
@@ -5473,15 +5428,6 @@ app.post("/agency/respond-join-request", generalLimiter, verifyUser, async (req,
 // Live/Gift reward (server-side). payments.js se PEHLE mount hota hai, isliye
 // agar payments.js me purana /reward/claim ho to bhi ye wala hi chalega.
 require("./rewards")({
-  app,
-  db,
-  admin,
-  verifyUser,
-  rateLimit,
-});
-
-// Withdrawal (request + admin Success/Failed). Success par user ke Gift Stars katte hain.
-require("./withdrawRoutes")({
   app,
   db,
   admin,
