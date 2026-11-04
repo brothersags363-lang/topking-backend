@@ -5459,7 +5459,7 @@ try {
 // =====================================================
 
 // IST me: 10 Nov 2026 00:00  ->  10 Dec 2026 23:59:59   (yahin se badlo, app ke event.js me bhi same rakho)
-const EVENT_START_MS = new Date("2026-11-01T00:00:00+05:30").getTime();
+const EVENT_START_MS = new Date("2026-11-10T00:00:00+05:30").getTime();
 const EVENT_END_MS = new Date("2026-12-10T23:59:59+05:30").getTime();
 // Agency ka default target (members ko mile total STARS). Kisi agency ko alag target dena ho to
 // agencies/{id} me `eventTarget` (number) daal do.
