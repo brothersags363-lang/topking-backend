@@ -5452,12 +5452,6 @@ try {
   }
 }
 
-// Unknown route -> JSON 404 (log ke saath)
-app.use((req, res) => {
-  console.warn(`404 NOT FOUND: ${req.method} ${req.path}`);
-  res.status(404).json({ success: false, error: "Route not found: " + req.path });
-});
-
 // =====================================================
 // EVENT LEADERBOARD  (10 Nov -> 10 Dec)
 // Event ke dauran jo videos post hue, unke views user-wise aur agency-wise.
@@ -5633,6 +5627,12 @@ app.post("/event/leaderboard", generalLimiter, verifyUser, async (req, res) => {
     console.error("EVENT LEADERBOARD ERROR:", e && e.message);
     return res.status(500).json({ success: false, error: "Event data load nahi hua" });
   }
+});
+
+// Unknown route -> JSON 404 (log ke saath)
+app.use((req, res) => {
+  console.warn(`404 NOT FOUND: ${req.method} ${req.path}`);
+  res.status(404).json({ success: false, error: "Route not found: " + req.path });
 });
 
 // =====================================================
