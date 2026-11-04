@@ -1,7 +1,9 @@
-import React, { useEffect, useRef, useMemo, memo } from "react";
+import React, { useCallback, useEffect, useRef, useMemo, useState, memo } from "react";
 import {
+  ActivityIndicator,
   Animated,
   Easing,
+  RefreshControl,
   SafeAreaView,
   ScrollView,
   StatusBar,
@@ -15,34 +17,26 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
+import FastImage from "../components/FastImage";
+import { callApi } from "../utils/api";
 
 /* =====================================================
    EVENT SETTINGS  (yahin se badlo)
    ===================================================== */
 
-// Event 5 November se 5 December tak (month 10 = November, 11 = December)
-const EVENT_START = new Date(2026, 10, 5, 0, 0, 0);
-const EVENT_END = new Date(2026, 11, 5, 23, 59, 59);
+// Event 10 November se 10 December tak (month 10 = November, 11 = December)
+// NOTE: server.js me EVENT_START_MS / EVENT_END_MS bhi yahi dates hain - dono saath badalna.
+const EVENT_START = new Date(2026, 10, 1, 0, 0, 0);
+const EVENT_END = new Date(2026, 11, 10, 23, 59, 59);
+
+// Auto refresh (millisecond). Server 60 sec cache karta hai, isliye isse kam mat karo.
+const REFRESH_MS = 60000;
 
 const SCREEN_W = Dimensions.get("window").width;
 
 const GOLD = "#FFD700";
 const NAVY = "#0b1437";
 const NAVY2 = "#17235f";
-
-// Namuna data - asli users aane par yahan se replace karo
-const USERS = [
-  { name: "Aman Official", views: 248310, move: 2 },
-  { name: "Riya Singh", views: 231904, move: -1 },
-  { name: "Rohit Vlogs", views: 219450, move: 1 },
-  { name: "Neha Queen", views: 187220, move: -2 },
-  { name: "Sahil Gamer", views: 164880, move: 0 },
-  { name: "Pooja Dance", views: 152315, move: 3 },
-  { name: "Vikas Music", views: 139760, move: -1 },
-  { name: "Anjali Style", views: 121045, move: "new" },
-  { name: "Raj Comedy", views: 108390, move: -2 },
-  { name: "Sneha Art", views: 96420, move: 1 },
-];
 
 const fmt = (n) => Number(n).toLocaleString("en-IN");
 
@@ -211,9 +205,23 @@ function usePulse(min = 0.6, max = 1, duration = 1100) {
    SMALL PIECES
    ===================================================== */
 
-const Avatar = memo(function Avatar({ name, size = 44 }) {
-  const hue = (name.length * 47) % 360;
-  const initials = name
+const Avatar = memo(function Avatar({ name = "User", uri, size = 44 }) {
+  const [failed, setFailed] = useState(false);
+  const base = { width: size, height: size, borderRadius: size / 2 };
+
+  if (uri && !failed) {
+    return (
+      <FastImage
+        source={{ uri }}
+        style={[base, { backgroundColor: "#1b2557" }]}
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+
+  const nm = String(name || "User");
+  const hue = (nm.length * 47) % 360;
+  const initials = nm
     .split(" ")
     .map((w) => w[0])
     .join("")
@@ -224,73 +232,17 @@ const Avatar = memo(function Avatar({ name, size = 44 }) {
       colors={[`hsl(${hue}, 70%, 52%)`, `hsl(${(hue + 45) % 360}, 70%, 38%)`]}
       start={{ x: 0, y: 0 }}
       end={{ x: 1, y: 1 }}
-      style={{
-        width: size,
-        height: size,
-        borderRadius: size / 2,
-        alignItems: "center",
-        justifyContent: "center",
-      }}
+      style={[base, { alignItems: "center", justifyContent: "center" }]}
     >
       <Text style={{ color: "#fff", fontWeight: "900", fontSize: size * 0.36 }}>{initials}</Text>
     </LinearGradient>
   );
 });
 
-const Tick = memo(function Tick({ color = "#fff", size = 22 }) {
-  return <Ionicons name="checkmark-circle" size={size} color={color} />;
-});
-
-const PrizeCard = memo(function PrizeCard({ rank, user, stars, tickLabel, tickColor, first, delay }) {
-  return (
-    <FadeUp delay={delay}>
-      <View style={[styles.prize, first && styles.prizeFirst]}>
-        {first ? (
-          <LinearGradient
-            colors={["#1b2a7a", NAVY]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={StyleSheet.absoluteFill}
-          />
-        ) : null}
-        <Text style={[styles.prizeBgNum, first && { color: "rgba(255,215,0,0.18)" }]}>{rank}</Text>
-        <Text style={[styles.prizeRank, first && { color: GOLD }]}>TOP {rank}</Text>
-
-        <View style={styles.who}>
-          <View style={first ? styles.avatarRing : null}>
-            <Avatar name={user.name} size={first ? 70 : 60} />
-          </View>
-          <View style={{ flex: 1, marginLeft: 14 }}>
-            <Text style={[styles.whoName, first && { color: "#fff" }]} numberOfLines={1}>
-              {user.name}
-            </Text>
-            <Text style={[styles.whoViews, first && { color: "#aab3dc" }]}>
-              {fmt(user.views)} views
-            </Text>
-          </View>
-        </View>
-
-        <View style={[styles.reward, first && { borderTopColor: "rgba(255,255,255,0.22)" }]}>
-          <View style={styles.amtRow}>
-            <Ionicons name="star" size={first ? 34 : 28} color={GOLD} />
-            <Text style={[styles.amt, first && { color: GOLD, fontSize: 44 }]}>{fmt(stars)}</Text>
-            <Text style={[styles.amtSmall, first && { color: "#aab3dc" }]}>STARS</Text>
-          </View>
-          <View style={[styles.tickPill, { backgroundColor: tickColor.bg }]}>
-            <Tick color={tickColor.icon} size={22} />
-            <Text style={[styles.tickPillText, { color: tickColor.text }]}>{tickLabel}</Text>
-          </View>
-        </View>
-
-        {first ? <Shine duration={2400} delay={400} width={60} /> : null}
-      </View>
-    </FadeUp>
-  );
-});
-
-// Podium card: Top 1/2/3 ek line me, chhota aur clean
+// Podium card: Top 1/2/3 ek line me - asli naam, DP, videos aur total views
 const PodiumCard = memo(function PodiumCard({ rank, user, stars, tickLabel, tickColor, first, delay }) {
-  const short = user.name.length > 11 ? user.name.slice(0, 10) + "…" : user.name;
+  const name = user ? String(user.name || "User") : "—";
+  const short = name.length > 11 ? name.slice(0, 10) + "…" : name;
   return (
     <FadeUp delay={delay} style={styles.podWrap}>
       <View style={[styles.pod, first && styles.podFirst]}>
@@ -303,22 +255,34 @@ const PodiumCard = memo(function PodiumCard({ rank, user, stars, tickLabel, tick
           />
         ) : null}
 
-        {first ? (
-          <Ionicons name="trophy" size={22} color={GOLD} style={{ marginBottom: 4 }} />
-        ) : null}
+        {first ? <Ionicons name="trophy" size={22} color={GOLD} style={{ marginBottom: 4 }} /> : null}
 
         <View style={[styles.podBadge, first && { backgroundColor: GOLD }]}>
           <Text style={[styles.podBadgeText, first && { color: NAVY }]}>TOP {rank}</Text>
         </View>
 
         <View style={first ? styles.avatarRing : null}>
-          <Avatar name={user.name} size={first ? 62 : 50} />
+          {user ? (
+            <Avatar name={name} uri={user.dp} size={first ? 62 : 50} />
+          ) : (
+            <View style={[styles.emptyDp, { width: first ? 62 : 50, height: first ? 62 : 50, borderRadius: first ? 31 : 25 }]}>
+              <Ionicons name="person" size={first ? 28 : 22} color="#4a5599" />
+            </View>
+          )}
         </View>
 
         <Text style={[styles.podName, first && { fontSize: 13 }]} numberOfLines={1}>
           {short}
         </Text>
-        <Text style={styles.podViews}>{fmt(user.views)} views</Text>
+
+        {user ? (
+          <>
+            <Text style={[styles.podViewsBig, first && { color: GOLD }]}>{fmt(user.views)}</Text>
+            <Text style={styles.podViews}>total views · {fmt(user.videos)} video</Text>
+          </>
+        ) : (
+          <Text style={styles.podViews}>abhi khali</Text>
+        )}
 
         <View style={styles.podStars}>
           <Ionicons name="star" size={first ? 16 : 14} color={GOLD} />
@@ -338,56 +302,89 @@ const PodiumCard = memo(function PodiumCard({ rank, user, stars, tickLabel, tick
   );
 });
 
-const Move = memo(function Move({ move }) {
-  if (move === "new")
-    return (
-      <View style={styles.mvNew}>
-        <Text style={styles.mvNewText}>NEW</Text>
-      </View>
-    );
-  if (move > 0) return <Text style={[styles.mv, { color: "#0a9d6f" }]}>▲ {move}</Text>;
-  if (move < 0) return <Text style={[styles.mv, { color: "#e5384a" }]}>▼ {Math.abs(move)}</Text>;
-  return <Text style={[styles.mv, { color: "#8a93b5" }]}>— same</Text>;
-});
-
 const BoardRow = memo(function BoardRow({ user, index, max }) {
   const top = index < 3;
-  const pct = Math.round((user.views / max) * 100);
+  const pct = max > 0 ? Math.max(3, Math.round((user.views / max) * 100)) : 3;
   return (
     <View style={[styles.row, top && styles.rowTop]}>
       <Text style={[styles.rk, top && { color: GOLD }]}>{index + 1}</Text>
-      <Avatar name={user.name} size={42} />
+      <Avatar name={user.name} uri={user.dp} size={42} />
       <View style={{ flex: 1, marginHorizontal: 12 }}>
         <Text style={styles.rowName} numberOfLines={1}>
           {user.name}
         </Text>
+        <Text style={styles.rowSub}>{fmt(user.videos)} video is event me</Text>
         <View style={styles.bar}>
           <View style={[styles.barFill, { width: `${pct}%`, backgroundColor: top ? GOLD : "#5865c9" }]} />
         </View>
       </View>
       <View style={{ alignItems: "flex-end" }}>
         <Text style={styles.rowViews}>{fmt(user.views)}</Text>
-        <Move move={user.move} />
+        <Text style={styles.rowViewsLbl}>total views</Text>
       </View>
     </View>
   );
 });
 
-const AgencyTile = memo(function AgencyTile({ n, ticks, first, delay }) {
+const StatBox = memo(function StatBox({ icon, value, label }) {
+  return (
+    <View style={styles.statBox}>
+      <Ionicons name={icon} size={18} color={GOLD} />
+      <Text style={styles.statVal}>{value}</Text>
+      <Text style={styles.statLbl}>{label}</Text>
+    </View>
+  );
+});
+
+const AgencyTile = memo(function AgencyTile({ agency, n, ticks, first, delay }) {
+  const pct = agency ? Math.min(100, Math.round((agency.stars / (agency.target || 1)) * 100)) : 0;
   return (
     <FadeUp delay={delay}>
       <View style={[styles.tile, first && { backgroundColor: GOLD }]}>
         <View style={{ flexDirection: "row", alignItems: "center" }}>
           <Text style={styles.tileNum}>{n}</Text>
-          <Text style={styles.tileTitle}>AGENCY TOP {n}</Text>
+          {agency ? (
+            agency.logo ? (
+              <FastImage source={{ uri: agency.logo }} style={styles.agLogo} />
+            ) : (
+              <View style={[styles.agLogo, styles.agLogoEmpty]}>
+                <Ionicons name="business" size={22} color={NAVY} />
+              </View>
+            )
+          ) : null}
+          <View style={{ flex: 1, marginLeft: agency ? 10 : 0 }}>
+            <Text style={styles.tileTitle}>AGENCY TOP {n}</Text>
+            {agency ? (
+              <Text style={styles.agName} numberOfLines={1}>
+                {agency.name}
+              </Text>
+            ) : (
+              <Text style={styles.agSub}>Abhi koi agency nahi</Text>
+            )}
+          </View>
         </View>
+
+        {agency ? (
+          <View style={{ marginTop: 14 }}>
+            <View style={styles.agNumRow}>
+              <Ionicons name="star" size={22} color={NAVY} style={{ marginBottom: 3, marginRight: 4 }} />
+              <Text style={styles.agViews}>{fmt(agency.stars)}</Text>
+              <Text style={styles.agTarget}> / {fmt(agency.target)} target</Text>
+            </View>
+            <View style={styles.agBar}>
+              <View style={[styles.agBarFill, { width: `${Math.max(pct, 2)}%` }]} />
+            </View>
+            <Text style={styles.agSub}>
+              {pct}% poora · {fmt(agency.members)} member · {fmt(agency.views)} views
+            </Text>
+          </View>
+        ) : null}
+
         <View style={styles.plate}>
           {Array.from({ length: ticks }).map((_, i) => (
             <Ionicons key={i} name="checkmark-circle" size={26} color="#fff" style={{ marginRight: 4 }} />
           ))}
-          <Text style={styles.plateText}>
-            {ticks} White Tik
-          </Text>
+          <Text style={styles.plateText}>{ticks} White Tik</Text>
         </View>
         {first ? <Shine duration={2600} delay={900} width={50} /> : null}
       </View>
@@ -402,9 +399,38 @@ const AgencyTile = memo(function AgencyTile({ n, ticks, first, delay }) {
 export default function EventScreen() {
   const router = useRouter();
   const status = useMemo(getStatus, []);
+  const started = Date.now() >= EVENT_START.getTime();
   const pulse = usePulse(0.35, 1, 800);
   const glow = usePulse(0.5, 1, 1400);
-  const max = USERS[0].views;
+
+  const [board, setBoard] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async (silent) => {
+    try {
+      const r = await callApi("/event/leaderboard");
+      setBoard(r);
+      setError("");
+    } catch (e) {
+      if (!silent) setError((e && e.message) || "Event data load nahi hua");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load(false);
+    const t = setInterval(() => load(true), REFRESH_MS);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    load(false);
+  }, [load]);
 
   useEffect(() => {
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -413,6 +439,12 @@ export default function EventScreen() {
     });
     return () => sub.remove();
   }, [router]);
+
+  const users = board?.users || [];
+  const top10 = useMemo(() => users.slice(0, 10), [users]);
+  const agencies = board?.agencies || [];
+  const max = top10.length ? top10[0].views || 1 : 1;
+  const me = board?.me;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -427,7 +459,11 @@ export default function EventScreen() {
         <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 40 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={GOLD} colors={[GOLD]} />}
+      >
         {/* HERO */}
         <LinearGradient
           colors={[NAVY, "#101c52", NAVY2]}
@@ -436,10 +472,7 @@ export default function EventScreen() {
           style={styles.hero}
         >
           <Sparkle top={26} left={SCREEN_W * 0.78} size={18} delay={0} />
-          <Sparkle top={90} left={SCREEN_W * 0.9} size={12} delay={700} />
           <Sparkle top={150} left={SCREEN_W * 0.62} size={14} delay={1400} />
-          <Sparkle top={60} left={24} size={12} delay={1000} />
-          <Sparkle top={200} left={SCREEN_W * 0.2} size={16} delay={300} />
 
           <FadeUp delay={0}>
             <View style={styles.trophyWrap}>
@@ -448,20 +481,20 @@ export default function EventScreen() {
             </View>
           </FadeUp>
 
-          <FadeUp delay={120}>
+          <FadeUp delay={80}>
             <Text style={styles.heroTag}>TOPKING · EK MAHINE KA BADA MUKABLA</Text>
             <Text style={styles.heroH1}>TopKing</Text>
             <Text style={[styles.heroH1, { color: GOLD }]}>Event</Text>
           </FadeUp>
 
-          <FadeUp delay={240}>
+          <FadeUp delay={160}>
             <Text style={styles.heroP}>
               TopKing ke <Text style={{ color: "#fff", fontWeight: "800" }}>saare users</Text> is event me hissa le sakte
               hain. Sabse zyada views laao aur Stars aur Tik jeeto.
             </Text>
           </FadeUp>
 
-          <FadeUp delay={360}>
+          <FadeUp delay={240}>
             <View style={styles.dateCard}>
               <Ionicons name="calendar" size={20} color={NAVY} />
               <Text style={styles.dateText}>
@@ -482,95 +515,148 @@ export default function EventScreen() {
               </View>
             ))}
           </View>
-
-          <Shine duration={3200} delay={1200} width={90} />
         </LinearGradient>
 
         {/* HOW TO WIN */}
-        <FadeUp delay={200} style={styles.sec}>
+        <View style={styles.sec}>
           <View style={styles.how}>
             <Text style={styles.howBig}>1 MAHINA</Text>
             <Text style={styles.howH}>Kaise jeetna hai?</Text>
             <Text style={styles.howP}>
-              Is 1 mahine ke andar jiske videos par{" "}
-              <Text style={{ color: "#fff", fontWeight: "800" }}>sabse zyada views</Text> aayenge, unme se Top 1, Top 2
-              aur Top 3 select kiye jayenge.
+              {fmtDate(EVENT_START)} se {fmtDate(EVENT_END)} ke beech jo videos aap post karoge, un{" "}
+              <Text style={{ color: "#fff", fontWeight: "800" }}>sabhi videos ke milake total views</Text> gine jayenge.
+              Jiske total views sabse zyada honge, unme se Top 1, Top 2 aur Top 3 select kiye jayenge.
             </Text>
           </View>
-        </FadeUp>
+        </View>
 
-        {/* CREATOR PRIZES */}
-        <View style={styles.sec}>
-          <Text style={styles.label}>CREATORS KE INAAM</Text>
-          <Text style={styles.h2}>Top 3 ko Stars aur Tik</Text>
-
-          {/* Top 1, 2, 3 - ek hi line me (2 | 1 | 3 podium) */}
-          <View style={styles.podRow}>
-            <PodiumCard
-              rank={2}
-              user={USERS[1]}
-              stars={10000}
-              delay={200}
-              tickLabel="White Tik"
-              tickColor={{ bg: NAVY, icon: "#fff", text: "#fff" }}
-            />
-            <PodiumCard
-              rank={1}
-              user={USERS[0]}
-              stars={15000}
-              first
-              delay={100}
-              tickLabel="Garevi Tik"
-              tickColor={{ bg: "rgba(18,184,134,0.25)", icon: "#12b886", text: "#6ff0c4" }}
-            />
-            <PodiumCard
-              rank={3}
-              user={USERS[2]}
-              stars={5000}
-              delay={300}
-              tickLabel="White Tik"
-              tickColor={{ bg: NAVY, icon: "#fff", text: "#fff" }}
-            />
+        {loading ? (
+          <View style={styles.center}>
+            <ActivityIndicator size="large" color={GOLD} />
           </View>
-        </View>
-
-        {/* LIVE RANKING */}
-        <View style={styles.sec}>
-          <Text style={styles.label}>LIVE RANKING</Text>
-          <Text style={styles.h2}>Top 10 me kaun kis number par</Text>
-          <Text style={styles.sub}>
-            Kaun upar gaya, kaun neeche aaya, poore mahine app me dikhega. Har naam ke saath pichhle hafte ka badlav bhi.
-          </Text>
-          <View style={styles.sample}>
-            <Text style={styles.sampleText}>NAMUNA DATA · asli photo, naam aur views app se judne par yahan aayenge</Text>
+        ) : error && !board ? (
+          <View style={styles.center}>
+            <Ionicons name="cloud-offline" size={34} color="#8a93b5" />
+            <Text style={styles.errText}>{error}</Text>
+            <TouchableOpacity style={styles.retryBtn} activeOpacity={0.8} onPress={() => { setLoading(true); load(false); }}>
+              <Text style={styles.retryText}>Dobara try karo</Text>
+            </TouchableOpacity>
           </View>
+        ) : (
+          <>
+            {/* TOTAL STATS */}
+            <View style={styles.sec}>
+              <View style={styles.statRow}>
+                <StatBox icon="people" value={fmt(board?.totalCreators || 0)} label="Creators" />
+                <StatBox icon="videocam" value={fmt(board?.totalVideos || 0)} label="Videos" />
+                <StatBox icon="eye" value={fmt(board?.totalViews || 0)} label="Total Views" />
+              </View>
 
-          {USERS.map((u, i) => (
-            <BoardRow key={u.name} user={u} index={i} max={max} />
-          ))}
-        </View>
+              {/* MERI RANK */}
+              {started ? (
+                <View style={styles.meCard}>
+                  {me ? (
+                    <>
+                      <Text style={styles.meRank}>#{me.rank}</Text>
+                      <View style={{ flex: 1, marginLeft: 12 }}>
+                        <Text style={styles.meTitle}>Aapki rank</Text>
+                        <Text style={styles.meSub}>
+                          {fmt(me.videos)} video · {fmt(me.views)} total views
+                        </Text>
+                      </View>
+                    </>
+                  ) : (
+                    <>
+                      <Ionicons name="videocam" size={26} color={GOLD} />
+                      <View style={{ flex: 1, marginLeft: 12 }}>
+                        <Text style={styles.meTitle}>Aap abhi race me nahi ho</Text>
+                        <Text style={styles.meSub}>Event ke dauran video daalo, views judte jayenge.</Text>
+                      </View>
+                    </>
+                  )}
+                </View>
+              ) : null}
+            </View>
 
-        {/* AGENCY */}
-        <View style={[styles.sec, styles.agency]}>
-          <Text style={[styles.label, { color: GOLD }]}>AGENCY KE INAAM</Text>
-          <Text style={styles.h2}>Agency Top 3 ko White Tik</Text>
-          <Text style={[styles.sub, { color: "#b7bfe4" }]}>
-            Agencies ka alag mukabla. Sabse upar wali agency ko double White Tik.
-          </Text>
-          <AgencyTile n={1} ticks={2} first delay={100} />
-          <AgencyTile n={2} ticks={1} delay={200} />
-          <AgencyTile n={3} ticks={1} delay={300} />
-        </View>
+            {/* CREATOR PRIZES */}
+            <View style={styles.sec}>
+              <Text style={styles.label}>CREATORS KE INAAM</Text>
+              <Text style={styles.h2}>Top 3 ko Stars aur Tik</Text>
+
+              {/* Top 1, 2, 3 - ek hi line me (2 | 1 | 3 podium) */}
+              <View style={styles.podRow}>
+                <PodiumCard
+                  rank={2}
+                  user={users[1]}
+                  stars={10000}
+                  delay={120}
+                  tickLabel="White Tik"
+                  tickColor={{ bg: NAVY, icon: "#fff", text: "#fff" }}
+                />
+                <PodiumCard
+                  rank={1}
+                  user={users[0]}
+                  stars={15000}
+                  first
+                  delay={60}
+                  tickLabel="Garevi Tik"
+                  tickColor={{ bg: "rgba(18,184,134,0.25)", icon: "#12b886", text: "#6ff0c4" }}
+                />
+                <PodiumCard
+                  rank={3}
+                  user={users[2]}
+                  stars={5000}
+                  delay={180}
+                  tickLabel="White Tik"
+                  tickColor={{ bg: NAVY, icon: "#fff", text: "#fff" }}
+                />
+              </View>
+            </View>
+
+            {/* LIVE RANKING */}
+            <View style={styles.sec}>
+              <Text style={styles.label}>LIVE RANKING</Text>
+              <Text style={styles.h2}>Top 10 me kaun kis number par</Text>
+              <Text style={styles.sub}>
+                Har creator ke is event me dale gaye saare videos ke views milake total. Har 1 minute me apne aap update hota hai.
+              </Text>
+
+              {top10.length === 0 ? (
+                <View style={styles.emptyBox}>
+                  <Ionicons name="hourglass" size={28} color="#8a93b5" />
+                  <Text style={styles.emptyText}>
+                    {started
+                      ? "Abhi tak kisi ne event me video nahi dala. Pehle video daalo aur No.1 bano!"
+                      : `Event ${fmtDate(EVENT_START)} se shuru hoga. Shuru hote hi yahan naam, photo aur total views dikhenge.`}
+                  </Text>
+                </View>
+              ) : (
+                top10.map((u, i) => <BoardRow key={u.uid} user={u} index={i} max={max} />)
+              )}
+            </View>
+
+            {/* AGENCY */}
+            <View style={[styles.sec, styles.agency]}>
+              <Text style={[styles.label, { color: GOLD }]}>AGENCY KE INAAM</Text>
+              <Text style={styles.h2}>Agency Top 3 ko White Tik</Text>
+              <Text style={[styles.sub, { color: "#b7bfe4" }]}>
+                Agency ke saare members ko jitne stars mile, un sabko jodke agency ka total banta hai (jaise 5 member ko 10+50+60+70+2 = 192 stars). Sabse upar wali agency ko double White Tik.
+              </Text>
+              <AgencyTile n={1} ticks={2} first delay={60} agency={agencies[0]} />
+              <AgencyTile n={2} ticks={1} delay={120} agency={agencies[1]} />
+              <AgencyTile n={3} ticks={1} delay={180} agency={agencies[2]} />
+            </View>
+          </>
+        )}
 
         {/* FOOTER */}
-        <FadeUp style={styles.cta}>
+        <View style={styles.cta}>
           <Ionicons name="ribbon" size={34} color={GOLD} />
           <Text style={styles.ctaH}>Taaj aapka intezaar kar raha hai</Text>
           <Text style={styles.ctaP}>Aaj se hi videos daalo, views badhao aur TopKing banne ki race me aa jao.</Text>
           <Text style={styles.ctaP}>Koi sawal ho to humse sampark karein.</Text>
           <Text style={styles.ctaBy}>TopKing Team</Text>
-          <Shine duration={3000} delay={500} width={70} />
-        </FadeUp>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -761,15 +847,6 @@ const styles = StyleSheet.create({
   },
   podTickText: { fontWeight: "800", fontSize: 10.5, marginLeft: 3 },
 
-  sample: {
-    alignSelf: "flex-start",
-    backgroundColor: "#fff3cf",
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    marginBottom: 14,
-  },
-  sampleText: { color: "#7a5a00", fontSize: 11, fontWeight: "700" },
 
   row: {
     flexDirection: "row",
@@ -829,4 +906,63 @@ const styles = StyleSheet.create({
   ctaH: { color: GOLD, fontSize: 26, fontWeight: "900", marginTop: 10, textTransform: "uppercase", lineHeight: 30 },
   ctaP: { color: "#c3caea", fontSize: 14, lineHeight: 21, marginTop: 8 },
   ctaBy: { color: "#fff", fontWeight: "800", letterSpacing: 1, marginTop: 18 },
+
+  podViewsBig: { color: "#fff", fontWeight: "900", fontSize: 14, marginTop: 4 },
+  emptyDp: { backgroundColor: "#1b2557", alignItems: "center", justifyContent: "center" },
+
+  center: { alignItems: "center", justifyContent: "center", paddingVertical: 60, paddingHorizontal: 30 },
+  errText: { color: "#8a93b5", fontSize: 14, marginTop: 10, textAlign: "center" },
+  retryBtn: { marginTop: 14, backgroundColor: GOLD, borderRadius: 12, paddingHorizontal: 20, paddingVertical: 10 },
+  retryText: { color: NAVY, fontWeight: "900", fontSize: 14 },
+
+  statRow: { flexDirection: "row", marginHorizontal: -4 },
+  statBox: {
+    flex: 1,
+    marginHorizontal: 4,
+    alignItems: "center",
+    backgroundColor: "#0e1640",
+    borderWidth: 1,
+    borderColor: "#27337a",
+    borderRadius: 14,
+    paddingVertical: 12,
+  },
+  statVal: { color: "#fff", fontWeight: "900", fontSize: 17, marginTop: 4 },
+  statLbl: { color: "#8a93b5", fontWeight: "700", fontSize: 11, marginTop: 2 },
+
+  meCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 12,
+    backgroundColor: "#131d52",
+    borderWidth: 1,
+    borderColor: "rgba(255,215,0,0.55)",
+    borderRadius: 16,
+    padding: 14,
+  },
+  meRank: { color: GOLD, fontWeight: "900", fontSize: 30 },
+  meTitle: { color: "#fff", fontWeight: "800", fontSize: 15 },
+  meSub: { color: "#9aa4cf", fontSize: 12.5, marginTop: 2 },
+
+  rowSub: { color: "#8a93b5", fontSize: 11, marginTop: 2 },
+  rowViewsLbl: { color: "#8a93b5", fontSize: 10, fontWeight: "700", marginTop: 2 },
+
+  emptyBox: {
+    alignItems: "center",
+    backgroundColor: "#0e1640",
+    borderWidth: 1,
+    borderColor: "#202b6b",
+    borderRadius: 14,
+    padding: 24,
+  },
+  emptyText: { color: "#9aa4cf", fontSize: 14, lineHeight: 21, textAlign: "center", marginTop: 10 },
+
+  agLogo: { width: 46, height: 46, borderRadius: 12, backgroundColor: "#e9ecf8" },
+  agLogoEmpty: { alignItems: "center", justifyContent: "center" },
+  agName: { color: NAVY, fontWeight: "900", fontSize: 17, marginTop: 2 },
+  agSub: { color: "#4a5380", fontSize: 12, fontWeight: "700", marginTop: 6 },
+  agNumRow: { flexDirection: "row", alignItems: "flex-end" },
+  agViews: { color: NAVY, fontWeight: "900", fontSize: 24 },
+  agTarget: { color: "#4a5380", fontWeight: "800", fontSize: 13, marginBottom: 3 },
+  agBar: { height: 8, borderRadius: 4, backgroundColor: "rgba(11,20,55,0.18)", marginTop: 8, overflow: "hidden" },
+  agBarFill: { height: "100%", borderRadius: 4, backgroundColor: "#12b886" },
 });

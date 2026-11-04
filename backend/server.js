@@ -5513,6 +5513,183 @@ app.use((req, res) => {
 });
 
 // =====================================================
+// EVENT LEADERBOARD  (10 Nov -> 10 Dec)
+// Event ke dauran jo videos post hue, unke views user-wise aur agency-wise.
+// Result 60 sec cache hota hai, isliye app smooth/fast rehta hai.
+// =====================================================
+
+// IST me: 10 Nov 2026 00:00  ->  10 Dec 2026 23:59:59   (yahin se badlo, app ke event.js me bhi same rakho)
+const EVENT_START_MS = new Date("2026-11-01T00:00:00+05:30").getTime();
+const EVENT_END_MS = new Date("2026-12-10T23:59:59+05:30").getTime();
+// Agency ka default target (members ko mile total STARS). Kisi agency ko alag target dena ho to
+// agencies/{id} me `eventTarget` (number) daal do.
+const EVENT_AGENCY_TARGET = 100000;
+const EVENT_CACHE_MS = 60 * 1000;
+const EVENT_MAX_VIDEOS = 20000;
+
+let eventCache = { at: 0, data: null, pending: null };
+
+async function buildEventBoard() {
+  const vSnap = await db
+    .collection("all_videos")
+    .where("createdAt", ">=", admin.firestore.Timestamp.fromMillis(EVENT_START_MS))
+    .where("createdAt", "<=", admin.firestore.Timestamp.fromMillis(EVENT_END_MS))
+    .select("userId", "views")
+    .limit(EVENT_MAX_VIDEOS)
+    .get();
+
+  // user -> { videos, views }
+  const perUser = new Map();
+  vSnap.docs.forEach((d) => {
+    const x = d.data();
+    const uid = x.userId;
+    if (!uid || typeof uid !== "string") return;
+    const cur = perUser.get(uid) || { uid, videos: 0, views: 0 };
+    cur.videos += 1;
+    cur.views += Number(x.views) || 0;
+    perUser.set(uid, cur);
+  });
+
+  const users = Array.from(perUser.values());
+
+  // saare uploaders ke profile (naam, dp, agency) - 300-300 ke batch me
+  const uRefs = users.map((u) => db.collection("users").doc(u.uid));
+  const profiles = new Map();
+  for (let i = 0; i < uRefs.length; i += 300) {
+    const snaps = await db.getAll(
+      ...uRefs.slice(i, i + 300),
+      { fieldMask: ["username", "name", "profileImg", "agencyId", "banned"] }
+    );
+    snaps.forEach((sn) => {
+      if (sn.exists) profiles.set(sn.id, sn.data());
+    });
+  }
+
+  const rows = [];
+  const perAgency = new Map();
+  users.forEach((u) => {
+    const p = profiles.get(u.uid);
+    if (!p || p.banned === true) return; // banned user event me nahi
+    const row = {
+      uid: u.uid,
+      name: p.username || p.name || "User",
+      dp: p.profileImg || "",
+      videos: u.videos,
+      views: u.views,
+      agencyId: p.agencyId || "",
+    };
+    rows.push(row);
+    if (row.agencyId) {
+      const a = perAgency.get(row.agencyId) || { id: row.agencyId, views: 0, videos: 0, creators: 0 };
+      a.views += row.views;
+      a.videos += row.videos;
+      a.creators += 1;
+      perAgency.set(row.agencyId, a);
+    }
+  });
+
+  rows.sort((a, b) => b.views - a.views || b.videos - a.videos);
+  const ranked = rows.map((r, i) => ({ ...r, rank: i + 1 }));
+
+  // Agency ranking = agency ke saare members ko mile stars ka total (wallets/{uid}.receivedStars)
+  const [agSnap, memSnap] = await Promise.all([
+    db.collection("agencies").get(),
+    db.collection("users").where("agencyId", ">", "").select("agencyId").get(),
+  ]);
+  const memberOf = new Map(); // uid -> agencyId
+  const memberCount = new Map();
+  memSnap.docs.forEach((d) => {
+    const id = d.data().agencyId;
+    if (!id) return;
+    memberOf.set(d.id, id);
+    memberCount.set(id, (memberCount.get(id) || 0) + 1);
+  });
+  const memUids = Array.from(memberOf.keys());
+  const starsOf = new Map(); // agencyId -> total stars
+  for (let i = 0; i < memUids.length; i += 300) {
+    const snaps = await db.getAll(
+      ...memUids.slice(i, i + 300).map((u) => db.collection("wallets").doc(u)),
+      { fieldMask: ["receivedStars"] }
+    );
+    snaps.forEach((sn) => {
+      if (!sn.exists) return;
+      const ag = memberOf.get(sn.id);
+      starsOf.set(ag, (starsOf.get(ag) || 0) + (Number(sn.data().receivedStars) || 0));
+    });
+  }
+
+  const agencies = [];
+  agSnap.docs.forEach((sn) => {
+    const d = sn.data();
+    if (d.status === "blocked") return;
+    const pa = perAgency.get(sn.id);
+    const target = Number(d.eventTarget) > 0 ? Number(d.eventTarget) : EVENT_AGENCY_TARGET;
+    agencies.push({
+      id: sn.id,
+      name: d.agencyName || "Agency",
+      logo: d.logo || "",
+      stars: starsOf.get(sn.id) || 0,
+      members: memberCount.get(sn.id) || Number(d.totalMembers) || 0,
+      views: pa ? pa.views : 0,
+      videos: pa ? pa.videos : 0,
+      target,
+    });
+  });
+  agencies.sort((a, b) => b.stars - a.stars);
+
+  return {
+    startMs: EVENT_START_MS,
+    endMs: EVENT_END_MS,
+    updatedAt: Date.now(),
+    totalCreators: ranked.length,
+    totalVideos: ranked.reduce((s, r) => s + r.videos, 0),
+    totalViews: ranked.reduce((s, r) => s + r.views, 0),
+    ranked, // poori list (me ka rank nikalne ke liye); response me top 50 hi jati hai
+    agencies: agencies.slice(0, 10).map((a, i) => ({ ...a, rank: i + 1 })),
+  };
+}
+
+async function getEventBoard() {
+  const now = Date.now();
+  if (eventCache.data && now - eventCache.at < EVENT_CACHE_MS) return eventCache.data;
+  if (eventCache.pending) return eventCache.pending; // ek hi baar DB padho, baaki wait karein
+  eventCache.pending = buildEventBoard()
+    .then((data) => {
+      eventCache = { at: Date.now(), data, pending: null };
+      return data;
+    })
+    .catch((e) => {
+      eventCache.pending = null;
+      if (eventCache.data) return eventCache.data; // error me purana data de do
+      throw e;
+    });
+  return eventCache.pending;
+}
+
+app.post("/event/leaderboard", generalLimiter, verifyUser, async (req, res) => {
+  try {
+    const b = await getEventBoard();
+    const uid = req.user.uid;
+    const me = b.ranked.find((r) => r.uid === uid) || null;
+    return res.json({
+      success: true,
+      startMs: b.startMs,
+      endMs: b.endMs,
+      updatedAt: b.updatedAt,
+      totalCreators: b.totalCreators,
+      totalVideos: b.totalVideos,
+      totalViews: b.totalViews,
+      users: b.ranked.slice(0, 50).map(({ agencyId, ...r }) => r),
+      agencies: b.agencies,
+      me: me ? { rank: me.rank, videos: me.videos, views: me.views } : null,
+    });
+  } catch (e) {
+    console.error("EVENT LEADERBOARD ERROR:", e && e.message);
+    return res.status(500).json({ success: false, error: "Event data load nahi hua" });
+  }
+});
+
+// =====================================================
 // SERVER
 // =====================================================
 
