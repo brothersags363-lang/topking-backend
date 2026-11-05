@@ -4111,6 +4111,35 @@ app.post("/admin/list-framed-users", generalLimiter, verifyUser, requireAdminDoc
 
 
 // =====================================================
+// ADD: jo bhi agency me add ho (agencyId set) use turant liveGranted = true.
+// Firestore listener: naya member judte hi 1-2 sec me live khul jata hai.
+// Baad me rules lagane ho to sirf neeche wali  startAgencyLiveWatcher();  line hata do.
+// =====================================================
+function startAgencyLiveWatcher() {
+  try {
+    db.collection("users")
+      .where("agencyId", ">", "")
+      .onSnapshot(
+        (snap) => {
+          snap.docChanges().forEach((ch) => {
+            if (ch.type === "removed") return;
+            const d = ch.doc.data() || {};
+            if (typeof d.agencyId === "string" && d.agencyId && d.liveGranted !== true) {
+              ch.doc.ref.update({ liveGranted: true }).catch((e) =>
+                console.error("AGENCY LIVE GRANT ERROR:", e && e.message)
+              );
+            }
+          });
+        },
+        (e) => console.error("AGENCY LIVE WATCHER ERROR:", e && e.message)
+      );
+    console.log("AGENCY LIVE WATCHER started");
+  } catch (e) {
+    console.error("AGENCY LIVE WATCHER FAILED:", e);
+  }
+}
+
+// =====================================================
 // AUTO (ek baar): purane agency members ko live (liveGranted) - deploy par apne aap
 // =====================================================
 async function grandfatherAgencyLiveOnce() {
@@ -5664,6 +5693,9 @@ const server =
       grandfatherAgencyLiveOnce().catch((e) =>
         console.error("LIVE GRANDFATHER ERROR:", e)
       );
+
+      // ADD: agency me jo bhi add ho use turant live
+      startAgencyLiveWatcher();
 
     }
 
