@@ -5751,6 +5751,28 @@ app.post("/withdraw/request", generalLimiter, verifyUser, async (req, res) => {
     }
 
     const needStars = Math.round(tk * WITHDRAW_STARS_PER_TK);
+
+    // Admin screen ke liye: masked payout, shared-account aur few-gifters flags
+    const payoutKey = method === "BANK"
+      ? `BANK:${accountNumber}:${ifsc}`
+      : `UPI:${upiId.toLowerCase()}`;
+    const payoutMasked = method === "BANK"
+      ? `Bank A/C ••••${accountNumber.slice(-4)} (${ifsc})`
+      : `${upiId.split("@")[0].slice(0, 2)}***@${upiId.split("@")[1] || ""}`;
+
+    const flags = [];
+    try {
+      const sameSnap = await db.collection("withdrawals").where("payoutKey", "==", payoutKey).limit(10).get();
+      if (sameSnap.docs.some((d) => d.data().userId !== uid)) flags.push("PAYOUT_SHARED_WITH_OTHER_USER");
+    } catch (e) { console.error("WD FLAG(shared) ERROR:", e && e.message); }
+    try {
+      const gSnap = await db.collection("wallets").doc(uid).collection("giftHistory")
+        .where("type", "==", "received").limit(500).get();
+      const gifters = new Set();
+      gSnap.forEach((d) => { const f = d.data().fromUserId; if (f) gifters.add(f); });
+      if (gSnap.size > 0 && gifters.size < 3) flags.push("FEW_GIFTERS");
+    } catch (e) { console.error("WD FLAG(gifters) ERROR:", e && e.message); }
+
     const walletRef = db.collection("wallets").doc(uid);
     const userRef = db.collection("users").doc(uid);
     const wdRef = db.collection("withdrawals").doc();
@@ -5768,7 +5790,7 @@ app.post("/withdraw/request", generalLimiter, verifyUser, async (req, res) => {
 
       // Pehle se pending requests ke stars alag rakho (double-withdraw se bachne ke liye)
       let pendingStars = 0;
-      pendingSnap.forEach((d) => { pendingStars += Number(d.data().stars || 0); });
+      pendingSnap.forEach((d) => { pendingStars += Number(d.data().giftStars || d.data().stars || 0); });
 
       if (received - pendingStars < needStars) {
         const err = new Error("Gift Stars kam hain (pending withdrawal ke baad)");
@@ -5787,9 +5809,17 @@ app.post("/withdraw/request", generalLimiter, verifyUser, async (req, res) => {
       const data = {
         userId: uid,
         username: u.username || "",
+        name: u.username || u.name || "",
         agencyId: u.agencyId || "",
+        agencyName: u.agencyName || "",
         tk,
+        amount: tk,              // Admin "Amount to Pay" (1 TK = Rs 1 maana hai)
         stars: needStars,
+        giftStars: needStars,    // Success par itne Gift Stars katenge
+        mobile,
+        payoutKey,
+        payoutMasked,
+        flags,
         method,
         accountName,
         mobileNumber: mobile,
@@ -5825,7 +5855,7 @@ app.post("/withdraw/request", generalLimiter, verifyUser, async (req, res) => {
 // Failed  -> kuchh nahi katta, 7 din ka lock hat jata hai.
 app.post("/admin/withdrawal-status", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
   try {
-    const id = String((req.body && req.body.id) || "");
+    const id = String((req.body && (req.body.withdrawId || req.body.id)) || "");
     const status = String((req.body && req.body.status) || "");
 
     if (!id || id.length > 200 || id.includes("/")) {
@@ -5856,6 +5886,7 @@ app.post("/admin/withdrawal-status", generalLimiter, verifyUser, requireAdminDoc
       const histRef = walletRef.collection("withdrawHistory").doc(id);
       const wSnap = await tx.get(walletRef);
 
+      let starsDeducted = 0;
       const patch = {
         status,
         processedBy: req.user.uid,
@@ -5864,13 +5895,14 @@ app.post("/admin/withdrawal-status", generalLimiter, verifyUser, requireAdminDoc
 
       if (status === "Success") {
         const received = Number((wSnap.exists && wSnap.data().receivedStars) || 0);
-        const stars = Number(wd.stars || 0);
+        const stars = Number(wd.giftStars || wd.stars || 0);
         if (received < stars) {
           const err = new Error("User ke paas ab itne Gift Stars nahi bache");
           err.userFacing = true;
           throw err;
         }
         tx.update(walletRef, { receivedStars: received - stars });
+        starsDeducted = stars;
       } else if (wSnap.exists) {
         // Failed: 7 din ka lock wapas pehle jaisa
         tx.update(walletRef, { lastWithdrawAt: Number(wd.prevWithdrawAt || 0) });
@@ -5879,7 +5911,7 @@ app.post("/admin/withdrawal-status", generalLimiter, verifyUser, requireAdminDoc
       tx.update(wdRef, patch);
       tx.set(histRef, patch, { merge: true });
 
-      return { userId: uid, status };
+      return { userId: uid, status, starsDeducted };
     });
 
     return res.json({ success: true, ...result });
