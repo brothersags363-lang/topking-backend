@@ -5658,6 +5658,239 @@ app.post("/event/leaderboard", generalLimiter, verifyUser, async (req, res) => {
   }
 });
 
+// =====================================================
+// WALLET: RECHARGE REQUEST + WITHDRAW (server-only writes, Admin SDK)
+// Firestore rules me client se ye collections band hain
+// (rechargeRequests, withdrawals, wallets/{uid}/withdrawHistory),
+// isliye yahi routes unhe likhte hain.
+// =====================================================
+const WITHDRAW_MIN_TK = 25;
+const WITHDRAW_STARS_PER_TK = 600; // 1 TK = 600 Gift Stars (wallet.tsx jaisa)
+const WITHDRAW_GAP_MS = 7 * 24 * 60 * 60 * 1000; // 7 din me ek baar
+
+// USER: Stars recharge request (UTR ke saath). Admin payment check karke /admin/add-stars se stars deta hai.
+// body: { amount, utr }
+app.post("/recharge-request", generalLimiter, verifyUser, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const amount = Number(req.body && req.body.amount);
+    const utr = String((req.body && req.body.utr) || "").trim();
+
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 1000000) {
+      return res.status(400).json({ success: false, error: "Invalid amount" });
+    }
+    if (!/^[A-Za-z0-9]{6,30}$/.test(utr)) {
+      return res.status(400).json({ success: false, error: "Sahi UTR / Transaction ID daalo" });
+    }
+
+    // Same UTR dobara use na ho
+    const dup = await db.collection("rechargeRequests").where("utr", "==", utr).limit(1).get();
+    if (!dup.empty) {
+      return res.status(400).json({ success: false, error: "Ye UTR pehle hi submit ho chuka hai" });
+    }
+
+    const uSnap = await db.collection("users").doc(uid).get();
+    const ref = db.collection("rechargeRequests").doc();
+    await ref.set({
+      userId: uid,
+      username: (uSnap.exists && uSnap.data().username) || "",
+      amount,
+      utr,
+      status: "Pending",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return res.json({ success: true, id: ref.id });
+  } catch (e) {
+    console.error("RECHARGE REQUEST ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// USER: Withdrawal request
+// body: { tk, method: "UPI"|"BANK", accountName, mobile, upiId, accountNumber, ifsc }
+app.post("/withdraw/request", generalLimiter, verifyUser, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const b = req.body || {};
+
+    const tk = Number(b.tk);
+    const method = String(b.method || "");
+    const accountName = String(b.accountName || "").trim().slice(0, 80);
+    const mobile = String(b.mobile || "").trim();
+    const upiId = String(b.upiId || "").trim().slice(0, 100);
+    const accountNumber = String(b.accountNumber || "").trim();
+    const ifsc = String(b.ifsc || "").trim().toUpperCase();
+
+    if (!Number.isFinite(tk) || tk <= 0) {
+      return res.status(400).json({ success: false, error: "Please Enter TK" });
+    }
+    if (tk < WITHDRAW_MIN_TK) {
+      return res.status(400).json({ success: false, error: `Minimum Withdrawal is ${WITHDRAW_MIN_TK} TK` });
+    }
+    if (method !== "UPI" && method !== "BANK") {
+      return res.status(400).json({ success: false, error: "Invalid method" });
+    }
+    if (accountName.length < 3) {
+      return res.status(400).json({ success: false, error: "Account Holder Name sahi se bharo" });
+    }
+    if (!/^[6-9]\d{9}$/.test(mobile)) {
+      return res.status(400).json({ success: false, error: "Sahi 10 digit Mobile Number daalo" });
+    }
+    if (method === "UPI") {
+      if (!/^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/.test(upiId)) {
+        return res.status(400).json({ success: false, error: "Sahi UPI ID daalo (example: name@ybl)" });
+      }
+    } else {
+      if (!/^\d{9,18}$/.test(accountNumber)) {
+        return res.status(400).json({ success: false, error: "Sahi Account Number daalo (9 se 18 digit)" });
+      }
+      if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc)) {
+        return res.status(400).json({ success: false, error: "Sahi IFSC Code daalo (example: SBIN0001234)" });
+      }
+    }
+
+    const needStars = Math.round(tk * WITHDRAW_STARS_PER_TK);
+    const walletRef = db.collection("wallets").doc(uid);
+    const userRef = db.collection("users").doc(uid);
+    const wdRef = db.collection("withdrawals").doc();
+    const histRef = walletRef.collection("withdrawHistory").doc(wdRef.id); // same id (client status map isi se chalta hai)
+
+    await db.runTransaction(async (tx) => {
+      const wSnap = await tx.get(walletRef);
+      const uSnap = await tx.get(userRef);
+      const pendingSnap = await tx.get(
+        db.collection("withdrawals").where("userId", "==", uid).where("status", "==", "Pending")
+      );
+
+      const w = wSnap.exists ? wSnap.data() : {};
+      const received = Number(w.receivedStars || 0);
+
+      // Pehle se pending requests ke stars alag rakho (double-withdraw se bachne ke liye)
+      let pendingStars = 0;
+      pendingSnap.forEach((d) => { pendingStars += Number(d.data().stars || 0); });
+
+      if (received - pendingStars < needStars) {
+        const err = new Error("Gift Stars kam hain (pending withdrawal ke baad)");
+        err.userFacing = true;
+        throw err;
+      }
+
+      const lastAt = Number(w.lastWithdrawAt || 0);
+      if (Date.now() - lastAt < WITHDRAW_GAP_MS) {
+        const err = new Error("Withdraw 7 din me ek hi baar ho sakta hai");
+        err.userFacing = true;
+        throw err;
+      }
+
+      const u = uSnap.exists ? uSnap.data() : {};
+      const data = {
+        userId: uid,
+        username: u.username || "",
+        agencyId: u.agencyId || "",
+        tk,
+        stars: needStars,
+        method,
+        accountName,
+        mobileNumber: mobile,
+        upiId: method === "UPI" ? upiId : "",
+        payout: method === "BANK" ? { accountNumber, ifsc } : { upiId },
+        status: "Pending",
+        prevWithdrawAt: lastAt,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      tx.set(wdRef, data);
+      tx.set(histRef, data);
+      if (wSnap.exists) {
+        tx.update(walletRef, { lastWithdrawAt: Date.now() });
+      } else {
+        tx.set(walletRef, { lastWithdrawAt: Date.now() }, { merge: true });
+      }
+    });
+
+    return res.json({ success: true, id: wdRef.id });
+  } catch (e) {
+    if (e && e.userFacing) {
+      return res.status(400).json({ success: false, error: e.message });
+    }
+    console.error("WITHDRAW REQUEST ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// ADMIN: withdrawal ka status badlo
+// body: { id, status: "Success" | "Failed" }
+// Success -> user ke Gift Stars (receivedStars) usi transaction me kat'te hain.
+// Failed  -> kuchh nahi katta, 7 din ka lock hat jata hai.
+app.post("/admin/withdrawal-status", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const id = String((req.body && req.body.id) || "");
+    const status = String((req.body && req.body.status) || "");
+
+    if (!id || id.length > 200 || id.includes("/")) {
+      return res.status(400).json({ success: false, error: "Invalid id" });
+    }
+    if (status !== "Success" && status !== "Failed") {
+      return res.status(400).json({ success: false, error: "Status Success ya Failed hona chahiye" });
+    }
+
+    const wdRef = db.collection("withdrawals").doc(id);
+
+    const result = await db.runTransaction(async (tx) => {
+      const wdSnap = await tx.get(wdRef);
+      if (!wdSnap.exists) {
+        const err = new Error("Withdrawal nahi mila");
+        err.code404 = true;
+        throw err;
+      }
+      const wd = wdSnap.data();
+      if (wd.status !== "Pending") {
+        const err = new Error(`Ye request pehle hi ${wd.status} ho chuki hai`);
+        err.userFacing = true;
+        throw err;
+      }
+
+      const uid = String(wd.userId || "");
+      const walletRef = db.collection("wallets").doc(uid);
+      const histRef = walletRef.collection("withdrawHistory").doc(id);
+      const wSnap = await tx.get(walletRef);
+
+      const patch = {
+        status,
+        processedBy: req.user.uid,
+        processedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      if (status === "Success") {
+        const received = Number((wSnap.exists && wSnap.data().receivedStars) || 0);
+        const stars = Number(wd.stars || 0);
+        if (received < stars) {
+          const err = new Error("User ke paas ab itne Gift Stars nahi bache");
+          err.userFacing = true;
+          throw err;
+        }
+        tx.update(walletRef, { receivedStars: received - stars });
+      } else if (wSnap.exists) {
+        // Failed: 7 din ka lock wapas pehle jaisa
+        tx.update(walletRef, { lastWithdrawAt: Number(wd.prevWithdrawAt || 0) });
+      }
+
+      tx.update(wdRef, patch);
+      tx.set(histRef, patch, { merge: true });
+
+      return { userId: uid, status };
+    });
+
+    return res.json({ success: true, ...result });
+  } catch (e) {
+    if (e && e.code404) return res.status(404).json({ success: false, error: e.message });
+    if (e && e.userFacing) return res.status(400).json({ success: false, error: e.message });
+    console.error("WITHDRAWAL STATUS ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
 // Unknown route -> JSON 404 (log ke saath)
 app.use((req, res) => {
   console.warn(`404 NOT FOUND: ${req.method} ${req.path}`);
