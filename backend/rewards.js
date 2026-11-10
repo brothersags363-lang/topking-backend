@@ -6,7 +6,9 @@
 //  isliye app me koi value badal ke fake claim nahi kar sakta.
 //
 //  Reward:
-//    LIVE  : 2 ghanta live + 5 unique viewers      -> 300 Stars
+//    LIVE  : 2 ghanta live + 5 unique users jo SEAT par baith ke (unmute)
+//            kam se kam 10 minute baat kare                -> 300 Stars
+//            Private live ya room LOCK ho to time / seat-time kuch count nahi.
 //    GIFT  : 6500 Gift Stars (ek din me received)  -> 180 Stars
 //  Din ka reset: IST (Asia/Kolkata) raat 12 baje.
 //
@@ -14,6 +16,7 @@
 //    POST /reward/live-ping  { roomId }   (host, har ~30s)
 //    POST /reward/status     {}           (progress padhne ke liye, optional)
 //    POST /reward/claim      { type: "live" | "gift" }
+//    POST /reward/share      { videoId }   (1 share = 1 star, din me max 3)
 //
 //  Mount (server.js me, payments se PEHLE):
 //    require("./rewards")({ app, db, admin, verifyUser, rateLimit });
@@ -26,15 +29,15 @@ const REWARD = {
   LIVE_STARS: 300,           // upar wala reward
   GIFT_TARGET: 6500,         // 6500 gift stars
   GIFT_STARS: 180,           // niche wala reward
+  SHARE_STARS: 1,            // 1 video share = 1 star
+  SHARE_DAILY_MAX: 3,        // din me max 3 star (3 alag video share par)
 };
 
 const PING_MIN_GAP_MS = 15 * 1000;      // isse tez ping ginti me nahi
 const PING_MAX_CREDIT_S = 45;           // ek ping se max itna time judega
 const PING_MAX_GAP_MS = 90 * 1000;      // isse zyada gap = beech me band tha
-const VIEWER_MIN_STAY_MS = 60 * 1000;   // viewer kam se kam 1 min room me ho
-const VIEWER_FRESH_MS = 3 * 60 * 1000;  // aur abhi bhi room me ho
-const VIEWER_SCAN_LIMIT = 100;
-const VIEWER_STORE_CAP = 50;
+const SEAT_MIN_SECONDS = 10 * 60;       // har user seat par kam se kam 10 min
+const SEAT_STORE_CAP = 60;              // seatSecs me max itne users track
 
 function istDate(ms = Date.now()) {
   // "YYYY-MM-DD" in Asia/Kolkata
@@ -53,6 +56,7 @@ function freshDoc(date) {
     liveMinutes: 0,
     viewers: 0,
     viewerUids: [],
+    seatSecs: {},
     dailyGifts: 0,
     lastReceived: null,
     lastPingAt: 0,
@@ -106,35 +110,20 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
     doc.lastReceived = now;
   }
 
-  // Valid unique viewers: host nahi, room me >=1 min tika, abhi bhi online,
-  // real (users doc hai) aur banned nahi.
-  async function countNewViewers(roomId, hostUid, already) {
-    const snap = await db
-      .collection("rooms")
-      .doc(roomId)
-      .collection("audience")
-      .limit(VIEWER_SCAN_LIMIT)
-      .get();
-
-    const now = Date.now();
+  // Abhi seat par baithe, unmute, valid users (host nahi). Inhi ka seat-time judta hai.
+  async function getSeatedUids(room, hostUid) {
+    const seats = room.seatsData || {};
     const cand = [];
-    snap.forEach((d) => {
-      const a = d.data() || {};
-      const uid = String(a.uid || d.id);
-      if (uid !== d.id) return;            // doc id aur uid same ho
-      if (uid === hostUid) return;
-      if (already.includes(uid)) return;
-      if (a.online === false) return;
-      const joinedAt = num(a.joinedAt);
-      const lastSeen = num(a.lastSeen) || joinedAt;
-      if (!joinedAt) return;
-      if (now - joinedAt < VIEWER_MIN_STAY_MS) return;
-      if (now - lastSeen > VIEWER_FRESH_MS) return;
-      cand.push(uid);
+    Object.keys(seats).forEach((k) => {
+      const st = seats[k] || {};
+      const u = st.userId;
+      if (typeof u !== "string" || !u || u === hostUid) return;
+      if (st.isMuted === true) return;      // baat kar raha ho => unmute
+      if (!cand.includes(u)) cand.push(u);
     });
     if (!cand.length) return [];
 
-    const refs = cand.map((u) => db.collection("users").doc(u));
+    const refs = cand.slice(0, SEAT_STORE_CAP).map((u) => db.collection("users").doc(u));
     const users = await db.getAll(...refs);
     const ok = [];
     users.forEach((u) => {
@@ -173,13 +162,23 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
 
       const today = istDate();
       const ref = rewardRef(uid);
-
-      // Transaction se bahar: viewers ki scan (reads). Sirf tab jab target baaki ho.
       const pre = normalize((await ref.get()).data(), today);
-      let newViewers = [];
-      if (pre.viewerUids.length < REWARD.LIVE_VIEWERS) {
-        newViewers = await countNewViewers(roomId, uid, pre.viewerUids);
+
+      // PRIVATE live ya ROOM LOCK: time / seat-time kuch count nahi.
+      // lastPingAt = 0 taaki unlock ke baad lock wala gap judta na ho.
+      if (room.isPrivate === true || room.roomLocked === true) {
+        if (num(pre.lastPingAt)) await ref.set({ ...pre, lastPingAt: 0 });
+        return res.json({
+          success: true,
+          counted: false,
+          liveMinutes: pre.liveMinutes,
+          viewers: pre.viewers,
+          dailyGifts: pre.dailyGifts,
+        });
       }
+
+      // Transaction se bahar: seat par baithe valid users (reads).
+      const seatedNow = await getSeatedUids(room, uid);
 
       const w = await walletRef(uid).get();
       const receivedNow = w.exists ? num(w.data().receivedStars) : 0;
@@ -198,17 +197,24 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
         if (num(d.lastPingAt) && gap <= PING_MAX_GAP_MS && d.roomId === roomId) {
           const add = Math.min(PING_MAX_CREDIT_S, Math.floor(gap / 1000));
           d.liveSeconds = num(d.liveSeconds) + add;
+
+          // seat-time: jo user abhi seat par (unmute) hai uska bhi wahi time judta hai
+          const secs = d.seatSecs && typeof d.seatSecs === "object" ? d.seatSecs : {};
+          for (const u of seatedNow) {
+            if (!(u in secs) && Object.keys(secs).length >= SEAT_STORE_CAP) continue;
+            secs[u] = Math.min(num(secs[u]) + add, 24 * 3600);
+          }
+          d.seatSecs = secs;
         }
         d.liveSeconds = Math.min(num(d.liveSeconds), 24 * 3600);
         d.liveMinutes = Math.floor(d.liveSeconds / 60);
         d.lastPingAt = now;
         d.roomId = roomId;
 
-        // viewers
-        for (const v of newViewers) {
-          if (d.viewerUids.length >= VIEWER_STORE_CAP) break;
-          if (!d.viewerUids.includes(v)) d.viewerUids.push(v);
-        }
+        // "5 user": jinhone seat par kam se kam 10 min baat ki (alag-alag users)
+        d.viewerUids = Object.keys(d.seatSecs || {}).filter(
+          (u) => num(d.seatSecs[u]) >= SEAT_MIN_SECONDS
+        );
         d.viewers = d.viewerUids.length;
 
         // gifts
@@ -361,6 +367,105 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
       return res.status(500).json({ success: false, error: "Server error" });
     }
   });
+  // ------------------------------------------------------------------
+  // SHARE REWARD (TikTok jaisa): 1 video share = 1 star, din me max 3.
+  //  - 3 star ke baad kitna bhi share karo, star nahi milega
+  //  - ek hi video baar baar share karke star nahi milega (alag video chahiye)
+  //  - sab kuch server par, transaction me; din ka reset IST raat 12 baje
+  //  POST /reward/share { videoId }
+  //  Response: { success, awarded: true|false, stars, todayCount, dailyMax, total }
+  // ------------------------------------------------------------------
+  app.post("/reward/share", claimLimiter, verifyUser, async (req, res) => {
+    const uid = req.user.uid;
+    const videoId = String((req.body && req.body.videoId) || "").trim();
+    if (!videoId || videoId.length > 200 || videoId.includes("/")) {
+      return res.status(400).json({ success: false, error: "Invalid video" });
+    }
+
+    try {
+      const today = istDate();
+      const sRef = db.collection("shareRewards").doc(`${uid}_${today}`);
+      const wRef = walletRef(uid);
+      const vRef = db.collection("all_videos").doc(videoId);
+      const uRef = db.collection("users").doc(uid);
+
+      const result = await db.runTransaction(async (tx) => {
+        const [sSnap, wSnap, vSnap, uSnap] = await Promise.all([
+          tx.get(sRef),
+          tx.get(wRef),
+          tx.get(vRef),
+          tx.get(uRef),
+        ]);
+
+        if (!uSnap.exists || (uSnap.data() || {}).banned === true) {
+          throw httpErr(403, "Account not allowed");
+        }
+        if (!vSnap.exists) throw httpErr(404, "Video not found");
+
+        const d = sSnap.exists ? sSnap.data() : { date: today, count: 0, videoIds: [] };
+        const count = num(d.count);
+        const videoIds = Array.isArray(d.videoIds) ? d.videoIds : [];
+
+        // Limit poori ya ye video aaj pehle hi ginti me aa chuka -> star nahi
+        if (count >= REWARD.SHARE_DAILY_MAX || videoIds.includes(videoId)) {
+          return {
+            awarded: false,
+            stars: 0,
+            todayCount: count,
+            total: wSnap.exists ? num(wSnap.data().stars) : 0,
+          };
+        }
+
+        const stars = REWARD.SHARE_STARS;
+        const oldStars = wSnap.exists ? num(wSnap.data().stars) : 0;
+        const total = oldStars + stars;
+
+        tx.set(sRef, {
+          userId: uid,
+          date: today,
+          count: count + 1,
+          videoIds: [...videoIds, videoId],
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+
+        if (wSnap.exists) {
+          tx.update(wRef, { stars: total });
+        } else {
+          tx.set(wRef, { stars: total, earnings: 0, receivedStars: 0 });
+        }
+
+        // wallet history me dikhega
+        tx.set(wRef.collection("purchaseHistory").doc(), {
+          stars,
+          amount: 0,
+          paymentId: "REWARD_SHARE",
+          status: "Completed",
+          createdAt: FieldValue.serverTimestamp(),
+        });
+
+        return { awarded: true, stars, todayCount: count + 1, total };
+      });
+
+      if (result.awarded) {
+        console.log(`REWARD SHARE: uid=${uid} video=${videoId} n=${result.todayCount}`);
+      }
+      return res.json({
+        success: true,
+        awarded: result.awarded,
+        stars: result.stars,
+        todayCount: result.todayCount,
+        dailyMax: REWARD.SHARE_DAILY_MAX,
+        total: result.total,
+      });
+    } catch (e) {
+      if (e && e.httpCode) {
+        return res.status(e.httpCode).json({ success: false, error: e.message });
+      }
+      console.error("REWARD SHARE ERROR:", e);
+      return res.status(500).json({ success: false, error: "Server error" });
+    }
+  });
+
 };
 
 function httpErr(code, message) {
