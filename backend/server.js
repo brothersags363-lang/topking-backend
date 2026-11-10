@@ -3494,6 +3494,9 @@ app.post("/admin/add-stars", generalLimiter, verifyUser, requireAdminDoc, async 
   }
 });
 
+// Ek device = ek verified ID + verify ke baad hi agency (alag file: deviceVerifyRules.js)
+require("./deviceVerifyRules")({ app, db, verifyUser, requireAdminDoc, isValidUid });
+
 // ADMIN: kisi user ko Verified tick do / hatao
 // body: { uid, verified: true|false, color: "white" | "yellow" }
 const VERIFIED_COLORS = ["white", "yellow"];
@@ -3773,6 +3776,145 @@ app.post("/device/check", generalLimiter, async (req, res) => {
     return res.json({ success: true, banned: await isDeviceBanned(dh) });
   } catch (e) {
     return res.json({ success: true, banned: false });
+  }
+});
+
+// =====================================================
+// EK MOBILE = EK VERIFIED ID
+// devices/{hash}.verifiedUid -> is mobile par jis ID ne face verify kiya.
+// Jab tak wo ID verified / submitted hai, dusri ID isi mobile par verify nahi ho sakti.
+// (Owner ID banned ho, ya face reject ho jaye, to mobile phir se free ho jata hai.)
+// =====================================================
+const DEVICE_VERIFIED_MSG =
+  "Already verified on another ID. Is mobile par pehle se dusri ID verified hai, ek mobile par sirf ek hi ID verify ho sakti hai.";
+
+function holdsDeviceVerification(ud) {
+  if (!ud || ud.banned === true) return false;
+  return ud.verified === true || ud.faceStatus === "submitted" || ud.faceStatus === "approved";
+}
+
+// Is device par meri ID ke alawa koi aur ID verified hai? Haan to uska uid, warna null.
+// tx diya ho to transaction ke andar padhta hai.
+async function findOtherVerifiedOnDevice(uid, devData, tx) {
+  const ids = new Set();
+  if (devData && typeof devData.verifiedUid === "string") ids.add(devData.verifiedUid);
+  if (devData && Array.isArray(devData.uids)) devData.uids.forEach((u) => ids.add(u));
+  ids.delete(uid);
+  const list = [...ids].filter((u) => isValidUid(u)).slice(0, 300);
+  if (!list.length) return null;
+  const refs = list.map((id) => db.collection("users").doc(id));
+  const snaps = tx ? await tx.getAll(...refs) : await db.getAll(...refs);
+  for (const sn of snaps) {
+    if (sn.exists && holdsDeviceVerification(sn.data())) return sn.id;
+  }
+  return null;
+}
+
+// "Step 1: Verify your face" dabate hi: kya is mobile par dusri ID pehle se verified hai?
+app.post("/device/verified-check", generalLimiter, verifyUser, async (req, res) => {
+  try {
+    const dh = req.deviceHash;
+    if (!dh || (await isAdminUser({ uid: req.user.uid }))) {
+      return res.json({ success: true, blocked: false });
+    }
+    const dSnap = await db.collection("devices").doc(dh).get();
+    const other = await findOtherVerifiedOnDevice(
+      req.user.uid,
+      dSnap.exists ? dSnap.data() : null
+    );
+    if (other) {
+      return res.status(409).json({
+        success: false,
+        code: "DEVICE_ALREADY_VERIFIED",
+        error: DEVICE_VERIFIED_MSG,
+      });
+    }
+    return res.json({ success: true, blocked: false });
+  } catch (e) {
+    console.error("DEVICE VERIFIED CHECK ERROR:", e);
+    // Ye sirf pehli jaanch hai; asli rok /face/submit me hai
+    return res.json({ success: true, blocked: false });
+  }
+});
+
+// Face verification ka result sirf server likhta hai (client seedha faceStatus nahi likhega)
+app.post("/face/submit", generalLimiter, verifyUser, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const dh = req.deviceHash;
+    const staff = await isAdminUser({ uid });
+    const rawId = String(req.headers["x-device-id"] || "");
+    if (!staff && (!dh || !rawId.startsWith("d_"))) {
+      return res.status(400).json({
+        success: false,
+        code: "DEVICE_UNSUPPORTED",
+        error: "Please update the app",
+      });
+    }
+
+    let faceSelfie = req.body && req.body.faceSelfie;
+    faceSelfie =
+      typeof faceSelfie === "string" && /^https:\/\//.test(faceSelfie) && faceSelfie.length <= 1500
+        ? faceSelfie
+        : null;
+
+    const FV = admin.firestore.FieldValue;
+    const uRef = db.collection("users").doc(uid);
+    const dRef = dh ? db.collection("devices").doc(dh) : null;
+
+    await db.runTransaction(async (tx) => {
+      const uSnap = await tx.get(uRef);
+      const dSnap = dRef ? await tx.get(dRef) : null;
+
+      if (dRef && !staff) {
+        const other = await findOtherVerifiedOnDevice(
+          uid,
+          dSnap && dSnap.exists ? dSnap.data() : null,
+          tx
+        );
+        if (other) {
+          const err = new Error(DEVICE_VERIFIED_MSG);
+          err.code = "DEVICE_ALREADY_VERIFIED";
+          throw err;
+        }
+      }
+
+      const prev = uSnap.exists ? uSnap.data().faceStatus : null;
+      tx.set(
+        uRef,
+        {
+          faceStatus: prev === "approved" ? "approved" : "submitted",
+          faceSelfie,
+          faceLiveness: true,
+          faceVerifiedAt: Date.now(),
+        },
+        { merge: true }
+      );
+      if (dRef && !staff) {
+        tx.set(
+          dRef,
+          {
+            verifiedUid: uid,
+            verifiedAt: FV.serverTimestamp(),
+            uids: FV.arrayUnion(uid),
+            lastSeen: FV.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+    });
+
+    return res.json({ success: true });
+  } catch (e) {
+    if (e && e.code === "DEVICE_ALREADY_VERIFIED") {
+      return res.status(409).json({
+        success: false,
+        code: "DEVICE_ALREADY_VERIFIED",
+        error: DEVICE_VERIFIED_MSG,
+      });
+    }
+    console.error("FACE SUBMIT ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
   }
 });
 
