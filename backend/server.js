@@ -3495,7 +3495,16 @@ app.post("/admin/add-stars", generalLimiter, verifyUser, requireAdminDoc, async 
 });
 
 // Ek device = ek verified ID + verify ke baad hi agency (alag file: deviceVerifyRules.js)
-require("./deviceVerifyRules")({ app, db, verifyUser, requireAdminDoc, isValidUid });
+try {
+  require("./deviceVerifyRules")({ app, db, verifyUser, requireAdminDoc, isValidUid });
+} catch (e) {
+  // Sirf "file nahi mili" ko chhodte hain, baaki har error pehle ki tarah crash karega
+  if (e && e.code === "MODULE_NOT_FOUND" && String(e.message).includes("deviceVerifyRules")) {
+    console.warn("WARNING: deviceVerifyRules.js nahi mila, uske rules abhi band hain");
+  } else {
+    throw e;
+  }
+}
 
 // ADMIN: kisi user ko Verified tick do / hatao
 // body: { uid, verified: true|false, color: "white" | "yellow" }
