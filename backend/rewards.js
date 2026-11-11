@@ -6,9 +6,10 @@
 //  isliye app me koi value badal ke fake claim nahi kar sakta.
 //
 //  Reward:
-//    LIVE  : 2 ghanta live + 5 unique users jo SEAT par baith ke (unmute)
-//            kam se kam 10 minute baat kare                -> 300 Stars
-//            Private live ya room LOCK ho to time / seat-time kuch count nahi.
+//    LIVE  : sirf VIDEO LIVE (videolive) me. Kisi bhi 24 ghante ke andar
+//            kul 2 ghanta live (30 min + 30 min + ... judta hai)  -> 150 Stars
+//            Claim ke baad agla reward 24 ghante baad. Voice room / private
+//            live / room LOCK me kuch count nahi.
 //    GIFT  : 6500 Gift Stars (ek din me received)  -> 180 Stars
 //  Din ka reset: IST (Asia/Kolkata) raat 12 baje.
 //
@@ -23,10 +24,9 @@
 // =====================================================================
 
 const REWARD = {
-  LIVE_SECONDS: 2 * 60 * 60, // 2 ghanta
-  LIVE_VIEWERS: 5,           // 5 unique viewers
-  LIVE_MIN_GIFTS: 0,         // pehle 1000 thi; abhi koi gift shart nahi
-  LIVE_STARS: 300,           // upar wala reward
+  LIVE_SECONDS: 2 * 60 * 60, // 2 ghanta (24 ghante ke andar kul)
+  LIVE_WINDOW_MS: 24 * 60 * 60 * 1000, // 24 ghante ki window / claim cooldown
+  LIVE_STARS: 150,           // video live reward
   GIFT_TARGET: 6500,         // 6500 gift stars
   GIFT_STARS: 180,           // niche wala reward
   SHARE_STARS: 1,            // 1 video share = 1 star
@@ -61,6 +61,8 @@ function freshDoc(date) {
     lastReceived: null,
     lastPingAt: 0,
     roomId: "",
+    liveWindowStart: 0,
+    lastLiveClaimAt: 0,
     liveRewardClaimed: false,
     giftRewardClaimed: false,
   };
@@ -92,7 +94,21 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
 
   // Aaj ka doc; purani date ho to naya zero doc (claim-flags bhi reset)
   function normalize(data, today) {
-    if (!data || data.date !== today) return freshDoc(today);
+    if (!data) return freshDoc(today);
+    if (data.date !== today) {
+      // naya din: gift/claim-flags reset, lekin video-live ka 24 ghante wala hisaab chalu rahe
+      const f = freshDoc(today);
+      f.liveSeconds = num(data.liveSeconds);
+      f.liveMinutes = num(data.liveMinutes);
+      f.liveWindowStart = num(data.liveWindowStart);
+      f.lastLiveClaimAt = num(data.lastLiveClaimAt);
+      f.lastPingAt = num(data.lastPingAt);
+      f.roomId = data.roomId || "";
+      f.lastReceived = data.lastReceived === undefined ? null : data.lastReceived;
+      f.lastLiveClaimDate = data.lastLiveClaimDate || "";
+      f.lastGiftClaimDate = data.lastGiftClaimDate || "";
+      return f;
+    }
     return { ...freshDoc(today), ...data };
   }
 
@@ -110,31 +126,6 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
     doc.lastReceived = now;
   }
 
-  // Abhi seat par baithe, unmute, valid users (host nahi). Inhi ka seat-time judta hai.
-  async function getSeatedUids(room, hostUid) {
-    const seats = room.seatsData || {};
-    const cand = [];
-    Object.keys(seats).forEach((k) => {
-      const st = seats[k] || {};
-      const u = st.userId;
-      if (typeof u !== "string" || !u || u === hostUid) return;
-      if (st.isMuted === true) return;      // baat kar raha ho => unmute
-      if (!cand.includes(u)) cand.push(u);
-    });
-    if (!cand.length) return [];
-
-    const refs = cand.slice(0, SEAT_STORE_CAP).map((u) => db.collection("users").doc(u));
-    const users = await db.getAll(...refs);
-    const ok = [];
-    users.forEach((u) => {
-      if (!u.exists) return;
-      const ud = u.data() || {};
-      if (ud.banned === true) return;
-      ok.push(u.id);
-    });
-    return ok;
-  }
-
   // ------------------------------------------------------------------
   // HOST PING - live ka time yahin se judta hai
   // ------------------------------------------------------------------
@@ -144,6 +135,10 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
       const roomId = String((req.body && req.body.roomId) || "");
       if (!roomId || roomId.length > 200 || roomId.includes("/")) {
         return res.status(400).json({ success: false, error: "Invalid room" });
+      }
+      // Live reward sirf video live (videolive) se. Voice room / baaki screens ka time count nahi.
+      if (String((req.body && req.body.source) || "") !== "videolive") {
+        return res.json({ success: true, counted: false });
       }
 
       // room sach me hai aur ye uid uska host hai?
@@ -172,13 +167,9 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
           success: true,
           counted: false,
           liveMinutes: pre.liveMinutes,
-          viewers: pre.viewers,
           dailyGifts: pre.dailyGifts,
         });
       }
-
-      // Transaction se bahar: seat par baithe valid users (reads).
-      const seatedNow = await getSeatedUids(room, uid);
 
       const w = await walletRef(uid).get();
       const receivedNow = w.exists ? num(w.data().receivedStars) : 0;
@@ -193,29 +184,30 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
           return d; // bahut jaldi: ginti me nahi
         }
 
+        // claim ke baad 24 ghante tak naya time nahi judta (cooldown)
+        if (num(d.lastLiveClaimAt) && now - num(d.lastLiveClaimAt) < REWARD.LIVE_WINDOW_MS) {
+          d.lastPingAt = now;
+          d.roomId = roomId;
+          applyGiftDelta(d, receivedNow);
+          tx.set(ref, d);
+          return d;
+        }
+
+        // 24 ghante ki window: pehli live se shuru; poori ho gayi aur claim nahi hua to nayi shuru
+        if (!num(d.liveWindowStart) || now - num(d.liveWindowStart) > REWARD.LIVE_WINDOW_MS) {
+          d.liveWindowStart = now;
+          d.liveSeconds = 0;
+        }
+
         // time: pichle ping se agar gap theek hai to hi judega
         if (num(d.lastPingAt) && gap <= PING_MAX_GAP_MS && d.roomId === roomId) {
           const add = Math.min(PING_MAX_CREDIT_S, Math.floor(gap / 1000));
           d.liveSeconds = num(d.liveSeconds) + add;
-
-          // seat-time: jo user abhi seat par (unmute) hai uska bhi wahi time judta hai
-          const secs = d.seatSecs && typeof d.seatSecs === "object" ? d.seatSecs : {};
-          for (const u of seatedNow) {
-            if (!(u in secs) && Object.keys(secs).length >= SEAT_STORE_CAP) continue;
-            secs[u] = Math.min(num(secs[u]) + add, 24 * 3600);
-          }
-          d.seatSecs = secs;
         }
-        d.liveSeconds = Math.min(num(d.liveSeconds), 24 * 3600);
+        d.liveSeconds = Math.min(num(d.liveSeconds), REWARD.LIVE_SECONDS);
         d.liveMinutes = Math.floor(d.liveSeconds / 60);
         d.lastPingAt = now;
         d.roomId = roomId;
-
-        // "5 user": jinhone seat par kam se kam 10 min baat ki (alag-alag users)
-        d.viewerUids = Object.keys(d.seatSecs || {}).filter(
-          (u) => num(d.seatSecs[u]) >= SEAT_MIN_SECONDS
-        );
-        d.viewers = d.viewerUids.length;
 
         // gifts
         applyGiftDelta(d, receivedNow);
@@ -227,7 +219,6 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
       return res.json({
         success: true,
         liveMinutes: out.liveMinutes,
-        viewers: out.viewers,
         dailyGifts: out.dailyGifts,
       });
     } catch (e) {
@@ -259,7 +250,7 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
         success: true,
         date: out.date,
         liveMinutes: out.liveMinutes,
-        viewers: out.viewers,
+        lastLiveClaimAt: num(out.lastLiveClaimAt),
         dailyGifts: out.dailyGifts,
         liveRewardClaimed: out.liveRewardClaimed === true,
         giftRewardClaimed: out.giftRewardClaimed === true,
@@ -284,6 +275,7 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
       const today = istDate();
       const ref = rewardRef(uid);
       const wRef = walletRef(uid);
+      // live: 24 ghante me ek baar (cooldown doc ke andar), gift: din me ek baar
       const lockRef = db.collection("rewardClaims").doc(`${uid}_${today}_${type}`);
 
       const userSnap = await db.collection("users").doc(uid).get();
@@ -300,24 +292,28 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
           tx.get(wRef),
         ]);
 
-        if (lock.exists) throw httpErr(400, "Aaj ka reward pehle hi le chuke ho");
-
         const d = normalize(snap.data(), today);
+        const nowMs = Date.now();
+        if (type === "gift" && lock.exists) throw httpErr(400, "Aaj ka reward pehle hi le chuke ho");
         applyGiftDelta(d, wSnap.exists ? num(wSnap.data().receivedStars) : 0);
 
         if (type === "live") {
-          if (d.liveRewardClaimed) throw httpErr(400, "Live reward already claimed");
+          if (num(d.lastLiveClaimAt) && nowMs - num(d.lastLiveClaimAt) < REWARD.LIVE_WINDOW_MS) {
+            throw httpErr(400, "Live reward 24 ghante me ek baar milta hai");
+          }
           if (num(d.liveSeconds) < REWARD.LIVE_SECONDS) {
-            throw httpErr(400, "2 ghanta live poora nahi hua");
+            throw httpErr(400, "24 ghante me 2 ghanta live poora nahi hua");
           }
-          if (num(d.viewers) < REWARD.LIVE_VIEWERS) {
-            throw httpErr(400, `${REWARD.LIVE_VIEWERS} unique viewers poore nahi hue`);
-          }
-          if (num(d.dailyGifts) < REWARD.LIVE_MIN_GIFTS) {
-            throw httpErr(400, "Gift target poora nahi hua");
-          }
-          d.liveRewardClaimed = true;
+          d.lastLiveClaimAt = nowMs;
           d.lastLiveClaimDate = today;
+          d.liveRewardClaimed = true;
+          // naya hisaab claim ke 24 ghante baad shuru hoga
+          d.liveSeconds = 0;
+          d.liveMinutes = 0;
+          d.liveWindowStart = 0;
+          // 150 star withdraw wale (Gift Stars) me jayenge: ye gift nahi hai,
+          // isliye gift-target (dailyGifts) me na judein
+          d.lastReceived = num(d.lastReceived) + REWARD.LIVE_STARS;
         } else {
           if (d.giftRewardClaimed) throw httpErr(400, "Gift reward already claimed");
           if (num(d.dailyGifts) < REWARD.GIFT_TARGET) {
@@ -331,15 +327,35 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
         const total = oldStars + stars;
 
         tx.set(ref, d);
-        tx.create(lockRef, {
-          userId: uid,
-          date: today,
-          type,
-          stars,
-          createdAt: FieldValue.serverTimestamp(),
-        });
+        if (type === "gift") {
+          tx.create(lockRef, {
+            userId: uid,
+            date: today,
+            type,
+            stars,
+            createdAt: FieldValue.serverTimestamp(),
+          });
+        } else {
+          tx.set(db.collection("rewardClaims").doc(`${uid}_live_${nowMs}`), {
+            userId: uid,
+            date: today,
+            type,
+            stars,
+            createdAt: FieldValue.serverTimestamp(),
+          });
+        }
 
-        if (wSnap.exists) {
+        if (type === "live") {
+          // video live reward -> withdraw wale stars (receivedStars + earnings), sending stars nahi
+          if (wSnap.exists) {
+            tx.update(wRef, {
+              receivedStars: FieldValue.increment(stars),
+              earnings: FieldValue.increment(stars),
+            });
+          } else {
+            tx.set(wRef, { stars: 0, earnings: stars, receivedStars: stars });
+          }
+        } else if (wSnap.exists) {
           tx.update(wRef, { stars: total });
         } else {
           tx.set(wRef, { stars: total, earnings: 0, receivedStars: 0 });
@@ -349,12 +365,12 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
         tx.set(wRef.collection("purchaseHistory").doc(), {
           stars,
           amount: 0,
-          paymentId: type === "live" ? "REWARD_LIVE" : "REWARD_GIFT",
+          paymentId: type === "live" ? "REWARD_VIDEOLIVE" : "REWARD_GIFT",
           status: "Completed",
           createdAt: FieldValue.serverTimestamp(),
         });
 
-        return { stars, total };
+        return { stars, total: type === "live" ? oldStars : total };
       });
 
       console.log(`REWARD CLAIM: uid=${uid} type=${type} stars=${result.stars}`);

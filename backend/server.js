@@ -3846,6 +3846,9 @@ app.post("/device/verified-check", generalLimiter, verifyUser, async (req, res) 
   }
 });
 
+// Naye user ko face verify par 35 sending stars (ek user / ek mobile par sirf ek baar)
+const FACE_REWARD_STARS = 35;
+
 // Face verification ka result sirf server likhta hai (client seedha faceStatus nahi likhega)
 app.post("/face/submit", generalLimiter, verifyUser, async (req, res) => {
   try {
@@ -3871,9 +3874,14 @@ app.post("/face/submit", generalLimiter, verifyUser, async (req, res) => {
     const uRef = db.collection("users").doc(uid);
     const dRef = dh ? db.collection("devices").doc(dh) : null;
 
+    const wRef = db.collection("wallets").doc(uid);
+    let rewardStars = 0;
+
     await db.runTransaction(async (tx) => {
+      rewardStars = 0;
       const uSnap = await tx.get(uRef);
       const dSnap = dRef ? await tx.get(dRef) : null;
+      const wSnap = await tx.get(wRef);
 
       if (dRef && !staff) {
         const other = await findOtherVerifiedOnDevice(
@@ -3888,7 +3896,18 @@ app.post("/face/submit", generalLimiter, verifyUser, async (req, res) => {
         }
       }
 
-      const prev = uSnap.exists ? uSnap.data().faceStatus : null;
+      const uData = uSnap.exists ? uSnap.data() || {} : {};
+      const dData = dSnap && dSnap.exists ? dSnap.data() || {} : {};
+      const prev = uData.faceStatus || null;
+
+      // 35 stars: sirf pehli baar, aur us mobile par pehle kisi ID ko mila na ho
+      const giveReward =
+        !staff &&
+        uSnap.exists &&
+        uData.banned !== true &&
+        uData.faceRewardGiven !== true &&
+        !dData.faceRewardUid;
+
       tx.set(
         uRef,
         {
@@ -3896,9 +3915,27 @@ app.post("/face/submit", generalLimiter, verifyUser, async (req, res) => {
           faceSelfie,
           faceLiveness: true,
           faceVerifiedAt: Date.now(),
+          ...(giveReward ? { faceRewardGiven: true } : {}),
         },
         { merge: true }
       );
+
+      if (giveReward) {
+        rewardStars = FACE_REWARD_STARS;
+        const oldStars = wSnap.exists ? Number(wSnap.data().stars) || 0 : 0;
+        if (wSnap.exists) {
+          tx.update(wRef, { stars: oldStars + rewardStars });
+        } else {
+          tx.set(wRef, { stars: rewardStars, earnings: 0, receivedStars: 0 });
+        }
+        tx.set(wRef.collection("purchaseHistory").doc(), {
+          stars: rewardStars,
+          amount: 0,
+          paymentId: "REWARD_FACE",
+          status: "Completed",
+          createdAt: FV.serverTimestamp(),
+        });
+      }
       if (dRef && !staff) {
         tx.set(
           dRef,
@@ -3907,13 +3944,14 @@ app.post("/face/submit", generalLimiter, verifyUser, async (req, res) => {
             verifiedAt: FV.serverTimestamp(),
             uids: FV.arrayUnion(uid),
             lastSeen: FV.serverTimestamp(),
+            ...(rewardStars > 0 ? { faceRewardUid: uid } : {}),
           },
           { merge: true }
         );
       }
     });
 
-    return res.json({ success: true });
+    return res.json({ success: true, rewardStars });
   } catch (e) {
     if (e && e.code === "DEVICE_ALREADY_VERIFIED") {
       return res.status(409).json({
