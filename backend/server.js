@@ -3551,6 +3551,56 @@ app.post("/admin/set-verified", generalLimiter, verifyUser, requireAdminDoc, asy
 });
 
 // =====================================================
+// ADMIN: LIVE ACCESS (admin jise chahe Live de / chheen le)
+// users/{uid}.liveAccess:
+//   "granted" => verify / agency / device rule ke bina bhi Live kar sakta hai
+//   "revoked" => verified + agency hone par bhi Live NAHI
+//   (field nahi) => auto: verified + agency wala purana rule
+// body: { uid, mode: "grant" | "revoke" | "clear" }
+// =====================================================
+app.post("/admin/set-live-access", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const uid = String((req.body && req.body.uid) || "");
+    const mode = String((req.body && req.body.mode) || "");
+
+    if (!isValidUid(uid)) {
+      return res.status(400).json({ success: false, error: "Invalid user" });
+    }
+    if (!["grant", "revoke", "clear"].includes(mode)) {
+      return res.status(400).json({ success: false, error: "Invalid mode" });
+    }
+
+    const userRef = db.collection("users").doc(uid);
+    const userSnap = await userRef.get();
+    if (!userSnap.exists) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+
+    const FV = admin.firestore.FieldValue;
+    const liveAccess = mode === "grant" ? "granted" : mode === "revoke" ? "revoked" : null;
+
+    await userRef.update(
+      liveAccess
+        ? { liveAccess, liveAccessBy: req.user.uid, liveAccessAt: FV.serverTimestamp() }
+        : { liveAccess: FV.delete(), liveAccessBy: FV.delete(), liveAccessAt: FV.delete() }
+    );
+
+    await db.collection("liveAccessGrants").add({
+      userId: uid,
+      username: userSnap.data().username || "",
+      liveAccess,
+      adminId: req.user.uid,
+      createdAt: FV.serverTimestamp(),
+    });
+
+    return res.json({ success: true, liveAccess });
+  } catch (e) {
+    console.error("SET LIVE ACCESS ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// =====================================================
 // ADMIN: VIDEO / USER DELETE + BAN / UNBAN
 // =====================================================
 
