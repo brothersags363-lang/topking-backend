@@ -6,8 +6,7 @@
 //  isliye app me koi value badal ke fake claim nahi kar sakta.
 //
 //  Reward:
-//    LIVE  : 2 ghanta live + 5 unique users jo SEAT par baith ke (unmute)
-//            kam se kam 10 minute baat kare                -> 300 Stars
+//    LIVE  : sirf 2 ghanta live (unique viewers ki shart nahi)  -> 300 Stars
 //            Private live ya room LOCK ho to time / seat-time kuch count nahi.
 //    GIFT  : 6500 Gift Stars (ek din me received)  -> 180 Stars
 //  Din ka reset: IST (Asia/Kolkata) raat 12 baje.
@@ -24,7 +23,7 @@
 
 const REWARD = {
   LIVE_SECONDS: 2 * 60 * 60, // 2 ghanta
-  LIVE_VIEWERS: 5,           // 5 unique viewers
+  LIVE_VIEWERS: 0,           // unique viewers ki shart hata di (use nahi hota)
   LIVE_MIN_GIFTS: 0,         // pehle 1000 thi; abhi koi gift shart nahi
   LIVE_STARS: 300,           // upar wala reward
   GIFT_TARGET: 6500,         // 6500 gift stars
@@ -310,9 +309,7 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
           if (num(d.liveSeconds) < REWARD.LIVE_SECONDS) {
             throw httpErr(400, "2 ghanta live poora nahi hua");
           }
-          if (num(d.viewers) < REWARD.LIVE_VIEWERS) {
-            throw httpErr(400, `${REWARD.LIVE_VIEWERS} unique viewers poore nahi hue`);
-          }
+          // unique viewers ki shart hata di gayi: ab sirf 2 ghanta live chahiye
           if (num(d.dailyGifts) < REWARD.LIVE_MIN_GIFTS) {
             throw httpErr(400, "Gift target poora nahi hua");
           }
