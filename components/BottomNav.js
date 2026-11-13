@@ -7,7 +7,8 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter, usePathname } from 'expo-router';
+import { usePathname } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 import { auth } from "../app/firebaseConfig";
 
 const ACTIVE = '#3498db';

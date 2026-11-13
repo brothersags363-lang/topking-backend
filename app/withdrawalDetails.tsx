@@ -9,15 +9,25 @@ import {
   Alert,
   ScrollView,
 } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { doc, getDoc } from "firebase/firestore";
-import { getApp } from "firebase/app";
-import { getFunctions, httpsCallable } from "firebase/functions";
 
-import { db } from "./firebaseConfig";
+import { auth, db } from "./firebaseConfig";
 
-const functions = getFunctions(getApp(), "asia-south1");
-const adminUpdateWithdrawal = httpsCallable(functions, "adminUpdateWithdrawal");
+const BACKEND = "https://topking-backend.onrender.com";
+
+async function adminUpdateWithdrawal({ withdrawId, status }: { withdrawId: string; status: string }) {
+  const token = await auth.currentUser?.getIdToken();
+  const res = await fetch(`${BACKEND}/admin/withdrawal-status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ withdrawId, status }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json.success) throw new Error(json.error || "Try again");
+  return json;
+}
 
 const statusColor = (s: string) =>
   s === "Success" ? "#00ff66" : s === "Failed" ? "#ff3b30" : "#FFD700";
@@ -58,8 +68,8 @@ export default function WithdrawalDetails() {
     Alert.alert(
       "Confirm",
       status === "Success"
-        ? `₹${data.amount} ${data.method === "BANK" ? "bank account" : "UPI"} me bhej diya? Payment Success karna hai?`
-        : "Payment Failed karna hai? User ke stars wapas ho jayenge.",
+        ? `₹${data.amount} ${data.method === "BANK" ? "bank account" : "UPI"} me bhej diya?\nSuccess dabane par user ke ${data.giftStars} Gift Stars (${data.tk} TK) kat jayenge.`
+        : "Payment Failed karna hai? User ke stars nahi katenge.",
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -67,8 +77,13 @@ export default function WithdrawalDetails() {
           onPress: async () => {
             setBusy(true);
             try {
-              await adminUpdateWithdrawal({ withdrawId: data.id, status });
-              Alert.alert("Done", `Withdrawal ${status}`);
+              const r: any = await adminUpdateWithdrawal({ withdrawId: data.id, status });
+              Alert.alert(
+                "Done",
+                status === "Success"
+                  ? `Withdrawal Success. User ke ${r.starsDeducted} Gift Stars kat gaye.`
+                  : "Withdrawal Failed. User ke stars nahi kate."
+              );
               router.back();
             } catch (e: any) {
               Alert.alert("Error", e?.message || "Try again");
@@ -123,7 +138,7 @@ export default function WithdrawalDetails() {
         <Row label="Agency" value={data.agencyName || "No Agency"} />
         <Row label="Method" value={data.method === "BANK" ? "Bank Account" : "UPI"} />
         <Row label="Account Holder" value={data.accountName} />
-        <Row label="Mobile" value={data.mobile} />
+        <Row label="Mobile" value={data.mobileNumber || data.mobile} />
 
         {data.method === "BANK" ? (
           <>
@@ -136,7 +151,7 @@ export default function WithdrawalDetails() {
 
         <Row label="Amount to Pay" value={`₹ ${data.amount}`} />
         <Row label="Withdrawal TK" value={`${data.tk} TK`} />
-        <Row label="Gift Stars (already held)" value={`⭐ ${data.giftStars}`} />
+        <Row label="Gift Stars (Success par katenge)" value={`⭐ ${data.giftStars}`} />
 
         <Text style={styles.label}>Status</Text>
         <Text style={{ color: statusColor(status), fontSize: 18, fontWeight: "bold", marginTop: 5 }}>

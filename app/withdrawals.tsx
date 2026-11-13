@@ -8,7 +8,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { collection, query, orderBy, onSnapshot } from "firebase/firestore";
 import { Ionicons } from "@expo/vector-icons";
 

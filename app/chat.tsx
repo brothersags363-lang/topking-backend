@@ -54,7 +54,8 @@ import {
 } from "firebase/storage";
 
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 
 import { auth, db } from "./firebaseConfig";
 import { callApi } from "../utils/api";

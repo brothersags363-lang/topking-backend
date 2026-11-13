@@ -18,6 +18,7 @@ import {
   ActivityIndicator,
   BackHandler,
 } from 'react-native';
+import { scopedBackHandler } from '../utils/scopedBack';
 
 import { Ionicons } from '@expo/vector-icons';
 import { Image as ExpoImage } from 'expo-image';
@@ -36,17 +37,14 @@ import {
 
 import { db } from './firebaseConfig';
 import { callApi } from '../utils/api';
+import { showStarToast } from '../utils/starToast';
 
 import {
   getAuth
 } from 'firebase/auth';
 
-import {
-  useLocalSearchParams,
-  useRouter,
-  useNavigation,
-  useFocusEffect,
-} from 'expo-router';
+import { useLocalSearchParams, useNavigation, useFocusEffect } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 import UserTick from "../components/UserTick";
 
 const { width } = Dimensions.get('window');
@@ -114,7 +112,7 @@ export default function ShareVideo() {
   // useFocusEffect: handler sirf tab active rahega jab ye screen upar ho.
   useFocusEffect(
     useCallback(() => {
-      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      const sub = scopedBackHandler('/ShareVideo', 'hardwareBackPress', () => {
         goToIndex();
         return true; // default back (app exit) rok do
       });
@@ -355,7 +353,25 @@ export default function ShareVideo() {
         })
       );
 
-      Alert.alert("Success", "Video Sent");
+      // Share reward: 1 video = 1 star, din me max 3 (server decide karta hai).
+      // Message index par dikhega, yahan Alert nahi.
+      let awarded = null;
+      if (type !== "live" && videoId) {
+        try {
+          const r = await callApi("/reward/share", { videoId });
+          if (r && r.awarded) awarded = r.stars;
+        } catch (e) {
+          console.log("SHARE REWARD ERROR =", e && e.status, e && e.message);
+        }
+      }
+
+      if (awarded) {
+        // index khulne ke baad dikhao (transition ke beech me nahi)
+        setTimeout(() => showStarToast(`${awarded} star received`), 400);
+      } else {
+        // star nahi mila (daily limit / same video) -> sirf normal confirmation
+        Alert.alert("Success", "Video Sent");
+      }
 
       goToIndex();
 

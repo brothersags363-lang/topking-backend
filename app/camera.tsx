@@ -17,6 +17,7 @@ import {
   PanResponder,
   Animated,
 } from 'react-native';
+import { scopedBackHandler } from '../utils/scopedBack';
 
 import {
   SafeAreaView,
@@ -34,10 +35,8 @@ import {
   useMicrophonePermissions,
 } from 'expo-camera';
 
-import {
-  useRouter,
-  useLocalSearchParams,
-} from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 import { useIsFocused } from '@react-navigation/native';
 
 import {
@@ -51,6 +50,7 @@ import {
 } from 'firebase/auth';
 
 import { db } from './firebaseConfig';
+import { callApi } from '../utils/api';
 import FilterOverlay from '../components/FilterOverlay';
 import FilterStrip from '../components/FilterStrip';
 
@@ -666,7 +666,7 @@ export default function CameraPage() {
 
 
     const subscription =
-      BackHandler.addEventListener(
+      scopedBackHandler('/camera', 
         'hardwareBackPress',
         backAction
       );
@@ -697,20 +697,45 @@ export default function CameraPage() {
 
         const data = userSnap.exists() ? userSnap.data() : null;
 
-        // Live sirf inko: purane agency members (liveGranted), agency owner (agencyApproved),
-        // ya jinko tick mila (verified). Naya agency join karne se live NAHI milta -
-        // white tick milne ke baad hi live aayega.
-        const allowed =
+        // Live sirf inko: verified (admin tick YA chehra verify) + agency me add (member / owner).
+        // Verify ke bina live NAHI. Agency se nikalne par live apne aap band.
+        const isVerifiedUser =
           !!data &&
-          (data.liveGranted === true ||
-            data.agencyApproved === true ||
-            data.verified === true);
+          (data.verified === true ||
+            data.faceVerified === true ||
+            data.faceStatus === 'submitted' ||
+            data.faceStatus === 'approved');
+        const inAgency =
+          !!data &&
+          ((typeof data.agencyId === 'string' && data.agencyId.length > 0) ||
+            data.agencyApproved === true);
+        // ADMIN OVERRIDE (adminLiveAccess screen): admin ne "granted" diya to
+        // verify / agency / device rule ke bina Live; "revoked" diya to Live nahi.
+        const adminGranted = !!data && data.liveAccess === 'granted';
+        const adminRevoked = !!data && data.liveAccess === 'revoked';
+
+        const allowed = adminRevoked
+          ? false
+          : adminGranted
+            ? true
+            : isVerifiedUser && inAgency;
 
         // Cache save: agli baar camera turant sahi bar dikhayega
         liveAccessCache = { uid, allowed };
 
         if (isMounted) {
           setCanGoLive(allowed);
+        }
+
+        // Ek mobile par ek hi verified ID: background me server se check (button rukta nahi).
+        // Admin ne jise Live diya hai uspar ye device rule lagu nahi hota.
+        if (allowed && !adminGranted) {
+          callApi('/device/verified-check', {}).catch((e: any) => {
+            if (e && e.code === 'DEVICE_ALREADY_VERIFIED') {
+              liveAccessCache = { uid, allowed: false };
+              if (isMounted) setCanGoLive(false);
+            }
+          });
         }
 
       } catch (error) {

@@ -9,7 +9,7 @@ import {
   Image,
   StyleSheet,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { collection, onSnapshot } from "firebase/firestore";
 import { Ionicons } from "@expo/vector-icons";
 import { db } from "./firebaseConfig";

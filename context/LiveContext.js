@@ -2,6 +2,7 @@ import React, {
   createContext,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -13,7 +14,7 @@ import {
   deleteDoc,
 } from "firebase/firestore";
 
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 
 
 // =====================================================
@@ -823,54 +824,52 @@ export function LiveProvider({ children }) {
   // CONTEXT VALUE
   // ===================================================
 
-  const value = {
-
-    // Live state
-    activeLive,
-
-    isMiniPlayerVisible,
-
-    liveDuration,
-
-    isLiveMuted,
-
-
-    // Agora
-    agoraEngineRef,
-
-    agoraUidRef,
-
-    isAgoraJoinedRef,
-
-
-    // Live control
+  // SPEED: value ko memoize kiya taaki jab tak live ka state na badle,
+  // useLive() wale sab components (mini player, live screens) re-render na hon.
+  // Functions upar closures hain (state padhte hain) -> stale na hon isliye
+  // fnsRef me hamesha latest rakhte hain aur bahar stable wrapper dete hain.
+  const fnsRef = useRef({});
+  fnsRef.current = {
     startLive,
-
     updateLiveInfo,
-
     minimizeLive,
-
     openLive,
-
     closeLive,
-
     endLive,
-
     switchLive,
-
-
-    // Agora control
     registerAgoraEngine,
-
     setAgoraEngine,
-
     unregisterAgoraEngine,
-
     stopAgora,
-
     toggleLiveMute,
-
   };
+
+  const stableFns = useMemo(() => {
+    const out = {};
+    Object.keys(fnsRef.current).forEach((k) => {
+      out[k] = (...args) => fnsRef.current[k](...args);
+    });
+    return out;
+  }, []);
+
+  const value = useMemo(
+    () => ({
+      // Live state
+      activeLive,
+      isMiniPlayerVisible,
+      liveDuration,
+      isLiveMuted,
+
+      // Agora (refs - stable)
+      agoraEngineRef,
+      agoraUidRef,
+      isAgoraJoinedRef,
+
+      // Live control + Agora control (stable wrappers)
+      ...stableFns,
+    }),
+    [activeLive, isMiniPlayerVisible, liveDuration, isLiveMuted, stableFns]
+  );
 
 
   return (

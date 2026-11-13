@@ -12,8 +12,9 @@ import {
   BackHandler,
   Modal,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 import { Image as ExpoImage } from "expo-image";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { callApi } from "../utils/api";
 import useIsAdmin from "./useIsAdmin";
 import { ADMIN_FRAMES, ADMIN_FRAME_KEYS } from "../components/adminFrames";
@@ -61,7 +62,7 @@ export default function AdminFrames() {
   const reqId = useRef(0);
 
   useEffect(() => {
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+    const sub = scopedBackHandler('/adminFrames', "hardwareBackPress", () => {
       if (picked) {
         setPicked(null);
         return true;

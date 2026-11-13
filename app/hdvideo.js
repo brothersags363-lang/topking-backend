@@ -10,10 +10,11 @@ import {
   Alert,
   BackHandler,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 
 const VIDEO_QUALITIES = [
   {
@@ -83,7 +84,7 @@ useEffect(() => {
 
 
   const subscription =
-    BackHandler.addEventListener(
+    scopedBackHandler('/hdvideo', 
       "hardwareBackPress",
       onBackPress
     );

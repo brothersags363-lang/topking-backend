@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   BackHandler,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 
 import { LinearGradient } from "expo-linear-gradient";
 
@@ -28,7 +29,7 @@ import {
   getDoc,
   serverTimestamp,
 } from "firebase/firestore";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { db, auth } from "./firebaseConfig";
 import { callApi } from "../utils/api";
 
@@ -41,6 +42,8 @@ const router = useRouter();
 const [loading, setLoading] = useState(true);
 
 const [liveMinutes, setLiveMinutes] = useState(0);
+const [lastLiveClaimAt, setLastLiveClaimAt] = useState(0);
+const [liveWindowStart, setLiveWindowStart] = useState(0);
 
 const [viewers, setViewers] = useState(0);
 
@@ -65,7 +68,7 @@ useEffect(() => {
     return true;
   };
 
-  const subscription = BackHandler.addEventListener(
+  const subscription = scopedBackHandler('/reward', 
     "hardwareBackPress",
     handleBackPress
   );
@@ -76,9 +79,11 @@ useEffect(() => {
 
 }, [router]);
 
-const liveCompleted = liveMinutes >= 120;
-
-const viewerCompleted = viewers >= 5;
+const DAY_MS = 24*60*60*1000;
+const claimedWithin24h = !!lastLiveClaimAt && (Date.now() - lastLiveClaimAt) < DAY_MS;
+const windowExpired = !!liveWindowStart && !claimedWithin24h && (Date.now() - liveWindowStart) > DAY_MS;
+const liveMinutesShown = (claimedWithin24h || windowExpired) ? 0 : liveMinutes;
+const liveCompleted = liveMinutesShown >= 120;
 
 const giftCompleted = dailyGifts >= 6500;
 
@@ -105,8 +110,7 @@ const checkDailyReset = async()=>{};
 
 const canClaimLiveReward =
 liveCompleted &&
-viewerCompleted &&
-!liveRewardClaimed;
+!claimedWithin24h;
 
 
 // 6500 gift reward
@@ -154,6 +158,14 @@ setDailyGifts(
 data.dailyGifts || 0
 );
 
+setLastLiveClaimAt(
+data.lastLiveClaimAt || 0
+);
+
+setLiveWindowStart(
+data.liveWindowStart || 0
+);
+
 setLiveRewardClaimed(
 data.liveRewardClaimed || false
 );
@@ -192,11 +204,11 @@ try{
 
 const today = todayDate();
 
-if(lastLiveClaimDate === today){
+if(claimedWithin24h){
 
 Alert.alert(
 "Already Claimed",
-"Live Reward can be claimed only once a day"
+"Live Reward can be claimed only once in 24 hours"
 );
 
 return;
@@ -211,7 +223,7 @@ const res = await callApi("/reward/claim",{ type:"live" });
 
 Alert.alert(
 "Congratulations 🎉",
-`${res.stars} Stars Added Successfully`
+`${res.stars} Stars withdraw balance me add ho gaye`
 );
 
 }catch(error){
@@ -350,7 +362,7 @@ style={[
 styles.progressFill,
 {
 width:`${Math.min(
-(liveMinutes/120)*100,
+(liveMinutesShown/120)*100,
 100
 )}%`
 }
@@ -361,7 +373,7 @@ width:`${Math.min(
 
 <Text style={styles.progressText}>
 
-{Math.min(liveMinutes,120)} / 120 Minutes
+{Math.min(liveMinutesShown,120)} / 120 Minutes
 
 </Text>
 
@@ -372,62 +384,7 @@ liveCompleted
 ?
 "✅ Completed"
 :
-`${Math.max(0,120-liveMinutes)} Minutes Left`
-}
-
-</Text>
-
-</View>
-
-
-{/* VIEWERS */}
-
-<View style={styles.card}>
-
-<View style={styles.row}>
-
-<Ionicons
-name="people"
-size={28}
-color="#00D2FF"
-/>
-
-<Text style={styles.cardTitle}>
-5 Unique Viewers
-</Text>
-
-</View>
-
-<View style={styles.progressBg}>
-
-<View
-style={[
-styles.progressFill,
-{
-width:`${Math.min(
-(viewers/5)*100,
-100
-)}%`
-}
-]}
-/>
-
-</View>
-
-<Text style={styles.progressText}>
-
-{Math.min(viewers,5)} / 5 Viewers
-
-</Text>
-
-<Text style={styles.status}>
-
-{
-viewerCompleted
-?
-"✅ Completed"
-:
-`${Math.max(0,5-viewers)} More Needed`
+`${Math.max(0,120-liveMinutesShown)} Minutes Left`
 }
 
 </Text>
@@ -506,12 +463,12 @@ style={styles.rewardCard}
 
 
 <Text style={styles.rewardSmall}>
-Complete 2 Hours Live + 5 Unique Viewers
+Complete 2 Hours Video Live within 24 hours
 </Text>
 
 
 <Text style={styles.rewardValue}>
-⭐ 300 Stars
+⭐ 150 Stars
 </Text>
 
 
@@ -560,15 +517,15 @@ backgroundColor:"#444"
 
 {
 
-liveRewardClaimed
+claimedWithin24h
 
 ?
 
-"Live + Viewer Reward Claimed ✅"
+"Live Reward Claimed ✅ (next after 24h)"
 
 :
 
-"Claim 2H + 5 Viewers Reward (300 Stars)"
+"Claim 2H Video Live Reward (150 Stars)"
 
 }
 

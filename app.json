@@ -30,6 +30,33 @@
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.POST_NOTIFICATIONS"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "topking-short.vercel.app",
+              "pathPrefix": "/live"
+            },
+            {
+              "scheme": "https",
+              "host": "topking-short.vercel.app",
+              "pathPrefix": "/video"
+            },
+            {
+              "scheme": "https",
+              "host": "topking-short.vercel.app",
+              "pathPrefix": "/profile"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
       ]
     },
     "web": {

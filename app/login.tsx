@@ -9,7 +9,7 @@ import {
   statusCodes,
 } from '@react-native-google-signin/google-signin';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRouter } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 import {
   GoogleAuthProvider,
   PhoneAuthProvider,
@@ -82,6 +82,11 @@ const createUniqueUsername = async (seed: string) => {
 const routeAfterLogin = async (router: any, uid: string) => {
   try {
     const snap = await getDoc(doc(db, 'users', uid));
+    // Naya user: username khud dalna zaroori hai -> jab tak na dale profile nahi khulegi
+    if (snap.exists() && snap.data()?.usernameSet === false) {
+      router.replace({ pathname: '/editProfile', params: { force: '1' } });
+      return;
+    }
     if (snap.exists() && snap.data()?.profileSetupDone === false) {
       router.replace('/setupProfile');
       return;
@@ -213,6 +218,7 @@ export default function LoginScreen() {
           category: 'Video Creator',
           gender: 'Male',
           profileSetupDone: false, // naya user -> pehle name + photo setup
+          usernameSet: false, // naya user -> username khud add karna zaroori (Edit Profile)
         },
         { merge: true }
       );

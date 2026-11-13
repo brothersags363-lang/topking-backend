@@ -1,5 +1,25 @@
 export const gifts = [
 
+
+{
+id:"diwali_diya",
+name:"Shubh Diya",
+price:49,
+duration:4000,
+icon: require("./gifts/thumb/diwali_diya.png"),
+animation: "img:diwali_diya",
+},
+
+
+{
+id:"diwali",
+name:"Happy Diwali",
+price:699,
+duration:5000,
+icon: require("./gifts/thumb/diwali.png"),
+animation: "img:diwali",
+},
+
 {
 id:"proposeme",
 name:"Will You Be Mine",

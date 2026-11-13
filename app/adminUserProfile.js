@@ -10,7 +10,8 @@ import {
   TouchableOpacity,
   Alert,
 } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { collection, doc, onSnapshot, query, where } from "firebase/firestore";
 import { db } from "./firebaseConfig";
 import useIsAdmin from "./useIsAdmin";

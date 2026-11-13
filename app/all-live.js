@@ -18,13 +18,16 @@ import {
   TouchableOpacity,
   View
 } from 'react-native';
+import { scopedBackHandler } from '../utils/scopedBack';
 
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useNavigation, useRouter } from 'expo-router';
+import { useNavigation } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
+import { listenRecentRooms } from '../utils/recentRooms';
 import useSwipeTabs from '../utils/useSwipeTabs';
 
-import BottomNav from "../components/BottomNav";
+import AppBottomNav from "../components/AppBottomNav";
 
 let db;
 
@@ -612,7 +615,7 @@ export default function AllLive() {
       return true;
     };
 
-    const sub = BackHandler.addEventListener('hardwareBackPress', handleBackButton);
+    const sub = scopedBackHandler('/all-live', 'hardwareBackPress', handleBackButton);
     return () => sub.remove();
   }, [router]);
 
@@ -726,7 +729,8 @@ export default function AllLive() {
     if (!focused) return; // LiveRoom khula hai -> listener band, CPU free
 
     let unsubscribe = () => {};
-    let firstSnap = true;
+    streamMapRef.current = new Map();
+    heartbeatMapRef.current = {};
 
     // Map me ek room daalo; purana object reuse (taaki card re-render na ho)
     const upsert = (map, id, stream) => {
@@ -741,35 +745,16 @@ export default function AllLive() {
     };
 
     try {
-      unsubscribe = onSnapshot(
-        collection(db, 'rooms'),
-        (snapshot) => {
+      // SPEED: sirf pichhle 24 ghante ke rooms (do query), diff-based updates pehle jaise.
+      const firstByKey = { num: true, ts: true };
+      unsubscribe = listenRecentRooms(
+        db,
+        (snapshot, key) => {
           const now = Date.now();
+          const map = streamMapRef.current;
           let changed = false;
 
-          if (firstSnap) {
-            // Pehla snapshot: poori list naye sire se (reuse ke saath)
-            firstSnap = false;
-            const next = new Map();
-            const hb = {};
-            snapshot.forEach((docItem) => {
-              if (!docItem.exists()) return;
-              const raw = docItem.data();
-              const s = parseRoom(docItem.id, raw, now);
-              if (!s) return;
-              hb[docItem.id] = getHeartbeatMs(raw);
-              if (upsert(next, docItem.id, s)) changed = true;
-            });
-            if (next.size !== streamMapRef.current.size) changed = true;
-            streamMapRef.current = next;
-            heartbeatMapRef.current = hb;
-            flushNow(); // pehli baar turant dikhao
-            setLoading(false);
-            return;
-          }
-
-          // Baad ke snapshots: sirf badle hue docs
-          const map = streamMapRef.current;
+          // Pehla snapshot bhi docChanges me sab 'added' aata hai -> alag branch ki zarurat nahi
           snapshot.docChanges().forEach((change) => {
             const id = change.doc.id;
             if (change.type === 'removed') {
@@ -793,13 +778,17 @@ export default function AllLive() {
             }
           });
 
+          if (firstByKey[key]) {
+            firstByKey[key] = false;
+            flushNow(); // pehli baar turant dikhao
+            setLoading(false);
+            return;
+          }
           // Heartbeat-only snapshot => changed=false => koi re-render nahi
           if (changed) scheduleFlush();
         },
         (error) => {
           __DEV__ && console.log('Firebase Sync Error:', error);
-          streamMapRef.current = new Map();
-          setLiveStreams([]);
           setLoading(false);
         }
       );
@@ -983,7 +972,7 @@ export default function AllLive() {
           removeClippedSubviews={false}
         />
 
-        <BottomNav />
+        <AppBottomNav />
       </SafeAreaView>
     </FocusContext.Provider>
   );

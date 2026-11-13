@@ -5,7 +5,8 @@ import {
   TouchableOpacity, KeyboardAvoidingView, Platform, 
   ActivityIndicator, Image, Keyboard
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 import { Ionicons } from '@expo/vector-icons';
 
 // FIREBASE IMPORTS

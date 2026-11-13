@@ -11,9 +11,10 @@ import {
   ActivityIndicator,
   SafeAreaView,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 import { Ionicons } from "@expo/vector-icons";
 import { Image as ExpoImage } from "expo-image";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { doc, getDoc } from "firebase/firestore";
 
 import { auth, db } from "./firebaseConfig";
@@ -106,7 +107,7 @@ export default function FramesEntries() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+    const sub = scopedBackHandler('/framesEntries', "hardwareBackPress", () => {
       router.back();
       return true;
     });

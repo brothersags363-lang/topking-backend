@@ -2,7 +2,7 @@ import useBackStep from '../utils/useBackStep';
 import React, { useState } from "react";
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { Ionicons } from "@expo/vector-icons";
 import { doc, getDoc, getDocs, collection, query, where } from "firebase/firestore";
 import { auth, db } from "./firebaseConfig";

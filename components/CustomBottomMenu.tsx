@@ -9,10 +9,8 @@ Platform,
 
 import { Ionicons } from '@expo/vector-icons';
 
-import {
-useRouter,
-usePathname,
-} from 'expo-router';
+import { usePathname } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 
 export default function CustomBottomMenu() {
 

@@ -9,6 +9,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 
 import {
   doc,
@@ -21,7 +22,8 @@ import { auth, db } from "./firebaseConfig";
 
 import { Ionicons } from "@expo/vector-icons";
 import { Image as ExpoImage } from "expo-image";
-import { useRouter, useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import UserTick from "../components/UserTick";
 import { AvatarFrame } from "../components/FramedAvatar";
 
@@ -152,7 +154,7 @@ export default function TopGifters() {
       return false;
     };
 
-    const subscription = BackHandler.addEventListener(
+    const subscription = scopedBackHandler('/TopGifters', 
       "hardwareBackPress",
       onBackPress
     );

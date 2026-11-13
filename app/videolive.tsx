@@ -55,8 +55,10 @@ import {
   Switch,
   TouchableWithoutFeedback,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 
-import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
+import { useLocalSearchParams, useFocusEffect } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import * as ScreenCapture from "expo-screen-capture";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -66,6 +68,7 @@ import LottieView from "lottie-react-native";
 import { WebView } from "react-native-webview";
 import { gifts } from "../assets/giftsData";
 import { giftHtml } from "../assets/giftWeb";
+import GiftImage, { isImgGift } from "../components/GiftImage";
 import { callApi } from "../utils/api";
 import { useLiveBanGuard } from "../utils/liveBan";
 import { useBlockedIds } from '../utils/useBlockedIds';
@@ -99,6 +102,7 @@ import {
   RtcSurfaceView,
 } from "react-native-agora";
 import UserTick from '../components/UserTick';
+import { LinearGradient } from "expo-linear-gradient";
 
 // Firebase safety check (same pattern as LiveRoom.js / all-live.js)
 let db: any = null;
@@ -134,8 +138,8 @@ const JOIN_ANIM_VARIANT = "auto";
 const HEARTBEAT_INTERVAL = 8000;
 
 // PK settings
-const PK_DURATION_SEC = 180; // 3 minutes
-const PK_RESULT_SHOW_MS = 9000; // winner banner stays this long, then PK is cleared
+const PK_DURATION_SEC = 300; // 5 minutes
+const PK_RESULT_SHOW_MS = 6000; // PK ke baad 10 sec ruka rahe (loser punishment chalta hai), phir PK clear
 const PK_INVITE_TTL = 30000; // invite expires after 30s
 const PK_UID_OFFSET = 1000000; // uid used when we peek into the opponent's channel
 // PK friend list:
@@ -152,9 +156,9 @@ const PK_FRIEND_LIMIT = 40; // PK sheet me max itne friends
 // Phone thanda rahe aur aur smooth chahiye to frameRate 20 try karo.
 const VIDEO_PROFILE = {
   dimensions: { width: 540, height: 960 },
-  frameRate: 15,
-  bitrate: 800,
-  minBitrate: 250,
+  frameRate: 20, // SMOOTH FIX: 15 -> 20 fps (motion ~33% smoother, heat thodi hi badhti hai). Aur smooth chahiye to 24.
+  bitrate: 950,
+  minBitrate: 300,
   orientationMode: 2, // fixed portrait
   degradationPreference: 1, // weak network → resolution pehle girta hai, motion smooth rehta hai
 };
@@ -169,7 +173,7 @@ const VIDEO_PROFILE_LOW = {
 };
 
 // PK length choices the host can pick before inviting (seconds)
-const PK_DURATIONS = [180, 300, 600];
+const PK_DURATIONS = [300]; // fixed 5 minutes
 
 // ---- Guest seats: viewers who join the host's video call (tiles on the right) ----
 const MAX_GUESTS = 3; // seats at the same time (tiles stack on the right side)
@@ -186,9 +190,13 @@ const GUEST_VIDEO_PROFILE = {
 };
 const GUEST_TILE_W = Math.round(Math.min(width * 0.27, 116));
 const GUEST_TILE_H = Math.round(GUEST_TILE_W * 1.3);
+const pkPanelHFixed = Math.round(Math.min((width / 2) * 1.547, height * 0.36)); // PK panel height (Tiki ratio 1.547)
+const PK_BAR_H = 16; // score bar height (Tiki)
+const PK_TIPS =
+  "Great performance and active interaction with the audience will help you win the PK battle!      •      Send gifts to support your host and win the PK!      •      ";
 
 // Weekly-host goal shown in the header pill + live-ended screen
-const WEEKLY_TARGET_MIN = 30;
+const WEEKLY_TARGET_MIN = 120; // 2 ghanta = 150 stars (24 ghante ke andar kul)
 // Random Match gives up after this many seconds
 const MATCH_TIMEOUT_SEC = 90;
 const WELCOME_TEXT =
@@ -258,8 +266,11 @@ liveFilters().forEach((lf: any) => {
 // Where the "Recharge / Buy stars" button sends the user. Change to your real route.
 const RECHARGE_ROUTE = "/recharge";
 
-// Gift quantity choices in the gift sheet
-const GIFT_QTY = [1, 10, 66, 99];
+// HEAT FIX (LiveRoom jaisa): gift WebView (canvas) me pixel ratio 1.5 par cap.
+const GIFT_WEB_PRE_JS = "try{var __r=window.devicePixelRatio||1;Object.defineProperty(window,'devicePixelRatio',{get:function(){return Math.min(__r,1.5)}})}catch(e){}true;";
+const GIFT_GOLD = "#F5C451";
+// Normal (non-PK) mode me gift animation kitna UPAR ho (px). Zyada upar chahiye to number badhao.
+const GIFT_NORMAL_UP = 120;
 
 // ---- Compact gift sheet pieces (same look as LiveRoom.js) ----
 const GIFTS_PER_PAGE = 8; // 4 columns x 2 rows
@@ -272,18 +283,18 @@ const GIFT_PAGES: any[] = (() => {
   return pages;
 })();
 
-const GiftCard = memo(({ item, qty, onSend }: any) => (
-  <TouchableOpacity style={styles.giftCard} activeOpacity={0.7} onPress={() => onSend(item)}>
+const GiftCard = memo(({ item, onSend }: any) => (
+  <TouchableOpacity style={styles.giftCard} activeOpacity={0.6} delayPressIn={0} onPress={() => onSend(item)}>
     <Image source={item.icon} style={{ width: 42, height: 42 }} resizeMode="contain" fadeDuration={0} />
     <Text style={styles.giftName} numberOfLines={1}>{item.name}</Text>
-    <Text style={styles.giftCoin}>{Number(item.price || 0) * qty}</Text>
+    <Text style={styles.giftCoin}>{item.price}</Text>
   </TouchableOpacity>
 ));
 
-const GiftPage = memo(({ page, qty, onSend }: any) => (
+const GiftPage = memo(({ page, onSend }: any) => (
   <View style={{ width: GIFT_PAGE_W, flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-start" }}>
     {page.items.map((item: any) => (
-      <GiftCard key={item.id} item={item} qty={qty} onSend={onSend} />
+      <GiftCard key={item.id} item={item} onSend={onSend} />
     ))}
   </View>
 ));
@@ -530,9 +541,183 @@ const ProgressRing = ({ pct, size = 78, stroke = 7, color = "#FFD700", track = "
   );
 };
 
-// Full-screen gift animation (Lottie or WebView) — same as LiveRoom.js.
-// `playKey` changes on every new gift so the same gift twice restarts.
-const GiftOverlay = memo(({ activeGift, playKey, onFinish }: any) => {
+// ============================================================
+// Tiki-style gift banner row: magenta pill (avatar + name + "Sent"), bada gift icon
+// pill ke kinare par overlap, aur bada italic "x1". Har naye tap par x count pop karta hai.
+// ============================================================
+const ComboRow = memo(({ data }: any) => {
+  const tx = useRef(new Animated.Value(-140)).current;
+  const pop = useRef(new Animated.Value(1)).current;
+  const mounted = useRef(false);
+  const gd = gifts.find((g: any) => String(g.id) === String(data.giftId));
+
+  useEffect(() => {
+    if (!mounted.current) {
+      mounted.current = true;
+      Animated.spring(tx, { toValue: 0, speed: 12, bounciness: 7, useNativeDriver: true }).start();
+      return;
+    }
+    pop.setValue(1.6);
+    Animated.spring(pop, { toValue: 1, speed: 28, bounciness: 12, useNativeDriver: true }).start();
+  }, [data.seq]);
+
+  return (
+    <Animated.View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        marginBottom: 8,
+        transform: [{ translateX: tx }],
+      }}
+    >
+      <LinearGradient
+        colors={["#E83CA6", "#C2289F", "rgba(150,40,170,0.78)"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 0 }}
+        style={{
+          width: width * 0.58,
+          height: 58,
+          borderRadius: 29,
+          flexDirection: "row",
+          alignItems: "center",
+          paddingLeft: 4,
+          paddingRight: 40,
+        }}
+      >
+        <Image
+          source={{ uri: data.senderImg || STABLE_AVATAR }}
+          style={{
+            width: 50,
+            height: 50,
+            borderRadius: 25,
+            borderWidth: 2,
+            borderColor: "rgba(255,255,255,0.9)",
+            backgroundColor: "#2a2b38",
+          }}
+        />
+        <View style={{ marginLeft: 8, flexShrink: 1 }}>
+          <Text numberOfLines={1} style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>
+            {data.senderName}
+          </Text>
+          <Text numberOfLines={1} style={{ color: "rgba(255,255,255,0.92)", fontSize: 13, marginTop: 1 }}>
+            Sent
+          </Text>
+        </View>
+      </LinearGradient>
+
+      {gd?.icon ? (
+        <Image
+          source={gd.icon}
+          style={{ width: 64, height: 64, resizeMode: "contain", marginLeft: -44 }}
+        />
+      ) : (
+        <View style={{ width: 20 }} />
+      )}
+
+      <Animated.Text
+        style={{
+          color: "#fff",
+          fontSize: 38,
+          fontWeight: "900",
+          fontStyle: "italic",
+          marginLeft: 8,
+          textShadowColor: "rgba(0,0,0,0.55)",
+          textShadowOffset: { width: 1, height: 2 },
+          textShadowRadius: 3,
+          transform: [{ scale: pop }],
+        }}
+      >
+        x{data.count || 1}
+      </Animated.Text>
+    </Animated.View>
+  );
+});
+
+// ============================================================
+// GiftLayer (LiveRoom.js ka SAME): full-screen gift animation + "X send @Y x3" banner.
+// Saari gift state (activeGift, combo, timers, banner animation) is component ke ANDAR hai,
+// VideoLive sirf ref.current.play / playDeferred / showCombo bulata hai -> gift se poori
+// screen re-render nahi hoti.
+// ============================================================
+const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, animTop, animSize }: any, ref: any) {
+  const [activeGift, setActiveGift] = useState<any>(null);
+  const [activeMeta, setActiveMeta] = useState<any>(null); // kisne bheja (animation ke upar dikhta hai)
+  const [playKey, setPlayKey] = useState(0);
+  // Tiki: max 2 banners ek saath (alag-alag senders), har sender ka apna x1, x2, x3...
+  const [combos, setCombos] = useState<any[]>([]);
+  const comboSeqRef = useRef(0);
+
+  const giftTimerRef = useRef<any>(null);
+  const comboTimersRef = useRef<any>({});
+  const deferTimerRef = useRef<any>(null);
+
+  // 3D (web:) gift: timer WebView load hone (onLoadEnd) par shuru hota hai
+  const WEB_LOAD_GRACE = 9000;
+  const durationRef = useRef(5000);
+
+  const armHideTimer = (ms: number) => {
+    if (giftTimerRef.current) clearTimeout(giftTimerRef.current);
+    giftTimerRef.current = setTimeout(() => {
+      giftTimerRef.current = null;
+      setActiveGift(null);
+      setActiveMeta(null);
+    }, ms);
+  };
+
+  const doPlay = (animation: any, duration?: number, meta?: any) => {
+    if (!animation) return;
+    durationRef.current = duration || 5000;
+    setActiveGift(animation);
+    setActiveMeta(meta || null);
+    setPlayKey((k) => k + 1);
+    const isWeb = typeof animation === "string" && animation.startsWith("web:");
+    armHideTimer(isWeb ? WEB_LOAD_GRACE + durationRef.current : durationRef.current);
+  };
+
+  const onWebGiftLoaded = () => {
+    armHideTimer(durationRef.current);
+  };
+
+  useImperativeHandle(ref, () => ({
+    play: doPlay,
+    // Real-live behaviour: jab tak gift tap hote rahein, full-screen animation nahi chalti
+    // (sirf combo banner x1, x2, x3...). Tap ruke -> SIRF last gift ki animation chalti hai.
+    playDeferred(animation: any, duration?: number, delay = 600, meta?: any) {
+      if (!animation) return;
+      if (deferTimerRef.current) clearTimeout(deferTimerRef.current);
+      deferTimerRef.current = setTimeout(() => {
+        deferTimerRef.current = null;
+        doPlay(animation, duration, meta);
+      }, delay);
+    },
+    showCombo(data: any, onEnd?: () => void, ms = 2200) {
+      const key = String(data?.senderName || "user");
+      comboSeqRef.current += 1;
+      const entry = { key, data: { ...data, seq: comboSeqRef.current } };
+      setCombos((prev) => {
+        const i = prev.findIndex((c) => c.key === key);
+        if (i >= 0) {
+          const n = prev.slice();
+          n[i] = entry; // wahi jagah par update -> x count pop
+          return n;
+        }
+        return [...prev, entry].slice(-2);
+      });
+      if (comboTimersRef.current[key]) clearTimeout(comboTimersRef.current[key]);
+      comboTimersRef.current[key] = setTimeout(() => {
+        delete comboTimersRef.current[key];
+        setCombos((prev) => prev.filter((c) => c.key !== key));
+        if (onEnd) onEnd();
+      }, ms);
+    },
+  }), []);
+
+  useEffect(() => () => {
+    if (giftTimerRef.current) clearTimeout(giftTimerRef.current);
+    Object.values(comboTimersRef.current).forEach((t: any) => clearTimeout(t));
+    if (deferTimerRef.current) clearTimeout(deferTimerRef.current);
+  }, []);
+
   const webSource = React.useMemo(
     () =>
       typeof activeGift === "string" && activeGift.startsWith("web:")
@@ -541,56 +726,155 @@ const GiftOverlay = memo(({ activeGift, playKey, onFinish }: any) => {
     [activeGift]
   );
 
-  if (!activeGift) return null;
-
   return (
-    <View
-      pointerEvents="none"
-      style={{
-        position: "absolute",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        justifyContent: "center",
-        alignItems: "center",
-        zIndex: 99999,
-        elevation: 99999,
-      }}
-    >
-      {webSource ? (
-        <WebView
-          key={playKey}
-          source={webSource}
-          originWhitelist={["*"]}
-          javaScriptEnabled
-          domStorageEnabled={false}
-          cacheEnabled
-          overScrollMode="never"
-          style={{ width: width, height: width * 1.3, backgroundColor: "transparent" }}
-          containerStyle={{ backgroundColor: "transparent" }}
-          androidLayerType="hardware"
-          scrollEnabled={false}
+    <>
+      {activeGift ? (
+        <View
           pointerEvents="none"
-        />
-      ) : (
-        <LottieView
-          key={playKey}
-          source={activeGift}
-          autoPlay
-          loop={false}
-          speed={2}
-          hardwareAccelerationAndroid={true}
-          renderMode="HARDWARE"
-          cacheComposition={true}
-          resizeMode="contain"
-          onAnimationFinish={(cancelled: boolean) => {
-            if (!cancelled) onFinish && onFinish();
+          style={{
+            position: "absolute",
+            // PK mode: chhota gift, banner ke NICHE (animTop). Normal mode: full-screen center.
+            ...(animTop != null
+              ? { top: animTop, left: 0, right: 0, height: animSize || 200 }
+              : { top: -GIFT_NORMAL_UP, left: 0, right: 0, bottom: GIFT_NORMAL_UP }),
+            justifyContent: "center",
+            alignItems: "center",
+            zIndex: 99999,
+            elevation: 99999,
           }}
-          style={{ width: 350, height: 350, backgroundColor: "transparent" }}
-        />
-      )}
-    </View>
+        >
+          <View
+            style={
+              animTop != null
+                ? {
+                    width: 350,
+                    height: 350,
+                    justifyContent: "center",
+                    alignItems: "center",
+                    transform: [{ scale: (animSize || 200) / 350 }],
+                  }
+                : { justifyContent: "center", alignItems: "center" }
+            }
+          >
+          {webSource ? (
+            <WebView
+              key={playKey}
+              source={webSource}
+              originWhitelist={["*"]}
+              javaScriptEnabled
+              domStorageEnabled={false}
+              cacheEnabled
+              overScrollMode="never"
+              style={animTop != null ? { width: 350, height: 350, backgroundColor: "transparent" } : { width: width, height: width * 1.3, backgroundColor: "transparent" }}
+              containerStyle={{ backgroundColor: "transparent" }}
+              androidLayerType="hardware"
+              scrollEnabled={false}
+              pointerEvents="none"
+              injectedJavaScriptBeforeContentLoaded={GIFT_WEB_PRE_JS}
+              onLoadEnd={onWebGiftLoaded}
+            />
+          ) : isImgGift(activeGift) ? (
+            <GiftImage key={playKey} name={activeGift.slice(4)} />
+          ) : (
+            <LottieView
+              key={playKey}
+              source={activeGift}
+              autoPlay
+              loop={false}
+              speed={1}
+              hardwareAccelerationAndroid={true}
+              renderMode="HARDWARE"
+              cacheComposition={true}
+              resizeMode="contain"
+              style={{ width: 350, height: 350, backgroundColor: "transparent" }}
+            />
+          )}
+          </View>
+        </View>
+      ) : null}
+
+      {activeGift && activeMeta && activeMeta.senderName ? (
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            top: height * 0.17,
+            alignSelf: "center",
+            left: 0,
+            right: 0,
+            alignItems: "center",
+            zIndex: 100000,
+            elevation: 100000,
+          }}
+        >
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              paddingVertical: 5,
+              paddingLeft: 5,
+              paddingRight: 14,
+              borderRadius: 24,
+              backgroundColor: "rgba(0,0,0,0.6)",
+              borderWidth: 1,
+              borderColor: "rgba(255,105,180,0.85)",
+              maxWidth: width * 0.9,
+            }}
+          >
+            <Image
+              source={{ uri: activeMeta.senderImg || STABLE_AVATAR }}
+              style={{ width: 30, height: 30, borderRadius: 15, marginRight: 8, backgroundColor: "#2a2b38" }}
+            />
+            <Text numberOfLines={1} style={{ color: "#fff", fontSize: 13, flexShrink: 1 }}>
+              <Text style={{ fontWeight: "bold" }}>{activeMeta.senderName}</Text>
+              {" "}sent{" "}
+              {activeMeta.giftName ? <Text style={{ color: "#FFE600", fontWeight: "bold" }}>{activeMeta.giftName}</Text> : "a gift"}
+              {activeMeta.receiverName ? <Text>{" "}to <Text style={{ color: "#FFE600", fontWeight: "bold" }}>@{activeMeta.receiverName}</Text></Text> : null}
+            </Text>
+          </View>
+        </View>
+      ) : null}
+
+      {combos.length > 0 ? (
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            top: comboTop != null ? comboTop : height * 0.25,
+            left: 10,
+            zIndex: 99998,
+            elevation: 99998,
+          }}
+        >
+          {combos.map((c: any) => (
+            <ComboRow key={c.key} data={c.data} />
+          ))}
+        </View>
+      ) : null}
+    </>
+  );
+}));
+
+// Pending (abhi write na hue) gift kharcha: chhota store + chhota component (LiveRoom jaisa).
+const giftPendingStore: any = {
+  v: 0,
+  subs: new Set<any>(),
+  set(n: number) {
+    giftPendingStore.v = n;
+    giftPendingStore.subs.forEach((f: any) => f(n));
+  },
+};
+const GiftBalance = memo(({ stars }: any) => {
+  const [pending, setPending] = useState<number>(giftPendingStore.v);
+  useEffect(() => {
+    setPending(giftPendingStore.v);
+    giftPendingStore.subs.add(setPending);
+    return () => { giftPendingStore.subs.delete(setPending); };
+  }, []);
+  return (
+    <Text style={{ color: GIFT_GOLD, fontSize: 15, fontWeight: "bold", marginLeft: 4 }}>
+      {Math.max(0, stars - pending)}
+    </Text>
   );
 });
 
@@ -667,14 +951,14 @@ const HeartsLayer = memo(
   })
 );
 
-// One chat row: join / gift / normal message (same three types as LiveRoom.js).
+// One chat row: join / gift / normal message (same three types as LiveRoom.js) — Tiki pill style.
 const ChatItem = memo(({ chat, onUser }: any) => {
   const theme = getLevelTheme(chat.level || 1);
   const openUser = () =>
     onUser &&
-    chat.senderId &&
+    (chat.senderId || chat.uid) &&
     onUser({
-      uid: chat.senderId,
+      uid: chat.senderId || chat.uid,
       name: chat.senderName,
       username: chat.username,
       img: chat.userImg,
@@ -685,22 +969,12 @@ const ChatItem = memo(({ chat, onUser }: any) => {
 
   if (chat.type === "join") {
     return (
-      <View style={styles.sysRow}>
-        <TouchableOpacity activeOpacity={0.8} onPress={openUser}>
-          <Image source={{ uri: chat.userImg || STABLE_AVATAR }} style={styles.sysAva} />
-          {(chat.level >= 10 || chat.special || !!chat.senderId) && (
-            <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated style={styles.sysFrame} />
-          )}
-        </TouchableOpacity>
-        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", marginLeft: 6 }}>
-          <Text style={styles.sysText}>{chat.senderName}</Text>
+      <View style={styles.tkRow}>
+        <TouchableOpacity activeOpacity={0.8} onPress={openUser} style={styles.tkPill}>
+          <Text style={styles.tkTxt}>{chat.senderName}</Text>
           <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={15} />
-          <View style={[styles.levelBadge, { marginLeft: 5, backgroundColor: theme.bg, borderColor: theme.border }]}>
-            <MaterialCommunityIcons name="diamond-stone" size={8} color={theme.icon} />
-            <Text style={[styles.levelText, { color: theme.text, fontSize: 8 }]}>LV {chat.level || 1}</Text>
-          </View>
-          <Text style={[styles.sysText, { marginLeft: 5 }]}>joined</Text>
-        </View>
+          <Text style={styles.tkTxt}> has joined</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -708,62 +982,55 @@ const ChatItem = memo(({ chat, onUser }: any) => {
   if (chat.type === "gift") {
     const gd = gifts.find((g: any) => String(g.id) === String(chat.giftId));
     return (
-      <View style={[styles.sysRow, { flexWrap: "wrap" }]}>
-        <TouchableOpacity activeOpacity={0.8} onPress={openUser}>
-          <Image source={{ uri: chat.userImg || STABLE_AVATAR }} style={styles.sysAva} />
+      <View style={styles.tkRow}>
+        <TouchableOpacity activeOpacity={0.8} onPress={openUser} style={styles.tkPill}>
+          <Ionicons name="megaphone" size={14} color="#fff" style={{ marginRight: 6 }} />
+          <Text style={styles.tkTxt}>{chat.senderName}</Text>
+          <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={15} />
+          <Text style={styles.tkTxt}> sent {chat.qty || 1} </Text>
+          {gd?.icon ? (
+            <Image source={gd.icon} style={{ width: 22, height: 22, resizeMode: "contain" }} />
+          ) : (
+            <Text style={styles.tkGiftName}>{chat.giftName}</Text>
+          )}
+          <Text style={styles.tkTxt}> to {chat.receiverName ? chat.receiverName : "the host"}</Text>
         </TouchableOpacity>
-        <Text style={[styles.sysText, { marginLeft: 6 }]}>{chat.senderName}</Text>
-        <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={15} />
-        <Text style={[styles.sysText, { marginLeft: 5 }]}>sent</Text>
-        {gd?.icon ? (
-          <Image source={gd.icon} style={{ width: 24, height: 24, resizeMode: "contain", marginHorizontal: 4 }} />
-        ) : (
-          <Text style={{ color: "#00FFFF", fontWeight: "bold", marginHorizontal: 4 }}>{chat.giftName}</Text>
-        )}
-        {chat.qty > 1 && (
-          <Text style={{ color: "#FFE600", fontWeight: "bold", marginRight: 4 }}>x{chat.qty}</Text>
-        )}
-        <Text style={styles.sysText}>to </Text>
-        <Text style={{ color: "#FFE600", fontSize: 13, fontWeight: "bold" }}>@{chat.receiverName}</Text>
       </View>
     );
   }
 
   return (
-    <View style={styles.chatRow}>
-      <TouchableOpacity
-        activeOpacity={0.8}
-        onPress={openUser}
-        style={{ width: 38, height: 38, justifyContent: "center", alignItems: "center" }}
-      >
-        <Image source={{ uri: chat.userImg || STABLE_AVATAR }} style={styles.chatAva} />
-        {(chat.level >= 10 || chat.special || !!chat.senderId) && (
-          <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated style={styles.chatFrame} />
-        )}
-      </TouchableOpacity>
-      <View style={styles.chatContent}>
-        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap" }}>
-          <Text style={styles.chatUser}>{chat.senderName}</Text>
-          <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={14} />
-          <View style={[styles.levelBadge, { backgroundColor: theme.bg, borderColor: theme.border }]}>
-            <MaterialCommunityIcons name="diamond-stone" size={9} color={theme.icon} />
-            <Text style={[styles.levelText, { color: theme.text, fontSize: 8 }]}>LV {chat.level || 1}</Text>
+    <View style={styles.tkRow}>
+      <TouchableOpacity activeOpacity={0.85} onPress={openUser} style={[styles.tkPill, { flexWrap: "nowrap", alignItems: "flex-start" }]}>
+        <View style={{ flexShrink: 1 }}>
+          {/* line 1: [HOST/MOD]  name  tick  level  (same order as LiveRoom) */}
+          <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap" }}>
             {chat.role === "host" && (
-              <View style={[styles.roleTag, { backgroundColor: "#F71084" }]}>
+              <View style={[styles.roleTag, { backgroundColor: "#F71084", marginLeft: 0, marginRight: 5 }]}>
                 <Text style={styles.roleTagTxt}>HOST</Text>
               </View>
             )}
             {chat.role === "mod" && (
-              <View style={[styles.roleTag, { backgroundColor: "#2D9CFF" }]}>
+              <View style={[styles.roleTag, { backgroundColor: "#2D9CFF", marginLeft: 0, marginRight: 5 }]}>
                 <Text style={styles.roleTagTxt}>MOD</Text>
               </View>
             )}
+            <Text style={styles.tkName}>{chat.senderName}</Text>
+            <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={14} />
+            <View
+              style={[
+                styles.levelBadge,
+                { marginLeft: 6, marginRight: 0, paddingHorizontal: 6, paddingVertical: 1, backgroundColor: theme.bg, borderColor: theme.border },
+              ]}
+            >
+              <MaterialCommunityIcons name="diamond-stone" size={8} color={theme.icon} />
+              <Text style={[styles.levelText, { color: theme.text, fontSize: 8 }]}>LV {chat.level || 1}</Text>
+            </View>
           </View>
+          {/* line 2: message */}
+          <Text style={styles.tkTxt}>{chat.message}</Text>
         </View>
-        <View style={styles.bubble}>
-          <Text style={styles.chatMsg}>{chat.message}</Text>
-        </View>
-      </View>
+      </TouchableOpacity>
     </View>
   );
 }, (prev: any, next: any) => prev.chat.id === next.chat.id && prev.onUser === next.onUser);
@@ -780,60 +1047,10 @@ const ToolBtn = ({ icon, label, onPress, active, badge }: any) => (
   </TouchableOpacity>
 );
 
-// ---------- PK winner banner ----------
-// Shown after a PK ends: the host who received the most gifts (highest score).
-// Native-driver animations only (scale / opacity / translate) → stays smooth.
-const PkWinnerBanner = memo(({ result, winner, score }: any) => {
-  const scale = useRef(new Animated.Value(0.4)).current;
-  const opacity = useRef(new Animated.Value(0)).current;
-  const crownY = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    Animated.parallel([
-      Animated.spring(scale, { toValue: 1, friction: 5, tension: 90, useNativeDriver: true }),
-      Animated.timing(opacity, { toValue: 1, duration: 250, useNativeDriver: true }),
-    ]).start();
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(crownY, { toValue: -6, duration: 500, useNativeDriver: true }),
-        Animated.timing(crownY, { toValue: 0, duration: 500, useNativeDriver: true }),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
-  }, []);
-
-  const isDraw = result === "draw";
-
-  return (
-    <View pointerEvents="none" style={styles.pkWinnerWrap}>
-      <Animated.View style={[styles.pkWinnerCard, { opacity, transform: [{ scale }] }]}>
-        {isDraw ? (
-          <>
-            <Text style={styles.pkWinnerDraw}>🤝 DRAW</Text>
-            <Text style={styles.pkWinnerSub}>Both hosts got {score} stars</Text>
-          </>
-        ) : (
-          <>
-            <Animated.Text style={[styles.pkWinnerCrown, { transform: [{ translateY: crownY }] }]}>👑</Animated.Text>
-            <Image source={{ uri: winner?.img || STABLE_AVATAR }} style={styles.pkWinnerAva} />
-            <Text style={styles.pkWinnerTitle}>WINNER</Text>
-            <Text numberOfLines={1} style={styles.pkWinnerName}>
-              {winner?.name || "Host"}
-            </Text>
-            <Text style={styles.pkWinnerSub}>⭐ {score} stars received</Text>
-          </>
-        )}
-      </Animated.View>
-    </View>
-  );
-});
-
-
 // ---------- PK countdown pill ----------
 // Own state → only this tiny pill re-renders every tick (not the whole screen).
 // Last 10 seconds: turns red and pulses, like every real PK.
-const PkTimerPill = memo(({ endAt }: { endAt: number }) => {
+const PkTimerPill = memo(({ endAt, result }: { endAt: number; result?: boolean }) => {
   const calc = () => Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
   const [left, setLeft] = useState(calc);
   const pulse = useRef(new Animated.Value(1)).current;
@@ -845,7 +1062,7 @@ const PkTimerPill = memo(({ endAt }: { endAt: number }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [endAt]);
 
-  const urgent = left > 0 && left <= 10;
+  const urgent = !result && left > 0 && left <= 10;
   useEffect(() => {
     if (!urgent) {
       pulse.setValue(1);
@@ -866,76 +1083,1115 @@ const PkTimerPill = memo(({ endAt }: { endAt: number }) => {
       pointerEvents="none"
       style={[styles.pkTimerPill, urgent && { backgroundColor: "rgba(220,38,38,0.95)" }, { transform: [{ scale: pulse }] }]}
     >
-      <Text style={styles.pkTimerPk}>PK</Text>
+      {!result && (
+        <Text style={styles.pkTimerPk}>
+          <Text style={{ color: "#35C8FF" }}>P</Text>
+          <Text style={{ color: "#FF3D9A" }}>K</Text>
+        </Text>
+      )}
       <Text style={styles.pkTimerTxt}>{fmtClock(left)}</Text>
     </Animated.View>
   );
 });
 
-// ---------- PK "VS" intro splash (first ~2.5s of a battle) ----------
-const PkVsIntro = memo(({ leftName, leftImg, rightName, rightImg }: any) => {
-  const [show, setShow] = useState(true);
-  const lx = useRef(new Animated.Value(-width / 2)).current;
-  const rx = useRef(new Animated.Value(width / 2)).current;
-  const vs = useRef(new Animated.Value(0)).current;
+// ---------- Tiki-style PK parts ----------
+// Centre graphic: blue glove  ⚡  pink glove with a small "PK" plate (pulses softly).
+const PkGlovesVs = memo(({ startAt }: { startAt?: number }) => {
+  const beat = useRef(new Animated.Value(0)).current;
+  const enter = useRef(new Animated.Value(0)).current; // pop-in
   const fade = useRef(new Animated.Value(1)).current;
-
+  const [show, setShow] = useState(true);
   useEffect(() => {
-    Animated.sequence([
-      Animated.parallel([
-        Animated.spring(lx, { toValue: 0, friction: 7, tension: 70, useNativeDriver: true }),
-        Animated.spring(rx, { toValue: 0, friction: 7, tension: 70, useNativeDriver: true }),
-        Animated.sequence([
-          Animated.delay(250),
-          Animated.spring(vs, { toValue: 1, friction: 4, tension: 120, useNativeDriver: true }),
-        ]),
-      ]),
-      Animated.delay(1100),
-      Animated.timing(fade, { toValue: 0, duration: 350, useNativeDriver: true }),
-    ]).start(() => setShow(false));
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(beat, { toValue: 1, duration: 420, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+        Animated.timing(beat, { toValue: 0, duration: 420, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    Animated.spring(enter, { toValue: 1, friction: 5, tension: 90, useNativeDriver: true }).start();
+    // visible ~3s from the PK start (late joiners only see the remainder), then fade away
+    const left = Math.max(0, 3000 - (Date.now() - (startAt || Date.now())));
+    const t = setTimeout(() => {
+      Animated.timing(fade, { toValue: 0, duration: 350, useNativeDriver: true }).start(() => setShow(false));
+    }, left);
+    return () => {
+      loop.stop();
+      clearTimeout(t);
+    };
   }, []);
-
   if (!show) return null;
-
+  const sc = beat.interpolate({ inputRange: [0, 1], outputRange: [1, 1.07] });
+  const pop = enter.interpolate({ inputRange: [0, 1], outputRange: [0.3, 1] });
   return (
-    <Animated.View pointerEvents="none" style={[styles.pkIntroWrap, { opacity: fade }]}>
-      <Animated.View style={[styles.pkIntroSide, { transform: [{ translateX: lx }] }]}>
-        <Image source={{ uri: leftImg || STABLE_AVATAR }} style={[styles.pkIntroAva, { borderColor: "#1E90FF" }]} />
-        <Text numberOfLines={1} style={styles.pkIntroName}>
-          {leftName}
+    <Animated.View pointerEvents="none" style={[styles.pkVsStage, { opacity: fade, transform: [{ scale: Animated.multiply(sc, pop) }] }]}>
+      <Ionicons name="flash" size={104} color="rgba(255,225,60,0.95)" style={styles.pkVsBolt} />
+      <MaterialCommunityIcons
+        name="boxing-glove"
+        size={54}
+        color="#2F8CFF"
+        style={[styles.pkGlove, { left: 0, transform: [{ scaleX: -1 }] }]}
+      />
+      <MaterialCommunityIcons name="boxing-glove" size={54} color="#FF2D75" style={[styles.pkGlove, { right: 0 }]} />
+      <View style={styles.pkVsPlate}>
+        <Text style={styles.pkVsPlateTxt}>
+          <Text style={{ color: "#2F8CFF" }}>P</Text>
+          <Text style={{ color: "#FF2D75" }}>K</Text>
         </Text>
-      </Animated.View>
-
-      <Animated.View style={[styles.pkIntroVs, { transform: [{ scale: vs }] }]}>
-        <Text style={styles.pkIntroVsTxt}>VS</Text>
-      </Animated.View>
-
-      <Animated.View style={[styles.pkIntroSide, { transform: [{ translateX: rx }] }]}>
-        <Image source={{ uri: rightImg || STABLE_AVATAR }} style={[styles.pkIntroAva, { borderColor: "#FF2D95" }]} />
-        <Text numberOfLines={1} style={styles.pkIntroName}>
-          {rightName}
-        </Text>
-      </Animated.View>
+      </View>
     </Animated.View>
   );
 });
 
-// ---------- PK top-3 supporters of one side ----------
-const PkSupporters = memo(({ gifters, side }: any) => {
+// Big result on each panel after the PK ends (Tiki style): winner = crown + gold WIN + confetti, loser = LOSE.
+const CONFETTI_COLORS = ["#FFD700", "#FF3D9A", "#35C8FF", "#7CFF6B", "#FF8A00", "#B388FF"];
+const PkConfetti = memo(() => {
+  const N = 14;
+  const vals = useRef(Array.from({ length: N }, () => new Animated.Value(0))).current;
+  useEffect(() => {
+    const loops = vals.map((v, i) => {
+      const l = Animated.loop(
+        Animated.sequence([
+          Animated.delay((i % 7) * 260),
+          Animated.timing(v, { toValue: 1, duration: 1800 + (i % 4) * 300, easing: Easing.linear, useNativeDriver: true }),
+          Animated.timing(v, { toValue: 0, duration: 0, useNativeDriver: true }),
+        ])
+      );
+      l.start();
+      return l;
+    });
+    return () => loops.forEach((l) => l.stop());
+  }, []);
+  const pw = width / 2;
+  return (
+    <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      {vals.map((v, i) => (
+        <Animated.View
+          key={i}
+          style={{
+            position: "absolute",
+            top: -12,
+            left: ((i * 37) % 100) / 100 * (pw - 8),
+            width: 6,
+            height: 10,
+            borderRadius: 1.5,
+            backgroundColor: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+            opacity: v.interpolate({ inputRange: [0, 0.1, 0.85, 1], outputRange: [0, 1, 1, 0] }),
+            transform: [
+              { translateY: v.interpolate({ inputRange: [0, 1], outputRange: [0, pkPanelHFixed + 20] }) },
+              { rotate: v.interpolate({ inputRange: [0, 1], outputRange: ["0deg", `${360 + i * 40}deg`] }) },
+            ],
+          }}
+        />
+      ))}
+    </View>
+  );
+});
+
+// Tiki trophy (copied from the real screenshots).
+// WIN : blue-purple dotted ring, pink disc, gold cup with star, gold ribbon with swallow-tails + pink gems, gold sparkle.
+// LOSE: everything pale silver-blue, same shape, small cloud on the top-right.
+// DRAW: blue version.
+const TrophyBadge = memo(({ kind, size = 84 }: { kind: "win" | "lose" | "draw"; size?: number }) => {
+  const win = kind === "win";
+  const draw = kind === "draw";
+  const ring = win ? ["#6F6BFF", "#8B5CF6"] : draw ? ["#5EA8FF", "#9B7BFF"] : ["#C4CAE6", "#A3ABD0"];
+  const disc = win ? ["#FF9DB0", "#EE5F7E"] : draw ? ["#9CC8FF", "#5E9BFF"] : ["#B3BAD9", "#9AA3C8"];
+  const cup = win ? "#FFC928" : draw ? "#F2F7FF" : "#EEF1FA";
+  const starCol = win ? "#FFE98A" : "#D5DBEF";
+  const ribbon = win ? ["#FFDD55", "#F5A81C"] : draw ? ["#9FD0FF", "#4F8DFF"] : ["#D2DBF3", "#B3BFE3"];
+  const tail = win ? "#E8920F" : draw ? "#3E78E6" : "#98A5CF";
+  const label = win ? "WIN" : draw ? "DRAW" : "LOSE";
+  const W = size * 1.3;
+  const innerSz = size * 0.8;
+  const rh = size * 0.27; // ribbon height
+  const dots = Array.from({ length: 12 }, (_, i) => i);
+  return (
+    <View style={{ width: W, alignItems: "center" }}>
+      {/* ring + disc + cup */}
+      <LinearGradient
+        colors={ring}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={{ width: size, height: size, borderRadius: size / 2, justifyContent: "center", alignItems: "center" }}
+      >
+        {dots.map((i) => {
+          const ang = (i / dots.length) * Math.PI * 2;
+          const r = size * 0.45;
+          return (
+            <View
+              key={i}
+              style={{
+                position: "absolute",
+                width: size * 0.035,
+                height: size * 0.035,
+                borderRadius: size,
+                backgroundColor: "rgba(255,255,255,0.85)",
+                left: size / 2 + r * Math.cos(ang) - size * 0.0175,
+                top: size / 2 + r * Math.sin(ang) - size * 0.0175,
+              }}
+            />
+          );
+        })}
+        <LinearGradient
+          colors={disc}
+          start={{ x: 0.2, y: 0 }}
+          end={{ x: 0.8, y: 1 }}
+          style={{ width: innerSz, height: innerSz, borderRadius: innerSz / 2, justifyContent: "center", alignItems: "center" }}
+        >
+          <Ionicons name="trophy" size={size * 0.56} color={cup} style={{ marginTop: -size * 0.06 }} />
+          <Ionicons
+            name="star"
+            size={size * 0.15}
+            color={starCol}
+            style={{ position: "absolute", top: innerSz * 0.22 }}
+          />
+        </LinearGradient>
+      </LinearGradient>
+
+      {/* sparkle (win) / cloud (lose) */}
+      {win && (
+        <Ionicons name="star" size={size * 0.24} color="#FFD84D" style={{ position: "absolute", top: -size * 0.06, left: W * 0.08 }} />
+      )}
+      {!win && !draw && (
+        <>
+          <Ionicons name="cloud" size={size * 0.3} color="#F4F6FF" style={{ position: "absolute", top: size * 0.62, right: W * 0.02 }} />
+          <Ionicons name="star" size={size * 0.12} color="#8E9BC9" style={{ position: "absolute", top: size * 0.02, left: W * 0.14 }} />
+        </>
+      )}
+
+      {/* ribbon with swallow-tails */}
+      <View style={{ marginTop: -size * 0.24, width: W, height: rh * 1.25, alignItems: "center" }}>
+        <View style={{ position: "absolute", left: 0, top: rh * 0.25, width: W * 0.28, height: rh, backgroundColor: tail, borderRadius: 2 }} />
+        <View style={{ position: "absolute", right: 0, top: rh * 0.25, width: W * 0.28, height: rh, backgroundColor: tail, borderRadius: 2 }} />
+        {/* swallow-tail notches */}
+        <View style={{ position: "absolute", left: -rh * 0.28, top: rh * 0.25 + rh * 0.22, width: rh * 0.56, height: rh * 0.56, backgroundColor: "#1B1545", transform: [{ rotate: "45deg" }] }} />
+        <View style={{ position: "absolute", right: -rh * 0.28, top: rh * 0.25 + rh * 0.22, width: rh * 0.56, height: rh * 0.56, backgroundColor: "#1B1545", transform: [{ rotate: "45deg" }] }} />
+        <LinearGradient
+          colors={ribbon}
+          style={{ width: W * 0.82, height: rh, borderRadius: 3, justifyContent: "center", alignItems: "center" }}
+        >
+          <Text
+            style={{
+              color: "#fff",
+              fontSize: size * 0.21,
+              fontWeight: "900",
+              fontStyle: "italic",
+              letterSpacing: 0.3,
+              textShadowColor: win ? "rgba(160,80,0,0.55)" : "rgba(80,90,140,0.5)",
+              textShadowOffset: { width: 0, height: 1 },
+              textShadowRadius: 2,
+            }}
+          >
+            {label}
+          </Text>
+        </LinearGradient>
+        {win && (
+          <>
+            <View style={{ position: "absolute", left: W * 0.1, top: -rh * 0.1, width: size * 0.1, height: size * 0.1, borderRadius: size, backgroundColor: "#FF5C8A" }} />
+            <View style={{ position: "absolute", right: W * 0.1, top: -rh * 0.1, width: size * 0.1, height: size * 0.1, borderRadius: size, backgroundColor: "#FF5C8A" }} />
+          </>
+        )}
+      </View>
+    </View>
+  );
+});
+
+const resultKind = (r?: string): "win" | "lose" | "draw" => (r === "win" ? "win" : r === "draw" ? "draw" : "lose");
+
+// Big trophy in the middle for the first ~3.5s after the PK ends (Tiki), then it shrinks away.
+const PkCenterTrophy = memo(({ result, endedAt }: { result?: string; endedAt?: number }) => {
+  const pop = useRef(new Animated.Value(0)).current;
+  const [show, setShow] = useState(true);
+  useEffect(() => {
+    Animated.spring(pop, { toValue: 1, friction: 5, tension: 80, useNativeDriver: true }).start();
+    const left = Math.max(0, 3500 - (Date.now() - (Number(endedAt) || Date.now())));
+    const t = setTimeout(() => {
+      Animated.timing(pop, { toValue: 0, duration: 300, useNativeDriver: true }).start(() => setShow(false));
+    }, left);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  if (!show || !result) return null;
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        styles.pkCenterTrophy,
+        { opacity: pop, transform: [{ scale: pop.interpolate({ inputRange: [0, 1], outputRange: [0.2, 1] }) }] },
+      ]}
+    >
+      <TrophyBadge kind={resultKind(result)} size={92} />
+    </Animated.View>
+  );
+});
+
+// Small WIN / LOSE trophy above the seats of each panel (appears after the big one is gone) + confetti for the winner.
+const PkPanelResult = memo(({ result, endedAt }: { result?: string; endedAt?: number }) => {
+  const pop = useRef(new Animated.Value(0)).current;
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const left = Math.max(0, 3500 - (Date.now() - (Number(endedAt) || Date.now())));
+    const t = setTimeout(() => {
+      setReady(true);
+      Animated.spring(pop, { toValue: 1, friction: 5, tension: 80, useNativeDriver: true }).start();
+    }, left);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  if (!result) return null;
+  const kind = resultKind(result);
+  return (
+    <View pointerEvents="none" style={styles.pkResultWrapNew}>
+      {kind === "win" && !ready && <PkConfetti />}
+      {ready && (
+        <Animated.View
+          style={[
+            styles.pkPanelTrophy,
+            { opacity: pop, transform: [{ scale: pop.interpolate({ inputRange: [0, 1], outputRange: [0.3, 1] }) }] },
+          ]}
+        >
+          <TrophyBadge kind={kind} size={48} />
+        </Animated.View>
+      )}
+    </View>
+  );
+});
+
+// ---------- Last 10 seconds: BIG centre countdown 10 9 8 ... 1 (Tiki) ----------
+const PkFinalCountdown = memo(({ endAt }: { endAt: number }) => {
+  const calc = () => Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+  const [left, setLeft] = useState(calc);
+  const pop = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    setLeft(calc());
+    const i = setInterval(() => setLeft(calc()), 250);
+    return () => clearInterval(i);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [endAt]);
+  const show = left > 0 && left <= 10;
+  useEffect(() => {
+    if (!show) return;
+    pop.setValue(0);
+    Animated.spring(pop, { toValue: 1, friction: 4, tension: 120, useNativeDriver: true }).start();
+  }, [left, show]);
+  if (!show) return null;
+  const hot = left <= 3;
+  return (
+    <View pointerEvents="none" style={styles.pkFinalWrap}>
+      <Animated.Text
+        style={[
+          styles.pkFinalNum,
+          hot && { color: "#FF3B3B" },
+          {
+            opacity: pop.interpolate({ inputRange: [0, 0.4, 1], outputRange: [0, 1, 1] }),
+            transform: [{ scale: pop.interpolate({ inputRange: [0, 1], outputRange: [2.4, 1] }) }],
+          },
+        ]}
+      >
+        {left}
+      </Animated.Text>
+    </View>
+  );
+});
+
+// ---------- LOSER punishment (shown on the losing panel for PK_RESULT_SHOW_MS) ----------
+// BOMB drops on the face -> fuse burns -> BOOM (fireball, shock ring, sparks, flash) ->
+// face turns black, burnt hair, eyes cry (tears), moustache + beard appear, mouth bawls. No emoji, all drawn with shapes.
+// Face TRACKING: the losing host's Agora face detection (onFacePositionChanged) is sent through
+// Firestore (rooms/{id}.pk.face, fractions 0..1) and the whole face group follows it smoothly.
+// Face data na mile (device unsupported) → fixed jagah par dikhta hai.
+const FACE_PAD = 1.35; // tracked face rect x yeh = kale chehre ka size (kaan/sir cover)
+const FACE_SMOOTH_MS = 200; // movement smoothing
+const FACE_FALLBACK_Y = 0.36; // face data na ho to panel height ka fraction
+const FACE_FALLBACK_W = 0.5; // face data na ho to panel width ka fraction
+const FACE_FLIP_X = false; // agar mooch/aansu left-right ULTE chalein to true karo
+
+const Tear = ({ x, y, fall, delay }: { x: number; y: number; fall: number; delay: number }) => {
+  const t = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.delay(delay),
+        Animated.timing(t, { toValue: 1, duration: 1100, easing: Easing.in(Easing.quad), useNativeDriver: true }),
+        Animated.timing(t, { toValue: 0, duration: 0, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return (
+    <Animated.View
+      style={{
+        position: "absolute",
+        left: x - 5,
+        top: y,
+        width: 10,
+        height: 14,
+        borderTopLeftRadius: 5,
+        borderTopRightRadius: 5,
+        borderBottomLeftRadius: 8,
+        borderBottomRightRadius: 8,
+        backgroundColor: "#5CC8FF",
+        borderWidth: 1,
+        borderColor: "#BFE9FF",
+        opacity: t.interpolate({ inputRange: [0, 0.1, 0.8, 1], outputRange: [0, 1, 0.9, 0] }),
+        transform: [{ translateY: t.interpolate({ inputRange: [0, 1], outputRange: [0, fall] }) }],
+      }}
+    />
+  );
+};
+
+// face = { cx, cy, w, h, ar } (fractions of the camera image, ar = image width / height)
+// mirror = true when this panel is the host's OWN local preview on the front camera
+const FW = 100; // design units of the face group (it is scaled to the real face)
+const FH = 112;
+const BOMB_BOOM_AT = 1100; // ms: bomb sits on the face, fuse burns, then BOOM
+
+// Smoke puff that keeps rising from the burnt face after the blast
+const Smoke = memo(({ x, size, start }: { x: number; size: number; start: number }) => {
+  const t = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const seq = Animated.sequence([
+      Animated.delay(start),
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(t, { toValue: 1, duration: 1900, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+          Animated.timing(t, { toValue: 0, duration: 0, useNativeDriver: true }),
+        ])
+      ),
+    ]);
+    seq.start();
+    return () => seq.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return (
+    <Animated.View
+      style={{
+        position: "absolute",
+        left: x - size / 2,
+        top: FH * 0.12,
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        backgroundColor: "rgba(70,64,64,0.8)",
+        opacity: t.interpolate({ inputRange: [0, 0.15, 1], outputRange: [0, 0.85, 0] }),
+        transform: [
+          { translateY: t.interpolate({ inputRange: [0, 1], outputRange: [0, -FH * 0.95] }) },
+          { translateX: t.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 6, -4] }) },
+          { scale: t.interpolate({ inputRange: [0, 1], outputRange: [0.4, 1.7] }) },
+        ],
+      }}
+    />
+  );
+});
+
+// flying spark of the blast
+const SPARKS = Array.from({ length: 12 }, (_, i) => ({
+  ang: (i / 12) * Math.PI * 2 + (i % 2) * 0.16,
+  dist: FW * (0.78 + (i % 3) * 0.24),
+  size: 4 + (i % 3) * 1.6,
+  color: ["#FFE066", "#FF9F1C", "#FFFFFF"][i % 3],
+}));
+const Spark = memo(({ boom, ang, dist, size, color }: any) => (
+  <Animated.View
+    style={{
+      position: "absolute",
+      left: FW / 2 - size / 2,
+      top: FH / 2 - size,
+      width: size,
+      height: size * 2.2,
+      borderRadius: size,
+      backgroundColor: color,
+      opacity: boom.interpolate({ inputRange: [0, 0.05, 0.7, 1], outputRange: [0, 1, 0.9, 0] }),
+      transform: [
+        { translateX: boom.interpolate({ inputRange: [0, 1], outputRange: [0, Math.cos(ang) * dist] }) },
+        { translateY: boom.interpolate({ inputRange: [0, 1], outputRange: [0, Math.sin(ang) * dist] }) },
+        { rotate: `${(ang * 180) / Math.PI + 90}deg` },
+        { scaleY: boom.interpolate({ inputRange: [0, 0.3, 1], outputRange: [0.3, 1.6, 0.5] }) },
+      ],
+    }}
+  />
+));
+
+// burnt, standing-up hair spikes along the top of the face oval
+const HAIR = [0.15, 0.27, 0.39, 0.5, 0.61, 0.73, 0.85];
+const HairSpike = ({ u, i }: { u: number; i: number }) => {
+  const t = (u - 0.5) / 0.5; // -1 .. 1
+  const baseY = (FH / 2) * (1 - Math.sqrt(Math.max(0, 1 - t * t)));
+  const h = FH * (0.2 + (i % 3) * 0.06);
+  const w = FW * 0.07;
+  return (
+    <View
+      style={{
+        position: "absolute",
+        left: u * FW - w,
+        top: baseY - h * 0.7,
+        width: 0,
+        height: 0,
+        borderLeftWidth: w,
+        borderRightWidth: w,
+        borderBottomWidth: h,
+        borderLeftColor: "transparent",
+        borderRightColor: "transparent",
+        borderBottomColor: "#141010",
+        transform: [{ rotate: `${t * 38}deg` }],
+      }}
+    />
+  );
+};
+
+const PkLoserPunish = memo(({ panelW, panelH, face, mirror }: { panelW: number; panelH: number; face?: any; mirror?: boolean }) => {
+  const bombIn = useRef(new Animated.Value(0)).current; // bomb pops onto the face
+  const fuse = useRef(new Animated.Value(0)).current; // 0..1 while the fuse burns (shake + swell + spark)
+  const bombGone = useRef(new Animated.Value(0)).current;
+  const boom = useRef(new Animated.Value(0)).current; // blast
+  const flash = useRef(new Animated.Value(0)).current; // white screen flash
+  const quake = useRef(new Animated.Value(0)).current; // face shakes after the blast
+  const soot = useRef(new Animated.Value(0)).current; // face turns black
+  const props = useRef(new Animated.Value(0)).current; // moustache / beard / mouth pop in
+  const cry = useRef(new Animated.Value(0)).current; // mouth bawling loop
+  const tx = useRef(new Animated.Value(0)).current;
+  const ty = useRef(new Animated.Value(0)).current;
+  const sc = useRef(new Animated.Value(1)).current;
+  const firstPos = useRef(true);
+
+  // timeline: bomb -> fuse burns -> BOOM -> face black -> moustache + beard + crying
+  useEffect(() => {
+    const timeline = Animated.parallel([
+      Animated.spring(bombIn, { toValue: 1, friction: 5, tension: 110, useNativeDriver: true }),
+      Animated.timing(fuse, { toValue: 1, duration: BOMB_BOOM_AT, easing: Easing.linear, useNativeDriver: true }),
+      Animated.sequence([
+        Animated.delay(BOMB_BOOM_AT),
+        Animated.parallel([
+          Animated.timing(bombGone, { toValue: 1, duration: 60, useNativeDriver: true }),
+          Animated.timing(boom, { toValue: 1, duration: 850, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+          Animated.timing(quake, { toValue: 1, duration: 650, easing: Easing.linear, useNativeDriver: true }),
+          Animated.sequence([
+            Animated.timing(flash, { toValue: 1, duration: 70, useNativeDriver: true }),
+            Animated.timing(flash, { toValue: 0, duration: 450, useNativeDriver: true }),
+          ]),
+          Animated.sequence([
+            Animated.delay(160),
+            Animated.timing(soot, { toValue: 1, duration: 600, useNativeDriver: true }),
+          ]),
+          Animated.sequence([
+            Animated.delay(750),
+            Animated.spring(props, { toValue: 1, friction: 5, tension: 90, useNativeDriver: true }),
+          ]),
+        ]),
+      ]),
+    ]);
+    timeline.start();
+    const bawl = Animated.loop(
+      Animated.sequence([
+        Animated.timing(cry, { toValue: 1, duration: 260, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(cry, { toValue: 0, duration: 260, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ])
+    );
+    bawl.start();
+    return () => {
+      timeline.stop();
+      bawl.stop();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // follow the face
+  useEffect(() => {
+    const baseX = panelW / 2;
+    const baseY = panelH * FACE_FALLBACK_Y;
+    let cxp = baseX;
+    let cyp = baseY;
+    let wpx = panelW * FACE_FALLBACK_W;
+    const hasFace = !!(face && Number(face.ar) > 0 && Number(face.w) > 0);
+    if (hasFace) {
+      // the video fills the panel (crop): same maths as Agora's "hidden" render mode
+      const ar = Number(face.ar);
+      const k = Math.max(panelW / ar, panelH);
+      const dw = ar * k;
+      const dh = k;
+      const ox = (panelW - dw) / 2;
+      const oy = (panelH - dh) / 2;
+      let fx = Number(face.cx);
+      if (mirror !== FACE_FLIP_X) fx = 1 - fx; // front-cam local preview is mirrored
+      cxp = ox + fx * dw;
+      cyp = oy + Number(face.cy) * dh;
+      wpx = Number(face.w) * dw * FACE_PAD;
+    }
+    const toX = cxp - baseX;
+    const toY = cyp - baseY;
+    const toS = Math.max(0.3, Math.min(4, wpx / FW));
+    if (firstPos.current) {
+      // snap (no sliding) to the first real face position; until it arrives sit at the fallback spot
+      tx.setValue(toX);
+      ty.setValue(toY);
+      sc.setValue(toS);
+      if (hasFace) firstPos.current = false;
+      return;
+    }
+    Animated.parallel([
+      Animated.timing(tx, { toValue: toX, duration: FACE_SMOOTH_MS, useNativeDriver: true }),
+      Animated.timing(ty, { toValue: toY, duration: FACE_SMOOTH_MS, useNativeDriver: true }),
+      Animated.timing(sc, { toValue: toS, duration: FACE_SMOOTH_MS, useNativeDriver: true }),
+    ]).start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [face?.cx, face?.cy, face?.w, face?.ar, mirror, panelW, panelH]);
+
+  // ---- layout of the face parts (design units) ----
+  const eyeY = FH * 0.36;
+  const eyeDX = FW * 0.2;
+  const eyeW = FW * 0.22;
+  const eyeH = eyeW * 0.78;
+  const lx = FW / 2 - eyeDX;
+  const rx = FW / 2 + eyeDX;
+  const browY = eyeY - eyeH * 0.95;
+  const mustY = FH * 0.6;
+  const mustW = FW * 0.36;
+  const mustH = FW * 0.12;
+  const mouthW = FW * 0.3;
+  const mouthH = FH * 0.17;
+  const mouthY = FH * 0.74;
+  const beardW = FW * 0.84;
+  const beardH = FH * 0.52;
+  const beardTop = FH * 0.64;
+  const fall = FH * 0.95;
+  const B = FW * 0.62; // bomb size
+
+  const eye = (x: number) => (
+    <>
+      {/* water pooling under the eye */}
+      <View
+        style={{
+          position: "absolute",
+          left: x - eyeW * 0.55,
+          top: eyeY + eyeH * 0.25,
+          width: eyeW * 1.1,
+          height: eyeH * 0.55,
+          borderRadius: eyeW,
+          backgroundColor: "rgba(120,205,255,0.5)",
+        }}
+      />
+      <View
+        style={{
+          position: "absolute",
+          left: x - eyeW / 2,
+          top: eyeY - eyeH / 2,
+          width: eyeW,
+          height: eyeH,
+          borderRadius: eyeW,
+          backgroundColor: "#fff",
+          justifyContent: "center",
+          alignItems: "center",
+        }}
+      >
+        <View
+          style={{
+            width: eyeH * 0.62,
+            height: eyeH * 0.62,
+            borderRadius: eyeH,
+            backgroundColor: "#0b0b0b",
+            marginTop: eyeH * 0.1,
+          }}
+        >
+          <View
+            style={{
+              position: "absolute",
+              left: eyeH * 0.12,
+              top: eyeH * 0.1,
+              width: eyeH * 0.18,
+              height: eyeH * 0.18,
+              borderRadius: eyeH,
+              backgroundColor: "#fff",
+            }}
+          />
+        </View>
+      </View>
+    </>
+  );
+
+  const brow = (x: number, rot: string) => (
+    <View
+      style={{
+        position: "absolute",
+        left: x - eyeW * 0.6,
+        top: browY,
+        width: eyeW * 1.2,
+        height: FH * 0.034,
+        borderRadius: 3,
+        backgroundColor: "#d8cfc8",
+        transform: [{ rotate: rot }],
+      }}
+    />
+  );
+
+  const shakeX = quake.interpolate({
+    inputRange: [0, 0.08, 0.16, 0.26, 0.38, 0.52, 0.7, 1],
+    outputRange: [0, -9, 9, -7, 5, -3, 1, 0],
+  });
+  const bombRot = fuse.interpolate({
+    inputRange: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
+    outputRange: ["0deg", "-5deg", "5deg", "-5deg", "6deg", "-7deg", "7deg", "-9deg", "9deg", "-12deg", "12deg"],
+  });
+  const bombScale = Animated.multiply(
+    bombIn.interpolate({ inputRange: [0, 1], outputRange: [0.2, 1] }),
+    fuse.interpolate({ inputRange: [0, 0.65, 1], outputRange: [1, 1, 1.28] })
+  );
+  const sparkFlick = fuse.interpolate({
+    inputRange: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
+    outputRange: [1, 1.7, 1, 1.8, 1.1, 1.9, 1, 1.8, 1.2, 2, 1.4],
+  });
+  const bodyD = B * 0.86;
+
+  return (
+    <View pointerEvents="none" style={[StyleSheet.absoluteFill, { overflow: "hidden" }]}>
+      {/* panel gets a bit darker (smoke) */}
+      <Animated.View style={[StyleSheet.absoluteFill, { opacity: soot, backgroundColor: "rgba(0,0,0,0.2)" }]} />
+
+      {/* everything below moves + scales with the tracked face */}
+      <Animated.View
+        style={{
+          position: "absolute",
+          left: panelW / 2 - FW / 2,
+          top: panelH * FACE_FALLBACK_Y - FH / 2,
+          width: FW,
+          height: FH,
+          transform: [{ translateX: tx }, { translateY: ty }, { scale: sc }],
+        }}
+      >
+        <Animated.View style={{ width: FW, height: FH, transform: [{ translateX: shakeX }] }}>
+          {/* ---------- burnt hair ---------- */}
+          <Animated.View style={[StyleSheet.absoluteFill, { opacity: props }]}>
+            {HAIR.map((u, i) => (
+              <HairSpike key={i} u={u} i={i} />
+            ))}
+          </Animated.View>
+
+          {/* ---------- black face (soft, 2 layers) ---------- */}
+          <Animated.View
+            style={{
+              position: "absolute",
+              left: -FW * 0.07,
+              top: -FH * 0.07,
+              width: FW * 1.14,
+              height: FH * 1.14,
+              borderRadius: FW,
+              backgroundColor: "rgba(0,0,0,0.3)",
+              opacity: soot,
+            }}
+          />
+          <Animated.View
+            style={{
+              position: "absolute",
+              left: 0,
+              top: 0,
+              width: FW,
+              height: FH,
+              borderRadius: FW,
+              backgroundColor: "rgba(10,8,8,0.9)",
+              opacity: soot,
+            }}
+          />
+
+          {/* ---------- beard ---------- */}
+          <Animated.View
+            style={{
+              position: "absolute",
+              left: (FW - beardW) / 2,
+              top: beardTop,
+              width: beardW,
+              height: beardH,
+              borderTopLeftRadius: beardW * 0.22,
+              borderTopRightRadius: beardW * 0.22,
+              borderBottomLeftRadius: beardW * 0.5,
+              borderBottomRightRadius: beardW * 0.5,
+              backgroundColor: "#4A2A12",
+              borderWidth: 1.5,
+              borderColor: "#1a0d05",
+              opacity: props,
+              transform: [{ scale: props }],
+              overflow: "hidden",
+            }}
+          >
+            {[0.2, 0.36, 0.5, 0.64, 0.8].map((p, i) => (
+              <View
+                key={i}
+                style={{
+                  position: "absolute",
+                  left: beardW * p,
+                  top: beardH * 0.3,
+                  width: 2,
+                  height: beardH * 0.62,
+                  borderRadius: 1,
+                  backgroundColor: "rgba(160,100,50,0.55)",
+                }}
+              />
+            ))}
+          </Animated.View>
+
+          {/* ---------- eyes + brows ---------- */}
+          <Animated.View style={[StyleSheet.absoluteFill, { opacity: soot }]}>
+            {eye(lx)}
+            {eye(rx)}
+          </Animated.View>
+          <Animated.View style={[StyleSheet.absoluteFill, { opacity: props }]}>
+            {brow(lx, "-20deg")}
+            {brow(rx, "20deg")}
+          </Animated.View>
+
+          {/* ---------- tears (streaks + falling drops) ---------- */}
+          <Animated.View style={[StyleSheet.absoluteFill, { opacity: props }]}>
+            <View
+              style={{
+                position: "absolute",
+                left: lx - 2.5,
+                top: eyeY + eyeH * 0.5,
+                width: 5,
+                height: FH * 0.34,
+                borderRadius: 3,
+                backgroundColor: "rgba(120,205,255,0.35)",
+              }}
+            />
+            <View
+              style={{
+                position: "absolute",
+                left: rx - 2.5,
+                top: eyeY + eyeH * 0.5,
+                width: 5,
+                height: FH * 0.34,
+                borderRadius: 3,
+                backgroundColor: "rgba(120,205,255,0.35)",
+              }}
+            />
+          </Animated.View>
+          <Animated.View style={[StyleSheet.absoluteFill, { opacity: soot }]}>
+            {[0, 1, 2].map((i) => (
+              <React.Fragment key={i}>
+                <Tear x={lx + (i - 1) * 3} y={eyeY + eyeH * 0.4} fall={fall} delay={i * 330} />
+                <Tear x={rx + (i - 1) * 3} y={eyeY + eyeH * 0.4} fall={fall} delay={i * 330 + 140} />
+              </React.Fragment>
+            ))}
+          </Animated.View>
+
+          {/* ---------- bawling mouth ---------- */}
+          <Animated.View
+            style={{
+              position: "absolute",
+              left: FW / 2 - mouthW / 2,
+              top: mouthY,
+              width: mouthW,
+              height: mouthH,
+              borderRadius: mouthW,
+              backgroundColor: "#6e0d1b",
+              borderWidth: 1.5,
+              borderColor: "#240407",
+              overflow: "hidden",
+              opacity: props,
+              transform: [
+                { scale: props },
+                { scaleY: cry.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1.2] }) },
+              ],
+            }}
+          >
+            <View
+              style={{
+                position: "absolute",
+                left: mouthW * 0.2,
+                bottom: -mouthH * 0.15,
+                width: mouthW * 0.6,
+                height: mouthH * 0.5,
+                borderRadius: mouthW,
+                backgroundColor: "#ee6a85",
+              }}
+            />
+          </Animated.View>
+
+          {/* ---------- moustache (2 curls) ---------- */}
+          <Animated.View style={[StyleSheet.absoluteFill, { opacity: props, transform: [{ scale: props }] }]}>
+            <View
+              style={{
+                position: "absolute",
+                left: FW / 2 - mustW,
+                top: mustY,
+                width: mustW,
+                height: mustH,
+                borderTopLeftRadius: mustH,
+                borderBottomLeftRadius: mustH * 0.2,
+                borderTopRightRadius: mustH * 0.4,
+                borderBottomRightRadius: mustH,
+                backgroundColor: "#6B3E1A",
+                borderWidth: 1.5,
+                borderColor: "#1a0d05",
+                transform: [{ rotate: "-9deg" }],
+              }}
+            />
+            <View
+              style={{
+                position: "absolute",
+                left: FW / 2,
+                top: mustY,
+                width: mustW,
+                height: mustH,
+                borderTopRightRadius: mustH,
+                borderBottomRightRadius: mustH * 0.2,
+                borderTopLeftRadius: mustH * 0.4,
+                borderBottomLeftRadius: mustH,
+                backgroundColor: "#6B3E1A",
+                borderWidth: 1.5,
+                borderColor: "#1a0d05",
+                transform: [{ rotate: "9deg" }],
+              }}
+            />
+          </Animated.View>
+
+          {/* ---------- smoke rising from the burnt face ---------- */}
+          <Smoke x={FW * 0.3} size={26} start={BOMB_BOOM_AT + 250} />
+          <Smoke x={FW * 0.5} size={34} start={BOMB_BOOM_AT + 700} />
+          <Smoke x={FW * 0.7} size={26} start={BOMB_BOOM_AT + 1150} />
+
+          {/* ---------- BOMB on the face ---------- */}
+          <Animated.View
+            style={{
+              position: "absolute",
+              left: FW / 2 - B / 2,
+              top: FH * 0.5 - B / 2,
+              width: B,
+              height: B,
+              opacity: Animated.multiply(bombIn, bombGone.interpolate({ inputRange: [0, 1], outputRange: [1, 0] })),
+              transform: [{ scale: bombScale }, { rotate: bombRot }],
+            }}
+          >
+            {/* body */}
+            <View
+              style={{
+                position: "absolute",
+                left: (B - bodyD) / 2,
+                top: B * 0.14,
+                width: bodyD,
+                height: bodyD,
+                borderRadius: bodyD / 2,
+                backgroundColor: "#17171d",
+                borderWidth: 2,
+                borderColor: "#4b4b57",
+              }}
+            />
+            {/* shine */}
+            <View
+              style={{
+                position: "absolute",
+                left: B * 0.22,
+                top: B * 0.3,
+                width: B * 0.2,
+                height: B * 0.1,
+                borderRadius: B,
+                backgroundColor: "rgba(255,255,255,0.4)",
+                transform: [{ rotate: "-32deg" }],
+              }}
+            />
+            {/* cap */}
+            <View
+              style={{
+                position: "absolute",
+                left: B / 2 - B * 0.14,
+                top: B * 0.05,
+                width: B * 0.28,
+                height: B * 0.15,
+                borderRadius: 3,
+                backgroundColor: "#6b6b78",
+                borderWidth: 1.5,
+                borderColor: "#2b2b33",
+              }}
+            />
+            {/* fuse */}
+            <View
+              style={{
+                position: "absolute",
+                left: B / 2 - 1.5,
+                top: -B * 0.1,
+                width: 3,
+                height: B * 0.18,
+                borderRadius: 2,
+                backgroundColor: "#c8a15a",
+                transform: [{ rotate: "20deg" }],
+              }}
+            />
+            <View
+              style={{
+                position: "absolute",
+                left: B / 2 + B * 0.05,
+                top: -B * 0.22,
+                width: 3,
+                height: B * 0.14,
+                borderRadius: 2,
+                backgroundColor: "#c8a15a",
+                transform: [{ rotate: "-28deg" }],
+              }}
+            />
+            {/* burning spark */}
+            <Animated.View
+              style={{
+                position: "absolute",
+                left: B / 2 + B * 0.02,
+                top: -B * 0.36,
+                width: B * 0.22,
+                height: B * 0.22,
+                borderRadius: B,
+                backgroundColor: "#FF7A00",
+                justifyContent: "center",
+                alignItems: "center",
+                transform: [{ scale: sparkFlick }],
+              }}
+            >
+              <View style={{ width: B * 0.11, height: B * 0.11, borderRadius: B, backgroundColor: "#FFF2A0" }} />
+            </Animated.View>
+          </Animated.View>
+
+          {/* ---------- BLAST (fireball, shock ring, sparks) ---------- */}
+          <Animated.View
+            style={{
+              position: "absolute",
+              left: FW / 2 - FW * 0.85,
+              top: FH / 2 - FW * 0.85,
+              width: FW * 1.7,
+              height: FW * 1.7,
+              borderRadius: FW,
+              backgroundColor: "#FF5A00",
+              opacity: boom.interpolate({ inputRange: [0, 0.04, 0.5, 1], outputRange: [0, 1, 0.8, 0] }),
+              transform: [{ scale: boom.interpolate({ inputRange: [0, 0.25, 1], outputRange: [0.1, 1, 1.25] }) }],
+            }}
+          />
+          <Animated.View
+            style={{
+              position: "absolute",
+              left: FW / 2 - FW * 0.6,
+              top: FH / 2 - FW * 0.6,
+              width: FW * 1.2,
+              height: FW * 1.2,
+              borderRadius: FW,
+              backgroundColor: "#FF9F1C",
+              opacity: boom.interpolate({ inputRange: [0, 0.04, 0.35, 0.8], outputRange: [0, 1, 0.9, 0] }),
+              transform: [{ scale: boom.interpolate({ inputRange: [0, 0.25, 1], outputRange: [0.1, 0.9, 1.05] }) }],
+            }}
+          />
+          <Animated.View
+            style={{
+              position: "absolute",
+              left: FW / 2 - FW * 0.35,
+              top: FH / 2 - FW * 0.35,
+              width: FW * 0.7,
+              height: FW * 0.7,
+              borderRadius: FW,
+              backgroundColor: "#FFF3A0",
+              opacity: boom.interpolate({ inputRange: [0, 0.04, 0.25, 0.5], outputRange: [0, 1, 0.8, 0] }),
+              transform: [{ scale: boom.interpolate({ inputRange: [0, 0.2, 1], outputRange: [0.1, 1, 0.6] }) }],
+            }}
+          />
+          <Animated.View
+            style={{
+              position: "absolute",
+              left: FW / 2 - FW * 0.55,
+              top: FH / 2 - FW * 0.55,
+              width: FW * 1.1,
+              height: FW * 1.1,
+              borderRadius: FW,
+              borderWidth: 4,
+              borderColor: "rgba(255,255,255,0.9)",
+              opacity: boom.interpolate({ inputRange: [0, 0.05, 1], outputRange: [0, 0.9, 0] }),
+              transform: [{ scale: boom.interpolate({ inputRange: [0, 1], outputRange: [0.3, 2.8] }) }],
+            }}
+          />
+          {SPARKS.map((s, i) => (
+            <Spark key={i} boom={boom} ang={s.ang} dist={s.dist} size={s.size} color={s.color} />
+          ))}
+        </Animated.View>
+      </Animated.View>
+
+      {/* white flash on the whole panel at the moment of the blast */}
+      <Animated.View
+        style={[StyleSheet.absoluteFill, { backgroundColor: "#fff", opacity: flash.interpolate({ inputRange: [0, 1], outputRange: [0, 0.85] }) }]}
+      />
+    </View>
+  );
+});
+
+// 3 round "seats" at the bottom of each panel (Tiki): sofa when empty, else the top-3 gifters.
+// #1 gets a crown + MVP ribbon, #2 / #3 a small number. Left panel is mirrored so #1 always sits next to the centre.
+const SEAT_COL = ["#FFD700", "#C0C0C0", "#CD7F32"];
+const SEAT_BADGE = ["#F59E0B", "#8A96AB", "#B8693A"];
+const PkSeats = memo(({ gifters, mirror }: any) => {
   const top: any[] = Object.values(gifters || {})
     .filter((g: any) => g && g.uid && Number(g.stars) > 0)
     .sort((a: any, b: any) => Number(b.stars) - Number(a.stars))
     .slice(0, 3);
-  if (top.length === 0) return null;
+  const order = mirror ? [2, 1, 0] : [0, 1, 2];
   return (
-    <View pointerEvents="none" style={[styles.pkSupRow, side === "left" ? { left: 6 } : { right: 6 }]}>
-      {top.map((g: any, i: number) => (
-        <Image
-          key={g.uid}
-          source={{ uri: g.img || STABLE_AVATAR }}
-          style={[styles.pkSupAva, { marginLeft: i === 0 ? 0 : -6, borderColor: ["#FFD700", "#C0C0C0", "#CD7F32"][i] }]}
-        />
-      ))}
+    <View pointerEvents="none" style={styles.pkSeatRow}>
+      {order.map((i) => {
+        const g = top[i];
+        return (
+          <View key={i} style={styles.pkSeatWrap}>
+            {g ? (
+              <Image
+                source={{ uri: g.img || STABLE_AVATAR }}
+                style={[styles.pkSeat, { borderColor: SEAT_COL[i], borderWidth: 2 }]}
+              />
+            ) : (
+              <View style={[styles.pkSeat, styles.pkSeatEmpty]}>
+                <MaterialCommunityIcons name="sofa" size={14} color="rgba(214,170,90,0.95)" />
+              </View>
+            )}
+            {!!g && i === 0 && <Text style={styles.pkSeatCrown}>👑</Text>}
+            {!!g && (
+              <View style={[styles.pkSeatNum, { backgroundColor: SEAT_BADGE[i] }]}>
+                <Text style={styles.pkSeatNumTxt}>{i === 0 ? "MVP" : i + 1}</Text>
+              </View>
+            )}
+          </View>
+        );
+      })}
+    </View>
+  );
+});
+
+// Panel shown while a video is not there yet: blurred avatar (no flat black) + spinner.
+const PkWaiting = memo(({ img, loading }: any) => (
+  <View style={styles.pkWaiting}>
+    <Image
+      source={{ uri: img || STABLE_AVATAR }}
+      style={StyleSheet.absoluteFill}
+      blurRadius={Platform.OS === "android" ? 14 : 24}
+    />
+    <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(28,20,70,0.55)" }]} />
+    <Image source={{ uri: img || STABLE_AVATAR }} style={styles.pkWaitAvatar} />
+    {!!loading && (
+      <>
+        <ActivityIndicator size="small" color="#fff" style={{ marginTop: 10 }} />
+        <Text style={styles.pkWaitTxt}>Connecting...</Text>
+      </>
+    )}
+  </View>
+));
+
+// Scrolling tip under the PK panels (Tiki). Pure native-driver translate = cheap.
+const PkTicker = memo(({ top }: { top: number }) => {
+  const x = useRef(new Animated.Value(0)).current;
+  const boxW = Math.round(width * 0.6);
+  const textW = Math.round(PK_TIPS.length * 6.4);
+  useEffect(() => {
+    x.setValue(boxW);
+    const loop = Animated.loop(
+      Animated.timing(x, { toValue: -textW, duration: (textW + boxW) * 30, easing: Easing.linear, useNativeDriver: true })
+    );
+    loop.start();
+    return () => loop.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return (
+    <View pointerEvents="none" style={[styles.pkTicker, { top, width: boxW, left: Math.round((width - boxW) / 2) }]}>
+      <Animated.Text numberOfLines={1} style={[styles.pkTickerTxt, { width: textW, transform: [{ translateX: x }] }]}>
+        {PK_TIPS}
+      </Animated.Text>
     </View>
   );
 });
@@ -1011,22 +2267,29 @@ export default function VideoLive() {
   
 
   // ---------- gifting ----------
-  const [activeGift, setActiveGift] = useState<any>(null);
-  const [giftPlayKey, setGiftPlayKey] = useState(0);
-  const [giftCombo, setGiftCombo] = useState<any>(null);
+  // Gift animation + combo banner state <GiftLayer/> ke andar hai (LiveRoom jaisa) -> ref se bulate hain.
+  const giftLayerRef = useRef<any>(null);
+  const giftComboCountRef = useRef(0);
+  const pendingSpendRef = useRef(0);   // taps jo abhi write nahi hue
+  const inflightSpendRef = useRef(0);  // write ho gaye, wallet snapshot abhi nahi aaya
+  const giftBatchRef = useRef<any>(null);
+  const giftFlushTimerRef = useRef<any>(null);
+  const flushGiftBatchRef = useRef<any>(null);
+  const onComboEnd = useCallback(() => {
+    lastGiftRef.current = null;
+    giftComboCountRef.current = 0;
+  }, []);
   const [selectedGiftUser, setSelectedGiftUser] = useState<string | null>(null);
   const lastSeenGiftKeyRef = useRef("");
   const giftBaselineSetRef = useRef(false);
   const lastGiftRef = useRef<any>(null);
-  const giftTimeoutRef = useRef<any>(null);
-  const comboTimeoutRef = useRef<any>(null);
-  const comboCountRef = useRef(0);
 
   const giftModalAnim = useRef(new Animated.Value(400)).current;
-  const giftTranslateX = useRef(new Animated.Value(-80)).current;
-  const giftScale = useRef(new Animated.Value(1)).current;
-  const giftShake = useRef(new Animated.Value(0)).current;
-  const giftOpacity = useRef(new Animated.Value(0)).current;
+  // PK side: viewer kis host ki side me hai ("me" = left, "opp" = right). Gift sirf isi side ke host ko jata hai.
+  const [pkSide, setPkSide] = useState<"me" | "opp">("me");
+  const pkSideAnim = useRef(new Animated.Value(0)).current; // 0 = left, 1 = right (native driver, smooth)
+  const pkSideRef = useRef<"me" | "opp">("me");
+  const [followedByIds, setFollowedByIds] = useState<Set<string>>(new Set()); // jo mujhe follow karte hain (PK hosts)
 
   // ---------- join banner ----------
   const [joinBanner, setJoinBanner] = useState<any>(null);
@@ -1086,12 +2349,15 @@ export default function VideoLive() {
   const pkBarAnim = useRef(new Animated.Value(50)).current; // smooth score bar (0-100)
   const pkFallbackTimerRef = useRef<any>(null);
   const lastOppSigRef = useRef("");
+  const oppTokenRef = useRef<any>(null); // prefetched token for the opponent channel
 
   const chatListRef = useRef<FlatList>(null);
   const heartbeatRef = useRef<any>(null);
   // ---------- NO-FACE / BLACK SCREEN AUTO BAN (host) ----------
   const lastFaceAtRef = useRef<number>(Date.now());   // aakhri baar kab face dikha
   const faceCheckOnRef = useRef(false);                // device par face detection chalu hua?
+  const faceRectRef = useRef<any>(null);               // latest tracked face (0..1 fractions) -> loser punishment follows it
+  const camFrontRef = useRef(true);                    // front camera? (local preview is mirrored on front cam)
   const faceWarnedRef = useRef(false);                 // 4 min par warning ek hi baar
   const faceBanFiredRef = useRef(false);               // ban ek hi baar lage
   const rewardPingRef = useRef<any>(null);
@@ -1113,7 +2379,6 @@ export default function VideoLive() {
   const [lockDraft, setLockDraft] = useState(false);
   const [summary, setSummary] = useState<any>(null);
   const [netQuality, setNetQuality] = useState(0); // 0 unknown, 1-2 good, 3 ok, 4-6 bad
-  const [giftQty, setGiftQty] = useState(1);
   const [giftPageIdx, setGiftPageIdx] = useState(0);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const lastChatAtRef = useRef(0);
@@ -1124,7 +2389,7 @@ export default function VideoLive() {
   // ---------- guest seats ----------
   const [guestSheetVisible, setGuestSheetVisible] = useState(false); // host: requests / guests sheet
   const [guestMicOn, setGuestMicOn] = useState(true); // guest: my own mic switch
-  const [guestCamOn, setGuestCamOn] = useState(true); // guest: my own camera switch
+  const [guestCamOn, setGuestCamOn] = useState(false); // guests are AUDIO ONLY // guest: my own camera switch
   const [remoteVideoOn, setRemoteVideoOn] = useState<Record<number, boolean>>({}); // uid → video is really decoding
   const [guestFollowed, setGuestFollowed] = useState<Set<string>>(new Set());
   const guestPublishingRef = useRef(false);
@@ -1206,10 +2471,11 @@ export default function VideoLive() {
     () => Object.values(audienceMap).filter((u: any) => u && u.uid && u.uid !== hostId),
     [audienceMap, hostId]
   );
-  const topViewers = React.useMemo(
-    () => [...audienceArray].sort((a: any, b: any) => Number(b.level || 1) - Number(a.level || 1)).slice(0, 3),
+  const audienceSorted = React.useMemo(
+    () => [...audienceArray].sort((a: any, b: any) => Number(b.level || 1) - Number(a.level || 1)),
     [audienceArray]
   );
+  const topViewers = React.useMemo(() => audienceSorted.slice(0, 3), [audienceSorted]);
   const viewerCount = audienceArray.length;
   if (viewerCount > peakViewersRef.current) peakViewersRef.current = viewerCount;
 
@@ -1222,10 +2488,34 @@ export default function VideoLive() {
   const roomTitle: string = roomData?.title || "";
   const pinnedText: string = roomData?.pinned?.text || "";
   const roomLikes = Number(roomData?.likes || 0);
-  const rankedGifters: any[] = Object.values(roomData?.roomGifters || {})
-    .filter((g: any) => g && g.uid && Number(g.stars) > 0)
-    .sort((a: any, b: any) => Number(b.stars) - Number(a.stars));
-  const top3Gifters = rankedGifters.slice(0, 3);
+  const rankedGifters: any[] = React.useMemo(
+    () =>
+      Object.values(roomData?.roomGifters || {})
+        .filter((g: any) => g && g.uid && Number(g.stars) > 0)
+        .sort((a: any, b: any) => Number(b.stars) - Number(a.stars)),
+    [roomData?.roomGifters]
+  );
+  const top3Gifters = React.useMemo(() => rankedGifters.slice(0, 3), [rankedGifters]);
+  // Header: always up to 5 people. Gifters first (most stars in front), then the other viewers by level.
+  const headerFive: any[] = React.useMemo(() => {
+    const seen = new Set<string>();
+    const out: any[] = [];
+    rankedGifters.forEach((g: any) => {
+      // gifter sirf tab dikhe jab abhi room me ho (audience me); gift karke chala gaya to hat jaye,
+      // wapas aaye to apne stars ke hisaab se fir aage dikhne lage
+      if (out.length < 5 && g?.uid && !!audienceMap[g.uid] && !blockedIds.has(g.uid) && !seen.has(g.uid)) {
+        seen.add(g.uid);
+        out.push({ ...g, isGifter: true });
+      }
+    });
+    audienceSorted.forEach((u: any) => {
+      if (out.length < 5 && u?.uid && !seen.has(u.uid)) {
+        seen.add(u.uid);
+        out.push({ ...u, isGifter: false });
+      }
+    });
+    return out;
+  }, [rankedGifters, audienceSorted, audienceMap, blockedIds]);
 
   // ---------- guard: no room id at all ----------
   useEffect(() => {
@@ -1236,7 +2526,12 @@ export default function VideoLive() {
   useEffect(() => {
     if (!db || !currentUid) return;
     const unsub = onSnapshot(doc(db, "wallets", currentUid), (snap) => {
-      if (snap.exists()) setStars(snap.data()?.stars || 0);
+      if (snap.exists()) {
+        setStars(snap.data()?.stars || 0);
+        // wallet update ho gaya -> in-flight spend ab stars me included hai
+        inflightSpendRef.current = 0;
+        giftPendingStore.set(pendingSpendRef.current);
+      }
     });
     return () => unsub();
   }, [currentUid]);
@@ -1397,7 +2692,7 @@ export default function VideoLive() {
     // Live reward: host ka time server gintta hai (30s ping)
     const rewardPing = () => {
       if (AppState.currentState !== "active") return;
-      callApi("/reward/live-ping", { roomId }).catch(() => {});
+      callApi("/reward/live-ping", { roomId, source: "videolive" }).catch(() => {});
     };
     rewardPing();
     rewardPingRef.current = setInterval(rewardPing, 30000);
@@ -1429,11 +2724,17 @@ export default function VideoLive() {
   useEffect(() => {
     if (!db || !roomId) return;
 
-    const chatsQuery = query(
-      collection(db, "rooms", roomId, "chats"),
-      orderBy("createdAt", "desc"),
-      limit(50)
-    );
+    // Viewer: sirf jab se room me aaya uske BAAD ke messages dikhein (purani chat nahi).
+    // Host / moderator-host ko poori chat dikhti hai.
+    const chatSince = isHost ? 0 : Date.now();
+    const chatsQuery = isHost
+      ? query(collection(db, "rooms", roomId, "chats"), orderBy("createdAt", "desc"), limit(50))
+      : query(
+          collection(db, "rooms", roomId, "chats"),
+          where("createdAt", ">=", chatSince),
+          orderBy("createdAt", "desc"),
+          limit(50)
+        );
 
     chatsReadyRef.current = false;
 
@@ -1477,7 +2778,7 @@ export default function VideoLive() {
       if (chatTimer) clearTimeout(chatTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId]);
+  }, [roomId, isHost]);
 
   const showJoinBanner = (data: any) => {
     if (data?.senderId && blockedRef.current.has(data.senderId)) return;
@@ -1596,82 +2897,57 @@ export default function VideoLive() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId, currentUid, profileReady, isHost]);
 
-  // ---------- remote gift (liveGift) → play animation + combo banner ----------
+  // ---------- remote gift (liveGift) → combo banner + animation (LiveRoom jaisa) ----------
   useEffect(() => {
     const gift = roomData?.liveGift;
     if (!gift) return;
 
     const giftKey = `${gift.senderId}_${gift.timestamp}`;
+
+    // Already handled (or it's the gift that existed before we joined).
     if (giftKey === lastSeenGiftKeyRef.current) return;
     lastSeenGiftKeyRef.current = giftKey;
 
-    // My own gift is already on screen (instant local display).
+    // My own gift is already on screen (instant local display in the send handler).
     if (gift.senderId === currentUid) return;
-  if (blockedRef.current.has(gift.senderId)) return; // BLOCK
-
-    setGiftCombo({
-      senderName: gift.senderName,
-      senderImg: gift.senderImg,
-      receiverName: gift.receiverName,
-      giftId: gift.giftId,
-      giftName: gift.giftName,
-      count: gift.comboCount || 1,
-    });
+    if (blockedRef.current.has(gift.senderId)) return; // BLOCK
 
     lastGiftRef.current = { senderId: gift.senderId, giftId: gift.giftId, time: Date.now() };
 
-    if (comboTimeoutRef.current) clearTimeout(comboTimeoutRef.current);
-    comboTimeoutRef.current = setTimeout(() => {
-      setGiftCombo(null);
-      lastGiftRef.current = null;
-      comboCountRef.current = 0;
-    }, 2200);
+    if (giftLayerRef.current) {
+      giftLayerRef.current.showCombo(
+        {
+          senderName: gift.senderName,
+          senderImg: gift.senderImg,
+          receiverName: gift.receiverName,
+          giftId: gift.giftId,
+          giftName: gift.giftName,
+          count: gift.comboCount || 1,
+        },
+        onComboEnd
+      );
+    }
 
     const giftData = gifts.find((g: any) => String(g.id) === String(gift.giftId));
     if (!giftData || !giftData.animation) return;
-    playGift(giftData.animation, giftData.duration);
+
+    if (giftLayerRef.current) {
+      giftLayerRef.current.playDeferred(giftData.animation, giftData.duration, 1600, {
+        senderName: gift.senderName,
+        senderImg: gift.senderImg,
+        receiverName: gift.receiverName,
+        giftName: gift.giftName || giftData.name,
+      });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomData?.liveGift?.timestamp]);
-
-  const playGift = useCallback((animation: any, duration?: number) => {
-    if (!animation) return;
-    setActiveGift(animation);
-    setGiftPlayKey((k) => k + 1);
-    if (giftTimeoutRef.current) clearTimeout(giftTimeoutRef.current);
-    giftTimeoutRef.current = setTimeout(() => setActiveGift(null), duration || 5000);
-  }, []);
-
-  const handleGiftFinish = useCallback(() => {
-    if (giftTimeoutRef.current) clearTimeout(giftTimeoutRef.current);
-    setActiveGift(null);
-  }, []);
-
-  // combo banner slide-in
-  useEffect(() => {
-    if (!giftCombo) return;
-    giftTranslateX.setValue(-80);
-    giftScale.setValue(0.8);
-    giftShake.setValue(-1);
-    giftOpacity.setValue(0);
-
-    Animated.parallel([
-      Animated.spring(giftTranslateX, { toValue: 0, speed: 12, bounciness: 6, useNativeDriver: true }),
-      Animated.spring(giftScale, { toValue: 1, speed: 12, bounciness: 6, useNativeDriver: true }),
-      Animated.timing(giftOpacity, { toValue: 1, duration: 250, useNativeDriver: true }),
-      Animated.sequence([
-        Animated.timing(giftShake, { toValue: 1, duration: 60, useNativeDriver: true }),
-        Animated.timing(giftShake, { toValue: -1, duration: 60, useNativeDriver: true }),
-        Animated.timing(giftShake, { toValue: 0, duration: 60, useNativeDriver: true }),
-      ]),
-    ]).start();
-  }, [giftCombo]);
 
   // gift sheet slide-up
   useEffect(() => {
     if (giftModalVisible) {
-      giftModalAnim.setValue(400);
+      giftModalAnim.setValue(420);
       setGiftPageIdx(0);
-      Animated.timing(giftModalAnim, { toValue: 0, duration: 230, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+      Animated.spring(giftModalAnim, { toValue: 0, damping: 24, stiffness: 300, mass: 0.7, overshootClamping: true, useNativeDriver: true }).start();
     }
   }, [giftModalVisible]);
 
@@ -1739,8 +3015,18 @@ export default function VideoLive() {
       styles.chatArea,
       { bottom: 96 + keyboardHeight },
       !showPk && guestList.length > 0 ? { right: GUEST_TILE_W + 16 } : null,
+      showPk
+        ? {
+            maxHeight: Math.max(
+              120,
+              height -
+                (Math.round(Math.max(Math.max(insets.top, 24) + 74, height * 0.128)) + PK_BAR_H + pkPanelHFixed + 38) -
+                (96 + keyboardHeight)
+            ),
+          }
+        : null,
     ],
-    [keyboardHeight, showPk, guestList.length]
+    [keyboardHeight, showPk, guestList.length, insets.top]
   );
 
   // ============================================================
@@ -1868,6 +3154,30 @@ export default function VideoLive() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [oppRoom, oppLoaded, pkActive, pk?.pkId]);
 
+  // PK result = LOSE → this host sends his tracked face position (~4x/sec) so everybody's
+  // tears / moustache / black face stick to the real face.
+  useEffect(() => {
+    if (!isHost || !pkEnded || pk?.result !== "lose" || !db || !roomId) return;
+    let last: any = null;
+    const i = setInterval(() => {
+      const f = faceRectRef.current;
+      if (!f || Date.now() - f.at > 1500) return; // no fresh face → panel keeps last spot
+      if (
+        last &&
+        Math.abs(f.cx - last.cx) < 0.008 &&
+        Math.abs(f.cy - last.cy) < 0.008 &&
+        Math.abs(f.w - last.w) < 0.01
+      )
+        return;
+      last = f;
+      updateDoc(doc(db, "rooms", roomId), {
+        "pk.face": { cx: f.cx, cy: f.cy, w: f.w, h: f.h, ar: f.ar },
+      }).catch(() => {});
+    }, 250);
+    return () => clearInterval(i);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHost, pkEnded, pk?.result, pk?.pkId]);
+
   // after the result was shown for 8s → clear PK from the room
   useEffect(() => {
     if (!isHost || !pkEnded || !db || !roomId) return;
@@ -1876,6 +3186,24 @@ export default function VideoLive() {
     }, PK_RESULT_SHOW_MS);
     return () => clearTimeout(t);
   }, [isHost, pkEnded, pk?.pkId]);
+
+  // PK khatam hone ke baad 5 sec ke liye "Start PK" button (sirf host ko)
+  const [showStartPk, setShowStartPk] = useState(false);
+  useEffect(() => {
+    if (!isHost || !pkEnded) {
+      setShowStartPk(false);
+      return;
+    }
+    const left = 5000 - (Date.now() - Number(pk?.endedAt || Date.now()));
+    if (left <= 0) {
+      setShowStartPk(false);
+      return;
+    }
+    setShowStartPk(true);
+    const t = setTimeout(() => setShowStartPk(false), left);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHost, pkEnded, pk?.pkId, pk?.endedAt]);
 
   // score bar slides smoothly instead of jumping on every gift
   useEffect(() => {
@@ -1887,10 +3215,29 @@ export default function VideoLive() {
     setOppMuted(false);
   }, [pk?.pkId]);
 
+  // Fetch the opponent-channel token BEFORE the PK starts, so the right panel gets video at once
+  // (before: token was fetched only after "accept" -> long dark "Connecting..." panel).
+  const prefetchOppToken = (channel?: string | null) => {
+    if (!channel || !agoraEngineRef.current) return;
+    if (oppTokenRef.current?.channel === channel) return;
+    const wantedUid = (myAgoraUidRef.current || 1) + PK_UID_OFFSET;
+    oppTokenRef.current = { channel, promise: fetchAgoraToken(channel, wantedUid) };
+  };
+
   // incoming invite → wake the token server while the host is deciding
   useEffect(() => {
-    if (showInvite) warmUpBackend();
+    if (showInvite) {
+      warmUpBackend();
+      prefetchOppToken(pkInvite?.fromRoomId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showInvite]);
+
+  // inviter (and the inviter's viewers): PK is "invited" -> prefetch the opponent token now
+  useEffect(() => {
+    if (agoraReady && pkInvited && pk?.opponentRoomId) prefetchOppToken(pk.opponentRoomId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agoraReady, pkInvited, pk?.opponentRoomId]);
 
   // inviter: cancel automatically if nobody answers
   useEffect(() => {
@@ -2210,6 +3557,13 @@ export default function VideoLive() {
     }
   };
 
+  const onStartPkAgain = () => {
+    setShowStartPk(false);
+    // purana result turant hata do, phir naya PK ke liye friend list kholo
+    if (db && roomId) updateDoc(doc(db, "rooms", roomId), { pk: deleteField() }).catch(() => {});
+    openPkList();
+  };
+
   const onPkButton = () => {
     if (pkActive) {
       Alert.alert("End PK?", "The battle will end now and the current score decides the winner.", [
@@ -2228,7 +3582,7 @@ export default function VideoLive() {
   // their video on the right half and hear them.
   useEffect(() => {
     const engine = agoraEngineRef.current;
-    const oppChannel = pkActive ? pk?.opponentRoomId : null;
+    const oppChannel = showPk ? pk?.opponentRoomId : null;
     if (!agoraReady || !engine || !oppChannel) return;
 
     let cancelled = false;
@@ -2236,7 +3590,12 @@ export default function VideoLive() {
 
     (async () => {
       const wantedUid = (myAgoraUidRef.current || 1) + PK_UID_OFFSET;
-      let t: any = await fetchAgoraToken(oppChannel, wantedUid, () => cancelled);
+      const pre = oppTokenRef.current;
+      oppTokenRef.current = null;
+      let t: any =
+        pre && pre.channel === oppChannel
+          ? await pre.promise
+          : await fetchAgoraToken(oppChannel, wantedUid, () => cancelled);
       if (!cancelled && !t?.token) {
         // token server was slow / cold → one more try before joining
         await new Promise((r) => setTimeout(r, 1500));
@@ -2277,7 +3636,7 @@ export default function VideoLive() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agoraReady, pkActive, pk?.pkId, pk?.opponentRoomId]);
+  }, [agoraReady, showPk, pk?.pkId, pk?.opponentRoomId]);
 
   // ---------- Agora: host broadcasts video, viewer just watches ----------
   // Order matters for speed:
@@ -2413,8 +3772,27 @@ export default function VideoLive() {
 
         engine.registerEventHandler({
           // Agora face detection: face dikhte hi time update. Black screen / camera band / face hata -> update nahi hota.
-          onFacePositionChanged: (_w: number, _h: number, _rects: any, _dist: any, numFaces: number) => {
-            if (isHost && Number(numFaces) > 0) lastFaceAtRef.current = Date.now();
+          onFacePositionChanged: (w: number, h: number, rects: any, _dist: any, numFaces: number) => {
+            if (!isHost || !(Number(numFaces) > 0)) return;
+            lastFaceAtRef.current = Date.now();
+            // keep the biggest face as 0..1 fractions of the camera image (for the PK loser filter)
+            try {
+              const arr: any[] = Array.isArray(rects) ? rects : [];
+              let best: any = null;
+              for (const r of arr) {
+                if (r && (!best || r.width * r.height > best.width * best.height)) best = r;
+              }
+              if (best && w > 0 && h > 0) {
+                faceRectRef.current = {
+                  cx: (best.x + best.width / 2) / w,
+                  cy: (best.y + best.height / 2) / h,
+                  w: best.width / w,
+                  h: best.height / h,
+                  ar: w / h,
+                  at: Date.now(),
+                };
+              }
+            } catch (_) {}
           },
           onJoinChannelSuccess: (connection: any) => {
             if (connection?.channelId && connection.channelId !== roomId) return; // PK channel
@@ -2641,6 +4019,7 @@ export default function VideoLive() {
   const flipCamera = () => {
     try {
       agoraEngineRef.current?.switchCamera();
+      camFrontRef.current = !camFrontRef.current;
     } catch (e) {
       console.log("FLIP CAMERA ERROR:", e);
     }
@@ -2714,7 +4093,7 @@ export default function VideoLive() {
         setExitModalVisible(true);
         return true;
       };
-      const sub = BackHandler.addEventListener("hardwareBackPress", onBack);
+      const sub = scopedBackHandler('/videolive', "hardwareBackPress", onBack);
       return () => sub.remove();
     }, [])
   );
@@ -2825,7 +4204,7 @@ export default function VideoLive() {
 
   const handleShare = async () => {
     try {
-      const shareLink = `https://topking.app/live/${roomId}`;
+      const shareLink = `https://topking-short.vercel.app/live/${roomId}`;
       await Share.share({ message: `🎥 Join ${hostName}'s Live now!\n${shareLink}` });
     } catch (e) {
       console.log(e);
@@ -2897,6 +4276,8 @@ export default function VideoLive() {
           username: currentName || "User",
           img: currentAvatar || STABLE_AVATAR,
           level: Number(myLevel) || 1,
+          verified: myVerified,
+          verifiedColor: normTickColor(myVerifiedColor),
           agoraUid: myAgoraUidRef.current || null,
           at: Date.now(),
         },
@@ -2972,39 +4353,32 @@ export default function VideoLive() {
     if (amGuest && !guestPublishingRef.current) {
       guestPublishingRef.current = true;
       setGuestMicOn(true);
-      setGuestCamOn(true);
+      setGuestCamOn(false);
       (async () => {
         try {
           if (Platform.OS === "android") {
-            const perms = [PermissionsAndroid.PERMISSIONS.CAMERA, PermissionsAndroid.PERMISSIONS.RECORD_AUDIO];
-            const granted = await PermissionsAndroid.requestMultiple(perms);
-            if (
-              granted[PermissionsAndroid.PERMISSIONS.CAMERA] !== PermissionsAndroid.RESULTS.GRANTED ||
-              granted[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] !== PermissionsAndroid.RESULTS.GRANTED
-            ) {
-              throw new Error("Camera / mic permission denied");
+            const granted = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
+            if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+              throw new Error("Mic permission denied");
             }
           }
           engine.enableAudio();
-          engine.enableLocalVideo(true);
-          try {
-            engine.setVideoEncoderConfiguration(GUEST_VIDEO_PROFILE);
-          } catch (_) {}
+          // guest = AUDIO ONLY: camera never opens
+          try { engine.enableLocalVideo(false); } catch (_) {}
           engine.muteLocalAudioStream(false);
-          engine.muteLocalVideoStream(false);
+          engine.muteLocalVideoStream(true);
           engine.setClientRole(ClientRoleType.ClientRoleBroadcaster);
           engine.updateChannelMediaOptions({
             clientRoleType: ClientRoleType.ClientRoleBroadcaster,
-            publishCameraTrack: true,
+            publishCameraTrack: false,
             publishMicrophoneTrack: true,
             autoSubscribeAudio: true,
             autoSubscribeVideo: true,
           });
-          engine.startPreview();
           showToast("You are on the call with the host 🎤");
         } catch (e: any) {
           console.log("GUEST PUBLISH ERROR:", e?.message || e);
-          Alert.alert("Could not join", e?.message || "Camera / mic could not start.");
+          Alert.alert("Could not join", e?.message || "Mic could not start.");
           leaveGuestSeat();
         }
       })();
@@ -3028,7 +4402,7 @@ export default function VideoLive() {
   useEffect(() => {
     if (!amGuest) return;
     try {
-      agoraEngineRef.current?.muteLocalVideoStream(!guestCamOn);
+      agoraEngineRef.current?.muteLocalVideoStream(true); // audio only
     } catch (_) {}
   }, [amGuest, guestCamOn]);
 
@@ -3076,6 +4450,8 @@ export default function VideoLive() {
           name: req.username || req.name || "Guest",
           img: req.img || STABLE_AVATAR,
           level: Number(req.level || 1),
+          verified: isVerified(req.verified),
+          verifiedColor: normTickColor(req.verifiedColor),
           agoraUid: Number(req.agoraUid) || null,
           hostMuted: false,
           at: Date.now(),
@@ -3120,6 +4496,28 @@ export default function VideoLive() {
     return () => clearInterval(t);
   }, [isHost, roomId]);
 
+  // PK shuru hote hi call par baithe sabhi guests hata do (aur pending requests bhi saaf).
+  // Har host sirf apna room likhta hai. Guest ki taraf amGuest false hote hi uska mic/cam apne aap band ho jata hai.
+  useEffect(() => {
+    if (!isHost || !db || !roomId || !pkActive) return;
+    const hasGuests = Object.keys(roomData?.guests || {}).length > 0;
+    const hasReqs = Object.keys(roomData?.guestReq || {}).length > 0;
+    if (!hasGuests && !hasReqs) return;
+    updateDoc(doc(db, "rooms", roomId), {
+      ...(hasGuests ? { guests: deleteField() } : null),
+      ...(hasReqs ? { guestReq: deleteField() } : null),
+    }).catch(() => {});
+  }, [isHost, roomId, pkActive, roomData?.guests, roomData?.guestReq]);
+
+  // guest ko pata chale ki PK ki wajah se call se hata diya gaya
+  const wasGuestRef = useRef(false);
+  useEffect(() => {
+    if (wasGuestRef.current && !amGuest && pkActive) {
+      showToast("PK started - you were removed from the call");
+    }
+    wasGuestRef.current = amGuest;
+  }, [amGuest, pkActive]);
+
   const onGuestTilePress = (g: any) => {
     if (g.uid === currentUid) {
       setMenuVisible(true);
@@ -3127,6 +4525,10 @@ export default function VideoLive() {
     }
     if (isHost) {
       Alert.alert(g.name || "Guest", "Guest controls", [
+        {
+          text: "View profile",
+          onPress: () => openProfile({ uid: g.uid, name: g.name, img: g.img, level: Number(g.level || 1), verified: g.verified, verifiedColor: g.verifiedColor }),
+        },
         {
           text: g.hostMuted ? "Unmute guest" : "Mute guest",
           onPress: () => muteGuest(g.uid, !g.hostMuted),
@@ -3359,9 +4761,35 @@ export default function VideoLive() {
     if (!likeTimerRef.current) likeTimerRef.current = setTimeout(flushLikes, 2500);
   };
 
-  const onScreenTap = () => {
+  const goingOppRef = useRef(false);
+  const goToOpponentRoom = () => {
+    const targetId = pk?.opponentRoomId;
+    if (isHost || !targetId || targetId === roomId || goingOppRef.current) return;
+    goingOppRef.current = true;
+    setTimeout(() => { goingOppRef.current = false; }, 2000);
+    flushGiftBatchRef.current?.(); // bacha hua gift batch isi room ke host ko bhej do
+    if (amGuest) leaveGuestSeat();
+    try {
+      router.replace({ pathname: "/videolive", params: { id: targetId, role: "viewer" } } as any);
+    } catch (_) {
+      goingOppRef.current = false;
+    }
+  };
+
+  const onScreenTap = (e?: any) => {
     Keyboard.dismiss();
     setEmojiOpen(false);
+    // PK me viewer doosri side ke panel par tap kare -> us host ke live room me chala jaye
+    if (!isHost && pkActive && !!pk?.opponentHostId && e?.nativeEvent) {
+      const { pageX, pageY } = e.nativeEvent;
+      if (pageY >= pkPanelTop && pageY <= pkPanelTop + pkPanelH) {
+        // Doosri side ke panel par tap -> us host ke live room me chale jao (wahin gift de sakte ho)
+        if (pageX >= pkPanelW) {
+          goToOpponentRoom();
+          return;
+        }
+      }
+    }
     sendLike();
   };
 
@@ -3506,13 +4934,70 @@ export default function VideoLive() {
   // GIFTING (same flow as LiveRoom.js)
   // ============================================================
 
-  // Who can receive a gift here: the host, and — during a PK — the opponent host.
+  // ---------- PK side (Tiki style) ----------
+  // Viewer apni side ke host ko hi gift de sakta hai. Doosri side par jana ho to
+  // us panel par tap karo -> turant switch, koi await nahi. (Gift sheet me ab Switch button nahi hai,
+  // taaki ek viewer dono hosts ko gift na bhej sake.)
+  const switchPkSide = useCallback((to?: "me" | "opp") => {
+    const next = to || (pkSideRef.current === "me" ? "opp" : "me");
+    if (next === pkSideRef.current) return;
+    pkSideRef.current = next;
+    setPkSide(next);
+    Animated.timing(pkSideAnim, {
+      toValue: next === "me" ? 0 : 1,
+      duration: 160,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, []);
+
+  // PK khatam / naya PK -> wapas apni side par
+  useEffect(() => {
+    if (!showPk) {
+      pkSideRef.current = "me";
+      setPkSide("me");
+      pkSideAnim.setValue(0);
+    }
+  }, [showPk, pk?.pkId]);
+
+  // Friend = dono taraf follow. Sirf main follow karu to "Following".
+  const iFollowId = (id: string) =>
+    followingIds.has(id) || guestFollowed.has(id) || (id === hostId && isFollowing);
+  const isFriendId = (id: string) => iFollowId(id) && followedByIds.has(id);
+
+  // PK me dono hosts (aur viewers) ke liye: opponent / host ko follow kiya hai ya nahi (sirf ek getDoc)
+  useEffect(() => {
+    if (!db || !currentUid || !pk?.opponentHostId || !showPk) return;
+    const ids = [pk.opponentHostId, hostId].filter((id: any) => id && id !== currentUid);
+    let alive = true;
+    ids.forEach((id: string) => {
+      getDoc(doc(db, "users", currentUid, "following", id))
+        .then((sn) => {
+          if (alive && sn.exists()) setGuestFollowed((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+        })
+        .catch(() => {});
+      getDoc(doc(db, "users", currentUid, "followers", id))
+        .then((sn) => {
+          if (alive && sn.exists()) setFollowedByIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+        })
+        .catch(() => {});
+    });
+    return () => {
+      alive = false;
+    };
+  }, [pk?.opponentHostId, pk?.pkId, showPk, hostId, currentUid]);
+
+  // Who can receive a gift here: ONLY the host of the side the viewer is on.
+  // Gift hamesha is room ke host ko jata hai. Doosre host ko gift karna ho to uske PK panel par tap karke
+  // uske live room me jao (goToOpponentRoom) - ek room se dono ko gift nahi ja sakta.
+  const onOppSide = false;
   const giftUsers: any[] = [];
-  if (hostId && hostId !== currentUid) {
-    giftUsers.push({ uid: hostId, name: hostName, img: hostImg });
-  }
-  if (pkActive && pk?.opponentHostId && pk.opponentHostId !== currentUid) {
-    giftUsers.push({ uid: pk.opponentHostId, name: pk.opponentName, img: pk.opponentImg });
+  if (onOppSide) {
+    if (pk.opponentHostId !== currentUid) {
+      giftUsers.push({ uid: pk.opponentHostId, name: pk.opponentName, img: pk.opponentImg });
+    }
+  } else if (hostId && hostId !== currentUid) {
+    giftUsers.push({ uid: hostId, name: hostName, img: hostImg, verified: hostVerified, verifiedColor: hostVerifiedColor });
   }
 
   const openGiftModal = () => {
@@ -3520,30 +5005,31 @@ export default function VideoLive() {
       Alert.alert("Gift", "There is nobody to send a gift to right now.");
       return;
     }
-    if (!giftUsers.some((u) => u.uid === selectedGiftUser)) {
-      setSelectedGiftUser(giftUsers[0].uid);
-    }
-    setGiftQty(1);
+    setSelectedGiftUser(giftUsers[0].uid);
     setGiftModalVisible(true);
   };
 
-  // 1) close sheet + show animation/banner IMMEDIATELY
-  // 2) all Firestore / backend work happens in the background
+  // ============================================================
+  // SEND GIFT (LiveRoom.js jaisa):
+  //  1) combo banner x1, x2, x3 turant (har tap par), full-screen animation tap ruke tab
+  //  2) sheet band NAHI hoti -> lagatar 10-20 tap
+  //  3) taps batch hote hain, ~1s me ek Firestore write
+  // ============================================================
   const handleSendGift = (item: any) => {
-    if (!selectedGiftUser || typeof selectedGiftUser !== "string") {
+    const receiverId = giftUsers[0]?.uid;
+    if (!receiverId || typeof receiverId !== "string") {
       Alert.alert("Gift", "Please select a user");
       return;
     }
-    const qty = giftQty;
-    if (stars < Number(item.price || 0) * qty) {
-      Alert.alert("Gift", "Not enough stars", [
-        { text: "Cancel", style: "cancel" },
-        { text: "Recharge", onPress: goRecharge },
-      ]);
+
+    const price = Number(item.price || 0);
+
+    // balance = wallet - (abhi tak write na hue taps) - (write ho chuke par snapshot pending)
+    const available = stars - pendingSpendRef.current - inflightSpendRef.current;
+    if (available < price) {
+      Alert.alert("Gift", "Not enough stars");
       return;
     }
-
-    const receiverId = selectedGiftUser;
 
     // never gift yourself, and only users that are in the list
     if (receiverId === currentUid || !giftUsers.some((u) => u.uid === receiverId)) {
@@ -3551,25 +5037,25 @@ export default function VideoLive() {
       return;
     }
 
-    setGiftModalVisible(false);
-
-    if (item.animation) playGift(item.animation, item.duration);
+    // gift ya receiver badal gaya (PK me side switch) -> pehle purana batch bhej do
+    const open = giftBatchRef.current;
+    if (open && (open.item.id !== item.id || open.receiverId !== receiverId)) {
+      flushGiftBatchRef.current?.();
+    }
 
     const isComboContinue =
       lastGiftRef.current &&
       lastGiftRef.current.senderId === currentUid &&
       lastGiftRef.current.giftId === item.id &&
+      lastGiftRef.current.receiverId === receiverId &&
       Date.now() - lastGiftRef.current.time < 3000;
 
-    if (!comboCountRef.current || !isComboContinue) comboCountRef.current = 1;
-    else comboCountRef.current++;
+    if (!giftComboCountRef.current || !isComboContinue) giftComboCountRef.current = 1;
+    else giftComboCountRef.current++;
 
-    if (qty > 1) comboCountRef.current += qty - 1;
-    const comboCount = comboCountRef.current;
+    const comboCount = giftComboCountRef.current;
 
-    lastGiftRef.current = { senderId: currentUid, giftId: item.id, time: Date.now() };
-
-    if (comboTimeoutRef.current) clearTimeout(comboTimeoutRef.current);
+    lastGiftRef.current = { senderId: currentUid, giftId: item.id, receiverId, time: Date.now() };
 
     const _receiver = giftUsers.find((u) => u.uid === receiverId);
     const _receiverName =
@@ -3580,35 +5066,95 @@ export default function VideoLive() {
     const _senderDisplay =
       currentRealName && currentRealName !== "User" ? currentRealName : currentName;
 
-    setGiftCombo({
-      senderName: _senderDisplay,
-      senderImg: currentAvatar || STABLE_AVATAR,
-      receiverName: _receiverName,
-      giftId: item.id,
-      giftName: item.name,
-      count: comboCount,
-    });
+    if (giftLayerRef.current) {
+      // 1) instant: combo banner x1, x2, x3 ... (har tap par)
+      giftLayerRef.current.showCombo(
+        {
+          senderName: _senderDisplay,
+          senderImg: currentAvatar || STABLE_AVATAR,
+          receiverName: _receiverName,
+          giftId: item.id,
+          giftName: item.name,
+          count: comboCount,
+        },
+        onComboEnd
+      );
 
-    comboTimeoutRef.current = setTimeout(() => {
-      setGiftCombo(null);
-      lastGiftRef.current = null;
-      comboCountRef.current = 0;
-    }, 2200);
+      // 2) full-screen animation: tap ruke tab SIRF last gift ki chalegi
+      if (item.animation) {
+        giftLayerRef.current.playDeferred(item.animation, item.duration, 600, {
+          senderName: _senderDisplay,
+          senderImg: currentAvatar || STABLE_AVATAR,
+          receiverName: _receiverName,
+          giftName: item.name,
+        });
+      }
+    }
 
-    // Own gift: mark as seen so the Firestore echo is ignored.
+    // 3) local balance turant kam dikhe
+    pendingSpendRef.current += price;
+    giftPendingStore.set(pendingSpendRef.current);
+
+    // 4) tap ko batch me jodo (Firestore write baad me, ek saath)
+    if (!giftBatchRef.current) {
+      giftBatchRef.current = {
+        item,
+        receiverId,
+        receiverName: _receiverName,
+        senderDisplay: _senderDisplay,
+        taps: 0,
+        comboCount: 0,
+        chat: false,
+      };
+    }
+    const batch = giftBatchRef.current;
+    batch.taps += 1;
+    batch.comboCount = comboCount;
+    if (comboCount === 1) batch.chat = true; // chat line sirf combo ke pehle batch me
+
+    // lagatar tap ho to bhi har ~1s me ek write (dusron ko x count badhta dikhe)
+    if (!giftFlushTimerRef.current) {
+      giftFlushTimerRef.current = setTimeout(() => {
+        flushGiftBatchRef.current?.();
+      }, 1000);
+    }
+  };
+
+  const flushGiftBatch = () => {
+    if (giftFlushTimerRef.current) {
+      clearTimeout(giftFlushTimerRef.current);
+      giftFlushTimerRef.current = null;
+    }
+
+    const batch = giftBatchRef.current;
+    if (!batch) return;
+    giftBatchRef.current = null;
+
+    const total = Number(batch.item.price || 0) * batch.taps;
+    pendingSpendRef.current = Math.max(0, pendingSpendRef.current - total);
+    inflightSpendRef.current += total;
+
+    // Own gift timestamp: mark as seen so the Firestore echo is ignored.
     const giftTimestamp = Date.now();
     lastSeenGiftKeyRef.current = `${currentUid}_${giftTimestamp}`;
 
     sendGiftInBackground({
-      item,
-      receiverId,
-      receiverName: _receiverName,
-      senderDisplay: _senderDisplay,
-      comboCount,
+      item: batch.item,
+      receiverId: batch.receiverId,
+      receiverName: batch.receiverName,
+      senderDisplay: batch.senderDisplay,
+      comboCount: batch.comboCount,
+      taps: batch.taps,
+      chat: batch.chat,
       giftTimestamp,
-      qty,
     });
   };
+  flushGiftBatchRef.current = flushGiftBatch;
+
+  // room chhodte waqt bacha hua batch bhi bhej do (stars kat chuke hain)
+  useEffect(() => () => {
+    flushGiftBatchRef.current?.();
+  }, []);
 
   const handleSendGiftRef = useRef<any>(null);
   handleSendGiftRef.current = handleSendGift;
@@ -3620,12 +5166,14 @@ export default function VideoLive() {
     receiverName,
     senderDisplay,
     comboCount,
+    taps = 1,
+    chat = false,
     giftTimestamp,
-    qty = 1,
   }: any) => {
     if (!db || !roomId || !currentUid) return;
 
-    const price = Number(item.price || 0) * qty;
+    // taps = is batch me kitne gift tap hue -> total price ek hi write me
+    const price = Number(item.price || 0) * taps;
     const roomRef = doc(db, "rooms", roomId);
     const receiverWalletRef = doc(db, "wallets", receiverId);
     const receiverUserRef = doc(db, "users", receiverId);
@@ -3639,6 +5187,7 @@ export default function VideoLive() {
       [`roomGifters.${currentUid}.img`]: currentAvatar || STABLE_AVATAR,
       [`roomGifters.${currentUid}.level`]: myLevel,
       [`roomGifters.${currentUid}.verified`]: myVerified,
+      [`roomGifters.${currentUid}.verifiedColor`]: normTickColor(myVerifiedColor),
       [`roomGifters.${currentUid}.stars`]: increment(price),
       liveGift: {
         giftId: item.id,
@@ -3673,11 +5222,21 @@ export default function VideoLive() {
       }
     }
 
+    // PEHLE room write (liveGift + seatStars). Fail ho to na stars kategi, na doosron ko kuch dikhega
+    // -> user ko batao aur wallet se paisa mat kaato (LiveRoom jaisa).
+    try {
+      await updateDoc(roomRef, roomUpdate);
+    } catch (e: any) {
+      console.log("GIFT ROOM WRITE FAILED:", e?.code, e?.message);
+      inflightSpendRef.current = Math.max(0, inflightSpendRef.current - price);
+      giftPendingStore.set(pendingSpendRef.current);
+      showToast("⚠️ Gift nahi gaya, dobara try karo");
+      return;
+    }
+
     const jobs: Promise<any>[] = [
       // sender wallet
       updateDoc(doc(db, "wallets", currentUid), { stars: increment(-price), totalSpent: increment(price) }),
-
-      updateDoc(roomRef, roomUpdate),
 
       // receiver wallet: earnings + receivedStars
       setDoc(
@@ -3698,13 +5257,13 @@ export default function VideoLive() {
       ...pkJobs,
     ];
 
-    // chat line only on the first tap of a combo (avoid spam)
-    if (comboCount <= qty) {
+    // chat line only once per combo (avoid spam)
+    if (chat) {
       jobs.push(
         addDoc(collection(db, "rooms", roomId, "chats"), {
           type: "gift",
           senderId: currentUid,
-          qty,
+          qty: 1,
           senderName: senderDisplay,
           username: currentName,
           userImg: currentAvatar || STABLE_AVATAR,
@@ -3715,6 +5274,7 @@ export default function VideoLive() {
           receiverName,
           giftId: item.id,
           giftName: item.name,
+          comboCount,
           createdAt: Date.now(),
         })
       );
@@ -3723,7 +5283,7 @@ export default function VideoLive() {
     // one failing write must not cancel the others
     const results = await Promise.allSettled(jobs);
     results.forEach((r, idx) => {
-      if (r.status === "rejected" && __DEV__) console.log("GIFT WRITE FAILED #" + idx, r.reason);
+      if (r.status === "rejected") console.log("GIFT WRITE FAILED #" + idx, (r as any).reason?.code, (r as any).reason?.message);
     });
 
     // agency stars: fire-and-forget (Render cold start can take 30s+)
@@ -3752,9 +5312,11 @@ export default function VideoLive() {
   const showRemoteVideo = !isHost && hostRemoteUid != null;
 
   const pkPanelW = width / 2;
-  const pkPanelH = pkPanelW * 1.54;
-  const pkBarTop = 130;
-  const pkPanelTop = pkBarTop + 16;
+  const pkPanelH = pkPanelHFixed; // Tiki ratio 1.547
+  const safeTop = Math.max(insets.top, 24);
+  // Tiki: score bar starts ~13% from the top (below the header with a gap), panels sit right under it.
+  const pkBarTop = Math.round(Math.max(safeTop + 74, height * 0.128));
+  const pkPanelTop = pkBarTop + PK_BAR_H;
 
   const myResult = pk?.result; // "win" | "lose" | "draw" — from THIS room's point of view
   const oppResult = myResult === "win" ? "lose" : myResult === "lose" ? "win" : myResult;
@@ -3818,19 +5380,6 @@ export default function VideoLive() {
                 active: hostMutedMe || !guestMicOn,
                 icon: <Ionicons name={hostMutedMe || !guestMicOn ? "mic-off" : "mic"} size={24} color="#fff" />,
                 onPress: toggleGuestMic,
-              },
-              {
-                key: "gcam",
-                label: guestCamOn ? "Camera off" : "Camera on",
-                active: !guestCamOn,
-                icon: <Ionicons name={guestCamOn ? "videocam" : "videocam-off"} size={24} color="#fff" />,
-                onPress: () => setGuestCamOn((v) => !v),
-              },
-              {
-                key: "gflip",
-                label: "Flip",
-                icon: <Ionicons name="camera-reverse-outline" size={24} color="#fff" />,
-                onPress: flipCamera,
               },
               {
                 key: "gleave",
@@ -3974,31 +5523,38 @@ export default function VideoLive() {
         </>
       ) : (
         <>
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: "#1A1444" }]} />
-          <View
+          {/* Tiki background: navy -> purple gradient (no flat black) */}
+          <LinearGradient
+            colors={["#0F0D33", "#1A1450", "#2C2168", "#3B2B7D"]}
+            locations={[0, 0.35, 0.7, 1]}
+            style={StyleSheet.absoluteFill}
+          />
+          <LinearGradient
             pointerEvents="none"
-            style={{
-              position: "absolute",
-              left: 0,
-              right: 0,
-              bottom: 0,
-              height: height * 0.5,
-              backgroundColor: "rgba(8,6,28,0.55)",
-            }}
+            colors={["rgba(40,110,255,0.38)", "rgba(40,110,255,0)"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={{ position: "absolute", top: 0, left: 0, width: width * 0.7, height: 230 }}
+          />
+          <LinearGradient
+            pointerEvents="none"
+            colors={["rgba(255,45,117,0.32)", "rgba(255,45,117,0)"]}
+            start={{ x: 1, y: 0 }}
+            end={{ x: 0, y: 1 }}
+            style={{ position: "absolute", top: 0, right: 0, width: width * 0.7, height: 230 }}
           />
 
-          {/* score bar */}
+          {/* score bar: BLUE (me) | PINK (opponent) */}
           <View style={[styles.pkBarWrap, { top: pkBarTop }]}>
             <View style={styles.pkBar}>
               <Animated.View
                 style={{
                   ...StyleSheet.absoluteFillObject,
-                  backgroundColor: "#1E90FF",
+                  backgroundColor: "#1E8CFF",
                   transform: [{ translateX: pkBarAnim.interpolate({ inputRange: [0, 100], outputRange: [-width, 0] }) }],
                 }}
               />
             </View>
-            {/* lightning marker rides the border between the two scores */}
             <Animated.View
               pointerEvents="none"
               style={[
@@ -4010,14 +5566,14 @@ export default function VideoLive() {
             </Animated.View>
             <View pointerEvents="none" style={[styles.pkScoreWrap, { left: 4 }]}>
               <View style={styles.pkStarBox}>
-                <Ionicons name="star" size={9} color="#1E90FF" />
+                <Ionicons name="star" size={11} color="#1E8CFF" />
               </View>
               <Text style={styles.pkScoreTxt}>{shownMy}</Text>
             </View>
             <View pointerEvents="none" style={[styles.pkScoreWrap, { right: 4 }]}>
               <Text style={styles.pkScoreTxt}>{shownOpp}</Text>
               <View style={styles.pkStarBox}>
-                <Ionicons name="star" size={9} color="#FF2D95" />
+                <Ionicons name="star" size={11} color="#FF2D75" />
               </View>
             </View>
           </View>
@@ -4025,101 +5581,85 @@ export default function VideoLive() {
           {/* two video panels */}
           <View style={[styles.pkPanels, { top: pkPanelTop, height: pkPanelH }]}>
             {/* LEFT = this room's host */}
-            <View
-              style={[
-                { width: pkPanelW, height: pkPanelH, backgroundColor: "#111" },
-                pkEnded && myResult === "win" && styles.pkWinnerPanel,
-              ]}
-            >
+            <View style={{ width: pkPanelW, height: pkPanelH, backgroundColor: "#1B1545" }}>
               {showLocalVideo ? (
                 <RtcSurfaceView style={{ flex: 1 }} canvas={{ uid: 0 }} />
               ) : showRemoteVideo ? (
                 <RtcSurfaceView style={{ flex: 1 }} canvas={{ uid: hostRemoteUid as number }} />
               ) : (
-                <View style={styles.pkWaiting}>
-                  <View style={styles.pkBadge}>
-                    <Text style={styles.pkBadgeTxt}>PK</Text>
-                  </View>
-                </View>
+                <PkWaiting img={hostImg} />
               )}
               {(isHost ? videoOff : hostVideoOff) && pausedOverlay("Video paused", StyleSheet.absoluteFill, false)}
-              {pkEnded && myResult === "lose" && <View pointerEvents="none" style={styles.pkDim} />}
-              <PkSupporters gifters={pk?.gifters} side="left" />
-              {pkEnded && !!myResult && (
-                <View style={[styles.pkResultBadge, myResult === "win" && { backgroundColor: "#FFB300" }]}>
-                  <Text style={styles.pkResultBadgeTxt}>{resultText(myResult)}</Text>
-                </View>
-              )}
-              <View style={styles.pkNamePill}>
-                <Text numberOfLines={1} style={styles.pkNameTxt}>
-                  {hostName}
-                </Text>
-              </View>
+                            {pkEnded && !!myResult && <PkPanelResult key={`res_me_${pk?.pkId}`} result={myResult} endedAt={pk?.endedAt} />}
+              {pkEnded && myResult === "lose" && <PkLoserPunish key={`pun_me_${pk?.pkId}`} panelW={pkPanelW} panelH={pkPanelH} face={pk?.face} mirror={isHost && camFrontRef.current} />}
+              <PkSeats gifters={pk?.gifters} mirror />
             </View>
 
             {/* RIGHT = opponent host (their channel) */}
-            <View
-              style={[
-                { width: pkPanelW, height: pkPanelH, backgroundColor: "#111" },
-                pkEnded && oppResult === "win" && styles.pkWinnerPanel,
-              ]}
-            >
+            <View style={{ width: pkPanelW, height: pkPanelH, backgroundColor: "#1B1545" }}>
               {oppRemoteUid && pkConn ? (
                 <RtcSurfaceView style={{ flex: 1 }} canvas={{ uid: oppRemoteUid }} connection={pkConn} />
               ) : (
-                <View style={styles.pkWaiting}>
-                  <Image source={{ uri: pk?.opponentImg || STABLE_AVATAR }} style={styles.pkWaitAvatar} />
-                  <ActivityIndicator size="small" color="#F71084" style={{ marginTop: 10 }} />
-                  <Text style={styles.pkWaitTxt}>Connecting...</Text>
-                </View>
+                <PkWaiting img={pk?.opponentImg} loading={pkActive} />
               )}
-              {pkEnded && oppResult === "lose" && <View pointerEvents="none" style={styles.pkDim} />}
-              <PkSupporters gifters={oppRoom?.pk?.gifters} side="right" />
-              {pkActive && !!oppRemoteUid && (
-                <TouchableOpacity style={styles.pkMuteBtn} onPress={toggleOppMute} activeOpacity={0.8}>
-                  <Ionicons name={oppMuted ? "volume-mute" : "volume-high"} size={14} color="#fff" />
-                </TouchableOpacity>
-              )}
-              {pkEnded && !!myResult && (
-                <View style={[styles.pkResultBadge, oppResult === "win" && { backgroundColor: "#FFB300" }]}>
-                  <Text style={styles.pkResultBadgeTxt}>{resultText(oppResult)}</Text>
-                </View>
-              )}
-              <View style={[styles.pkNamePill, { left: undefined, right: 6 }]}>
-                <Text numberOfLines={1} style={styles.pkNameTxt}>
-                  {pk?.opponentName || "Opponent"}
-                </Text>
-              </View>
+              {pkEnded && !!myResult && <PkPanelResult key={`res_opp_${pk?.pkId}`} result={oppResult} endedAt={pk?.endedAt} />}
+              {pkEnded && oppResult === "lose" && <PkLoserPunish key={`pun_opp_${pk?.pkId}`} panelW={pkPanelW} panelH={pkPanelH} face={oppRoom?.pk?.face} mirror={false} />}
+              <PkSeats gifters={oppRoom?.pk?.gifters} />
             </View>
 
-            {/* winner banner: the host who got the most gifts */}
-            {pkEnded && !!myResult && (
-              <PkWinnerBanner
-                key={`banner_${pk?.pkId}`}
-                result={myResult}
-                winner={
-                  myResult === "win"
-                    ? { name: hostName, img: hostImg }
-                    : { name: pk?.opponentName, img: pk?.opponentImg }
-                }
-                score={myResult === "lose" ? shownOpp : shownMy}
-              />
+            {/* viewer ki side: glow border (native-driven, smooth) + hint doosri side par */}
+            {!isHost && pkActive && !!pk?.opponentHostId && (
+              <>
+                <Animated.View
+                  pointerEvents="none"
+                  style={[
+                    styles.pkSideGlow,
+                    { left: 0, width: pkPanelW, height: pkPanelH, borderColor: "#1E8CFF", opacity: pkSideAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) },
+                  ]}
+                />
+                <Animated.View
+                  pointerEvents="none"
+                  style={[
+                    styles.pkSideGlow,
+                    { left: pkPanelW, width: pkPanelW, height: pkPanelH, borderColor: "#FF2D75", opacity: pkSideAnim },
+                  ]}
+                />
+                <Animated.View
+                  pointerEvents="none"
+                  style={[styles.pkSideHint, { left: 0, width: pkPanelW, opacity: pkSideAnim }]}
+                >
+                  <Text style={styles.pkSideHintTxt}>Tap to join & support</Text>
+                </Animated.View>
+                <Animated.View
+                  pointerEvents="none"
+                  style={[
+                    styles.pkSideHint,
+                    { left: pkPanelW, width: pkPanelW, opacity: pkSideAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) },
+                  ]}
+                >
+                  <Text style={styles.pkSideHintTxt}>Tap to join & support</Text>
+                </Animated.View>
+              </>
             )}
+
+            {/* gloves + lightning in the middle */}
+            {pkActive && Date.now() - (pk?.startAt || 0) < 3500 && <PkGlovesVs key={`vs_${pk?.pkId}`} startAt={pk?.startAt} />}
+
+            {/* big trophy in the middle right after the PK ends */}
+            {pkEnded && !!myResult && <PkCenterTrophy key={`ct_${pk?.pkId}`} result={myResult} endedAt={pk?.endedAt} />}
 
             {/* countdown (own component → no whole-screen re-render) */}
             {pkActive && !!pk?.endAt && <PkTimerPill key={`timer_${pk?.pkId}`} endAt={pk.endAt} />}
-
-            {/* "VS" splash only for the first seconds of a fresh battle */}
-            {pkActive && Date.now() - (pk?.startAt || 0) < 4000 && (
-              <PkVsIntro
-                key={`intro_${pk?.pkId}`}
-                leftName={hostName}
-                leftImg={hostImg}
-                rightName={pk?.opponentName || "Opponent"}
-                rightImg={pk?.opponentImg}
-              />
+            {/* last 10 seconds: big 10 9 8 ... 1 */}
+            {pkActive && !!pk?.endAt && <PkFinalCountdown key={`fcd_${pk?.pkId}`} endAt={pk.endAt} />}
+            {/* after the PK: "00:09" result countdown (Tiki) */}
+            {pkEnded && !!pk?.endedAt && (
+              <PkTimerPill key={`rtimer_${pk?.pkId}`} endAt={Number(pk.endedAt) + PK_RESULT_SHOW_MS} result />
             )}
           </View>
+
+          {/* scrolling tip under the panels */}
+          <PkTicker top={pkPanelTop + pkPanelH + 8} />
         </>
       )}
 
@@ -4128,9 +5668,83 @@ export default function VideoLive() {
         <View style={StyleSheet.absoluteFill} />
       </TouchableWithoutFeedback>
 
+      {/* PK ke baad 5 sec: yellow "Start PK" (Tiki) -> tap overlay ke UPAR */}
+      {isHost && pkEnded && showStartPk && (
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={onStartPkAgain}
+          style={[styles.startPkBtn, { top: pkPanelTop + pkPanelH - 28, left: width / 2 - 113 }]}
+        >
+          <Text style={styles.startPkTxt}>Start PK</Text>
+        </TouchableOpacity>
+      )}
+
+      {/* PK: name pills + follow / Friend + mute -> tap overlay ke UPAR (warna tap nahi pakadte) */}
+      {showPk && (
+        <View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, top: pkPanelTop, height: pkPanelH, flexDirection: "row" }}>
+          <View pointerEvents="box-none" style={{ width: pkPanelW, height: pkPanelH }}>
+              {/* left host name + follow "+" / Friend (viewers + opponent host dekh sakte hain) */}
+              {!!hostId && (
+                <View style={[styles.pkOppPill, { right: undefined, left: 6, paddingLeft: 9, paddingRight: hostId === currentUid ? 9 : 3 }]}>
+                  <Text numberOfLines={1} style={styles.pkOppName}>
+                    {hostName}
+                  </Text>
+                  {hostId !== currentUid && (iFollowId(hostId) ? (
+                    <View style={[styles.pkFriendTag, !isFriendId(hostId) && styles.pkFollowingTag]}>
+                      <Ionicons name={isFriendId(hostId) ? "people" : "checkmark"} size={9} color="#fff" />
+                      <Text style={styles.pkFriendTxt}>{isFriendId(hostId) ? "Friend" : "Following"}</Text>
+                    </View>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.pkOppPlus}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      onPress={() => followGuest({ uid: hostId, name: hostName, img: hostImg })}
+                    >
+                      <Ionicons name="add" size={13} color="#111" />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+          </View>
+          <View pointerEvents="box-none" style={{ width: pkPanelW, height: pkPanelH }}>
+                            {pkActive && !!oppRemoteUid && (
+                <TouchableOpacity style={styles.pkMuteBtn} onPress={toggleOppMute} activeOpacity={0.8}>
+                  <Ionicons name={oppMuted ? "volume-mute" : "volume-high"} size={14} color="#fff" />
+                </TouchableOpacity>
+              )}
+              {/* opponent name + yellow follow "+" (top-right, like Tiki) */}
+              <View style={styles.pkOppPill}>
+                <Text numberOfLines={1} style={styles.pkOppName}>
+                  {pk?.opponentName || "Opponent"}
+                </Text>
+                {!!pk?.opponentHostId && pk.opponentHostId !== currentUid && (
+                  iFollowId(pk.opponentHostId) ? (
+                    <View style={[styles.pkFriendTag, !isFriendId(pk.opponentHostId) && styles.pkFollowingTag]}>
+                      <Ionicons name={isFriendId(pk.opponentHostId) ? "people" : "checkmark"} size={9} color="#fff" />
+                      <Text style={styles.pkFriendTxt}>{isFriendId(pk.opponentHostId) ? "Friend" : "Following"}</Text>
+                    </View>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.pkOppPlus}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      onPress={() => followGuest({ uid: pk.opponentHostId, name: pk.opponentName, img: pk.opponentImg })}
+                    >
+                      <Ionicons name="add" size={13} color="#111" />
+                    </TouchableOpacity>
+                  )
+                )}
+              </View>
+          </View>
+        </View>
+      )}
+
       {/* soft top/bottom scrims so the white text stays readable */}
-      <View pointerEvents="none" style={styles.topScrim} />
-      <View pointerEvents="none" style={styles.bottomScrim} />
+      {!showPk && (
+        <>
+          <LinearGradient pointerEvents="none" colors={["rgba(0,0,0,0.5)", "rgba(0,0,0,0)"]} style={styles.topScrim} />
+          <LinearGradient pointerEvents="none" colors={["rgba(0,0,0,0)", "rgba(0,0,0,0.55)"]} style={styles.bottomScrim} />
+        </>
+      )}
 
       {/* ================= GUEST TILES (viewers on the call with the host) ================= */}
       {!showPk && guestList.length > 0 && (
@@ -4170,6 +5784,7 @@ export default function VideoLive() {
                   <Text numberOfLines={1} style={styles.guestNameTxt}>
                     {isMe ? "You" : g.name || "Guest"}
                   </Text>
+                  <UserTick uid={g.uid} verified={isMe ? !!myVerified : !!g.verified} verifiedColor={isMe ? myVerifiedColor : g.verifiedColor} size={12} />
                   {!isMe && !isHost && !followed && (
                     <TouchableOpacity
                       style={styles.guestPlus}
@@ -4187,7 +5802,7 @@ export default function VideoLive() {
       )}
 
       {/* ================= TOP HEADER ================= */}
-      <View style={styles.topHeader} pointerEvents="box-none">
+      <View style={[styles.topHeader, { top: safeTop + 12 }]} pointerEvents="box-none">
         <View style={styles.topRow}>
           <View style={styles.hostPill}>
             <TouchableOpacity activeOpacity={0.85} onPress={openHostCard} style={styles.hostAvatarContainer}>
@@ -4215,22 +5830,49 @@ export default function VideoLive() {
           </View>
 
           <View style={styles.rightGroup}>
-            <TouchableOpacity style={styles.viewerStack} activeOpacity={0.8} onPress={() => setViewerListVisible(true)}>
-              {topViewers.map((u: any, i: number) => (
+            <View style={styles.topStack}>
+              {headerFive.map((u: any, i: number) => (
+                <TouchableOpacity
+                  key={u.uid}
+                  activeOpacity={0.8}
+                  style={styles.topChip}
+                  onPress={() =>
+                    setProfileCard({
+                      uid: u.uid,
+                      name: u.name || u.username,
+                      username: u.username,
+                      img: u.img,
+                      level: u.level,
+                      verified: u.verified,
+                      verifiedColor: u.verifiedColor,
+                    })
+                  }
+                >
                   <Image
-                    key={u.uid}
                     source={{ uri: u.img || STABLE_AVATAR }}
-                    style={[styles.viewerStackAva, { marginLeft: i === 0 ? 0 : -8, zIndex: 10 - i }]}
+                    style={[styles.topChipAva, { borderColor: u.isGifter && i < 3 ? SEAT_COL[i] : "#fff" }]}
                   />
-                ))}
-              <Text style={styles.viewerStackCount}>{viewerCount}</Text>
-            </TouchableOpacity>
+                  {u.isGifter && i < 3 && (
+                    <>
+                      {i === 0 && <Text style={styles.topChipCrown}>👑</Text>}
+                      <View style={[styles.topChipTag, { backgroundColor: SEAT_BADGE[i] }]}>
+                        <Text style={styles.topChipTagTxt}>TOP{i + 1}</Text>
+                      </View>
+                    </>
+                  )}
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity activeOpacity={0.8} style={styles.viewerCountCircle} onPress={() => setViewerListVisible(true)}>
+                <Text style={styles.viewerStackCount}>{viewerCount}</Text>
+              </TouchableOpacity>
+            </View>
             <TouchableOpacity style={styles.closeBtn} onPress={() => setExitModalVisible(true)}>
               <Ionicons name="close" size={22} color="#fff" />
             </TouchableOpacity>
           </View>
         </View>
 
+        {!showPk && (
         <View style={styles.weeklyRow}>
           <View style={styles.weeklyTag}>
             <Ionicons name="stats-chart" size={12} color="#FFD700" />
@@ -4247,6 +5889,7 @@ export default function VideoLive() {
             />
           )}
         </View>
+        )}
       </View>
 
       {/* title / pinned message / weak network */}
@@ -4317,8 +5960,8 @@ export default function VideoLive() {
         }
         style={chatListStyle}
         showsVerticalScrollIndicator={false}
-        initialNumToRender={12}
-        windowSize={7}
+        initialNumToRender={10}
+        windowSize={5}
         removeClippedSubviews={false}
       />
 
@@ -4364,18 +6007,19 @@ export default function VideoLive() {
         ) : (
           <>
             <TouchableOpacity style={styles.chatPill} onPress={openChat} activeOpacity={0.8}>
-              <Ionicons name="chatbubble-outline" size={18} color="#fff" />
+              <Ionicons name="chatbubble-outline" size={22} color="#fff" />
               <Text style={styles.chatPillTxt}>Chat</Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.circleBtn} onPress={handleShare}>
-              <Ionicons name="arrow-redo" size={18} color="#fff" />
+              <Ionicons name="arrow-redo" size={23} color="#fff" />
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.circleBtn} onPress={() => setMenuVisible(true)}>
-              <Ionicons name="menu" size={20} color="#fff" />
+              <Ionicons name="menu" size={26} color="#fff" />
             </TouchableOpacity>
 
+            {!showPk && (
             <TouchableOpacity
               style={[styles.circleBtn, amGuest && styles.circleBtnOn]}
               onPress={isHost ? () => setGuestSheetVisible(true) : sendGuestRequest}
@@ -4391,6 +6035,7 @@ export default function VideoLive() {
                 </View>
               )}
             </TouchableOpacity>
+            )}
 
             <View style={{ flex: 1 }} />
 
@@ -4408,11 +6053,18 @@ export default function VideoLive() {
                   </TouchableOpacity>
                 ) : (
                   <TouchableOpacity
-                    style={[styles.pkBadgeBtn, pkActive && { backgroundColor: "#DC2626" }]}
+                    style={[styles.pkBadgeBtn, pkActive && styles.pkEndBtn]}
                     onPress={onPkButton}
                     activeOpacity={0.8}
                   >
-                    <Text style={styles.pkBadgeBtnTxt}>{pkActive ? "END" : "PK"}</Text>
+                    {pkActive ? (
+                      <Text style={styles.pkBadgeBtnTxt}>END</Text>
+                    ) : (
+                      <Text style={styles.pkLogoBtnTxt}>
+                        <Text style={{ color: "#35C8FF" }}>P</Text>
+                        <Text style={{ color: "#FF3D9A" }}>K</Text>
+                      </Text>
+                    )}
                     {showInvite && <View style={styles.pkBadgeDot} />}
                   </TouchableOpacity>
                 )}
@@ -4459,62 +6111,13 @@ export default function VideoLive() {
       )}
 
       {/* ================= GIFT ANIMATION + BANNERS ================= */}
-      <GiftOverlay activeGift={activeGift} playKey={giftPlayKey} onFinish={handleGiftFinish} />
-
-      {giftCombo && (
-        <Animated.View
-          pointerEvents="none"
-          style={{
-            position: "absolute",
-            top: height * 0.5,
-            left: 10,
-            zIndex: 99998,
-            elevation: 99998,
-            flexDirection: "row",
-            alignItems: "center",
-            opacity: giftOpacity,
-            transform: [{ translateX: giftTranslateX }, { scale: giftScale }],
-          }}
-        >
-          <View style={styles.comboPill}>
-            <Animated.Image
-              source={{
-                uri: giftCombo.senderImg || audienceMap?.[lastGiftRef.current?.senderId]?.img || STABLE_AVATAR,
-              }}
-              style={{
-                width: 44,
-                height: 44,
-                borderRadius: 22,
-                marginRight: 8,
-                backgroundColor: "#2a2b38",
-                transform: [
-                  {
-                    rotate: giftShake.interpolate({ inputRange: [-1, 1], outputRange: ["-8deg", "8deg"] }),
-                  },
-                ],
-              }}
-            />
-            <View style={{ flexShrink: 1 }}>
-              <Text numberOfLines={1} style={{ color: "#fff", fontWeight: "bold", fontSize: 14 }}>
-                {giftCombo.senderName}
-              </Text>
-              <Text numberOfLines={1} style={{ color: "#fff", fontSize: 13, marginTop: 1 }}>
-                send{" "}
-                <Text style={{ color: "#FFE600", fontWeight: "bold" }}>@{giftCombo.receiverName || "user"}</Text>
-              </Text>
-            </View>
-          </View>
-
-          {(() => {
-            const gd = gifts.find((g: any) => String(g.id) === String(giftCombo.giftId));
-            return gd?.icon ? (
-              <Image source={gd.icon} style={{ width: 58, height: 58, resizeMode: "contain", marginLeft: 6 }} />
-            ) : null;
-          })()}
-
-          <Text style={styles.comboX}>x{giftCombo.count || 1}</Text>
-        </Animated.View>
-      )}
+      <GiftLayer
+        ref={giftLayerRef}
+        comboTop={showPk ? pkPanelTop + pkPanelH + 4 : height * 0.18}
+        // PK: gift animation upar (banners ke upar se overlap hoga, touch-through hai) + bada size
+        animTop={showPk ? pkPanelTop + pkPanelH + 44 - 65 : undefined}
+        animSize={showPk ? Math.min(width * 0.9, 360) : undefined}
+      />
 
       {/* ================= JOIN ENTRY ANIMATION (LiveRoom jaisa: frame + tick) ================= */}
       {joinBanner && (
@@ -4569,72 +6172,50 @@ export default function VideoLive() {
               },
             ]}
           >
+            <LinearGradient
+              pointerEvents="none"
+              colors={["#2b1055", "#1a0b38", "#0d0618"]}
+              locations={[0, 0.5, 1]}
+              start={{ x: 0.2, y: 0 }}
+              end={{ x: 0.8, y: 1 }}
+              style={StyleSheet.absoluteFill}
+            />
+            <View style={styles.giftGoldLine} pointerEvents="none" />
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
               <Text style={styles.giftTitle}>🎁 Send Gifts</Text>
               <View style={{ flexDirection: "row", alignItems: "center" }}>
                 <Text style={{ fontSize: 16 }}>⭐</Text>
-                <Text style={{ color: "#fff", fontSize: 15, fontWeight: "bold", marginLeft: 4 }}>{stars}</Text>
-                <TouchableOpacity style={styles.rechargeBtn} onPress={goRecharge}>
-                  <Text style={styles.rechargeTxt}>+ Recharge</Text>
-                </TouchableOpacity>
+                <GiftBalance stars={stars} />
               </View>
             </View>
 
-            {/* who receives the gift */}
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={{ marginBottom: 6, flexGrow: 0 }}
-              contentContainerStyle={{ paddingHorizontal: 6, paddingVertical: 4 }}
-              nestedScrollEnabled
-              keyboardShouldPersistTaps="handled"
-            >
-              {giftUsers.map((user) => (
-                <TouchableOpacity
-                  key={user.uid}
-                  onPress={() => setSelectedGiftUser(user.uid)}
-                  style={{ alignItems: "center", marginRight: 10 }}
-                >
+            {/* who receives the gift: sirf meri side ka host (PK me Switch se doosri side) */}
+            <View style={styles.giftToRow}>
+              <Text style={styles.giftToLbl}>To</Text>
+              {giftUsers[0] && (
+                <>
                   <Image
-                    source={{ uri: user.img || STABLE_AVATAR }}
-                    style={{
-                      width: 44,
-                      height: 44,
-                      borderRadius: 22,
-                      borderWidth: selectedGiftUser === user.uid ? 3 : 1,
-                      borderColor: selectedGiftUser === user.uid ? "#ff1493" : "#555",
-                    }}
+                    source={{ uri: giftUsers[0].img || STABLE_AVATAR }}
+                    style={[styles.giftToAva, { borderColor: onOppSide ? "#FF2D75" : pkActive ? "#1E8CFF" : "#F5C451" }]}
                   />
-                  <Text
-                    style={{ color: "#fff", fontSize: 9, width: 52, textAlign: "center", marginTop: 2 }}
-                    numberOfLines={1}
-                  >
-                    {user.name}
+                  <Text style={styles.giftToName} numberOfLines={1}>
+                    {giftUsers[0].name}
                   </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
-            {/* quantity */}
-            <View style={[styles.qtyRow, { marginBottom: 6 }]}>
-              <Text style={styles.qtyLbl}>Qty</Text>
-              {GIFT_QTY.map((q) => (
-                <TouchableOpacity
-                  key={q}
-                  onPress={() => setGiftQty(q)}
-                  style={[styles.qtyChip, giftQty === q && styles.qtyChipOn]}
-                >
-                  <Text style={[styles.qtyChipTxt, giftQty === q && { color: "#fff" }]}>x{q}</Text>
-                </TouchableOpacity>
-              ))}
+                  <UserTick uid={giftUsers[0].uid} verified={!!giftUsers[0].verified} verifiedColor={giftUsers[0].verifiedColor} size={13} />
+                </>
+              )}
+              {pkActive && !!pk?.opponentHostId && (
+                <Text style={styles.giftSideHint} numberOfLines={2}>
+                  Gift goes to this host only. To gift the other host, tap their PK screen to enter their live room.
+                </Text>
+              )}
             </View>
 
             {/* gift pages: 4 columns x 2 rows, snap paging */}
             <FlatList
               data={GIFT_PAGES}
               keyExtractor={(p: any) => p.key}
-              renderItem={({ item }: any) => <GiftPage page={item} qty={giftQty} onSend={stableSendGift} />}
-              extraData={giftQty}
+              renderItem={({ item }: any) => <GiftPage page={item} onSend={stableSendGift} />}
               horizontal
               snapToInterval={GIFT_PAGE_W}
               snapToAlignment="start"
@@ -4669,7 +6250,7 @@ export default function VideoLive() {
                       height: 6,
                       borderRadius: 3,
                       marginHorizontal: 3,
-                      backgroundColor: i === giftPageIdx ? "#ff1493" : "rgba(255,255,255,0.3)",
+                      backgroundColor: i === giftPageIdx ? "#F5C451" : "rgba(255,255,255,0.25)",
                     }}
                   />
                 ))}
@@ -4723,7 +6304,11 @@ export default function VideoLive() {
               <Text style={styles.emptyTxt}>No viewers yet. Share the live to get people in!</Text>
             ) : (
               <FlatList
-                data={[...audienceArray].sort((a: any, b: any) => Number(b.level || 1) - Number(a.level || 1))}
+                data={audienceSorted}
+                initialNumToRender={10}
+                maxToRenderPerBatch={8}
+                windowSize={5}
+                removeClippedSubviews
                 keyExtractor={(i: any) => i.uid}
                 renderItem={({ item }: any) => {
                   const th = getLevelTheme(item.level || 1);
@@ -4793,6 +6378,10 @@ export default function VideoLive() {
             ) : (
               <FlatList
                 data={rankedGifters}
+                initialNumToRender={10}
+                maxToRenderPerBatch={8}
+                windowSize={5}
+                removeClippedSubviews
                 keyExtractor={(i: any) => i.uid}
                 renderItem={({ item, index }: any) => (
                   <TouchableOpacity
@@ -4805,6 +6394,7 @@ export default function VideoLive() {
                         img: item.img,
                         level: item.level,
                         verified: item.verified,
+                        verifiedColor: item.verifiedColor,
                       });
                     }}
                   >
@@ -4813,9 +6403,12 @@ export default function VideoLive() {
                     </Text>
                     <Image source={{ uri: item.img || STABLE_AVATAR }} style={styles.pkRowAva} />
                     <View style={{ flex: 1, marginLeft: 12 }}>
-                      <Text style={styles.pkRowName} numberOfLines={1}>
-                        {item.name || "User"}
-                      </Text>
+                      <View style={{ flexDirection: "row", alignItems: "center" }}>
+                        <Text style={styles.pkRowName} numberOfLines={1}>
+                          {item.name || "User"}
+                        </Text>
+                        <UserTick uid={item.uid} verified={!!item.verified} verifiedColor={item.verifiedColor} size={14} />
+                      </View>
                       <Text style={styles.pkRowSub}>LV {item.level || 1}</Text>
                     </View>
                     <Text style={styles.rankStars}>⭐ {item.stars}</Text>
@@ -4833,12 +6426,12 @@ export default function VideoLive() {
           <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={() => setProfileCard(null)} />
           {profileCard && (
             <View style={[styles.pcSheet, { paddingBottom: 16 + insets.bottom }]}>
-              <View style={styles.pcAvaWrap}>
+              <TouchableOpacity activeOpacity={0.85} style={styles.pcAvaWrap} onPress={() => goUserProfile(profileCard)}>
                 <Image source={{ uri: profileCard.img || STABLE_AVATAR }} style={styles.pcAva} />
                 {(Number(profileCard.level) >= 10 || !!profileCard.uid) && (
                   <LevelFrame level={Number(profileCard.level)} uid={profileCard.uid} animated style={{ position: "absolute", width: 110, height: 110 }} />
                 )}
-              </View>
+              </TouchableOpacity>
 
               <View style={{ flexDirection: "row", alignItems: "center", marginTop: 10 }}>
                 <Text style={styles.pcName} numberOfLines={1}>{profileCard.name || profileCard.username || "User"}</Text>
@@ -5052,7 +6645,7 @@ export default function VideoLive() {
                     <Text style={styles.endPct}>{pct}%</Text>
                   </ProgressRing>
                   <View style={{ marginLeft: 22, flex: 1 }}>
-                    <Text style={styles.endProgTitle}>Broadcast {WEEKLY_TARGET_MIN} min in a live</Text>
+                    <Text style={styles.endProgTitle}>Broadcast 2 hours live = 150 stars</Text>
                     <Text style={styles.endProgSub}>
                       {left > 0 ? `${left} more min to complete` : "Goal completed!"}
                     </Text>
@@ -5071,6 +6664,7 @@ export default function VideoLive() {
                     <Text style={styles.sumGifterName} numberOfLines={1}>
                       {g.name}
                     </Text>
+                    <UserTick uid={g.uid} verified={!!g.verified} verifiedColor={g.verifiedColor} size={14} />
                     <Text style={styles.rankStars}>⭐ {g.stars}</Text>
                   </View>
                 ))}
@@ -5116,6 +6710,7 @@ export default function VideoLive() {
                     <Text numberOfLines={1} style={styles.guestRowName}>
                       {g.name || "Guest"}
                     </Text>
+                    <UserTick uid={g.uid} verified={!!g.verified} verifiedColor={g.verifiedColor} size={14} />
                     <TouchableOpacity
                       style={[styles.guestBtn, { backgroundColor: g.hostMuted ? "#F71084" : "#2a2b38" }]}
                       onPress={() => muteGuest(g.uid, !g.hostMuted)}
@@ -5142,6 +6737,7 @@ export default function VideoLive() {
                     <Text numberOfLines={1} style={styles.guestRowName}>
                       {r.username || r.name || "Viewer"}
                     </Text>
+                    <UserTick uid={r.uid} verified={isVerified(r.verified)} verifiedColor={r.verifiedColor} size={14} />
                     <TouchableOpacity style={[styles.guestBtn, { backgroundColor: "#2a2b38" }]} onPress={() => rejectGuest(r)}>
                       <Ionicons name="close" size={16} color="#fff" />
                     </TouchableOpacity>
@@ -5382,10 +6978,14 @@ export default function VideoLive() {
   );
 }
 
+// PERF: live chat ki har row me animated frame (40-80 rows) bahut load deta tha.
+// false = chat me frame static (smooth). Seat/profile/host ke frames animated hi rehte hain.
+const CHAT_FRAME_ANIM = false;
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#000" },
 
-  loadingBg: { justifyContent: "center", alignItems: "center", backgroundColor: "#0A0B14" },
+  loadingBg: { justifyContent: "center", alignItems: "center", backgroundColor: "#1B1545" },
   loadingText: { color: "#AAB6D4", marginTop: 10, fontSize: 12, fontWeight: "600" },
 
   pausedOverlay: {
@@ -5401,16 +7001,14 @@ const styles = StyleSheet.create({
     top: 0,
     left: 0,
     right: 0,
-    height: 130,
-    backgroundColor: "rgba(0,0,0,0.35)",
+    height: 150,
   },
   bottomScrim: {
     position: "absolute",
     bottom: 0,
     left: 0,
     right: 0,
-    height: 160,
-    backgroundColor: "rgba(0,0,0,0.35)",
+    height: 240,
   },
 
   /* HEADER */
@@ -5491,7 +7089,7 @@ const styles = StyleSheet.create({
   chatArea: {
     position: "absolute",
     left: 0,
-    right: 16,
+    right: Math.round(width * 0.2),
     maxHeight: height * 0.35,
     paddingHorizontal: 10,
   },
@@ -5561,10 +7159,10 @@ const styles = StyleSheet.create({
   },
   inputStyle: { color: "#fff", fontSize: 14 },
   circleBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "rgba(60,40,80,0.65)",
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "transparent",
     justifyContent: "center",
     alignItems: "center",
     marginLeft: 8,
@@ -5586,13 +7184,13 @@ const styles = StyleSheet.create({
     paddingRight: 14,
     paddingVertical: 6,
     borderRadius: 30,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: "rgba(34,24,78,0.78)",
     borderWidth: 1.5,
-    borderColor: "rgba(255,105,180,0.8)",
+    borderColor: "rgba(255,200,60,0.7)",
     maxWidth: width * 0.62,
   },
   comboX: {
-    color: "#FF69B4",
+    color: "#FFFFFF",
     fontSize: 34,
     fontWeight: "900",
     fontStyle: "italic",
@@ -5602,15 +7200,105 @@ const styles = StyleSheet.create({
     textShadowRadius: 3,
   },
 
+  /* ---- Tiki-style PK ---- */
+  pkResultWrapNew: { ...StyleSheet.absoluteFillObject, justifyContent: "center", alignItems: "center", overflow: "hidden" },
+  pkCrown: { fontSize: 44 },
+  pkBigResult: {
+    fontSize: 40,
+    fontWeight: "900",
+    fontStyle: "italic",
+    letterSpacing: 2,
+    textShadowOffset: { width: 0, height: 3 },
+    textShadowRadius: 8,
+  },
+  pkBigWin: { color: "#FFE27A", textShadowColor: "rgba(160,70,0,0.95)" },
+  pkBigLose: { color: "#C9D3E8", textShadowColor: "rgba(0,0,0,0.9)" },
+  pkBigDraw: { color: "#fff", textShadowColor: "rgba(0,0,0,0.9)" },
+  pkVsStage: { position: "absolute", left: width / 2 - 70, top: pkPanelHFixed * 0.5 - 40, width: 140, height: 80, justifyContent: "center", alignItems: "center" },
+  pkVsBolt: { position: "absolute", transform: [{ rotate: "12deg" }], opacity: 0.9 },
+  pkGlove: { position: "absolute", top: 12 },
+  pkVsPlate: {
+    paddingHorizontal: 9,
+    paddingVertical: 2,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.95)",
+    transform: [{ skewX: "-10deg" }],
+  },
+  pkVsPlateTxt: { fontSize: 20, fontWeight: "900", fontStyle: "italic" },
+  pkStarDot: { width: 7, height: 7, borderRadius: 2, borderWidth: 1.5, borderColor: "#1E7BFF" },
+  pkSeatRow: { position: "absolute", left: 0, right: 0, bottom: 8, flexDirection: "row", justifyContent: "center", alignItems: "center" },
+  pkSeatWrap: { width: 32, height: 32, marginHorizontal: 4, alignItems: "center", justifyContent: "center" },
+  pkSeat: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: "rgba(20,16,40,0.6)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  pkSeatEmpty: { borderWidth: 1.5, borderColor: "rgba(214,170,90,0.75)", backgroundColor: "rgba(30,22,40,0.7)" },
+  pkSeatCrown: { position: "absolute", top: -11, left: -3, fontSize: 13, transform: [{ rotate: "-18deg" }] },
+  pkSeatNum: {
+    position: "absolute",
+    bottom: -5,
+    minWidth: 14,
+    height: 14,
+    borderRadius: 7,
+    paddingHorizontal: 3,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  pkSeatNumTxt: { color: "#fff", fontSize: 8, fontWeight: "900" },
+  pkCenterTrophy: { position: "absolute", left: width / 2 - 58, top: pkPanelHFixed * 0.5 - 78, width: 116, alignItems: "center" },
+  pkPanelTrophy: { position: "absolute", bottom: 44, left: 0, right: 0, alignItems: "center" },
+  pkTicker: {
+    position: "absolute",
+    height: 26,
+    borderRadius: 13,
+    overflow: "hidden",
+    backgroundColor: "rgba(255,255,255,0.13)",
+  },
+  pkTickerTxt: { position: "absolute", left: 0, top: 5, color: "rgba(255,255,255,0.92)", fontSize: 12, fontWeight: "500" },
+  pkOppPill: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    maxWidth: "86%",
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.5)",
+    borderRadius: 13,
+    paddingLeft: 9,
+    paddingRight: 3,
+    height: 24,
+  },
+  pkFriendTag: { flexDirection: "row", alignItems: "center", backgroundColor: "#22C55E", borderRadius: 9, paddingHorizontal: 6, height: 18, marginRight: 1 },
+  pkFollowingTag: { backgroundColor: "rgba(255,255,255,0.28)" },
+  pkFriendTxt: { color: "#fff", fontSize: 9, fontWeight: "800", marginLeft: 3 },
+  pkSideGlow: { position: "absolute", top: 0, borderWidth: 2.5 },
+  pkSideHint: { position: "absolute", bottom: 8, alignItems: "center" },
+  pkSideHintTxt: { color: "#fff", fontSize: 10, fontWeight: "700", backgroundColor: "rgba(0,0,0,0.45)", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, overflow: "hidden" },
+  giftToRow: { flexDirection: "row", alignItems: "center", paddingHorizontal: 6, paddingVertical: 4, marginBottom: 6 },
+  giftToLbl: { color: "#aaa", fontSize: 12, fontWeight: "700", marginRight: 8 },
+  giftToAva: { width: 34, height: 34, borderRadius: 17, borderWidth: 2.5 },
+  giftToName: { color: "#fff", fontSize: 13, fontWeight: "700", marginLeft: 8, flexShrink: 1 },
+  giftSideHint: { marginLeft: "auto", flex: 1, textAlign: "right", color: "rgba(255,255,255,0.6)", fontSize: 10, fontWeight: "600", paddingLeft: 10 },
+  giftSwitchBtn: { marginLeft: "auto", flexDirection: "row", alignItems: "center", backgroundColor: "rgba(255,255,255,0.14)", borderRadius: 14, paddingHorizontal: 10, paddingVertical: 6 },
+  giftSwitchTxt: { color: "#fff", fontSize: 11, fontWeight: "700", marginLeft: 4 },
+  pkOppName: { color: "#fff", fontSize: 11, fontWeight: "700", flexShrink: 1, paddingRight: 4 },
+  pkOppPlus: { width: 18, height: 18, borderRadius: 9, backgroundColor: "#FFE600", justifyContent: "center", alignItems: "center" },
+  pkLogoBtnTxt: { fontSize: 26, fontWeight: "900", fontStyle: "italic", letterSpacing: 1 },
+  pkEndBtn: { backgroundColor: "#DC2626", borderWidth: 1.5, borderColor: "#fff" },
+
   /* PK STAGE */
   pkBarWrap: {
     position: "absolute",
     left: 0,
     right: 0,
-    height: 16,
+    height: PK_BAR_H,
     justifyContent: "center",
   },
-  pkBar: { flexDirection: "row", height: 16, overflow: "hidden", backgroundColor: "#FF2D95" },
+  pkBar: { flexDirection: "row", height: PK_BAR_H, overflow: "hidden", backgroundColor: "#FF2D75" },
   pkScoreWrap: {
     position: "absolute",
     top: 0,
@@ -5619,16 +7307,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   pkStarBox: {
-    width: 13,
-    height: 13,
-    borderRadius: 3,
+    width: 15,
+    height: 15,
+    borderRadius: 4,
     backgroundColor: "#fff",
     justifyContent: "center",
     alignItems: "center",
   },
   pkSparkGlow: {
     width: 5,
-    height: 16,
+    height: PK_BAR_H + 2,
     borderRadius: 3,
     backgroundColor: "#fff",
     shadowColor: "#fff",
@@ -5639,7 +7327,7 @@ const styles = StyleSheet.create({
   pkScoreTxt: {
     color: "#fff",
     fontWeight: "800",
-    fontSize: 12,
+    fontSize: 14,
     marginHorizontal: 4,
     textShadowColor: "rgba(0,0,0,0.6)",
     textShadowOffset: { width: 1, height: 1 },
@@ -5656,7 +7344,7 @@ const styles = StyleSheet.create({
     textShadowRadius: 3,
   },
   pkPanels: { position: "absolute", left: 0, right: 0, flexDirection: "row" },
-  pkWaiting: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#0F1020" },
+  pkWaiting: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#1B1545", overflow: "hidden" },
   pkWaitAvatar: { width: 64, height: 64, borderRadius: 32, borderWidth: 2, borderColor: "#fff" },
   pkNamePill: {
     position: "absolute",
@@ -5671,19 +7359,28 @@ const styles = StyleSheet.create({
   pkNameTxt: { color: "#fff", fontSize: 11, fontWeight: "700" },
   pkTimerPill: {
     position: "absolute",
-    top: 4,
-    alignSelf: "center",
-    left: width / 2 - 48,
-    width: 96,
+    top: 8,
+    left: width / 2 - 36,
+    width: 72,
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "rgba(20,16,50,0.78)",
-    borderRadius: 14,
-    paddingVertical: 4,
+    backgroundColor: "rgba(15,12,40,0.62)",
+    borderRadius: 12,
+    paddingVertical: 3,
   },
-  pkTimerPk: { color: "#2AA8FF", fontWeight: "900", fontStyle: "italic", fontSize: 15, marginRight: 6 },
-  pkTimerTxt: { color: "#fff", fontWeight: "800", fontSize: 14 },
+  pkFinalWrap: { ...StyleSheet.absoluteFillObject, justifyContent: "center", alignItems: "center", zIndex: 30, elevation: 30 },
+  pkFinalNum: {
+    color: "#fff",
+    fontSize: 110,
+    fontWeight: "900",
+    fontStyle: "italic",
+    textShadowColor: "rgba(247,16,132,0.9)",
+    textShadowOffset: { width: 0, height: 3 },
+    textShadowRadius: 12,
+  },
+  pkTimerPk: { fontWeight: "900", fontStyle: "italic", fontSize: 12, marginRight: 5 },
+  pkTimerTxt: { color: "#fff", fontWeight: "800", fontSize: 12 },
   pkResultWrap: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: "center",
@@ -5711,36 +7408,6 @@ const styles = StyleSheet.create({
   },
   pkBadgeTxt: { color: "#fff", fontWeight: "900", fontSize: 24, fontStyle: "italic" },
   pkWinnerPanel: { borderWidth: 3, borderColor: "#FFD700" },
-  pkWinnerWrap: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  pkWinnerCard: {
-    minWidth: width * 0.58,
-    maxWidth: width * 0.8,
-    alignItems: "center",
-    backgroundColor: "rgba(10,11,20,0.88)",
-    borderRadius: 22,
-    borderWidth: 2,
-    borderColor: "#FFD700",
-    paddingHorizontal: 22,
-    paddingTop: 6,
-    paddingBottom: 14,
-  },
-  pkWinnerCrown: { fontSize: 34 },
-  pkWinnerAva: { width: 72, height: 72, borderRadius: 36, borderWidth: 3, borderColor: "#FFD700" },
-  pkWinnerTitle: {
-    color: "#FFD700",
-    fontSize: 24,
-    fontWeight: "900",
-    fontStyle: "italic",
-    marginTop: 8,
-    letterSpacing: 2,
-  },
-  pkWinnerName: { color: "#fff", fontSize: 15, fontWeight: "800", marginTop: 2, maxWidth: width * 0.6 },
-  pkWinnerSub: { color: "#FFE082", fontSize: 12, fontWeight: "700", marginTop: 4 },
-  pkWinnerDraw: { color: "#fff", fontSize: 28, fontWeight: "900", fontStyle: "italic", marginTop: 12 },
   pkWaitPill: {
     position: "absolute",
     top: 126,
@@ -5783,28 +7450,44 @@ const styles = StyleSheet.create({
   inviteAva: { width: 70, height: 70, borderRadius: 35, borderWidth: 2, borderColor: "#fff", marginBottom: 12 },
 
   /* GIFT MODAL */
-  giftOverlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.4)" },
+  giftOverlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(5,0,15,0.55)" },
   giftSheet: {
-    backgroundColor: "#111827",
+    backgroundColor: "#12071f",
+    overflow: "hidden",
+    borderTopWidth: 1,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(245,196,81,0.35)",
     maxHeight: height * 0.52,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
     paddingTop: 16,
     paddingHorizontal: 12,
     paddingBottom: 14,
   },
-  giftTitle: { color: "#fff", fontSize: 17, fontWeight: "bold" },
+  giftGoldLine: {
+    position: "absolute",
+    top: 0,
+    left: "25%",
+    right: "25%",
+    height: 2,
+    borderRadius: 2,
+    backgroundColor: "rgba(245,196,81,0.9)",
+  },
+  giftTitle: { color: "#FFE9A8", fontSize: 17, fontWeight: "bold", marginBottom: 0 },
   giftCard: {
     width: "22.5%",
     marginRight: "2%",
-    backgroundColor: "#1C1E2E",
-    borderRadius: 10,
+    backgroundColor: "rgba(255,255,255,0.07)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(245,196,81,0.28)",
+    borderRadius: 12,
     padding: 5,
     marginBottom: 10,
     alignItems: "center",
   },
   giftName: { color: "#fff", fontSize: 10, marginTop: 0 },
-  giftCoin: { color: "#999", fontSize: 12, marginTop: 2 },
+  giftCoin: { color: "#F5C451", fontWeight: "700", fontSize: 12, marginTop: 2 },
 
   /* BOTTOM SHEETS (filter / PK list) */
   sheetOverlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.4)" },
@@ -5866,8 +7549,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   pkVsBadgeTxt: { color: "#fff", fontWeight: "900", fontStyle: "italic", fontSize: 12 },
-  pkSupRow: { position: "absolute", bottom: 8, flexDirection: "row", alignItems: "center" },
-  pkSupAva: { width: 30, height: 30, borderRadius: 15, borderWidth: 2, backgroundColor: "#2a2b38" },
   pkMuteBtn: {
     position: "absolute",
     top: 34,
@@ -5879,8 +7560,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
-  pkWaitTxt: { color: "#9aa0b4", fontSize: 10, marginTop: 6, fontWeight: "600" },
-  pkDim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.55)" },
+  pkWaitTxt: { color: "#E6E0FF", fontSize: 10, marginTop: 6, fontWeight: "600" },
+  pkDim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(10,8,30,0.2)" },
   pkResultBadge: {
     position: "absolute",
     top: 34,
@@ -5891,27 +7572,6 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
   },
   pkResultBadgeTxt: { color: "#fff", fontSize: 11, fontWeight: "900" },
-  pkIntroWrap: {
-    ...StyleSheet.absoluteFillObject,
-    flexDirection: "row",
-    justifyContent: "space-around",
-    alignItems: "center",
-    backgroundColor: "rgba(10,11,20,0.78)",
-  },
-  pkIntroSide: { alignItems: "center", width: width * 0.32 },
-  pkIntroAva: { width: 72, height: 72, borderRadius: 36, borderWidth: 3, backgroundColor: "#2a2b38" },
-  pkIntroName: { color: "#fff", fontSize: 12, fontWeight: "800", marginTop: 6, maxWidth: width * 0.3 },
-  pkIntroVs: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: "#F71084",
-    borderWidth: 3,
-    borderColor: "#fff",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  pkIntroVsTxt: { color: "#fff", fontWeight: "900", fontStyle: "italic", fontSize: 20 },
 
   /* ===== PREMIUM ADDITIONS ===== */
   followPill: {
@@ -5973,8 +7633,8 @@ const styles = StyleSheet.create({
   heartsLayer: { position: "absolute", right: 0, width: 90, height: 280 },
 
   welcomeBox: {
-    backgroundColor: "rgba(110,90,125,0.62)",
-    borderRadius: 12,
+    backgroundColor: "rgba(24,18,58,0.6)",
+    borderRadius: 16,
     paddingHorizontal: 12,
     paddingVertical: 10,
     marginBottom: 10,
@@ -6119,8 +7779,8 @@ const styles = StyleSheet.create({
   hostPill: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(80,40,110,0.55)",
-    borderRadius: 24,
+    backgroundColor: "rgba(14,12,40,0.5)",
+    borderRadius: 22,
     paddingLeft: 5,
     paddingRight: 8,
     paddingVertical: 4,
@@ -6265,12 +7925,12 @@ const styles = StyleSheet.create({
   chatPill: {
     flexDirection: "row",
     alignItems: "center",
-    height: 36,
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    backgroundColor: "rgba(60,40,80,0.65)",
+    height: 40,
+    borderRadius: 20,
+    paddingHorizontal: 8,
+    backgroundColor: "transparent",
   },
-  chatPillTxt: { color: "#fff", fontSize: 13, fontWeight: "600", marginLeft: 6 },
+  chatPillTxt: { color: "#fff", fontSize: 15, fontWeight: "600", marginLeft: 7 },
   sendBtn: {
     width: 42,
     height: 42,
@@ -6280,14 +7940,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   pkBadgeBtn: {
-    width: 38,
+    minWidth: 44,
     height: 38,
     borderRadius: 10,
-    backgroundColor: "#8E44FF",
+    backgroundColor: "transparent",
     justifyContent: "center",
     alignItems: "center",
-    borderWidth: 1.5,
-    borderColor: "#fff",
+    paddingHorizontal: 6,
   },
   pkBadgeBtnTxt: { color: "#fff", fontWeight: "900", fontStyle: "italic", fontSize: 14 },
   pkBadgeDot: {
@@ -6456,4 +8115,54 @@ const styles = StyleSheet.create({
   },
   endCentreTitle: { color: "#111", fontSize: 14, fontWeight: "800" },
   endCentreSub: { color: "#333", fontSize: 11, marginTop: 2 },
+
+  startPkBtn: {
+    position: "absolute",
+    width: 226,
+    height: 58,
+    borderRadius: 12,
+    backgroundColor: "#FFD91A",
+    borderWidth: 2,
+    borderColor: "#E8B800",
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 60,
+    elevation: 60,
+  },
+  startPkTxt: { color: "#1A1A1A", fontSize: 22, fontWeight: "800" },
+
+  /* ===== TIKI CHAT PILLS ===== */
+  tkRow: { marginBottom: 6, alignItems: "flex-start" },
+  tkPill: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    maxWidth: "100%",
+    backgroundColor: "rgba(24,18,58,0.6)",
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  tkTxt: { color: "#fff", fontSize: 14 },
+  tkName: { color: "#D9D2F5", fontSize: 14, fontWeight: "600" },
+  tkGiftName: { color: "#FFE600", fontSize: 14, fontWeight: "700" },
+
+  /* ===== TIKI TOP-3 CHIPS (header) ===== */
+  topStack: { flexDirection: "row", alignItems: "center" },
+  topChip: { width: 27, height: 40, marginRight: 2, alignItems: "center" },
+  topChipAva: { width: 25, height: 25, borderRadius: 13, borderWidth: 2, backgroundColor: "#2a2b38", marginTop: 4 },
+  topChipCrown: { position: "absolute", top: -4, left: -3, fontSize: 13, transform: [{ rotate: "-20deg" }] },
+  topChipTag: { position: "absolute", bottom: 0, paddingHorizontal: 4, height: 11, borderRadius: 6, justifyContent: "center" },
+  topChipTagTxt: { color: "#fff", fontSize: 7, fontWeight: "900", fontStyle: "italic" },
+  viewerCountCircle: {
+    minWidth: 30,
+    height: 30,
+    borderRadius: 15,
+    paddingHorizontal: 5,
+    backgroundColor: "rgba(14,12,40,0.55)",
+    justifyContent: "center",
+    alignItems: "center",
+    marginLeft: 2,
+  },
 });

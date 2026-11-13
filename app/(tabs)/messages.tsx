@@ -1,13 +1,13 @@
 // Messages screen - ab sirf "jodne wala" page hai. Asli kaam in files me:
 //   components/messages/*   -> UI (rows, tabs, popups)
 //   utils/messages/*        -> Firestore hooks (friends, rooms, notifications)
-import { useRouter } from 'expo-router';
+import { useRouter } from '../../utils/safeRouter';
 import { doc, getDoc, getFirestore } from 'firebase/firestore';
 import React, { useCallback, useMemo, useState } from 'react';
 import { StatusBar, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import BottomNav from '../../components/BottomNav';
+import AppBottomNav from '../../components/AppBottomNav';
 import ChatRoomTab from '../../components/messages/ChatRoomTab';
 import { INFO_CONTENT, MessageRow, NOTIF_ROWS, STATIC_ROWS } from '../../components/messages/data';
 import InfoModal from '../../components/messages/InfoModal';
@@ -201,7 +201,7 @@ export default function MessagesPage() {
         />
       )}
 
-      <BottomNav />
+      <AppBottomNav />
 
       <InfoModal infoId={infoId} onClose={closeInfo} />
 

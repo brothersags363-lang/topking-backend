@@ -1,6 +1,8 @@
+import AppBottomNav from '../../components/AppBottomNav';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Image as ExpoImage } from 'expo-image';
-import { useFocusEffect, useLocalSearchParams, usePathname, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, usePathname } from 'expo-router';
+import { useRouter } from '../../utils/safeRouter';
 import { onAuthStateChanged } from 'firebase/auth';
 import {
   collection,
@@ -17,9 +19,11 @@ import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from '
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   BackHandler,
   Dimensions,
   FlatList,
+  InteractionManager,
   Image,
   Platform,
   Pressable,
@@ -33,10 +37,11 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { scopedBackHandler } from '../../utils/scopedBack';
+import { callApi } from '../../utils/api';
 import TopKingLogo from '../../assets/images/topking-logo.png';
 import FamilyCell from '../../components/FamilyCell';
 import FastImage from '../../components/FastImage';
-import { AvatarFrame } from '../../components/FramedAvatar';
 import UserTick from '../../components/UserTick';
 import { profileLink } from '../../utils/shareLinks';
 import {
@@ -50,7 +55,7 @@ import {
 import { auth, db } from '../firebaseConfig';
 
 const { width } = Dimensions.get('window');
-const ITEM_SIZE = (width - 30) / 3;
+const ITEM_SIZE = width / 3;
 
 // Angels: kitne top gifters dikhane hain
 const ANGEL_SHOW = 3;
@@ -73,6 +78,14 @@ const getCreatedTime = (value) => {
   return toMillis(value);
 };
 
+// Sirf tab state badlo jab value sach me badli ho => faltu re-render nahi hota
+const mergeProfile = (prev, next) => {
+  for (const k in next) {
+    if (prev[k] !== next[k]) return { ...prev, ...next };
+  }
+  return prev;
+};
+
 // Bio: 3 line dikhti hai, lambi ho to "more" dabane par khulti hai
 const BIO_COLLAPSED_LINES = 3;
 const BioText = memo(function BioText({ text, style, moreStyle }) {
@@ -92,23 +105,71 @@ const BioText = memo(function BioText({ text, style, moreStyle }) {
   );
 });
 
+// "+" button ke upar hint kitna upar rahe (bottom nav ki height ke hisaab se adjust karo)
+const HINT_BOTTOM = 70;
+
+// Jab ek bhi video na ho: "Tap to create your first video" bubble
+// Native driver => animation JS thread par load nahi daalta, 60fps smooth
+const CreateVideoHint = memo(function CreateVideoHint() {
+  const appear = useRef(new Animated.Value(0)).current; // fade + pop-in
+  const bounce = useRef(new Animated.Value(0)).current; // upar-neeche halka hilna
+
+  useEffect(() => {
+    Animated.spring(appear, { toValue: 1, friction: 6, tension: 80, useNativeDriver: true }).start();
+
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(bounce, { toValue: -6, duration: 700, useNativeDriver: true }),
+        Animated.timing(bounce, { toValue: 0, duration: 700, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => {
+      loop.stop();
+      appear.stopAnimation();
+    };
+  }, [appear, bounce]);
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        styles.hintWrap,
+        {
+          opacity: appear,
+          transform: [
+            { translateY: bounce },
+            { scale: appear.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1] }) },
+          ],
+        },
+      ]}
+    >
+      <View style={styles.hintIconBadge}>
+        <Ionicons name="videocam" size={26} color="#000" />
+      </View>
+      <View style={styles.hintBubble}>
+        <Text style={styles.hintText}>Tap to create your first video</Text>
+      </View>
+      <View style={styles.hintArrow} />
+    </Animated.View>
+  );
+});
+
 // One grid cell. memo => only changed cells re-render
 const VideoItem = memo(function VideoItem({ item, onPress }) {
   return (
     <TouchableOpacity style={styles.videoCard} activeOpacity={0.85} onPress={() => onPress(item)}>
       <FastImage uri={item.thumbnail} fallback={AVATAR_FALLBACK} style={styles.video} />
 
-      <View style={styles.videoOverlayViews}>
-        <Ionicons name="eye-outline" size={12} color="#fff" />
-        <Text style={styles.viewCountText}>{item.views || '0'}</Text>
-      </View>
-
-      <View style={styles.videoTitleRow}>
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <MaterialCommunityIcons name="play" size={16} color="#FFD700" />
-          <Text style={styles.videoItemTitle} numberOfLines={1}>{item.title || 'video'}</Text>
+      {!!(item.pinned || item.isPinned) && (
+        <View style={styles.pinnedBadge}>
+          <Text style={styles.pinnedText}>Pinned</Text>
         </View>
-        <MaterialCommunityIcons name="dots-vertical" size={16} color="#fff" />
+      )}
+
+      <View style={styles.videoOverlayViews}>
+        <Ionicons name="play-outline" size={14} color="#fff" />
+        <Text style={styles.viewCountText}>{formatCount(item.views || 0)}</Text>
       </View>
     </TouchableOpacity>
   );
@@ -133,6 +194,7 @@ export default function ProfileScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [videos, setVideos] = useState([]);
+  const [videosLoaded, setVideosLoaded] = useState(false); // load hone se pehle hint na flash kare
   const [likedCount, setLikedCount] = useState(0);
   const [likedMeCount, setLikedMeCount] = useState(0);
   const [userRank, setUserRank] = useState(null);
@@ -142,8 +204,24 @@ export default function ProfileScreen() {
   const [hasAgency, setHasAgency] = useState(false);
   const [topGifters, setTopGifters] = useState([]);
   const [giftUserCount, setGiftUserCount] = useState(0);
+  const [hasStars, setHasStars] = useState(false);
+  const [familyShown, setFamilyShown] = useState(false);
 
   const firstFocusRef = useRef(true);
+  const lastRefreshRef = useRef(0);
+  const giftSigRef = useRef('');
+  const navLockRef = useRef(false);
+  const routerRef = useRef(router);
+  routerRef.current = router;
+
+  // Double-tap / jaldi-jaldi click par ek hi page khulega (stack nahi banega)
+  // Lock 600ms me ya screen focus par khud khul jata hai => kabhi atakta nahi
+  const push = useCallback((to) => {
+    if (navLockRef.current) return;
+    navLockRef.current = true;
+    setTimeout(() => { navLockRef.current = false; }, 600);
+    routerRef.current.push(to);
+  }, []);
 
   const [profileData, setProfileData] = useState({
     name: 'User',
@@ -170,25 +248,27 @@ export default function ProfileScreen() {
       const wallet = walletSnap.exists() ? walletSnap.data() : {};
       const userLevel = wallet.level || 1;
       const receivedStars = wallet.receivedStars || 0;
+      setHasStars(receivedStars > 0);
 
       if (!docSnap.exists()) return null;
       const data = docSnap.data();
 
       setHasAgency(data.agencyApproved === true);
 
-      setProfileData((prev) => ({
-        ...prev,
-        name: data.name || 'Top King ',
-        username: data.username || auth.currentUser?.email?.split('@')[0] || 'user',
-        usernameChangedAt: toMillis(data.usernameChangedAt),
-        bioText: cleanBio(data.bioText),
-        category: data.category || 'Video Creator',
-        profileImg: data.profileImg || AVATAR_FALLBACK,
-        verified: data.verified || false,
-        faceVerified: data.faceStatus === 'submitted' || data.faceStatus === 'approved',
-        level: userLevel,
-        verifiedColor: data.verifiedColor || 'white',
-      }));
+      setProfileData((prev) =>
+        mergeProfile(prev, {
+          name: data.name || 'Top King ',
+          username: data.username || auth.currentUser?.email?.split('@')[0] || 'user',
+          usernameChangedAt: toMillis(data.usernameChangedAt),
+          bioText: cleanBio(data.bioText),
+          category: data.category || 'Video Creator',
+          profileImg: data.profileImg || AVATAR_FALLBACK,
+          verified: data.verified || false,
+          faceVerified: data.faceStatus === 'submitted' || data.faceStatus === 'approved',
+          level: userLevel,
+          verifiedColor: data.verifiedColor || 'white',
+        })
+      );
 
       return { userData: data, receivedStars };
     } catch (e) {
@@ -207,12 +287,13 @@ export default function ProfileScreen() {
       ]);
       if (l) setLikedCount(l.data().count);
 
-      setProfileData((prev) => ({
-        ...prev,
-        followers: String(f.data().count),
-        following: String(g.data().count),
-        ...(totalLikes != null ? { likes: String(totalLikes) } : {}),
-      }));
+      setProfileData((prev) =>
+        mergeProfile(prev, {
+          followers: String(f.data().count),
+          following: String(g.data().count),
+          ...(totalLikes != null ? { likes: String(totalLikes) } : {}),
+        })
+      );
     } catch (e) {
       if (__DEV__) console.log('Error fetching profile stats: ', e);
     }
@@ -234,6 +315,7 @@ export default function ProfileScreen() {
 
       list.sort((a, b) => getCreatedTime(b.createdAt) - getCreatedTime(a.createdAt));
       setVideos(list);
+      setVideosLoaded(true);
 
       return { videos: list, totalLikes, totalViews };
     } catch (e) {
@@ -260,10 +342,17 @@ export default function ProfileScreen() {
     } catch (e) {}
   };
 
-  const maybeYellowBadge = (uid, core, totalViews) => {
-    if (core?.userData?.verified && core?.userData?.verifiedColor !== 'yellow' && totalViews >= 4500) {
-      setDoc(doc(db, 'users', uid), { verifiedColor: 'yellow' }, { merge: true }).catch(() => {});
-    }
+  // Grey V: 5 videos x 3000+ views. Tick server khud lagata hai (client ab DB me seedha nahi likhta)
+  const greyClaimTried = useRef(false);
+  const maybeYellowBadge = (uid, core, videos) => {
+    const ud = core?.userData;
+    if (greyClaimTried.current || !ud) return;
+    if (ud.verifiedColor === 'yellow' || ud.verifiedColor === 'blue') return;
+    let n = 0;
+    for (const v of videos || []) if (Number(v?.views || 0) >= 3000) n += 1;
+    if (n < 5) return;
+    greyClaimTried.current = true; // ek session me ek hi baar try
+    callApi('/creator/claim-grey', {}).catch(() => {});
   };
 
   // ================== INIT (auth + profile + top gifters, ek hi listener) ==================
@@ -299,6 +388,9 @@ export default function ProfileScreen() {
             .sort((a, b) => b.stars - a.stars);
 
           const top = gifters.slice(0, ANGEL_SHOW);
+          const sig = gifters.length + '|' + top.map((g) => `${g.uid || g.userId}:${g.stars}`).join(',');
+          if (sig === giftSigRef.current) return; // kuch nahi badla -> na re-render, na extra reads
+          giftSigRef.current = sig;
           setTopGifters(top);
           setGiftUserCount(gifters.length);
 
@@ -339,9 +431,17 @@ export default function ProfileScreen() {
             likes: '0',
             uploadStatus: false,
             profileImg: user.photoURL || AVATAR_FALLBACK,
+            usernameSet: false,
           };
           await setDoc(doc(db, 'users', user.uid), newUserData);
-          setProfileData((prev) => ({ ...prev, ...newUserData }));
+          setLoading(false);
+          router.replace({ pathname: '/editProfile', params: { force: '1' } });
+          return;
+        } else if (userSnap.data()?.usernameSet === false) {
+          // Username add nahi kiya -> profile mat kholo, Edit Profile par bhejo
+          setLoading(false);
+          router.replace({ pathname: '/editProfile', params: { force: '1' } });
+          return;
         } else {
           videosPromise = loadVideos(user.uid); // header ke saath parallel
           core = await fetchCoreProfile(user.uid, userSnap);
@@ -351,7 +451,7 @@ export default function ProfileScreen() {
 
         const videoData = await (videosPromise || loadVideos(user.uid));
         setLikedMeCount(videoData.totalLikes);
-        maybeYellowBadge(user.uid, core, videoData.totalViews);
+        maybeYellowBadge(user.uid, core, videoData.videos);
 
         // Baaki sab background me
         Promise.allSettled([
@@ -374,21 +474,35 @@ export default function ProfileScreen() {
   // Edit / Followers page se wapas aane par sirf halka refresh (naam, photo, counts)
   useFocusEffect(
     useCallback(() => {
+      navLockRef.current = false; // wapas aane par taps hamesha chalu
+
       if (firstFocusRef.current) {
         firstFocusRef.current = false;
-        return;
+        lastRefreshRef.current = Date.now();
+        return () => setMenuVisible(false);
       }
+
+      // Har wapsi par nahi, sirf 20 sec baad refresh + UI free hone ke baad
       const uid = auth.currentUser?.uid;
-      if (!uid) return;
-      fetchCoreProfile(uid);
-      fetchProfileStats(uid);
+      let task = null;
+      if (uid && Date.now() - lastRefreshRef.current > 20000) {
+        lastRefreshRef.current = Date.now();
+        task = InteractionManager.runAfterInteractions(() => {
+          fetchCoreProfile(uid);
+          fetchProfileStats(uid);
+        });
+      }
+      return () => {
+        task?.cancel?.();
+        setMenuVisible(false); // page se nikalte hi menu band
+      };
     }, [])
   );
 
   // Hardware back: sirf jab ye screen focus me ho (nahi to dusre pages ka back bhi pakad leta)
   useFocusEffect(
     useCallback(() => {
-      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      const sub = scopedBackHandler('/profile', 'hardwareBackPress', () => {
         if (menuVisible) {
           setMenuVisible(false);
           return true;
@@ -416,7 +530,7 @@ export default function ProfileScreen() {
 
       const [core, videoData] = await Promise.all([fetchCoreProfile(uid), loadVideos(uid)]);
       setLikedMeCount(videoData.totalLikes);
-      maybeYellowBadge(uid, core, videoData.totalViews);
+      maybeYellowBadge(uid, core, videoData.videos);
 
       await Promise.all([
         fetchProfileStats(uid, videoData.totalLikes),
@@ -443,7 +557,7 @@ export default function ProfileScreen() {
 
   const go = (path) => {
     setMenuVisible(false);
-    router.push(path);
+    push(path);
   };
 
   const handleCleanStorage = () => {
@@ -469,7 +583,7 @@ export default function ProfileScreen() {
   const onTabChange = useCallback(
     (tab) => {
       if (tab === 'Likes') {
-        router.push({
+        push({
           pathname: '/likes',
           params: { userId: auth.currentUser?.uid, username: profileData.username },
         });
@@ -477,24 +591,21 @@ export default function ProfileScreen() {
       }
       setActiveTab('Videos');
     },
-    [router, profileData.username]
+    [push, profileData.username]
   );
+
+  // JSON pehle se ready (videos badalne par ek baar) => tap par UI nahi atakta
+  const videosJson = useMemo(() => JSON.stringify(videos), [videos]);
 
   const onVideoPress = useCallback(
     (item) => {
-      const current = videos;
-      const index = current.findIndex((v) => v.id === item.id);
-
-      router.push({
+      const index = videos.findIndex((v) => v.id === item.id);
+      push({
         pathname: '/videoedite',
-        params: {
-          videos: JSON.stringify(current),
-          index,
-          userId: auth.currentUser?.uid,
-        },
+        params: { videos: videosJson, index, userId: auth.currentUser?.uid },
       });
     },
-    [videos, router]
+    [videos, videosJson, push]
   );
 
   const renderVideoItem = useCallback(
@@ -512,168 +623,148 @@ export default function ProfileScreen() {
       !!profileData.name?.trim() &&
       profileData.name.trim().toLowerCase() !== (profileData.username || '').toLowerCase();
     const myUid = auth.currentUser?.uid;
+    // Star card tabhi dikhe jab user ko kabhi star mila ho ya Angels (gifters) hon
+    const showStarCard = hasStars || topGifters.length > 0;
 
     const openList = (pathname) =>
-      router.push({ pathname, params: { username: profileData.username } });
+      push({ pathname, params: { username: profileData.username } });
 
     return (
       <View style={styles.profileHeader}>
         <View style={styles.mainInfoSection}>
           <View style={styles.avatarContainer}>
             <FastImage uri={profileData.profileImg} fallback={AVATAR_FALLBACK} style={styles.avatar} />
-            <View pointerEvents="none" style={{ position: 'absolute', top: -2, left: -2 }}>
-              <AvatarFrame uid={myUid} size={90} ratio={1.3} animated />
-            </View>
           </View>
 
-          <View style={styles.statsRow}>
-            <TouchableOpacity style={styles.statBox} activeOpacity={0.7} onPress={() => openList('/followers')}>
-              <Text style={styles.statNum}>{formatCount(profileData.followers)}</Text>
-              <Text style={styles.statLab}>Followers</Text>
-            </TouchableOpacity>
+          <View style={styles.infoRight}>
+            <View style={styles.usernameRow}>
+              <Text numberOfLines={1} ellipsizeMode="tail" style={styles.profileName}>
+                {profileData.username || 'user'}
+              </Text>
+              <UserTick
+                verified={profileData.verified}
+                verifiedColor={profileData.verifiedColor}
+                faceVerified={profileData.faceVerified}
+                size={16}
+                style={{ marginLeft: 5 }}
+              />
+              <View style={[styles.levelBadge, { backgroundColor: levelTheme.bg, borderColor: levelTheme.border }]}>
+                <MaterialCommunityIcons name="diamond-stone" size={10} color={levelTheme.icon} />
+                <Text style={[styles.levelBadgeText, { color: levelTheme.text }]}>LV {profileData.level || 1}</Text>
+              </View>
+            </View>
 
-            <TouchableOpacity style={styles.statBox} activeOpacity={0.7} onPress={() => openList('/following')}>
-              <Text style={styles.statNum}>{formatCount(profileData.following)}</Text>
-              <Text style={styles.statLab}>Following</Text>
-            </TouchableOpacity>
+            <View style={styles.statsRow}>
+              <TouchableOpacity style={styles.statBox} activeOpacity={0.7} onPress={() => openList('/followers')}>
+                <Text style={styles.statNum}>{formatCount(profileData.followers)}</Text>
+                <Text style={styles.statLab}>Followers</Text>
+              </TouchableOpacity>
 
-            <View style={styles.statBox}>
-              <Text style={styles.statNum}>{formatCount(likedMeCount)}</Text>
-              <Text style={styles.statLab}>Likes</Text>
+              <TouchableOpacity style={styles.statBox} activeOpacity={0.7} onPress={() => openList('/following')}>
+                <Text style={styles.statNum}>{formatCount(profileData.following)}</Text>
+                <Text style={styles.statLab}>Following</Text>
+              </TouchableOpacity>
+
+              <View style={styles.statBox}>
+                <Text style={styles.statNum}>{formatCount(likedMeCount)}</Text>
+                <Text style={styles.statLab}>Likes</Text>
+              </View>
             </View>
           </View>
         </View>
 
-        <View style={styles.identityBlock}>
-          <View style={styles.usernameRow}>
-            <Text numberOfLines={1} ellipsizeMode="tail" style={styles.profileName}>
-              {showName ? profileData.name : `@${profileData.username || 'user'}`}
-            </Text>
-
-            <UserTick
-              verified={profileData.verified}
-              verifiedColor={profileData.verifiedColor}
-              faceVerified={profileData.faceVerified}
-              size={18}
-              style={{ marginLeft: 5 }}
-            />
-
-            <View style={[styles.levelBadge, { backgroundColor: levelTheme.bg, borderColor: levelTheme.border }]}>
-              <MaterialCommunityIcons name="diamond-stone" size={10} color={levelTheme.icon} />
-              <Text style={[styles.levelBadgeText, { color: levelTheme.text }]}>LV {profileData.level || 1}</Text>
-            </View>
+        {(showName || !!bioClean) && (
+          <View style={styles.identityBlock}>
+            {showName && (
+              <Text style={styles.displayName} numberOfLines={1}>{profileData.name}</Text>
+            )}
+            {!!bioClean && (
+              <View style={styles.bioSection}>
+                <BioText text={bioClean} style={styles.bioText} moreStyle={styles.bioMore} />
+              </View>
+            )}
           </View>
+        )}
 
-          {showName && (
-            <Text style={styles.profileHandle} numberOfLines={1}>@{profileData.username || 'user'}</Text>
-          )}
-
-          <Text style={styles.categoryText}>{profileData.category}</Text>
-
-          {!!bioClean && (
-            <View style={styles.bioSection}>
-              <BioText text={bioClean} style={styles.bioText} moreStyle={styles.bioMore} />
-            </View>
-          )}
-        </View>
-
+        {/* Edit Profile (TopKing logo button waisa hi rakha hai) */}
         <View style={styles.buttonRow}>
-          <TouchableOpacity style={styles.editBtn} onPress={() => router.push('/editProfile')}>
-            <MaterialCommunityIcons name="pencil" size={16} color="#000" style={{ marginRight: 6 }} />
+          <TouchableOpacity style={styles.editBtn} activeOpacity={0.8} onPress={() => push('/editProfile')}>
             <Text style={styles.editBtnText}>Edit Profile</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.instaBtn} onPress={() => router.push('/Agency-Request')}>
+          <TouchableOpacity style={styles.instaBtn} onPress={() => push('/Agency-Request')}>
             <Image source={TopKingLogo} style={{ width: 40, height: 40, resizeMode: 'contain' }} />
           </TouchableOpacity>
         </View>
 
-        {/* Rank / Angels / Family */}
-        <View style={styles.premiumCard}>
-          <TouchableOpacity style={styles.premiumItem} activeOpacity={0.8}>
-            <MaterialCommunityIcons name="star-four-points" size={20} color="#FFD700" />
-            <View style={{ marginLeft: 8 }}>
-              <Text style={styles.premiumSmallText}>Rank</Text>
-              <Text style={styles.premiumTitle}>
-                {userRank == null ? '--' : userRank > 500 ? '500+' : `No.${userRank}`}
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color="#777" style={{ marginLeft: 8 }} />
-          </TouchableOpacity>
-
-          <View style={styles.premiumDivider} />
-
-          <TouchableOpacity style={styles.premiumItem} activeOpacity={0.8} onPress={() => router.push('../TopGifters')}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.premiumTitle}>Angels</Text>
-
-              <View style={styles.memberRow}>
-                {topGifters.map((item, index) => {
-                  const imageUri =
-                    item.photo || item.profileImg || item.profile || item.photoURL || item.avatar || AVATAR_FALLBACK;
-                  const rank = index + 1;
-                  const rc = getAngelRankColors(rank);
-
-                  return (
-                    <View
-                      key={item.uid || item.userId || `gifter-${index}`}
-                      style={[styles.angelWrap, { marginLeft: index === 0 ? 0 : 10 }]}
-                    >
-                      <FastImage uri={imageUri} style={styles.angelImg} />
-                      <View style={[styles.angelBadge, { backgroundColor: rc.bg }]}>
-                        <Text style={[styles.angelBadgeText, { color: rc.text }]}>{rank}</Text>
-                      </View>
-                    </View>
-                  );
-                })}
-
-                {giftUserCount > 0 && (
-                  <Text style={{ color: '#FFD700', fontSize: 15, fontWeight: 'bold', marginLeft: 10 }}>
-                    {giftUserCount}
+        {/* Rank + Angels (sirf jab star mila ho) | Family alag card (sirf jab family me ho) */}
+        <View style={styles.cardsRow}>
+          {showStarCard && (
+            <View style={[styles.premiumCard, { flex: 1 }]}>
+              <TouchableOpacity style={styles.premiumItem} activeOpacity={0.8}>
+                <MaterialCommunityIcons name="star-four-points" size={22} color="#FFD700" />
+                <View>
+                  <Text style={styles.premiumSmallText}>Rank</Text>
+                  <Text style={styles.premiumTitle}>
+                    {userRank == null ? '--' : userRank > 500 ? '500+' : `No.${userRank}`}
                   </Text>
-                )}
-              </View>
-            </View>
-
-            <Ionicons name="chevron-forward" size={18} color="#777" style={{ marginLeft: 10 }} />
-          </TouchableOpacity>
-
-          <View style={styles.premiumDivider} />
-
-          <FamilyCell
-            userId={myUid}
-            fallback={
-              <TouchableOpacity style={styles.shareButton} activeOpacity={0.8}>
-                <Ionicons name="share-social" size={18} color="#FFD700" />
-                <Text style={styles.shareText}>Share</Text>
+                </View>
               </TouchableOpacity>
-            }
-          />
+
+              {topGifters.length > 0 && (
+                <TouchableOpacity style={styles.premiumItem} activeOpacity={0.8} onPress={() => push('../TopGifters')}>
+                  <View>
+                    <Text style={styles.premiumSmallText}>Angels</Text>
+                    <View style={styles.memberRow}>
+                      {topGifters.slice(0, ANGEL_SHOW).map((item, index) => {
+                        const imageUri =
+                          item.photo || item.profileImg || item.profile || item.photoURL || item.avatar || AVATAR_FALLBACK;
+
+                        return (
+                          <View
+                            key={item.uid || item.userId || `gifter-${index}`}
+                            style={[styles.angelWrap, { marginLeft: index === 0 ? 0 : -8, zIndex: ANGEL_SHOW - index }]}
+                          >
+                            <FastImage uri={imageUri} style={styles.angelImg} />
+                          </View>
+                        );
+                      })}
+                    </View>
+                  </View>
+                  <Ionicons name="chevron-forward" size={14} color="#9a9a9a" />
+                </TouchableOpacity>
+              )}
+
+            </View>
+          )}
+
+          {/* FamilyCell khud decide karta hai: family hai to dikhta hai, warna kuch nahi (card bhi nahi) */}
+          <View style={familyShown ? [styles.premiumCard, styles.familyCard] : null}>
+            <View onLayout={(e) => setFamilyShown(e.nativeEvent.layout.height > 0)}>
+              <FamilyCell userId={myUid} fallback={null} />
+            </View>
+          </View>
         </View>
 
         {/* Tabs */}
         <View style={styles.tabContainer}>
-          <TouchableOpacity
-            style={activeTab === 'Videos' ? styles.activeTab : styles.tab}
-            onPress={() => onTabChange('Videos')}
-          >
+          <TouchableOpacity style={styles.tab} activeOpacity={0.8} onPress={() => onTabChange('Videos')}>
             <Text style={activeTab === 'Videos' ? styles.activeTabText : styles.tabText}>
-              Video ({videos.length})
+              Videos {videos.length}
             </Text>
+            <View style={[styles.tabUnderline, activeTab !== 'Videos' && { backgroundColor: 'transparent' }]} />
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.tab}
-            onPress={() => onTabChange('Likes')}
-          >
-            <Text style={styles.tabText}>
-              Like ({likedCount})
+          <TouchableOpacity style={styles.tab} activeOpacity={0.8} onPress={() => onTabChange('Likes')}>
+            <Text style={activeTab === 'Likes' ? styles.activeTabText : styles.tabText}>
+              Likes {likedCount}
             </Text>
+            <View style={[styles.tabUnderline, activeTab !== 'Likes' && { backgroundColor: 'transparent' }]} />
           </TouchableOpacity>
         </View>
       </View>
     );
-  }, [profileData, likedMeCount, userRank, topGifters, giftUserCount, activeTab, videos.length, likedCount, router, onTabChange]);
+  }, [profileData, likedMeCount, userRank, topGifters, giftUserCount, hasStars, familyShown, activeTab, videos.length, likedCount, push, onTabChange]);
 
   if (loading) {
     return (
@@ -689,17 +780,17 @@ export default function ProfileScreen() {
 
       {/* Top Navigation Bar */}
       <View style={styles.topActionNavigation}>
-        <TouchableOpacity style={styles.starBox} activeOpacity={0.7} onPress={() => router.push('/claim')}>
+        <TouchableOpacity style={styles.starBox} activeOpacity={0.7} onPress={() => push('/claim')}>
           <Ionicons name="star" size={22} color="#FFD700" />
           <Text style={styles.starValue}>Claim</Text>
         </TouchableOpacity>
 
         <View style={styles.headerRightActions}>
-          <TouchableOpacity onPress={() => router.push('/wallet')} activeOpacity={0.7} style={{ marginRight: 15 }}>
+          <TouchableOpacity onPress={() => push('/wallet')} activeOpacity={0.7} style={{ marginRight: 15 }} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Ionicons name="wallet-outline" size={28} color="#FFD700" />
           </TouchableOpacity>
 
-          <TouchableOpacity onPress={() => setMenuVisible((v) => !v)} activeOpacity={0.7}>
+          <TouchableOpacity onPress={() => setMenuVisible((v) => !v)} activeOpacity={0.7} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Ionicons name="menu" size={28} color="#fff" />
           </TouchableOpacity>
         </View>
@@ -739,54 +830,24 @@ export default function ProfileScreen() {
         renderItem={renderVideoItem}
         numColumns={3}
         style={styles.videoList}
-        contentContainerStyle={{ paddingBottom: 140 }}
+        contentContainerStyle={{ paddingBottom: 100, paddingHorizontal: 1 }}
         showsVerticalScrollIndicator={false}
         removeClippedSubviews={false}
-        initialNumToRender={9}
-        maxToRenderPerBatch={9}
-        windowSize={5}
-        updateCellsBatchingPeriod={50}
+        initialNumToRender={12}
+        maxToRenderPerBatch={6}
+        windowSize={7}
+        updateCellsBatchingPeriod={80}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#FFD700']} tintColor="#FFD700" />
         }
         ListHeaderComponent={header}
       />
 
-      {/* Bottom Navigation */}
-      <View style={styles.bottomSection}>
-        <View style={styles.bottomNavContainer}>
-          <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/')}>
-            <Ionicons name={pathname === '/' ? 'home' : 'home-outline'} size={25} color={getIconColor('/')} />
-          </TouchableOpacity>
+      {/* Koi video nahi => "Tap to create your first video" hint */}
+      {videosLoaded && videos.length === 0 && !refreshing && <CreateVideoHint />}
 
-          <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/explore')}>
-            <Ionicons name={pathname === '/explore' ? 'search' : 'search-outline'} size={25} color={getIconColor('/explore')} />
-          </TouchableOpacity>
-
-          <View style={styles.navItem}>
-            <TouchableOpacity style={styles.plusBtn} onPress={() => router.push('/camera')}>
-              <Text style={styles.plusText}>+</Text>
-            </TouchableOpacity>
-          </View>
-
-          <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/messages')}>
-            <Ionicons name={pathname === '/messages' ? 'chatbubble-ellipses' : 'chatbubble-ellipses-outline'} size={25} color={getIconColor('/messages')} />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.navItem}
-            onPress={() => {
-              if (!auth.currentUser) {
-                router.push('/login');
-                return;
-              }
-              router.replace('/profile');
-            }}
-          >
-            <Ionicons name="person-outline" size={26} color={getIconColor('/profile')} />
-          </TouchableOpacity>
-        </View>
-      </View>
+      {/* Bottom Navigation: components/AppBottomNav.tsx */}
+      <AppBottomNav />
     </SafeAreaView>
   );
 }
@@ -808,44 +869,44 @@ const styles = StyleSheet.create({
   headerRightActions: { flexDirection: 'row', alignItems: 'center', gap: 20 },
   profileHeader: { paddingHorizontal: 16, paddingTop: 5 },
   mainInfoSection: { flexDirection: 'row', alignItems: 'center', marginTop: 10 },
-  avatarContainer: { width: 90, height: 90, borderRadius: 50, borderWidth: 2, borderColor: '#FFD700', justifyContent: 'center', alignItems: 'center', shadowColor: '#FFD700', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.6, shadowRadius: 8, elevation: 5 },
-  avatar: { width: 88, height: 88, borderRadius: 45, backgroundColor: '#222' },
-  identityBlock: { marginTop: 12 },
+  avatarContainer: { width: 80, height: 80, borderRadius: 40, justifyContent: 'center', alignItems: 'center' },
+  avatar: { width: 80, height: 80, borderRadius: 30, backgroundColor: '#222' },
+  identityBlock: { marginTop: 10 },
   usernameRow: { flexDirection: 'row', alignItems: 'center' },
-  profileName: { fontSize: 16, fontWeight: 'bold', color: '#fff', flexShrink: 1 },
+  profileName: { fontSize: 18, fontWeight: 'bold', color: '#fff', flexShrink: 1 },
   profileHandle: { color: '#9a9a9a', fontSize: 13, marginTop: 2 },
   categoryText: { color: '#FFD700', fontSize: 12, marginTop: 3, fontWeight: '500' },
-  statsRow: { flex: 1, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', marginLeft: 10 },
+  statsRow: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', marginTop: 6 },
   statBox: { alignItems: 'center', paddingHorizontal: 6, paddingVertical: 4, minWidth: 64 },
   statNum: { fontSize: 17, fontWeight: 'bold', color: '#fff' },
-  statLab: { fontSize: 12.5, color: '#888', marginTop: 2 },
-  bioSection: { marginTop: 8 },
-  bioText: { fontSize: 14, lineHeight: 19, color: '#fff', marginTop: 6 },
+  statLab: { fontSize: 13, color: '#8a8a8a', marginTop: 2 },
+  bioSection: { marginTop: 4 },
+  bioText: { fontSize: 14, lineHeight: 19, color: '#fff' },
   bioMore: { color: '#8e8e8e', fontWeight: '600' },
-  buttonRow: { flexDirection: 'row', marginTop: 20, gap: 12 },
-  editBtn: { flex: 1, backgroundColor: '#FFD700', paddingVertical: 12, borderRadius: 16, alignItems: 'center', justifyContent: 'center', flexDirection: 'row' },
-  editBtnText: { fontWeight: 'bold', color: '#000', fontSize: 15 },
-  instaBtn: { backgroundColor: '#141414', paddingHorizontal: 16, borderRadius: 16, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#222' },
+  buttonRow: { flexDirection: 'row', marginTop: 16, gap: 10 },
+  editBtn: { flex: 1, backgroundColor: '#2a2a2a', paddingVertical: 12, borderRadius: 8, alignItems: 'center', justifyContent: 'center', flexDirection: 'row' },
+  editBtnText: { fontWeight: '700', color: '#fff', fontSize: 15 },
+  instaBtn: { backgroundColor: '#2a2a2a', paddingHorizontal: 14, borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
 
-  tabContainer: { flexDirection: 'row', marginTop: 20, borderBottomWidth: 1, borderBottomColor: '#222' },
+  tabContainer: { flexDirection: 'row', marginTop: 18 },
   activeTab: { flex: 1, alignItems: 'center', paddingBottom: 10, borderBottomWidth: 2, borderBottomColor: '#FFD700' },
-  tab: { flex: 1, alignItems: 'center', paddingBottom: 10 },
-  activeTabText: { color: '#FFD700', fontWeight: 'bold', fontSize: 16 },
-  tabText: { color: '#888', fontSize: 16 },
+  tab: { flex: 1, alignItems: 'center', paddingVertical: 8 },
+  activeTabText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  tabText: { color: '#8a8a8a', fontWeight: 'bold', fontSize: 16 },
 
-  videoList: { flex: 1, marginTop: 10 },
-  videoCard: { width: ITEM_SIZE, height: ITEM_SIZE * 1.5, margin: 5, backgroundColor: '#111', borderRadius: 5, overflow: 'hidden' },
+  videoList: { flex: 1, marginTop: 4 },
+  videoCard: { width: ITEM_SIZE - 2, height: (ITEM_SIZE - 2) * 1.42, margin: 1, backgroundColor: '#111', overflow: 'hidden' },
   video: { width: '100%', height: '100%' },
-  videoOverlayViews: { position: 'absolute', top: 10, left: 10, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.4)', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 8 },
-  viewCountText: { color: '#fff', fontSize: 10, marginLeft: 4, fontWeight: 'bold' },
+  videoOverlayViews: { position: 'absolute', bottom: 6, left: 6, flexDirection: 'row', alignItems: 'center' },
+  viewCountText: { color: '#fff', fontSize: 12, marginLeft: 3, fontWeight: 'bold', textShadowColor: 'rgba(0,0,0,0.7)', textShadowRadius: 3, textShadowOffset: { width: 0, height: 1 } },
   videoTitleRow: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'rgba(0,0,0,0.1)' },
   videoItemTitle: { color: '#fff', fontSize: 11, marginLeft: 4, fontWeight: '500', width: width / 3 - 45 },
 
-  bottomSection: { position: 'absolute', bottom: 0, width: '100%', backgroundColor: '#000', borderTopWidth: 0.5, borderTopColor: '#1c1c1c', paddingBottom: Platform.OS === 'ios' ? 25 : 10, paddingTop: 8, zIndex: 99 },
-  bottomNavContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', width: '100%', height: 115 },
+  bottomSection: { position: 'absolute', bottom: 0, width: '100%', backgroundColor: '#000', paddingTop: 0, zIndex: 99 },
+  bottomNavContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', width: '100%', height: 56 },
   navItem: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  plusBtn: { backgroundColor: '#FFD700', width: 48, height: 32, borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
-  plusText: { fontSize: 24, fontWeight: 'bold', color: '#000', marginTop: -3 },
+  plusBtn: { backgroundColor: '#FFD400', width: 48, height: 34, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
+  plusText: { fontSize: 28, fontWeight: 'bold', color: '#000', marginTop: -4 },
 
   menuOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'transparent', zIndex: 9998 },
   menuDropdown: { position: 'absolute', top: 0, bottom: 25, right: 0, width: '78%', backgroundColor: '#121212', paddingTop: Platform.OS === 'ios' ? 60 : 55, paddingBottom: Platform.OS === 'ios' ? 30 : 20, zIndex: 9999, elevation: 20, shadowColor: '#000', shadowOpacity: 0.5, shadowRadius: 12 },
@@ -860,16 +921,30 @@ const styles = StyleSheet.create({
   levelBadge: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 20, marginLeft: 4, borderWidth: 1 },
   levelBadgeText: { marginLeft: 3, fontSize: 9, fontWeight: 'bold' },
 
-  premiumCard: { marginTop: 20, backgroundColor: '#181818', borderRadius: 12, flexDirection: 'row', alignItems: 'center', paddingVertical: 5, borderWidth: 1, borderColor: '#2c2c2c', shadowColor: '#FFD700', shadowOpacity: 0.3, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 10 },
-  premiumItem: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
-  premiumSmallText: { color: '#888', fontSize: 11 },
-  premiumTitle: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  premiumCard: { marginTop: 14, backgroundColor: '#2a2a2a', borderRadius: 10, flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 12, gap: 14 },
+  premiumItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  premiumSmallText: { color: '#8a8a8a', fontSize: 11 },
+  premiumTitle: { color: '#fff', fontSize: 13, fontWeight: '700' },
   premiumDivider: { width: 1, height: 34, backgroundColor: '#333' },
-  shareButton: { backgroundColor: '#3d3200', paddingHorizontal: 16, paddingVertical: 9, borderRadius: 12, flexDirection: 'row', alignItems: 'center', marginHorizontal: 10 },
-  shareText: { color: '#FFD700', fontWeight: 'bold', marginLeft: 6 },
-  memberRow: { flexDirection: 'row', marginTop: 6 },
-  angelWrap: { width: 28, height: 28 },
-  angelImg: { width: 28, height: 28, borderRadius: 14, borderWidth: 2, borderColor: '#181818' },
+  shareButton: { backgroundColor: '#D4C700', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, flexDirection: 'row', alignItems: 'center' },
+  shareText: { color: '#1a1a1a', fontWeight: 'bold', fontSize: 13, marginLeft: 5 },
+  memberRow: { flexDirection: 'row', alignItems: 'center' },
+  angelWrap: { width: 22, height: 22 },
+  angelImg: { width: 22, height: 22, borderRadius: 11, borderWidth: 1.5, borderColor: '#2a2a2a' },
+  infoRight: { flex: 1, marginLeft: 14 },
+  displayName: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  cardsRow: { flexDirection: 'row', gap: 10 },
+  familyCard: { paddingHorizontal: 10 },
+  tabUnderline: { width: 22, height: 3, borderRadius: 2, backgroundColor: '#FFD700', marginTop: 6 },
+  pinnedBadge: { position: 'absolute', top: 6, left: 6, backgroundColor: 'rgba(0,0,0,0.55)', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 3 },
+  pinnedText: { color: '#fff', fontSize: 10, fontWeight: '600' },
   angelBadge: { position: 'absolute', right: -5, bottom: -5, minWidth: 14, height: 14, paddingHorizontal: 2, borderRadius: 7, borderWidth: 1.5, borderColor: '#181818', justifyContent: 'center', alignItems: 'center' },
   angelBadgeText: { fontSize: 9, fontWeight: '900', lineHeight: 11 },
+
+  // Create-video hint
+  hintWrap: { position: 'absolute', alignSelf: 'center', bottom: HINT_BOTTOM, alignItems: 'center', zIndex: 50 },
+  hintIconBadge: { width: 46, height: 38, borderRadius: 12, backgroundColor: '#FFD400', justifyContent: 'center', alignItems: 'center', marginBottom: -14, zIndex: 2, transform: [{ rotate: '-8deg' }] },
+  hintBubble: { backgroundColor: '#fff', borderRadius: 8, paddingHorizontal: 16, paddingTop: 20, paddingBottom: 12, maxWidth: 190 },
+  hintText: { color: '#333', fontSize: 13, fontWeight: '500', textAlign: 'center' },
+  hintArrow: { width: 0, height: 0, borderLeftWidth: 8, borderRightWidth: 8, borderTopWidth: 8, borderLeftColor: 'transparent', borderRightColor: 'transparent', borderTopColor: '#fff' },
 });

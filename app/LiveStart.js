@@ -17,9 +17,10 @@ import {
   BackHandler,
   Modal
 } from 'react-native';
+import { scopedBackHandler } from '../utils/scopedBack';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 import { useLiveBanGuard } from '../utils/liveBan';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -98,7 +99,7 @@ const [loadingButton, setLoadingButton] = useState(null);
       return true; // Smartphone default close action filter
     };
 
-    const backHandlerSubscription = BackHandler.addEventListener(
+    const backHandlerSubscription = scopedBackHandler('/LiveStart', 
       'hardwareBackPress', 
       handleBackButton
     );
@@ -469,7 +470,7 @@ if (roomLayout === "multiguest") {
                     <Text style={styles.typeTitle}>{l.title}</Text>
                     <Text style={styles.typeDesc}>{l.desc}</Text>
                   </View>
-                  {active && <Ionicons name="checkmark-circle" size={22} color={YELLOW} />}
+                  {active && <Image source={require('../assets/images/grey-v-tick.png')} style={{ width: 22, height: 22 }} resizeMode="contain" />}
                 </TouchableOpacity>
               );
             })}

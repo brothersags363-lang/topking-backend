@@ -1,7 +1,8 @@
 import useBackStep from '../utils/useBackStep';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 import {
   collection,
   collectionGroup,
@@ -14,7 +15,7 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -100,7 +101,12 @@ const Chip = ({ label, active, onPress }) => (
 
 export default function EditProfileScreen() {
   const router = useRouter();
-  useBackStep('/profile');
+  const params = useLocalSearchParams();
+  // Naya user: username add kiye bina bahar nahi nikal sakta (back / close band)
+  const [mustSetUsername, setMustSetUsername] = useState(params?.force === '1');
+  const mustSetRef = useRef(mustSetUsername);
+  mustSetRef.current = mustSetUsername;
+  useBackStep('/profile', () => mustSetRef.current);
 
   const [ready, setReady] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -130,8 +136,10 @@ export default function EditProfileScreen() {
         if (cancelled) return;
         const d = snap.exists() ? snap.data() : {};
         const uname = d.username || user.email?.split('@')[0] || 'user';
-        setOrig({ username: uname, usernameChangedAt: toMillis(d.usernameChangedAt) });
-        setUsername(uname);
+        const forced = d.usernameSet === false;
+        if (forced) setMustSetUsername(true);
+        setOrig({ username: uname, usernameChangedAt: forced ? 0 : toMillis(d.usernameChangedAt) });
+        setUsername(forced ? '' : uname); // forced: khali field, user khud likhe
         setName(sanitizeName(d.name || ''));
         setBio(cleanBio(d.bioText));
         setBirthday(birthdayToDisplay(d.birthday));
@@ -167,7 +175,11 @@ export default function EditProfileScreen() {
     if (!user) return;
 
     // ---- 1. Validate pehle ----
-    const cleanUsername = username === orig.username ? username : sanitizeUsername(username);
+    if (mustSetUsername && !username.trim()) {
+      return Alert.alert('Username zaroori hai', 'Profile kholne ke liye pehle apna username add karo.');
+    }
+    const cleanUsername =
+      !mustSetUsername && username === orig.username ? username : sanitizeUsername(username);
 
     const cleanName = sanitizeName(name).trim();
     const nameError = validateName(cleanName);
@@ -176,15 +188,17 @@ export default function EditProfileScreen() {
     const bday = parseBirthday(birthday);
     if (bday.error) return Alert.alert('Birthday Error', bday.error);
 
-    const usernameError = username === orig.username ? null : validateUsername(cleanUsername);
+    const usernameError =
+      !mustSetUsername && username === orig.username ? null : validateUsername(cleanUsername);
     if (usernameError) return Alert.alert('Username Error', usernameError);
 
     setSaving(true);
     try {
-      const usernameChanged = cleanUsername !== orig.username;
+      // forced (pehli baar) me hamesha check + save; baad me sirf badalne par
+      const usernameChanged = mustSetUsername || cleanUsername !== orig.username;
 
-      // 14 din ka lock: server se taza value padh ke check
-      if (usernameChanged) {
+      // 14 din ka lock: server se taza value padh ke check (pehli baar ke liye lock nahi)
+      if (usernameChanged && !mustSetUsername) {
         const fresh = await getDoc(doc(db, 'users', user.uid));
         const l = getUsernameLock(fresh.exists() ? fresh.data().usernameChangedAt : orig.usernameChangedAt);
         if (l.locked) {
@@ -223,7 +237,8 @@ export default function EditProfileScreen() {
           category,
           gender,
           profileImg: imageUrl,
-          ...(usernameChanged ? { usernameChangedAt: Date.now() } : {}),
+          ...(usernameChanged && !mustSetUsername ? { usernameChangedAt: Date.now() } : {}),
+          ...(mustSetUsername ? { usernameSet: true, profileSetupDone: true } : {}),
         },
         { merge: true }
       );
@@ -231,7 +246,12 @@ export default function EditProfileScreen() {
       // Naam / dp badla hai to videos + comments me bhi (background, wait nahi)
       syncMyIdentity(user.uid, cleanUsername, imageUrl);
 
-      router.back(); // profile screen focus par apne aap refresh ho jaati hai
+      if (mustSetUsername) {
+        setMustSetUsername(false);
+        router.replace('/profile'); // username set -> ab profile khulegi
+      } else {
+        router.back(); // profile screen focus par apne aap refresh ho jaati hai
+      }
     } catch (error) {
       console.log('Profile save error:', error);
       Alert.alert('Error', (error && error.userMessage) || 'Profile save nahi ho saki.');
@@ -246,9 +266,13 @@ export default function EditProfileScreen() {
       <StatusBar backgroundColor="#111" barStyle="light-content" />
 
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} hitSlop={12}>
-          <Ionicons name="close" size={28} color="#fff" />
-        </TouchableOpacity>
+        {mustSetUsername ? (
+          <View style={{ width: 28 }} />
+        ) : (
+          <TouchableOpacity onPress={() => router.back()} hitSlop={12}>
+            <Ionicons name="close" size={28} color="#fff" />
+          </TouchableOpacity>
+        )}
         <Text style={styles.headerTitle}>Edit Profile</Text>
         <TouchableOpacity onPress={handleSave} disabled={saving || !ready} hitSlop={12}>
           {saving ? (
@@ -292,7 +316,9 @@ export default function EditProfileScreen() {
                 placeholderTextColor="#555"
               />
               <Text style={styles.helper}>
-                {lock.locked
+                {mustSetUsername
+                  ? 'Profile kholne ke liye apna username add karo (3 se ' + USERNAME_MAX + ' characters), phir Save dabao.'
+                  : lock.locked
                   ? `Username ${lock.daysLeft} din baad badal sakte ho (${USERNAME_COOLDOWN_DAYS} din me sirf ek baar)`
                   : `Letters, numbers, . aur _ use kar sakte ho (3 se ${USERNAME_MAX} characters). Ek baar badalne ke baad ${USERNAME_COOLDOWN_DAYS} din tak dobara nahi badlega.`}
               </Text>

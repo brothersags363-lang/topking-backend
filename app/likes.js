@@ -12,9 +12,11 @@ import {
   ActivityIndicator,
   BackHandler,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 import { Ionicons } from "@expo/vector-icons";
 import { Image as ExpoImage } from "expo-image";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { collection, getDocs, documentId, query, where } from "firebase/firestore";
 import { db } from "./firebaseConfig";
 
@@ -67,7 +69,7 @@ export default function LikesScreen() {
       return true;
     };
 
-    const subscription = BackHandler.addEventListener(
+    const subscription = scopedBackHandler('/likes', 
       "hardwareBackPress",
       backAction
     );

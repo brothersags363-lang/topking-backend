@@ -1,6 +1,9 @@
 import { blockIfProfane } from "../utils/guardText";
 import { notifyVideoLike } from "../utils/pushNotify";
+import StarToastView from "../utils/StarToastView";
+import { rewardShare } from "../utils/shareReward";
 import React, { useEffect, useRef, useState } from 'react';
+import { Image as ExpoImage } from 'expo-image';
 
 import {
   ActivityIndicator,
@@ -21,6 +24,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { scopedBackHandler } from '../utils/scopedBack';
 
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { VideoView, useVideoPlayer } from 'expo-video';
@@ -44,13 +48,21 @@ import {
 
 import { db } from './firebaseConfig';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
-import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 import UserTick from '../components/UserTick';
 
 const { height, width } = Dimensions.get('screen');
 
 // Ek video item ki asli height. getItemLayout aur videoContainer dono yahi use karte hain.
 const ITEM_HEIGHT = height - 77.2;
+
+// Stable (module-level) taaki FlatList har render par naye function na paaye
+const COMMENTS_LIMIT = 50;
+const VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 70 };
+const videoKeyExtractor = (item) => String(item.id);
+const videoGetItemLayout = (_, i) => ({ length: ITEM_HEIGHT, offset: ITEM_HEIGHT * i, index: i });
+const idKeyExtractor = (item) => item.id;
 
 const DEFAULT_AVATAR = 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png';
 
@@ -69,6 +81,8 @@ const formatCount = (n) => {
 const VerifiedBadge = ({ color, size = 18, verified = true, uid }: any) =>
   !verified ? (
     <UserTick uid={uid} size={size} />
+  ) : color === 'yellow' ? (
+    <UserTick verified verifiedColor="yellow" size={size} style={{ marginLeft: 1 }} />
   ) : (
   <View
     style={{
@@ -82,7 +96,7 @@ const VerifiedBadge = ({ color, size = 18, verified = true, uid }: any) =>
     <MaterialCommunityIcons
       name="check-decagram"
       size={size}
-      color={color === 'yellow' ? '#FFD700' : '#ffffff'}
+      color="#ffffff"
     />
     <Ionicons
       name="checkmark"
@@ -278,7 +292,8 @@ export default function App() {
   const loadedLikeIdsRef = useRef(new Set());
   const likeUserCacheRef = useRef({});
 
-  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 70 }).current;
+  const viewabilityConfig = VIEWABILITY_CONFIG;
+  const replyUnsubsRef = useRef({});
 
   const onViewRef = useRef(({ viewableItems }) => {
     if (viewableItems.length > 0 && viewableItems[0].index != null) {
@@ -353,7 +368,7 @@ export default function App() {
       return true;
     };
 
-    const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
+    const backHandler = scopedBackHandler('/videoedite', 'hardwareBackPress', backAction);
     return () => backHandler.remove();
   }, [showComments, showSharePopup, showLikes, goBack]);
 
@@ -552,11 +567,12 @@ export default function App() {
   /* ============ Comments + replies listeners ============ */
 
   useEffect(() => {
-    if (!selectedVideoId) return;
+    if (!selectedVideoId || !showComments) return;
 
     const q = query(
       collection(db, 'all_videos', selectedVideoId, 'comments'),
-      orderBy('createdAt', 'desc')
+      orderBy('createdAt', 'desc'),
+      limit(COMMENTS_LIMIT)
     );
 
     const unsubscribe = onSnapshot(
@@ -571,30 +587,47 @@ export default function App() {
       }
     );
     return () => unsubscribe();
-  }, [selectedVideoId]);
+  }, [selectedVideoId, showComments]);
 
+  // Replies: har comment ka listener sirf EK baar lagta hai. Pehle comments badalte hi
+  // saare listeners band hokar dobara lagte the (lag + extra Firestore reads).
   useEffect(() => {
-    if (!selectedVideoId) return;
+    if (!selectedVideoId || !showComments) return;
 
-    const unsubscribers = comments.map((comment) => {
+    const map = replyUnsubsRef.current;
+    const wanted = new Set(comments.map((c) => c.id));
+
+    Object.keys(map).forEach((id) => {
+      if (!wanted.has(id)) {
+        map[id]();
+        delete map[id];
+      }
+    });
+
+    wanted.forEach((id) => {
+      if (map[id]) return;
       const q = query(
-        collection(db, 'all_videos', selectedVideoId, 'comments', comment.id, 'replies'),
+        collection(db, 'all_videos', selectedVideoId, 'comments', id, 'replies'),
         orderBy('createdAt', 'asc')
       );
-
-      return onSnapshot(
+      map[id] = onSnapshot(
         q,
         (snap) => {
-          const arr = [];
-          snap.forEach((d) => arr.push({ id: d.id, ...d.data() }));
-          setReplies((prev) => ({ ...prev, [comment.id]: arr }));
+          const arr = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          setReplies((prev) => ({ ...prev, [id]: arr }));
         },
         (e) => console.log('REPLIES ERROR =', e)
       );
     });
+  }, [comments, selectedVideoId, showComments]);
 
-    return () => unsubscribers.forEach((unsub) => unsub());
-  }, [comments, selectedVideoId]);
+  // Sheet band / video badalne par saare reply listeners band
+  useEffect(() => {
+    return () => {
+      Object.values(replyUnsubsRef.current).forEach((unsub: any) => unsub());
+      replyUnsubsRef.current = {};
+    };
+  }, [selectedVideoId, showComments]);
 
   /* ============ Likes list listener ============ */
 
@@ -739,6 +772,7 @@ export default function App() {
       );
 
       if (result.action === Share.sharedAction) {
+        rewardShare(videoId);
         setAllVideos((prev) =>
           prev.map((v) => (v.id === videoId ? { ...v, shares: (v.shares || 0) + 1 } : v))
         );
@@ -959,6 +993,11 @@ export default function App() {
 
   /* ============ Render a single video page ============ */
 
+  const listExtra = React.useMemo(
+    () => ({ activeVideo, screenFocused, starAnimationVideoId, localLikes }),
+    [activeVideo, screenFocused, starAnimationVideoId, localLikes]
+  );
+
   const renderVideo = React.useCallback(
     ({ item, index: itemIndex }) => (
       <View style={styles.videoContainer}>
@@ -1154,6 +1193,7 @@ export default function App() {
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
+      <StarToastView />
 
       {/* Top black header */}
       <View style={styles.header} />
@@ -1163,14 +1203,10 @@ export default function App() {
         ref={flatListRef}
         data={videoData}
         renderItem={renderVideo}
-        extraData={{ activeVideo, screenFocused, starAnimationVideoId, localLikes }}
-        keyExtractor={(item) => String(item.id)}
+        extraData={listExtra}
+        keyExtractor={videoKeyExtractor}
         pagingEnabled
-        getItemLayout={(data, i) => ({
-          length: ITEM_HEIGHT,
-          offset: ITEM_HEIGHT * i,
-          index: i,
-        })}
+        getItemLayout={videoGetItemLayout}
         initialScrollIndex={
           Number(index) > 0 && Number(index) < (videoData?.length || 0)
             ? Number(index)
@@ -1190,11 +1226,13 @@ export default function App() {
         maxToRenderPerBatch={2}
         windowSize={3}
         removeClippedSubviews={false}
-        updateCellsBatchingPeriod={16}
+        updateCellsBatchingPeriod={50}
         decelerationRate="fast"
         snapToAlignment="start"
         disableIntervalMomentum={true}
-        scrollEventThrottle={8}
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+        overScrollMode="never"
       />
 
       {/* Comments sheet */}
@@ -1247,12 +1285,15 @@ export default function App() {
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
               removeClippedSubviews={false}
-              keyExtractor={(item) => item.id}
+              keyExtractor={idKeyExtractor}
+              initialNumToRender={10}
+              maxToRenderPerBatch={8}
+              windowSize={7}
               keyboardDismissMode="interactive"
               renderItem={({ item }) => (
                 <View style={styles.commentRow}>
                   <TouchableOpacity onPress={() => openProfile(item.userId)}>
-                    <Image
+                    <ExpoImage cachePolicy="memory-disk" transition={0}
                       source={{ uri: item.profilePic || DEFAULT_AVATAR }}
                       style={{ width: 40, height: 40, borderRadius: 20 }}
                     />
@@ -1303,7 +1344,7 @@ export default function App() {
                       replies[item.id]?.map((reply) => (
                         <View key={reply.id} style={styles.replyRow}>
                           <TouchableOpacity onPress={() => openProfile(reply.userId)}>
-                            <Image
+                            <ExpoImage cachePolicy="memory-disk" transition={0}
                               source={{ uri: reply.profilePic || DEFAULT_AVATAR }}
                               style={{ width: 30, height: 30, borderRadius: 15 }}
                             />
@@ -1409,7 +1450,7 @@ export default function App() {
           ) : (
             <FlatList
               data={visibleLikes}
-              keyExtractor={(u) => u.id}
+              keyExtractor={idKeyExtractor}
               style={{ flex: 1 }}
               contentContainerStyle={{ paddingBottom: 30 }}
               showsVerticalScrollIndicator={false}
@@ -1420,7 +1461,7 @@ export default function App() {
                   activeOpacity={0.7}
                   onPress={() => openProfile(u.id)}
                 >
-                  <Image source={{ uri: u.photo }} style={styles.likeAvatar} />
+                  <ExpoImage cachePolicy="memory-disk" transition={0} source={{ uri: u.photo }} style={styles.likeAvatar} />
 
                   <View style={[styles.userRow, { flex: 1, marginLeft: 12 }]}>
                     <Text style={styles.likeName} numberOfLines={1}>

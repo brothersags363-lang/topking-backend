@@ -13,7 +13,8 @@ import {
   Alert,
   BackHandler,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { scopedBackHandler } from "../utils/scopedBack";
+import { useRouter } from "../utils/safeRouter";
 import { callApi } from "../utils/api";
 import useIsAdmin from "./useIsAdmin";
 import useIsOfficial from "./useIsOfficial";
@@ -48,7 +49,7 @@ export default function OfficialPanel() {
   const lastQueryRef = useRef("");
 
   useEffect(() => {
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+    const sub = scopedBackHandler('/officialPanel', "hardwareBackPress", () => {
       if (selected) {
         setSelected(null);
         setAgencyMode(false);

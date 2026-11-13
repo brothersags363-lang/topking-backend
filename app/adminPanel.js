@@ -7,7 +7,8 @@ import {
   BackHandler,
   ScrollView,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { scopedBackHandler } from "../utils/scopedBack";
+import { useRouter } from "../utils/safeRouter";
 import { Ionicons } from "@expo/vector-icons";
 import useIsAdmin from "./useIsAdmin";
 
@@ -21,6 +22,7 @@ const ITEMS = [
   { label: "Agency Rewards", icon: "trophy", route: "/agencyRewards", bg: "#FFD700", fg: "#000" },
   { label: "Add Stars", icon: "star", route: "/addStars", bg: "#FFD700", fg: "#000" },
   { label: "Verified Tick", icon: "checkmark-circle", route: "/adminVerify", bg: "#2980b9", fg: "#fff" },
+  { label: "Live Access", icon: "radio", route: "/adminLiveAccess", bg: "#e84393", fg: "#fff" },
   { label: "Withdrawals", icon: "wallet", route: "/withdrawals", bg: "#FFD700", fg: "#000" },
   { label: "Feedback", icon: "chatbox-ellipses", route: "/feedbackAdmin", bg: "#FFD700", fg: "#000" },
   { label: "Profile Details", icon: "people", route: "/profileDetails", bg: "#8e44ad", fg: "#fff" },
@@ -38,7 +40,7 @@ export default function AdminPanel() {
       router.back();
       return true;
     };
-    const backHandler = BackHandler.addEventListener("hardwareBackPress", backAction);
+    const backHandler = scopedBackHandler('/adminPanel', "hardwareBackPress", backAction);
     return () => backHandler.remove();
   }, [router]);
 

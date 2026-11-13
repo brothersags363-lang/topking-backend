@@ -3506,6 +3506,17 @@ try {
   }
 }
 
+// Grey V auto system: 5 videos x 3000+ views (alag file: creatorTicks.js)
+try {
+  require("./creatorTicks")({ app, db, admin, verifyUser, generalLimiter });
+} catch (e) {
+  if (e && e.code === "MODULE_NOT_FOUND" && String(e.message).includes("creatorTicks")) {
+    console.warn("WARNING: creatorTicks.js nahi mila, Grey V auto system abhi band hai");
+  } else {
+    throw e;
+  }
+}
+
 // ADMIN: kisi user ko Verified tick do / hatao
 // body: { uid, verified: true|false, color: "white" | "yellow" }
 const VERIFIED_COLORS = ["white", "yellow"];

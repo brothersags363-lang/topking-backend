@@ -16,8 +16,10 @@ import {
   Platform,
   useWindowDimensions,
 } from 'react-native';
+import { scopedBackHandler } from '../utils/scopedBack';
 import { Ionicons } from '@expo/vector-icons';
-import { Stack, useRouter, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 import { getAuth } from 'firebase/auth';
 import { getFirestore, collection, addDoc, serverTimestamp, Timestamp } from 'firebase/firestore';
 import { VideoView, useVideoPlayer } from 'expo-video';
@@ -358,7 +360,7 @@ export default function StoryEditor() {
   backRef.current = { draft, panel, closeTextEditor, askDiscard };
 
   useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+    const sub = scopedBackHandler('/story-editor', 'hardwareBackPress', () => {
       const B = backRef.current;
       if (B.draft) {
         B.closeTextEditor();

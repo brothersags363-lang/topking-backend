@@ -1,4 +1,5 @@
 // components/live/GreedyGame.js
+// Greedy (food wheel) - UI screenshot jaisa (ferris wheel + bunny)
 // Greedy (food wheel) - bottom half panel, upar seats dikhti rehti hain.
 // Props: db, uid, roomId, stars, bottom, onClose
 //
@@ -14,30 +15,30 @@ const BET_MS = 15000;
 const SPIN_MS = 6000;
 const RESULT_MS = 4000;
 const CYCLE = BET_MS + SPIN_MS + RESULT_MS;
-const MAX_BET_PER_ROUND = 10000;
+const MAX_BET_PER_ROUND = 100000; // NOTE: server (settleLiveGame) me bhi 100K cap karna hoga (100K chip ke liye)
 
-const SALAD_MULT = 1.5; // Mix group (🍌🍍🍇🍊) - server key 'salad'
-const PIZZA_MULT = 2.3; // Red group (🍎🍓🍒🍉) - server key 'pizza'
+const SALAD_MULT = 1.2; // Veg group (🍅🥬🌽🥕) - server key 'salad'
+const PIZZA_MULT = 2.3; // Meat group (🌭🍢🍗🐟) - server key 'pizza'
 
-// Sirf fal. id 0-3 = laal fal (Red group), id 4-7 = baaki fal (Mix group). mult 0 wale khane par bet nahi lagti (khali khana).
-// Ring order: upar se clockwise. (mult/weight server me bhi same hain: functions/index.js)
+// Ring order: upar se clockwise (screenshot jaisa). id 0-3 = Pizza (meat), id 4-7 = Salad (veg).
+// IMPORTANT: server (functions/index.js) me bhi yahi mult/order rakho: [10,15,25,45,5,5,5,5]
+// cnt = khane ke neeche dikhne wala "players" number (sirf display)
 const ITEMS = [
-  { id: 0, emoji: '🍎', mult: 12 },
-  { id: 1, emoji: '🍓', mult: 8 },
-  { id: 2, emoji: '🍒', mult: 5 },
-  { id: 3, emoji: '🍉', mult: 28 },
-  { id: 4, emoji: '🍌', mult: 3 },
-  { id: 5, emoji: '🍍', mult: 12 },
-  { id: 6, emoji: '🍇', mult: 8 },
-  { id: 7, emoji: '🍊', mult: 35 },
+  { id: 0, emoji: '🌭', mult: 10, cnt: 200 },
+  { id: 1, emoji: '🍢', mult: 15, cnt: 200 },
+  { id: 2, emoji: '🍗', mult: 25, cnt: 200 },
+  { id: 3, emoji: '🐟', mult: 45, cnt: 200, hot: true },
+  { id: 4, emoji: '🥕', mult: 5, cnt: 100 },
+  { id: 5, emoji: '🌽', mult: 5, cnt: 0 },
+  { id: 6, emoji: '🥬', mult: 5, cnt: 100 },
+  { id: 7, emoji: '🍅', mult: 5, cnt: 200 },
 ];
 
 const CHIPS = [
-  { v: 50, label: '50', color: '#3ddc97' },
-  { v: 100, label: '100', color: '#ffd23f' },
-  { v: 500, label: '500', color: '#ff6b9d' },
-  { v: 1000, label: '1K', color: '#4fc3f7' },
-  { v: 10000, label: '10K', color: '#b388ff' },
+  { v: 100, label: '100', color: '#2ee6b6' },
+  { v: 1000, label: '1K', color: '#ffc928' },
+  { v: 10000, label: '10K', color: '#ff5f8d' },
+  { v: 100000, label: '100K', color: '#4fb8ff' },
 ];
 
 const fmt = (n = 0) =>
@@ -62,29 +63,191 @@ const spinPosition = (elapsed, winner, knownAt) => {
   return p0 + (T - p0) * (1 - Math.pow(1 - u, 3));
 };
 
-// ---- memoized pieces: sirf badle hue cells re-render hote hain (lag ka main fix) ----
+// ---- khane ke cartoon icons (sirf View se bane, koi extra library/image nahi chahiye) ----
+const bx = (cx, cy, w, h, extra) => ({ position: 'absolute', left: cx - w / 2, top: cy - h / 2, width: w, height: h, ...extra });
+
+const Food = memo(({ id, size }) => {
+  const u = size;
+  const W = { width: u, height: u };
+  switch (id) {
+    case 7: // tomato
+      return (
+        <View style={W}>
+          <View style={bx(u * 0.5, u * 0.55, u * 0.84, u * 0.76, { borderRadius: u * 0.4, backgroundColor: '#f2323a' })} />
+          <View style={bx(u * 0.3, u * 0.42, u * 0.16, u * 0.1, { borderRadius: u, backgroundColor: '#ff8a8a', transform: [{ rotate: '-30deg' }] })} />
+          <View style={bx(u * 0.36, u * 0.2, u * 0.26, u * 0.12, { borderRadius: u, backgroundColor: '#2fa84f', transform: [{ rotate: '-25deg' }] })} />
+          <View style={bx(u * 0.64, u * 0.2, u * 0.26, u * 0.12, { borderRadius: u, backgroundColor: '#2fa84f', transform: [{ rotate: '25deg' }] })} />
+          <View style={bx(u * 0.5, u * 0.17, u * 0.1, u * 0.14, { borderRadius: u, backgroundColor: '#1f7d3a' })} />
+        </View>
+      );
+    case 6: // cabbage
+      return (
+        <View style={W}>
+          <View style={bx(u * 0.5, u * 0.5, u * 0.88, u * 0.88, { borderRadius: u, backgroundColor: '#3fb958' })} />
+          <View style={bx(u * 0.5, u * 0.5, u * 0.62, u * 0.62, { borderRadius: u, backgroundColor: '#8ddf8a' })} />
+          <View style={bx(u * 0.5, u * 0.5, u * 0.05, u * 0.62, { borderRadius: u, backgroundColor: '#3fb958' })} />
+          <View style={bx(u * 0.5, u * 0.5, u * 0.36, u * 0.05, { borderRadius: u, backgroundColor: '#3fb958', transform: [{ rotate: '40deg' }] })} />
+          <View style={bx(u * 0.5, u * 0.5, u * 0.36, u * 0.05, { borderRadius: u, backgroundColor: '#3fb958', transform: [{ rotate: '-40deg' }] })} />
+        </View>
+      );
+    case 5: // corn
+      return (
+        <View style={W}>
+          <View style={bx(u * 0.3, u * 0.62, u * 0.2, u * 0.7, { borderRadius: u, backgroundColor: '#3fb958', transform: [{ rotate: '18deg' }] })} />
+          <View style={bx(u * 0.7, u * 0.62, u * 0.2, u * 0.7, { borderRadius: u, backgroundColor: '#2fa84f', transform: [{ rotate: '-18deg' }] })} />
+          <View style={bx(u * 0.5, u * 0.45, u * 0.42, u * 0.82, { borderRadius: u, backgroundColor: '#ffc928' })} />
+          {[0.22, 0.38, 0.54, 0.7].map((y) => [0.4, 0.6].map((x) => (
+            <View key={x + '-' + y} style={bx(u * x, u * y, u * 0.1, u * 0.1, { borderRadius: u, backgroundColor: '#ffe27a' })} />
+          )))}
+        </View>
+      );
+    case 4: // carrot
+      return (
+        <View style={W}>
+          <View style={bx(u * 0.62, u * 0.2, u * 0.16, u * 0.3, { borderRadius: u, backgroundColor: '#3fb958', transform: [{ rotate: '25deg' }] })} />
+          <View style={bx(u * 0.5, u * 0.16, u * 0.16, u * 0.3, { borderRadius: u, backgroundColor: '#2fa84f' })} />
+          <View style={bx(u * 0.38, u * 0.2, u * 0.16, u * 0.3, { borderRadius: u, backgroundColor: '#3fb958', transform: [{ rotate: '-25deg' }] })} />
+          <View style={bx(u * 0.5, u * 0.52, u * 0.5, u * 0.62, { borderRadius: u * 0.26, backgroundColor: '#ff8a1f' })} />
+          <View style={bx(u * 0.5, u * 0.84, u * 0.2, u * 0.26, { borderRadius: u * 0.1, backgroundColor: '#ff8a1f' })} />
+          <View style={bx(u * 0.42, u * 0.42, u * 0.16, u * 0.04, { borderRadius: u, backgroundColor: '#e86a00' })} />
+          <View style={bx(u * 0.58, u * 0.56, u * 0.16, u * 0.04, { borderRadius: u, backgroundColor: '#e86a00' })} />
+        </View>
+      );
+    case 0: // hotdog
+      return (
+        <View style={W}>
+          <View style={{ position: 'absolute', width: u, height: u, transform: [{ rotate: '-18deg' }] }}>
+            <View style={bx(u * 0.5, u * 0.58, u * 0.9, u * 0.36, { borderRadius: u * 0.18, backgroundColor: '#f0b25a' })} />
+            <View style={bx(u * 0.5, u * 0.42, u * 1.0, u * 0.22, { borderRadius: u * 0.11, backgroundColor: '#d8432b' })} />
+            {[0.22, 0.38, 0.54, 0.7, 0.86].map((x, i) => (
+              <View key={x} style={bx(u * x, u * (i % 2 ? 0.4 : 0.44), u * 0.1, u * 0.06, { borderRadius: u, backgroundColor: '#ffd23f' })} />
+            ))}
+            <View style={bx(u * 0.5, u * 0.68, u * 0.84, u * 0.1, { borderRadius: u, backgroundColor: '#e39b3d' })} />
+          </View>
+        </View>
+      );
+    case 1: // skewer
+      return (
+        <View style={W}>
+          <View style={{ position: 'absolute', width: u, height: u, transform: [{ rotate: '-40deg' }] }}>
+            <View style={bx(u * 0.5, u * 0.5, u * 1.0, u * 0.06, { borderRadius: u, backgroundColor: '#b57a3a' })} />
+            <View style={bx(u * 0.3, u * 0.5, u * 0.24, u * 0.3, { borderRadius: u * 0.08, backgroundColor: '#c8602b' })} />
+            <View style={bx(u * 0.5, u * 0.5, u * 0.24, u * 0.3, { borderRadius: u * 0.08, backgroundColor: '#7ac14f' })} />
+            <View style={bx(u * 0.7, u * 0.5, u * 0.24, u * 0.3, { borderRadius: u * 0.08, backgroundColor: '#c8602b' })} />
+          </View>
+        </View>
+      );
+    case 2: // drumstick
+      return (
+        <View style={W}>
+          <View style={{ position: 'absolute', width: u, height: u, transform: [{ rotate: '-40deg' }] }}>
+            <View style={bx(u * 0.22, u * 0.5, u * 0.34, u * 0.1, { borderRadius: u, backgroundColor: '#fff1d6' })} />
+            <View style={bx(u * 0.1, u * 0.44, u * 0.12, u * 0.12, { borderRadius: u, backgroundColor: '#fff1d6' })} />
+            <View style={bx(u * 0.1, u * 0.56, u * 0.12, u * 0.12, { borderRadius: u, backgroundColor: '#fff1d6' })} />
+            <View style={bx(u * 0.6, u * 0.5, u * 0.62, u * 0.48, { borderRadius: u * 0.26, backgroundColor: '#d9772a' })} />
+            <View style={bx(u * 0.66, u * 0.42, u * 0.28, u * 0.1, { borderRadius: u, backgroundColor: '#f0a25a' })} />
+          </View>
+        </View>
+      );
+    case 3: // fish
+      return (
+        <View style={W}>
+          <View style={{ position: 'absolute', left: u * 0.02, top: u * 0.3, width: 0, height: 0, borderTopWidth: u * 0.2, borderBottomWidth: u * 0.2, borderLeftWidth: u * 0.0, borderRightWidth: u * 0.28, borderTopColor: 'transparent', borderBottomColor: 'transparent', borderRightColor: '#ff7a1f' }} />
+          <View style={bx(u * 0.56, u * 0.5, u * 0.66, u * 0.46, { borderRadius: u * 0.3, backgroundColor: '#ff8a2b' })} />
+          <View style={bx(u * 0.52, u * 0.3, u * 0.26, u * 0.14, { borderRadius: u, backgroundColor: '#ff6a1a', transform: [{ rotate: '-20deg' }] })} />
+          <View style={bx(u * 0.52, u * 0.58, u * 0.34, u * 0.14, { borderRadius: u, backgroundColor: '#ffb066' })} />
+          <View style={bx(u * 0.74, u * 0.44, u * 0.14, u * 0.14, { borderRadius: u, backgroundColor: '#fff' })} />
+          <View style={bx(u * 0.76, u * 0.44, u * 0.07, u * 0.07, { borderRadius: u, backgroundColor: '#222' })} />
+        </View>
+      );
+    case 'pizza':
+      return (
+        <View style={W}>
+          <View style={bx(u * 0.5, u * 0.5, u * 0.9, u * 0.9, { borderRadius: u, backgroundColor: '#e8933a' })} />
+          <View style={bx(u * 0.5, u * 0.5, u * 0.74, u * 0.74, { borderRadius: u, backgroundColor: '#ffc94d' })} />
+          {[[0.4, 0.38], [0.62, 0.46], [0.46, 0.64], [0.66, 0.68], [0.3, 0.56]].map(([x, y]) => (
+            <View key={x + '' + y} style={bx(u * x, u * y, u * 0.14, u * 0.14, { borderRadius: u, backgroundColor: '#e03a2f' })} />
+          ))}
+        </View>
+      );
+    case 'salad':
+      return (
+        <View style={W}>
+          <View style={bx(u * 0.34, u * 0.42, u * 0.28, u * 0.28, { borderRadius: u, backgroundColor: '#3fb958' })} />
+          <View style={bx(u * 0.64, u * 0.4, u * 0.3, u * 0.3, { borderRadius: u, backgroundColor: '#6fd06a' })} />
+          <View style={bx(u * 0.5, u * 0.34, u * 0.2, u * 0.2, { borderRadius: u, backgroundColor: '#f2323a' })} />
+          <View style={bx(u * 0.5, u * 0.62, u * 0.9, u * 0.36, { borderBottomLeftRadius: u * 0.45, borderBottomRightRadius: u * 0.45, borderTopLeftRadius: u * 0.04, borderTopRightRadius: u * 0.04, backgroundColor: '#ffffff', borderWidth: 2, borderColor: '#cfd8e8' })} />
+        </View>
+      );
+    default:
+      return <View style={W} />;
+  }
+});
+
+// ---- bunny (hub ke andar) ----
+const Bunny = memo(({ size }) => {
+  const u = size;
+  return (
+    <View style={{ width: u, height: u }}>
+      <View style={bx(u * 0.34, u * 0.2, u * 0.2, u * 0.46, { borderRadius: u * 0.1, backgroundColor: '#fff' })} />
+      <View style={bx(u * 0.34, u * 0.22, u * 0.09, u * 0.32, { borderRadius: u * 0.05, backgroundColor: '#ffb3c6' })} />
+      <View style={bx(u * 0.66, u * 0.2, u * 0.2, u * 0.46, { borderRadius: u * 0.1, backgroundColor: '#fff' })} />
+      <View style={bx(u * 0.66, u * 0.22, u * 0.09, u * 0.32, { borderRadius: u * 0.05, backgroundColor: '#ffb3c6' })} />
+      <View style={bx(u * 0.5, u * 0.62, u * 0.82, u * 0.62, { borderRadius: u * 0.34, backgroundColor: '#fff' })} />
+      <View style={bx(u * 0.33, u * 0.6, u * 0.07, u * 0.09, { borderRadius: u, backgroundColor: '#3a2a4a' })} />
+      <View style={bx(u * 0.67, u * 0.6, u * 0.07, u * 0.09, { borderRadius: u, backgroundColor: '#3a2a4a' })} />
+      <View style={bx(u * 0.24, u * 0.7, u * 0.13, u * 0.08, { borderRadius: u, backgroundColor: '#ffb3c6' })} />
+      <View style={bx(u * 0.76, u * 0.7, u * 0.13, u * 0.08, { borderRadius: u, backgroundColor: '#ffb3c6' })} />
+      <View style={bx(u * 0.5, u * 0.68, u * 0.08, u * 0.06, { borderRadius: u, backgroundColor: '#f2708f' })} />
+    </View>
+  );
+});
+
+// ---- background dots ----
+const Dots = memo(({ w, h }) => {
+  const out = [];
+  for (let y = 10, j = 0; y < h; y += 26, j++) {
+    for (let x = (j % 2 ? 24 : 11); x < w; x += 26) {
+      out.push(<View key={x + '-' + y} style={{ position: 'absolute', left: x, top: y, width: 4, height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.07)' }} />);
+    }
+  }
+  return <View pointerEvents="none" style={{ position: 'absolute', left: 0, top: 0, width: w, height: h }}>{out}</View>;
+});
+
+// ---- memoized pieces ----
 const Cell = memo(({ item, cell, x, y, active, win, mine, onPress }) => (
   <TouchableOpacity
-    activeOpacity={item.mult > 0 ? 0.8 : 1}
-    disabled={item.mult <= 0}
+    activeOpacity={0.85}
     onPress={() => onPress(item.id)}
-    style={[st.cell, { width: cell, height: cell, borderRadius: cell / 2, left: x, top: y }, item.mult <= 0 && st.cellEmpty, active && st.cellActive, win && st.cellWin]}
+    style={[st.cell, { width: cell, height: cell, borderRadius: cell / 2, left: x, top: y }, item.hot && st.cellHot, active && st.cellActive, win && st.cellWin]}
   >
-    <Text allowFontScaling={false} style={{ fontSize: cell * 0.42 }}>{item.emoji}</Text>
-    <Text allowFontScaling={false} style={st.mine}>{mine ? fmt(mine) : ' '}</Text>
-    {item.mult > 0 ? (
-      <View style={[st.multPill, item.mult >= 12 && st.multHot]}>
-        <Text allowFontScaling={false} style={st.multTxt}>×{item.mult}</Text>
+    <View style={{ marginTop: -cell * 0.06 }}><Food id={item.id} size={cell * 0.6} /></View>
+    {mine ? (
+      <Text allowFontScaling={false} style={st.mine}>{fmt(mine)}</Text>
+    ) : item.cnt > 0 ? (
+      <Text allowFontScaling={false} style={st.cnt}>👥 {item.cnt}</Text>
+    ) : (
+      <Text allowFontScaling={false} style={st.cnt}> </Text>
+    )}
+    <View style={[st.multPill, item.mult >= 25 && st.multHot]}>
+      <Text allowFontScaling={false} style={st.multTxt}>×{item.mult}</Text>
+    </View>
+    {item.hot ? (
+      <View style={st.hotWrap}>
+        <Text allowFontScaling={false} style={{ fontSize: 20 }}>🔥</Text>
+        <View style={st.hotPill}><Text allowFontScaling={false} style={st.hotTxt}>HOT</Text></View>
       </View>
     ) : null}
   </TouchableOpacity>
 ));
 
-const Side = memo(({ k, label, emoji, mult, bet, style, onPress }) => (
+const Side = memo(({ k, label, bet, style, onPress }) => (
   <TouchableOpacity activeOpacity={0.8} onPress={() => onPress(k)} style={[st.side, style]}>
-    <Text allowFontScaling={false} style={{ fontSize: 22 }}>{emoji}</Text>
-    <Text allowFontScaling={false} style={st.sideTxt}>{label} ×{mult}</Text>
-    {!!bet && <Text allowFontScaling={false} style={st.sideBet}>{fmt(bet)}</Text>}
+    <View style={st.sideCircle}>
+      <Food id={k} size={40} />
+      {!!bet && <Text allowFontScaling={false} style={st.sideBet}>{fmt(bet)}</Text>}
+    </View>
+    <Text allowFontScaling={false} style={st.sideTxt}>{label}</Text>
   </TouchableOpacity>
 ));
 
@@ -245,7 +408,7 @@ export default function GreedyGame({ db, uid, roomId, stars = 0, bottom = 10, on
   const cell = S * 0.27;
   const r = (S - cell) / 2;
   const c = S / 2;
-  const centerSize = S * 0.3;
+  const centerSize = S * 0.34;
   const pos = useMemo(
     () => ITEMS.map((it) => {
       const a = (it.id * Math.PI) / 4;
@@ -255,15 +418,12 @@ export default function GreedyGame({ db, uid, roomId, stars = 0, bottom = 10, on
   );
 
   const settledWinner = outcome ? outcome.winner : null;
-  const centerText =
-    phase === 'bet' ? 'Bet ' + secLeft + 's'
-      : phase === 'spin' ? 'Spinning'
-      : settledWinner == null ? (status === 'failed' ? 'No result' : 'Checking')
-      : ITEMS[settledWinner].mult > 0 ? '×' + ITEMS[settledWinner].mult : 'No win';
+  const badgeText =
+    phase === 'bet' ? String(secLeft)
+      : phase === 'spin' ? '···'
+      : settledWinner == null ? (status === 'failed' ? '✕' : '···')
+      : '×' + ITEMS[settledWinner].mult;
 
-  // balance: bet me (balance - lagi bet), spin me kata hua balance (jeet chhupi), result me asli balance
-  // liveBalance: hamesha wallet (live) se. Agar wallet snapshot abhi tak nahi aaya (bet lock ke baad wahi purana
-  // balance dikh raha) to server ka diya hua final balance use hota hai. Dono ek saath kabhi nahi ladte.
   const liveBalance =
     outcome && outcome.stake > 0 && outcome.balance != null && walletBalance === lockStarsRef.current
       ? outcome.balance
@@ -278,44 +438,57 @@ export default function GreedyGame({ db, uid, roomId, stars = 0, bottom = 10, on
   );
 
   const playing = 60 + (round % 37);
+  const money = (n) => Number(n).toLocaleString('en-US');
 
   return (
     <View style={[st.panel, { height: panelH, bottom }]} pointerEvents="box-none">
+      <Dots w={width} h={panelH} />
       <View style={st.head}>
         <View>
           <Text allowFontScaling={false} style={st.title}>Greedy</Text>
-          <Text allowFontScaling={false} style={st.sub}>Round {round % 100000}</Text>
-          <Text allowFontScaling={false} style={st.sub}>● {playing} playing</Text>
+          <Text allowFontScaling={false} style={st.round}>Round {round % 100000}</Text>
+          <Text allowFontScaling={false} style={st.sub}><Text style={{ color: '#2ee6b6' }}>● </Text>{playing} playing</Text>
         </View>
         <View style={{ flexDirection: 'row' }}>
           <TouchableOpacity style={st.hBtn} onPress={() => setMuted((m) => !m)}>
-            <Text allowFontScaling={false} style={{ fontSize: 16 }}>{muted ? '🔇' : '🔊'}</Text>
+            <Text allowFontScaling={false} style={{ fontSize: 15 }}>{muted ? '🔇' : '🔊'}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={st.hBtn}
             onPress={() =>
               Alert.alert(
                 'Greedy rules',
-                'Chip chuno, phir fal par tap karke bet lagao.\nWheel ruke to jis fal par ruke uska multiplier milega.\nRed = 🍎🍓🍒🍉 me se koi jeete (×2.3), Mix = 🍌🍍🍇🍊 me se koi jeete (×1.5).'
+                'Chip chuno, phir khane par tap karke bet lagao.\nWheel ruke to jis khane par ruke uska multiplier milega.\nPizza = 🌭🍢🍗🐟 me se koi jeete (×2.3), Salad = 🍅🥬🌽🥕 me se koi jeete (×1.2).'
               )
             }
           >
             <Text allowFontScaling={false} style={st.hTxt}>?</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={st.hBtn} onPress={onClose}>
-            <Text allowFontScaling={false} style={st.hTxt}>✕</Text>
-          </TouchableOpacity>
         </View>
       </View>
 
       <View style={{ width: S, height: S, alignSelf: 'center' }}>
-        <View
-          style={[st.center, { width: centerSize, height: centerSize, borderRadius: centerSize / 2, left: c - centerSize / 2, top: c - centerSize / 2 }]}
-        >
-          <Text allowFontScaling={false} style={{ fontSize: centerSize * 0.4 }}>🐰</Text>
-          <View style={st.centerPill}>
-            <Text allowFontScaling={false} style={st.centerTxt}>{centerText}</Text>
+        {/* yellow stand */}
+        <View style={[st.leg, { left: c + S * 0.075 - 9, top: c + S * 0.1, height: S * 0.6, transform: [{ rotate: '-14deg' }] }]} />
+        <View style={[st.leg, { left: c - S * 0.075 - 9, top: c + S * 0.1, height: S * 0.6, transform: [{ rotate: '14deg' }] }]} />
+        {/* spokes */}
+        {ITEMS.map((it) => (
+          <View key={'sp' + it.id} pointerEvents="none" style={{ position: 'absolute', width: S, height: S, transform: [{ rotate: it.id * 45 + 'deg' }] }}>
+            <View style={st.spoke} />
           </View>
+        ))}
+        {/* ring dots */}
+        {ITEMS.map((it) => {
+          const a = ((it.id + 0.5) * Math.PI) / 4;
+          const d = cell * 0.2;
+          return <View key={'rd' + it.id} pointerEvents="none" style={{ position: 'absolute', width: d, height: d, borderRadius: d / 2, backgroundColor: '#fff', borderWidth: 2, borderColor: '#ffc928', left: c + r * Math.sin(a) - d / 2, top: c - r * Math.cos(a) - d / 2 }} />;
+        })}
+        {/* hub */}
+        <View style={[st.center, { width: centerSize, height: centerSize, borderRadius: centerSize / 2, left: c - centerSize / 2, top: c - centerSize / 2 }]}>
+          <Bunny size={centerSize * 0.78} />
+        </View>
+        <View style={[st.badge, { left: c - 22, top: c + centerSize / 2 - 18 }]}>
+          <Text allowFontScaling={false} style={st.badgeTxt}>{badgeText}</Text>
         </View>
         {ITEMS.map((item) => (
           <Cell
@@ -330,8 +503,8 @@ export default function GreedyGame({ db, uid, roomId, stars = 0, bottom = 10, on
             onPress={place}
           />
         ))}
-        <Side k="salad" label="Mix" emoji="🍊" mult={SALAD_MULT} bet={bets.salad} style={{ left: 0, bottom: 0 }} onPress={place} />
-        <Side k="pizza" label="Red" emoji="🍎" mult={PIZZA_MULT} bet={bets.pizza} style={{ right: 0, bottom: 0 }} onPress={place} />
+        <Side k="salad" label="Salad" bet={bets.salad} style={{ left: 0, bottom: 0 }} onPress={place} />
+        <Side k="pizza" label="Pizza" bet={bets.pizza} style={{ right: 0, bottom: 0 }} onPress={place} />
       </View>
 
       {!!toast && (
@@ -340,29 +513,38 @@ export default function GreedyGame({ db, uid, roomId, stars = 0, bottom = 10, on
         </View>
       )}
 
-      <View style={st.bar}>
-        <View style={st.bal}>
-          <Text allowFontScaling={false} style={st.balMain}>⭐ {fmt(shownBalance)}</Text>
-          <Text allowFontScaling={false} style={st.balSub}>Won today {fmt(wonToday)}</Text>
-        </View>
-        <View style={st.chips}>
-          {CHIPS.map((ch) => (
-            <TouchableOpacity
-              key={ch.v}
-              activeOpacity={0.8}
-              onPress={() => setChip(ch.v)}
-              style={[st.chip, { borderColor: ch.color }, chip === ch.v && st.chipOn]}
-            >
-              <Text allowFontScaling={false} style={st.chipTxt}>{ch.label}</Text>
-            </TouchableOpacity>
-          ))}
+      <View style={st.barWrap}>
+        <View style={st.bar}>
+          <View style={st.bal}>
+            <View style={st.balRow}>
+              <View style={st.coin}><Text allowFontScaling={false} style={st.coinTxt}>D</Text></View>
+              <Text allowFontScaling={false} style={st.balMain}>{money(shownBalance)}</Text>
+            </View>
+            <Text allowFontScaling={false} style={st.balSub}>Won today {fmt(wonToday)}</Text>
+            <View style={st.plus}><Text allowFontScaling={false} style={st.plusTxt}>+</Text></View>
+          </View>
+          <View style={st.chips}>
+            {CHIPS.map((ch) => (
+              <TouchableOpacity
+                key={ch.v}
+                activeOpacity={0.8}
+                onPress={() => setChip(ch.v)}
+                style={[st.chip, { borderColor: ch.color }, chip === ch.v && st.chipOn]}
+              >
+                <View style={[st.chipInner, { borderColor: ch.color }]}>
+                  <Text allowFontScaling={false} style={st.chipTxt}>{ch.label}</Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
         </View>
       </View>
 
       <View style={st.hist}>
         {Array.from({ length: 8 }).map((_, i) => (
           <View key={i} style={[st.histDot, i === 0 && history.length > 0 && st.histNew]}>
-            <Text allowFontScaling={false} style={{ fontSize: 15 }}>{history[i] != null ? ITEMS[history[i]].emoji : ''}</Text>
+            {history[i] != null ? <Food id={history[i]} size={22} /> : null}
+            {i === 0 && history.length > 0 ? <View style={st.newTag}><Text allowFontScaling={false} style={st.newTxt}>new</Text></View> : null}
           </View>
         ))}
       </View>
@@ -372,67 +554,88 @@ export default function GreedyGame({ db, uid, roomId, stars = 0, bottom = 10, on
 
 const st = StyleSheet.create({
   panel: {
-    position: 'absolute', left: 0, right: 0, backgroundColor: '#2a1a8a',
-    borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingHorizontal: 10, paddingTop: 10,
+    position: 'absolute', left: 0, right: 0, backgroundColor: '#3a1fb5',
+    borderTopLeftRadius: 4, borderTopRightRadius: 4, paddingHorizontal: 0, paddingTop: 10,
     zIndex: 80, elevation: 30,
   },
-  head: { flexDirection: 'row', justifyContent: 'space-between', height: 56 },
-  title: { color: '#ffd23f', fontSize: 20, fontWeight: '900' },
-  sub: { color: '#c9c3ff', fontSize: 10, fontWeight: '700' },
+  head: { flexDirection: 'row', justifyContent: 'space-between', height: 56, paddingHorizontal: 14 },
+  title: { color: '#ffc928', fontSize: 24, fontWeight: '900' },
+  round: { color: '#c9c3ff', fontSize: 11, fontWeight: '800' },
+  sub: { color: '#c9c3ff', fontSize: 11, fontWeight: '700' },
   hBtn: {
-    width: 30, height: 30, borderRadius: 15, backgroundColor: 'rgba(255,255,255,0.15)',
+    width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(0,0,10,0.35)',
     alignItems: 'center', justifyContent: 'center', marginLeft: 8,
   },
-  hTxt: { color: '#fff', fontSize: 15, fontWeight: '900' },
+  hTxt: { color: '#fff', fontSize: 16, fontWeight: '900' },
+  leg: { position: 'absolute', width: 16, backgroundColor: '#ffc928', borderRadius: 6 },
+  spoke: { position: 'absolute', left: '50%', marginLeft: -5, top: 0, height: '50%', width: 10, backgroundColor: '#ffc928' },
   center: {
-    position: 'absolute', backgroundColor: '#ff3d71', alignItems: 'center', justifyContent: 'center',
-    borderWidth: 3, borderColor: '#ff8fab',
+    position: 'absolute', backgroundColor: '#f0476f', alignItems: 'center', justifyContent: 'center',
+    borderWidth: 5, borderColor: '#ff7a9c',
   },
-  centerPill: { backgroundColor: '#ffd23f', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2, marginTop: 2 },
-  centerTxt: { color: '#3b2a00', fontSize: 11, fontWeight: '900' },
+  bunnyFace: { backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' },
+  badge: {
+    position: 'absolute', width: 44, height: 30, borderRadius: 15, backgroundColor: '#ffc928',
+    alignItems: 'center', justifyContent: 'center', borderWidth: 3, borderColor: '#3a1fb5',
+  },
+  badgeTxt: { color: '#3b2a00', fontSize: 15, fontWeight: '900' },
   cell: {
     position: 'absolute', backgroundColor: '#fff8e7', alignItems: 'center', justifyContent: 'center',
-    borderWidth: 2, borderColor: 'transparent',
+    borderWidth: 3, borderColor: 'transparent',
   },
-  cellEmpty: { opacity: 0.75 },
-  cellActive: { backgroundColor: '#ffe082', borderColor: '#ff3d71' },
-  cellWin: { backgroundColor: '#ffd23f', borderColor: '#fff', borderWidth: 3 },
-  mine: { color: '#5b3fd9', fontSize: 10, fontWeight: '900', height: 12 },
+  cellHot: { borderColor: '#ff3d71' },
+  cellActive: { backgroundColor: '#ffe9a8', borderColor: '#ff3d71' },
+  cellWin: { backgroundColor: '#ffd23f', borderColor: '#fff' },
+  cnt: { color: '#5b3fd9', fontSize: 11, fontWeight: '800', height: 14 },
+  mine: { color: '#e0245e', fontSize: 12, fontWeight: '900', height: 14 },
   multPill: {
-    position: 'absolute', bottom: -8, backgroundColor: '#ffffff', borderRadius: 10,
-    paddingHorizontal: 7, paddingVertical: 1, borderWidth: 1, borderColor: '#ddd',
+    position: 'absolute', bottom: -9, backgroundColor: '#2b1d7a', borderRadius: 11,
+    paddingHorizontal: 9, paddingVertical: 1,
   },
-  multHot: { backgroundColor: '#ff3d71', borderColor: '#ff3d71' },
-  multTxt: { color: '#222', fontSize: 11, fontWeight: '900' },
-  side: {
-    position: 'absolute', width: 66, height: 56, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.14)',
-    alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)',
+  multHot: { backgroundColor: '#ff3d5e' },
+  multTxt: { color: '#fff', fontSize: 12, fontWeight: '900' },
+  hotWrap: { position: 'absolute', left: -14, bottom: 6, alignItems: 'center' },
+  hotPill: { backgroundColor: '#ff3d5e', borderRadius: 6, paddingHorizontal: 5 },
+  hotTxt: { color: '#fff', fontSize: 8, fontWeight: '900' },
+  side: { position: 'absolute', alignItems: 'center' },
+  sideCircle: {
+    width: 56, height: 56, borderRadius: 28, backgroundColor: '#fff8e7',
+    alignItems: 'center', justifyContent: 'center', borderWidth: 3, borderColor: '#ffe9a8',
   },
-  sideTxt: { color: '#fff', fontSize: 9, fontWeight: '800' },
-  sideBet: { color: '#ffd23f', fontSize: 10, fontWeight: '900' },
+  sideTxt: { color: '#fff', fontSize: 12, fontWeight: '800', marginTop: 2 },
+  sideBet: { position: 'absolute', bottom: -2, color: '#e0245e', fontSize: 10, fontWeight: '900' },
   toast: {
     position: 'absolute', alignSelf: 'center', top: 60, backgroundColor: 'rgba(0,0,0,0.75)',
     paddingHorizontal: 14, paddingVertical: 6, borderRadius: 14,
   },
   toastTxt: { color: '#fff', fontSize: 12, fontWeight: '800' },
-  bar: { flexDirection: 'row', alignItems: 'center', marginTop: 6 },
-  bal: { backgroundColor: '#fff8e7', borderRadius: 14, paddingHorizontal: 10, paddingVertical: 8, minWidth: 96 },
-  balMain: { color: '#3b2a00', fontSize: 15, fontWeight: '900' },
-  balSub: { color: '#8a6d1a', fontSize: 9, fontWeight: '700' },
+  barWrap: { backgroundColor: '#2a1670', marginTop: 6, paddingHorizontal: 8, paddingTop: 8, paddingBottom: 4 },
+  bar: { flexDirection: 'row', alignItems: 'center' },
+  bal: { backgroundColor: '#fff8e7', borderRadius: 14, paddingHorizontal: 10, paddingVertical: 10, minWidth: 118 },
+  balRow: { flexDirection: 'row', alignItems: 'center' },
+  coin: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#ffb300', alignItems: 'center', justifyContent: 'center', marginRight: 6 },
+  coinTxt: { color: '#fff', fontSize: 12, fontWeight: '900' },
+  balMain: { color: '#3b2a00', fontSize: 20, fontWeight: '900' },
+  balSub: { color: '#8a6d1a', fontSize: 10, fontWeight: '700', marginTop: 2 },
+  plus: { position: 'absolute', right: -6, top: -8, width: 22, height: 22, borderRadius: 11, backgroundColor: '#1db954', alignItems: 'center', justifyContent: 'center' },
+  plusTxt: { color: '#fff', fontSize: 16, fontWeight: '900', marginTop: -2 },
   chips: {
     flex: 1, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.25)', borderRadius: 16, marginLeft: 8, paddingVertical: 6,
+    backgroundColor: '#25166a', borderRadius: 16, marginLeft: 10, paddingVertical: 6,
   },
   chip: {
-    width: 44, height: 44, borderRadius: 22, backgroundColor: '#fff', borderWidth: 4,
+    width: 48, height: 48, borderRadius: 24, backgroundColor: '#fff', borderWidth: 5,
     alignItems: 'center', justifyContent: 'center',
   },
-  chipOn: { transform: [{ scale: 1.18 }], borderWidth: 5 },
+  chipInner: { width: 34, height: 34, borderRadius: 17, borderWidth: 2, borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff' },
+  chipOn: { transform: [{ scale: 1.2 }] },
   chipTxt: { color: '#222', fontSize: 11, fontWeight: '900' },
-  hist: { flexDirection: 'row', justifyContent: 'center', marginTop: 6 },
+  hist: { flexDirection: 'row', justifyContent: 'center', paddingVertical: 8, backgroundColor: '#2a1670' },
   histDot: {
-    width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.9)',
+    width: 32, height: 32, borderRadius: 16, backgroundColor: '#fff3d6',
     alignItems: 'center', justifyContent: 'center', marginHorizontal: 3,
   },
-  histNew: { borderWidth: 2, borderColor: '#ff3d71' },
+  histNew: { backgroundColor: '#ffb300' },
+  newTag: { position: 'absolute', bottom: -6, backgroundColor: '#ff3d5e', borderRadius: 6, paddingHorizontal: 4 },
+  newTxt: { color: '#fff', fontSize: 8, fontWeight: '900' },
 });

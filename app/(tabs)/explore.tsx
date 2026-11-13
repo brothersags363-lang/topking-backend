@@ -25,7 +25,10 @@ import {
   Easing,
   Keyboard,
 } from 'react-native';
-import { useRouter, usePathname } from 'expo-router';
+import AppBottomNav from '../../components/AppBottomNav';
+import { scopedBackHandler } from '../../utils/scopedBack';
+import { usePathname } from 'expo-router';
+import { useRouter } from '../../utils/safeRouter';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -47,6 +50,7 @@ import {
   runTransaction,
 } from 'firebase/firestore';
 import UserTick, { isFaceVerified } from '../../components/UserTick';
+import { cleanTag, formatCount } from '../../services/hashtags/hashtagService';
 import Image from '../../components/FastImage'; // disk+memory cache: avatars/thumbnails turant, flicker nahi
 
 const { width } = Dimensions.get('window');
@@ -99,24 +103,94 @@ const TRENDING_BANNERS_DATA = [
   require('../../assets/images/banner6.png'),
 ];
 
+// Order (screenshot jaisa): Family Ranking -> Meetup -> LIVE -> Creator Verification -> Agency
+// NOTE: '/meetup' aur '/creator-verification' route apne asli route name se badal lena
 const TROPHY_ITEMS = [
-  { label: 'Live', icon: 'mic-sharp', note: 'Go Live Now', route: '/all-live' },
-  { label: 'Family Ranking', icon: 'trophy-sharp', note: 'Top Families', route: '../family' },
-  { label: 'Agency', icon: 'people-sharp', note: 'Agency Ranking', route: '../AgencyTop' },
-  { label: 'Creator', icon: 'ribbon-sharp', note: 'For Creators', route: '../top-followers' },
-];
+  { key: 'family', label: 'Family Ranking', route: '../family' },
+  { key: 'meetup', label: 'Meetup', route: '/meetup' },
+  { key: 'live', label: 'LIVE', route: '/all-live' },
+  { key: 'creator', label: 'Creator Verification', route: '/creator-verification' },
+  { key: 'agency', label: 'Agency', route: '../AgencyTop' },
+] as const;
+
+/* ---- Code se bane icons (koi image file nahi) ---- */
+const QuickIcon = memo(function QuickIcon({ k }: { k: string }) {
+  if (k === 'family') {
+    return (
+      <View style={qi.box}>
+        <MaterialCommunityIcons name="trophy" size={38} color="#FFB21E" />
+      </View>
+    );
+  }
+  if (k === 'meetup') {
+    return (
+      <View style={qi.box}>
+        <View style={qi.shield}>
+          <RNImage source={TOPKING_LOGO} style={qi.shieldLogo} resizeMode="contain" />
+          <Text style={qi.shieldBottom}>MEETUP</Text>
+        </View>
+      </View>
+    );
+  }
+  if (k === 'live') {
+    return (
+      <View style={qi.box}>
+        <Ionicons name="wifi" size={18} color="#8A2BE2" style={qi.wave} />
+        <View style={qi.liveBadge}>
+          <Text style={qi.liveText}>LIVE</Text>
+        </View>
+      </View>
+    );
+  }
+  if (k === 'creator') {
+    return (
+      <View style={qi.box}>
+        <MaterialCommunityIcons name="decagram" size={42} color="#3FA9F5" />
+        <Ionicons name="checkmark" size={20} color="#fff" style={qi.tick} />
+      </View>
+    );
+  }
+  return (
+    <View style={qi.box}>
+      <MaterialCommunityIcons name="office-building" size={36} color="#FF8A3D" />
+    </View>
+  );
+});
 
 // constant style objects (avoid new object every render)
-const SCROLL_STYLE = { backgroundColor: '#08080a' };
-const SCROLL_CONTENT = { paddingBottom: 140 };
-const TROPHY_CONTENT = { paddingHorizontal: 12 };
+const SCROLL_STYLE = { backgroundColor: '#000' };
+const SCROLL_CONTENT = { paddingBottom: 100 };
+const TOPKING_LOGO = require('../../assets/images/topking-logo.png');
+const TROPHY_PAD = 0;
+const TROPHY_GAP = 7;
+// 4 card screen me poore dikhte hain, 5th (Agency) scroll karke
+const TROPHY_CARD_W = Math.floor((width - 32 - TROPHY_GAP * 3) / 4);
+const TROPHY_CONTENT = { padding: TROPHY_PAD };
 const TOPVIDEO_CONTENT = { paddingRight: 0 };
-const GIFTKING_CONTENT = { paddingHorizontal: 15 };
 const ACCOUNTS_CONTENT = { paddingTop: 10, paddingBottom: 120 };
 const VIDEOS_CONTENT = { paddingTop: 10, paddingBottom: 120, gap: 6 };
 const VIDEOS_COLUMN = { gap: 6 };
 const RESULTS_WRAP = { flex: 1, backgroundColor: '#08080a' };
 const ROW_CENTER = { flexDirection: 'row' as const, alignItems: 'center' as const };
+
+const qi = StyleSheet.create({
+  box: { width: 46, height: 42, alignItems: 'center', justifyContent: 'center' },
+  shield: {
+    width: 40, height: 40, backgroundColor: '#7B2FF7', alignItems: 'center', justifyContent: 'center',
+    borderTopLeftRadius: 8, borderTopRightRadius: 8,
+    borderBottomLeftRadius: 20, borderBottomRightRadius: 20,
+    borderWidth: 2.5, borderColor: '#A66BFF',
+  },
+  shieldTop: { color: '#fff', fontSize: 13, fontWeight: '900', fontStyle: 'italic', textShadowColor: '#3b0a8f', textShadowRadius: 2 },
+  shieldLogo: { width: 22, height: 22 },
+  shieldBottom: { color: '#fff', fontSize: 6, fontWeight: '900', marginTop: -1 },
+  wave: { marginBottom: -3 },
+  liveBadge: {
+    backgroundColor: '#E94BC0', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3,
+  },
+  liveText: { color: '#fff', fontSize: 12, fontWeight: '900', letterSpacing: 0.5 },
+  tick: { position: 'absolute' },
+});
 
 const keyById = (item: any) => item.id;
 
@@ -127,15 +201,9 @@ const TV_CARD_W = Math.floor((width - 32 - TV_PAD * 2 - TV_GAP * 2) / 3);
 const TV_CARD_H = Math.round(TV_CARD_W * 1.42);
 const TV_HEAD = { paddingHorizontal: 0, paddingTop: 0, paddingBottom: 10 };
 const TOPVIDEO_ITEM_W = TV_CARD_W + TV_GAP;
-const GIFTKING_ITEM_W = 152; // 140 card + 12 margin
 const getTopVideoLayout = (_: any, index: number) => ({
   length: TOPVIDEO_ITEM_W,
   offset: TOPVIDEO_ITEM_W * index,
-  index,
-});
-const getGiftKingLayout = (_: any, index: number) => ({
-  length: GIFTKING_ITEM_W,
-  offset: GIFTKING_ITEM_W * index,
   index,
 });
 
@@ -150,8 +218,7 @@ const VIDEO_CACHE_TTL = 5 * 60 * 1000;
 const homeCache = {
   ts: 0,
   topVideos: [] as any[],
-  giftKings: [] as any[],
-  giftKingsMonth: '', // kis mahine ka data cache me hai
+  trendingTags: [] as any[], // [{ name, uses, videos: [3 top video] }]
   profileImg: '',
   kingStar: [] as any[],
   kingAgencies: [] as any[],
@@ -407,9 +474,23 @@ const loadTopAgencies = async () => {
 
 // Top 3 family: sirf admin se approved families, points desc (family.js jaisa hi)
 const loadTopFamilies = async () => {
-  const snap = await getDocs(
-    query(collection(db, 'families'), where('status', '==', 'approved'))
-  );
+  // Pehle sirf top 3 laao (fast, kam reads). Agar Firestore composite index
+  // (status + points) nahi bana ho to purane tareeke par fallback.
+  let snap;
+  try {
+    snap = await getDocs(
+      query(
+        collection(db, 'families'),
+        where('status', '==', 'approved'),
+        orderBy('points', 'desc'),
+        limit(3)
+      )
+    );
+  } catch (e) {
+    snap = await getDocs(
+      query(collection(db, 'families'), where('status', '==', 'approved'))
+    );
+  }
   return snap.docs
     .map((d) => ({ id: d.id, ...(d.data() as any) }))
     .sort((a: any, b: any) => (b.points || 0) - (a.points || 0))
@@ -422,6 +503,60 @@ const loadTopFamilies = async () => {
       verified: false,
       verifiedColor: undefined,
     }));
+};
+
+
+/* ------------------------------------------------------------------ */
+/*  TRENDING HASHTAGS: sabse zyada use hue # + har # ke top 3 video    */
+/* ------------------------------------------------------------------ */
+
+const TAG_COUNT = 5; // kitne top hashtag dikhane hain
+const TAG_VIDEOS = 3; // har hashtag ke kitne top video
+
+const loadTrendingTags = async () => {
+  const snap = await getDocs(
+    query(collection(db, 'hashtags'), orderBy('uses', 'desc'), limit(TAG_COUNT + 5))
+  );
+  const seen = new Set<string>();
+  const tags: { name: string; uses: number }[] = [];
+  snap.docs.forEach((d) => {
+    const x: any = d.data();
+    const name = cleanTag(x?.name ?? d.id);
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    tags.push({ name, uses: Number(x?.uses || 0) });
+  });
+
+  const myUid = auth.currentUser?.uid;
+  const rows = await Promise.all(
+    tags.slice(0, TAG_COUNT).map(async (t) => {
+      const base = [collection(db, 'all_videos'), where('hashtags', 'array-contains', '#' + t.name)] as const;
+      let docs: any[] = [];
+      try {
+        // sabse zyada views wale pehle (composite index chahiye: hashtags + views)
+        const vs = await getDocs(query(base[0], base[1], orderBy('views', 'desc'), limit(12)));
+        docs = vs.docs;
+      } catch (e) {
+        // index nahi bana ho to fallback: kuch video laao, phone par views se sort
+        try {
+          const vs = await getDocs(query(base[0], base[1], limit(40)));
+          docs = vs.docs.sort((a: any, b: any) => (b.data().views || 0) - (a.data().views || 0));
+        } catch (e2) {
+          docs = [];
+        }
+      }
+      const videos = docs
+        .map((d: any) => ({ id: d.id, ...d.data() } as any))
+        .filter((v: any) => v.privacy !== 'private' || v.userId === myUid)
+        .slice(0, TAG_VIDEOS);
+      videos.forEach((v: any) => {
+        if (v.thumbnail) Image.prefetch(v.thumbnail).catch(() => {});
+      });
+      return { name: t.name, uses: t.uses, videos };
+    })
+  );
+  // jis hashtag ka koi video nahi => mat dikhao
+  return rows.filter((r) => r.videos.length > 0);
 };
 
 
@@ -786,74 +921,54 @@ const AllVideosScreen = memo(function AllVideosScreen({
   );
 });
 
-// SPEED: har card par 512x512 / 40-frame animated WebP chalta tha (bahut bhaari).
-// false = static PNG frame (halka). Animation wapas chahiye to true kar do.
-const ANIMATE_FRAMES_IN_LIST = false;
+const RANK_COLORS = ['#FFD700', '#E3E8EE', '#E39A55'];
 
-const GiftKingCard = memo(function GiftKingCard({
-  item,
-  index,
-  onPress,
-}: {
-  item: any;
-  index: number;
-  onPress: (id: string) => void;
-}) {
-  const frame = getLevelFrame(item.level) || !!item.id;
+// TopKing card: title + top 3 rows (rank, avatar, naam + tick, stars)
+// Top 1 / 2 / 3 ke avatar par frame: ring + upar ribbon (NO.1/2/3) + crown + wings + sparkle
+// Sab code se bana hai => koi image file nahi
+const RANK_FRAMES = [
+  { ring: '#FFC83D', glow: '#FFF1A8', crown: '#FFC400', ribbon: '#7B2FF7', ribbonBorder: '#C9A7FF', label: 'NO.1' },
+  { ring: '#CFD8E3', glow: '#FFFFFF', crown: '#E6EDF5', ribbon: '#2E7CF6', ribbonBorder: '#A9CBFF', label: 'NO.2' },
+  { ring: '#D98A4A', glow: '#F6C79B', crown: '#E39A55', ribbon: '#E4572E', ribbonBorder: '#FFB08F', label: 'NO.3' },
+];
+const AvatarFrame = memo(function AvatarFrame({ uri, rank }: { uri: string; rank: number }) {
+  const f = RANK_FRAMES[rank];
+  if (!f) return <Image source={{ uri }} style={styles.kingAvatarPlain} />;
   return (
-    <TouchableOpacity style={styles.giftKingCard} onPress={() => onPress(item.id)}>
-      {/* Rank */}
-      <View style={styles.rankCircle}>
-        <Text style={styles.rankText}>{index + 1}</Text>
+    <View style={styles.frameWrap}>
+      {/* avatar + double ring */}
+      <View style={[styles.frameOuter, { borderColor: f.ring, shadowColor: f.ring }]}>
+        <View style={[styles.frameInner, { borderColor: f.glow }]}>
+          <Image source={{ uri }} style={styles.frameImg} />
+        </View>
       </View>
 
-      {/* Profile */}
-      <View
-        style={{
-          width: 90,
-          height: 90,
-          justifyContent: 'center',
-          alignItems: 'center',
-        }}
-      >
-        <Image
-          source={{ uri: item.profileImg || DEFAULT_AVATAR }}
-          style={styles.giftKingImage}
-        />
-        {frame && (
-          <LevelFrame
-            level={item.level}
-            uid={item.id}
-            animated={ANIMATE_FRAMES_IN_LIST}
-            style={{ position: 'absolute', width: 110, height: 110, top: -15 }}
-          />
-        )}
+      {/* wings (right side arcs) */}
+      <View pointerEvents="none" style={[styles.wingArc, { borderTopColor: f.ring, borderRightColor: f.ring }]} />
+      <View pointerEvents="none" style={[styles.wingArc2, { borderTopColor: f.glow, borderRightColor: f.glow }]} />
+
+      {/* sparkles */}
+      <MaterialCommunityIcons name="star-four-points" size={8} color={f.glow} style={styles.spark1} />
+      <MaterialCommunityIcons name="star-four-points" size={6} color={f.glow} style={styles.spark2} />
+
+      {/* crown (top-left, thoda tilted) */}
+      <MaterialCommunityIcons name="crown" size={17} color={f.crown} style={styles.frameCrown} />
+
+      {/* ribbon: NO.1 / NO.2 / NO.3 */}
+      <View style={[styles.ribbon, { backgroundColor: f.ribbon, borderColor: f.ribbonBorder }]}>
+        <Text style={[styles.ribbonText, { textShadowColor: f.ring }]}>{f.label}</Text>
       </View>
-
-      {/* Username */}
-      <Text style={styles.giftKingName} numberOfLines={1}>
-        @{item.username}
-      </Text>
-
-      {/* Level */}
-      <LevelBadge level={item.level} iconSize={11} fontSize={10} />
-
-      {/* Gifts */}
-      <Text style={styles.giftKingGift}>🎁 {item.gifts}</Text>
-    </TouchableOpacity>
+    </View>
   );
 });
 
-const RANK_COLORS = ['#FFD700', '#C0C0C0', '#CD7F32'];
-
-// TopKing card: title + top 3 rows (rank, avatar, naam + tick, stars)
 const RankCard = memo(function RankCard({
   title,
   icon,
   rows,
   onRowPress,
   onViewAll,
-  valueIcon = 'star-circle',
+  valueIcon = 'star',
   valueSuffix = '',
 }: {
   title: string;
@@ -868,11 +983,11 @@ const RankCard = memo(function RankCard({
     <View style={styles.kingCard}>
       <View style={styles.kingCardHead}>
         <View style={ROW_CENTER}>
-          <MaterialCommunityIcons name={icon as any} size={18} color="#FFD700" />
+          <RNImage source={TOPKING_LOGO} style={styles.kingLogoImg} resizeMode="contain" />
           <Text style={styles.kingCardTitle}>{title}</Text>
         </View>
         <TouchableOpacity onPress={onViewAll} disabled={!onViewAll}>
-          <Text style={styles.kingViewAll}>View All ›</Text>
+          <Text style={styles.kingViewAll}>View All &gt;</Text>
         </TouchableOpacity>
       </View>
 
@@ -886,11 +1001,11 @@ const RankCard = memo(function RankCard({
             activeOpacity={onRowPress ? 0.7 : 1}
             onPress={() => onRowPress && onRowPress(r.id)}
           >
-            <Text style={[styles.kingRank, { color: RANK_COLORS[i] }]}>{i + 1}</Text>
-            <Image
-              source={{ uri: r.img || DEFAULT_AVATAR }}
-              style={styles.kingAvatar}
-            />
+            <View style={styles.kingRankCol}>
+              <MaterialCommunityIcons name="crown" size={12} color={RANK_COLORS[i]} />
+              <Text style={[styles.kingRank, { color: RANK_COLORS[i] }]}>{i + 1}</Text>
+            </View>
+            <AvatarFrame uri={r.img || DEFAULT_AVATAR} rank={i} />
             <View style={{ flex: 1 }}>
               <View style={ROW_CENTER}>
                 <Text style={styles.kingName} numberOfLines={1}>
@@ -899,7 +1014,7 @@ const RankCard = memo(function RankCard({
                 <UserTick uid={r.id} verified={r.verified} verifiedColor={r.verifiedColor} faceVerified={r.faceVerified} size={14} whiteColor="#f8fbff" />
               </View>
               <View style={ROW_CENTER}>
-                <MaterialCommunityIcons name={valueIcon as any} size={13} color="#FFD700" />
+                <MaterialCommunityIcons name={valueIcon as any} size={16} color="#FFC107" />
                 <Text style={styles.kingStars}>
                   {fmtStars(r.stars)}
                   {valueSuffix}
@@ -963,57 +1078,6 @@ const BannerSlider = memo(function BannerSlider({ paused }: { paused?: boolean }
   );
 });
 
-const BottomNav = memo(function BottomNav({ pathname }: { pathname: string }) {
-  const router = useRouter();
-  const getIconColor = (path: string) => (pathname === path ? '#3498db' : '#fff');
-
-  const goProfile = () => {
-    const user = auth.currentUser;
-    if (!user) {
-      router.push('/login');
-      return;
-    }
-    router.replace('/profile');
-  };
-
-  return (
-    <View style={styles.bottomSection}>
-      <View style={styles.bottomNav}>
-        {/* HOME */}
-        <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/')}>
-          <Ionicons name="home-outline" size={26} color={getIconColor('/')} />
-        </TouchableOpacity>
-
-        {/* SEARCH (ACTIVE ON THIS PAGE) */}
-        <TouchableOpacity style={styles.navItem} onPress={() => { if (pathname !== '/explore') router.replace('/explore'); }}>
-          <Ionicons name="search" size={26} color="#3498db" />
-        </TouchableOpacity>
-
-        {/* PLUS */}
-        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/camera')}>
-          <View style={styles.plusBtn}>
-            <Text style={styles.plusText}>+</Text>
-          </View>
-        </TouchableOpacity>
-
-        {/* MESSAGE */}
-        <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/messages')}>
-          <Ionicons
-            name="chatbubble-ellipses-outline"
-            size={26}
-            color={getIconColor('/messages')}
-          />
-        </TouchableOpacity>
-
-        {/* PROFILE */}
-        <TouchableOpacity style={styles.navItem} onPress={goProfile}>
-          <Ionicons name="person-outline" size={26} color={getIconColor('/profile')} />
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-});
-
 /* ------------------------------------------------------------------ */
 /*  HOME CONTENT - memo => search type karte waqt re-render nahi hota   */
 /*  Hamesha mounted rehta hai (search me sirf hide) => wapas aate hi    */
@@ -1027,17 +1091,19 @@ const HomeContent = memo(function HomeContent({
   hidden,
   refreshControl,
   topVideos,
-  giftKings,
+  trendingTags,
   kingStar,
   kingAgencies,
   kingFamilies,
   openUser,
   renderTopVideo,
-  renderGiftKing,
+  openTag,
+  openTagVideo,
   openAllVideos,
 }: any) {
   const router = useRouter();
   const goAgencyTop = useCallback(() => router.push('../AgencyTop' as any), [router]);
+  const goTopKingStar = useCallback(() => router.push('../TopKingStar' as any), [router]);
   const goFamily = useCallback(() => router.push('../family' as any), [router]);
   const openFamily = useCallback(
     (id: string) => router.push({ pathname: '/familyDetail', params: { id } } as any),
@@ -1055,30 +1121,30 @@ const HomeContent = memo(function HomeContent({
         >
           <BannerSlider paused={hidden} />
 
-          {/* DYNAMIC SCROLLABLE PLATFORM ACCESS TOKENS ROW */}
-          <ScrollView
-            horizontal
-            style={styles.trophyRow}
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={TROPHY_CONTENT}
-          >
-            {TROPHY_ITEMS.map((t) => (
-              <TouchableOpacity
-                key={t.label}
-                style={styles.trophyBox}
-                activeOpacity={0.8}
-                onPress={() => {
-                  if (t.route) router.push(t.route as any);
-                }}
-              >
-                <View style={styles.trophyIconContainer}>
-                  <Ionicons name={t.icon as any} size={22} color="#f1c40f" />
-                </View>
-                <Text style={styles.trophyBoxLabelText}>{t.label}</Text>
-                <Text style={styles.trophyBoxSubLabelText}>{t.note}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
+          {/* QUICK ACTIONS ROW: Family Ranking, Meetup, LIVE, Creator Verification, Agency */}
+          <View style={styles.trophyWrap}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={TROPHY_CONTENT}
+            >
+              {TROPHY_ITEMS.map((t, i) => (
+                <TouchableOpacity
+                  key={t.key}
+                  style={[styles.trophyBox, i < TROPHY_ITEMS.length - 1 && { marginRight: TROPHY_GAP }]}
+                  activeOpacity={0.8}
+                  onPress={() => router.push(t.route as any)}
+                >
+                  <View style={styles.trophyIconContainer}>
+                    <QuickIcon k={t.key} />
+                  </View>
+                  <Text style={styles.trophyBoxLabelText} numberOfLines={2}>
+                    {t.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
 
           {/* TOP VIDEO */}
           <View style={styles.topVideoBox}>
@@ -1111,37 +1177,27 @@ const HomeContent = memo(function HomeContent({
           </View>
 
           {/* TOPKING STAR */}
-          <View style={[styles.sectionHead, { marginTop: 14 }]}>
-            <View style={styles.sectionHeadingWrapper}>
-              {/* Logo: apna TopKing logo chahiye to is View ko <Image source={require(...)} /> se badal do */}
-              <View style={styles.kingLogo}>
-                <MaterialCommunityIcons name="crown" size={16} color="#000" />
-              </View>
-              <Text style={styles.sectionTitle}>TopKing Star</Text>
-            </View>
-            <Text style={styles.viewsText}>This Month · {getDaysLeftInMonth()}d left</Text>
-          </View>
-
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.kingScroll}
           >
             <RankCard
-              title="Top Star"
-              icon="star-circle"
+              title="TopKing Star"
+              icon="logo"
               rows={kingStar}
               onRowPress={openUser}
+              onViewAll={goTopKingStar}
             />
             <RankCard
               title="Top Agency"
-              icon="office-building"
+              icon="logo"
               rows={kingAgencies}
               onViewAll={goAgencyTop}
             />
             <RankCard
               title="Top Family"
-              icon="home-heart"
+              icon="logo"
               rows={kingFamilies}
               valueIcon="fire"
               onRowPress={openFamily}
@@ -1149,37 +1205,54 @@ const HomeContent = memo(function HomeContent({
             />
           </ScrollView>
 
-          {/* STAR UP EARNING */}
-          <View style={styles.sectionHead}>
-            <View style={styles.sectionHeadingWrapper}>
-              <Ionicons
-                name="heart-sharp"
-                size={16}
-                color="#f1c40f"
-                style={{ marginRight: 6 }}
-              />
-              <Text style={styles.sectionTitle}>Star Up Earning</Text>
+          {/* TRENDING HASHTAGS: sabse zyada use hue # + unke top 3 video */}
+          {trendingTags.length > 0 && (
+            <View>
+              <View style={styles.sectionHead}>
+                <View style={styles.sectionHeadingWrapper}>
+                  <MaterialCommunityIcons
+                    name="pound"
+                    size={18}
+                    color="#f1c40f"
+                    style={{ marginRight: 4 }}
+                  />
+                  <Text style={styles.sectionTitle}>Trending Hashtags</Text>
+                </View>
+              </View>
+
+              {trendingTags.map((tag: any, ti: number) => (
+                <View key={tag.name} style={styles.topVideoBox}>
+                  <TouchableOpacity
+                    style={[styles.sectionHead, TV_HEAD]}
+                    activeOpacity={0.7}
+                    onPress={() => openTag(tag.name)}
+                  >
+                    <View style={styles.sectionHeadingWrapper}>
+                      <Text style={styles.tagRank}>{ti + 1}</Text>
+                      <Text style={styles.tagName} numberOfLines={1}>
+                        #{tag.name}
+                      </Text>
+                    </View>
+                    <Text style={styles.viewsText}>
+                      {formatCount(tag.uses)} uses{' '}
+                      <Ionicons name="chevron-forward" size={13} color="#f1c40f" />
+                    </Text>
+                  </TouchableOpacity>
+
+                  <View style={TOPVIDEO_ROW}>
+                    {tag.videos.map((item: any, index: number) => (
+                      <TopVideoCard
+                        key={item.id}
+                        item={item}
+                        index={index}
+                        onPress={(id: string, i: number) => openTagVideo(id, i, tag.videos)}
+                      />
+                    ))}
+                  </View>
+                </View>
+              ))}
             </View>
-
-            <Text style={styles.viewsText}>
-              {' '}
-              This Month · {getDaysLeftInMonth()}d left{' '}
-              <Ionicons name="chevron-forward" size={13} color="#f1c40f" />
-            </Text>
-          </View>
-
-          <FlatList
-            horizontal
-            data={giftKings}
-            keyExtractor={keyById}
-            renderItem={renderGiftKing}
-            getItemLayout={getGiftKingLayout}
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={GIFTKING_CONTENT}
-            initialNumToRender={3}
-            maxToRenderPerBatch={3}
-            windowSize={5}
-          />
+          )}
         </ScrollView>
     </View>
   );
@@ -1206,9 +1279,7 @@ export default function ExplorePage() {
 
   // cache se start => screen khulte hi data dikhta hai (blank/spinner nahi)
   const [profileImg, setProfileImg] = useState(homeCache.profileImg);
-  const [giftKings, setGiftKings] = useState<any[]>(
-    homeCache.giftKingsMonth === getMonthKey() ? homeCache.giftKings : []
-  );
+  const [trendingTags, setTrendingTags] = useState<any[]>(homeCache.trendingTags);
   const [topVideos, setTopVideos] = useState<any[]>(homeCache.topVideos.slice(0, TOP_PREVIEW));
   const [refreshing, setRefreshing] = useState(false);
   const [showAll, setShowAll] = useState(false);
@@ -1270,51 +1341,15 @@ export default function ExplorePage() {
     }
   };
 
-  // Sirf is mahine ke stars => naya mahina shuru hote hi list khali (0 se start)
-  const loadGiftKing = async (force = false) => {
+  // Sabse zyada use hue hashtags + har ek ke top 3 video
+  // Fail hone par purana (cached) data hata ke khali nahi karte
+  const loadTags = async () => {
     try {
-      const monthKey = getMonthKey();
-      // wallets ka ek hi shared fetch (TopKing Star ke saath share hota hai)
-      const [{ base, floor }, walletRows] = await Promise.all([
-        ensureBaseline(monthKey),
-        fetchTopWallets(force),
-      ]);
-
-      const ranked = walletRows
-        .map((w) => {
-          const total = w.data.receivedStars || 0;
-          const startTotal = base[w.id] ?? floor;
-          return { id: w.id, gifts: Math.max(0, total - startTotal), level: w.data.level || 1 };
-        })
-        .filter((x) => x.gifts > 0)
-        .sort((x, y) => y.gifts - x.gifts)
-        .slice(0, 10);
-
-      const users = await Promise.all(
-        ranked.map(async (r) => {
-          const u: any = await getUserCached(r.id);
-          if (!u) return null;
-          levelCache.set(r.id, r.level);
-          // sirf wahi fields jo card me chahiye => halka state, halka disk cache
-          return {
-            id: r.id,
-            gifts: r.gifts,
-            level: r.level,
-            username: u.username || u.name || 'user',
-            profileImg: u.profileImg || '',
-          };
-        })
-      );
-
-      const result = users.filter(Boolean) as any[];
-      result.forEach((r: any) => {
-        if (r.profileImg) Image.prefetch(r.profileImg).catch(() => {});
-      });
-      homeCache.giftKings = result;
-      homeCache.giftKingsMonth = monthKey;
-      setGiftKings(result);
+      const rows = await loadTrendingTags();
+      homeCache.trendingTags = rows;
+      setTrendingTags(rows);
     } catch (e) {
-      console.log(e);
+      console.log('Trending tags error:', e);
     }
   };
 
@@ -1357,7 +1392,7 @@ export default function ExplorePage() {
           const m = getMonthKey();
           setProfileImg(saved.profileImg || '');
           setTopVideos((saved.topVideos || []).slice(0, TOP_PREVIEW));
-          if (saved.giftKingsMonth === m) setGiftKings(saved.giftKings || []);
+          setTrendingTags(saved.trendingTags || []);
           if (saved.kingMonth === m) setKingStar(saved.kingStar || []);
           setKingAgencies(saved.kingAgencies || []);
           setKingFamilies(saved.kingFamilies || []);
@@ -1366,13 +1401,12 @@ export default function ExplorePage() {
 
       const fresh =
         Date.now() - homeCache.ts < HOME_TTL &&
-        homeCache.topVideos.length > 0 &&
-        homeCache.giftKingsMonth === getMonthKey();
+        homeCache.topVideos.length > 0;
       if (fresh || !alive) return;
 
       await Promise.all([
         loadTopVideos(),
-        loadGiftKing(),
+        loadTags(),
         loadTopKing(),
         getCurrentUserProfile(),
       ]);
@@ -1395,7 +1429,7 @@ export default function ExplorePage() {
       userDocCache.clear();
       await Promise.all([
         loadTopVideos(),
-        loadGiftKing(true),
+        loadTags(),
         getCurrentUserProfile(),
         loadTopKing(true),
       ]);
@@ -1560,7 +1594,7 @@ export default function ExplorePage() {
       return true;
     };
 
-    const sub = BackHandler.addEventListener('hardwareBackPress', handleBackButton);
+    const sub = scopedBackHandler('/explore', 'hardwareBackPress', handleBackButton);
     return () => sub.remove();
   }, [router, hasQuery, showAll, clearSearch]);
 
@@ -1640,11 +1674,27 @@ export default function ExplorePage() {
     ),
     [openTopVideo]
   );
-  const renderGiftKing = useCallback(
-    ({ item, index }: any) => (
-      <GiftKingCard item={item} index={index} onPress={openUser} />
-    ),
-    [openUser]
+  // Hashtag par tap => search me us # ke saare video khul jaate hain
+  const openTag = useCallback(
+    (name: string) => {
+      handleSearch('#' + name);
+      switchTab('videos');
+    },
+    [handleSearch, switchTab]
+  );
+
+  const openTagVideo = useCallback(
+    (id: string, index: number, list: any[]) =>
+      router.push({
+        pathname: '/allvideo',
+        params: {
+          videoId: id,
+          videos: JSON.stringify(list),
+          index,
+          from: 'explore',
+        },
+      }),
+    [router]
   );
 
   const refreshControl = useMemo(
@@ -1680,15 +1730,15 @@ export default function ExplorePage() {
         <View style={styles.searchBarWrapper}>
           <Ionicons
             name="search-outline"
-            size={18}
-            color="rgba(255,255,255,0.4)"
+            size={22}
+            color="rgba(255,255,255,0.55)"
             style={styles.searchIconFrame}
           />
 
           <TextInput
             style={styles.searchInput}
-            placeholder="Search accounts or videos..."
-            placeholderTextColor="rgba(255,255,255,0.3)"
+            placeholder="Search"
+            placeholderTextColor="rgba(255,255,255,0.4)"
             value={searchQuery}
             onChangeText={handleSearch}
             onFocus={onSearchFocus}
@@ -1708,13 +1758,14 @@ export default function ExplorePage() {
         hidden={hasQuery}
         refreshControl={refreshControl}
         topVideos={topVideos}
-        giftKings={giftKings}
+        trendingTags={trendingTags}
         kingStar={kingStar}
         kingAgencies={kingAgencies}
         kingFamilies={kingFamilies}
         openUser={openUser}
         renderTopVideo={renderTopVideo}
-        renderGiftKing={renderGiftKing}
+        openTag={openTag}
+        openTagVideo={openTagVideo}
         openAllVideos={openAllVideos}
       />
 
@@ -1824,35 +1875,31 @@ export default function ExplorePage() {
       {showAll && <AllVideosScreen onClose={closeAllVideos} onOpen={openAllVideoItem} />}
 
       {/* BOTTOM NAVBAR */}
-      <BottomNav pathname={pathname} />
+      <AppBottomNav />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#08080a' },
+  container: { flex: 1, backgroundColor: '#000' },
   header: {
     flexDirection: 'row',
     paddingHorizontal: 16,
     paddingVertical: 12,
     alignItems: 'center',
-    backgroundColor: '#08080a',
+    backgroundColor: '#000',
     marginTop: Platform.OS === 'ios' ? 45 : 30,
-    borderBottomWidth: 1,
-    borderColor: 'rgba(255,255,255,0.03)'
   },
   
   // CHANGED: SEARCH BOX WRAPPER ME GOLDEN MESH PARAT (BORDER OVERLAY) CHADHA DIYA HAI
   searchBarWrapper: {
     flex: 1,
     height: 44,
-    backgroundColor: '#11121a',
-    borderRadius: 22,
+    backgroundColor: '#1a1a1d',
+    borderRadius: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 14,
-    borderWidth: 1.5,                      // Thicker premium parat
-    borderColor: 'rgba(241,196,15,0.25)'  // Perfectly matches the trophyBox theme color
+    paddingHorizontal: 12,
   },
   
   searchIconFrame: { marginRight: 8 },
@@ -1967,17 +2014,20 @@ const styles = StyleSheet.create({
   
   trophyRow: { paddingVertical: 10 },
 
-  // TROPHY BOX PREMIUM PARAT
-  trophyBox: { 
-    alignItems: 'center', 
-    width: (width - 90) / 2.5, 
-    height: 100,
-    backgroundColor: '#11121a', 
-    marginRight: 7, 
-    padding: 14.5, 
-    borderRadius: 20,       
-    borderWidth: 1.3,
-borderColor: "#FFD700",
+  // QUICK ACTIONS ROW (screenshot jaisa)
+  trophyWrap: {
+    marginHorizontal: 16,
+    marginTop: 10,
+    marginBottom: 6,
+  },
+  trophyBox: {
+    width: TROPHY_CARD_W,
+    height: 96,
+    backgroundColor: '#1c1c1f',
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 2,
   },
 
 profileButton: {
@@ -1993,21 +2043,22 @@ profileHeaderImage: {
 },
 
   
-  trophyIconContainer: { 
-    width: 34, 
-    height: 34, 
-    borderRadius: 17, 
-    backgroundColor: 'rgba(241,196,15,0.05)', 
-    justifyContent: 'center', 
-    alignItems: 'center', 
+  trophyIconContainer: {
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
     marginBottom: 6,
-    borderWidth: 2, 
-    borderColor: 'rgba(255, 230, 0, 0.25)' 
   },
-  
-  trophyBoxLabelText: { color: '#ffffff', fontSize: 11, fontWeight: '800' },
-  trophyBoxSubLabelText: { color: 'rgba(255,255,255,0.3)', fontSize: 9, fontWeight: '600', marginTop: 2 },
-  
+  trophyBoxLabelText: {
+    color: 'rgba(255,255,255,0.45)',
+    fontSize: 10.5,
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 14,
+  },
+
+  forYouTitle: { color: '#fff', fontWeight: '800', fontSize: 15 },
+  moreText: { color: 'rgba(255,255,255,0.85)', fontSize: 12, fontWeight: '600' },
   sectionHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 4 },
   sectionHeadingWrapper: { flexDirection: 'row', alignItems: 'center' },
   sectionTitle: { color: '#ffffff', fontWeight: '900', fontSize: 15, letterSpacing: 0.2 },
@@ -2026,21 +2077,20 @@ profileHeaderImage: {
     bottom: 0,
     width: '100%',
     backgroundColor: '#000',
-    paddingBottom: Platform.OS === 'ios' ? 40 : 25,
-    paddingTop: 5,
+    paddingTop: 0,
   },
   bottomNav: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
-    height: 90,
+    height: 56,
   },
   navItem: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   plusBtn: {
     width: 48,
     height: 34,
-    borderRadius: 10,
-    backgroundColor: '#f1c40f',
+    borderRadius: 14,
+    backgroundColor: '#FFD400',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -2076,7 +2126,7 @@ topVideoBox:{
 marginHorizontal:16,
 marginTop:6,
 marginBottom:6,
-backgroundColor:"#232427",
+backgroundColor:"#17171a",
 borderRadius:16,
 borderWidth:1,
 borderColor:"rgba(255,255,255,0.06)",
@@ -2129,51 +2179,8 @@ fontWeight:"bold",
 
 
 
-giftKingCard: {
-  width: 140,
-  backgroundColor: "#11121a",
-  borderRadius: 16,
-  borderWidth: 1,
-  borderColor: "#FFD700",
-  marginRight: 12,
-  padding: 12,
-  alignItems: "center",
-},
-
-rankCircle: {
-  width: 20,
-  height: 20,
-  borderRadius: 12,
-  backgroundColor: "#FFD700",
-  justifyContent: "center",
-  alignItems: "center",
-  marginBottom: 8,
-},
-
-rankText: {
-  color: "#000",
-  fontWeight: "bold",
-  fontSize: 12,
-},
-
-giftKingImage: {
-  width: 65,
-  height: 65,
-  borderRadius: 33,
-  marginBottom: 8,
-},
-
-giftKingName: {
-  color: "#fff",
-  fontWeight: "bold",
-  fontSize: 12,
-},
-
-giftKingGift: {
-  color: "#FFD700",
-  marginTop: 8,
-  fontWeight: "bold",
-},
+tagRank: { color: '#000', backgroundColor: '#FFD700', width: 20, height: 20, borderRadius: 10, textAlign: 'center', lineHeight: 20, fontSize: 11, fontWeight: '900', overflow: 'hidden', marginRight: 8 },
+tagName: { color: '#fff', fontWeight: '900', fontSize: 15, flexShrink: 1 },
 
 kingLogo: {
   width: 24,
@@ -2186,12 +2193,12 @@ kingLogo: {
 },
 kingScroll: { paddingHorizontal: 14, paddingTop: 8 },
 kingCard: {
-  width: width * 0.62,
-  backgroundColor: '#11121a',
+  width: width * 0.7,
+  backgroundColor: '#161619',
   borderRadius: 16,
   borderWidth: 1,
-  borderColor: 'rgba(255,215,0,0.35)',
-  padding: 12,
+  borderColor: 'rgba(255,255,255,0.06)',
+  padding: 14,
   marginRight: 10,
 },
 kingCardHead: {
@@ -2200,13 +2207,29 @@ kingCardHead: {
   alignItems: 'center',
   marginBottom: 10,
 },
-kingCardTitle: { color: '#fff', fontWeight: '800', fontSize: 13, marginLeft: 6 },
-kingViewAll: { color: 'rgba(255,255,255,0.5)', fontSize: 11, fontWeight: '600' },
+kingCardTitle: { color: '#fff', fontWeight: '800', fontSize: 15, marginLeft: 8 },
+kingLogoImg: { width: 26, height: 26 },
+kingLogoTK: { width: 22, height: 22, borderRadius: 5, backgroundColor: '#FFD700', alignItems: 'center', justifyContent: 'center' },
+kingLogoTKText: { color: '#000', fontSize: 10, fontWeight: '900' },
+kingViewAll: { color: 'rgba(255,255,255,0.55)', fontSize: 12, fontWeight: '600' },
 kingRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-kingRank: { width: 18, fontWeight: '900', fontSize: 15 },
-kingAvatar: { width: 38, height: 38, borderRadius: 19, marginRight: 10, backgroundColor: '#1a1b24' },
-kingName: { color: '#fff', fontWeight: '700', fontSize: 13, flexShrink: 1 },
-kingStars: { color: '#FFD700', fontWeight: '700', fontSize: 12, marginLeft: 3 },
+kingRankCol: { width: 22, alignItems: 'center', justifyContent: 'center', marginRight: 2 },
+kingRank: { fontWeight: '900', fontSize: 18, fontStyle: 'italic', marginTop: -2 },
+kingAvatarPlain: { width: 38, height: 38, borderRadius: 19, marginRight: 10, backgroundColor: '#222' },
+frameWrap: { width: 62, height: 62, marginRight: 8, alignItems: 'center', justifyContent: 'flex-end' },
+frameOuter: { width: 48, height: 48, borderRadius: 24, borderWidth: 2.5, padding: 1.5, shadowOpacity: 0.85, shadowRadius: 6, shadowOffset: { width: 0, height: 0 }, elevation: 6, backgroundColor: '#000' },
+frameInner: { flex: 1, borderRadius: 22, borderWidth: 1, overflow: 'hidden' },
+frameImg: { width: '100%', height: '100%', backgroundColor: '#222' },
+frameCrown: { position: 'absolute', top: -1, left: 1, zIndex: 4, transform: [{ rotate: '-22deg' }] },
+ribbon: { position: 'absolute', top: 3, alignSelf: 'center', height: 16, minWidth: 34, paddingHorizontal: 6, borderRadius: 8, borderWidth: 1, alignItems: 'center', justifyContent: 'center', zIndex: 3 },
+ribbonText: { color: '#fff', fontSize: 10, fontWeight: '900', fontStyle: 'italic', letterSpacing: 0.3, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 3, includeFontPadding: false },
+wingArc: { position: 'absolute', top: 5, right: 0, width: 22, height: 22, borderRadius: 11, borderWidth: 2.5, borderColor: 'transparent', transform: [{ rotate: '-8deg' }], zIndex: 1 },
+wingArc2: { position: 'absolute', top: 8, right: 3, width: 15, height: 15, borderRadius: 8, borderWidth: 2, borderColor: 'transparent', transform: [{ rotate: '-8deg' }], zIndex: 1, opacity: 0.9 },
+spark1: { position: 'absolute', top: 0, right: 8, zIndex: 4 },
+spark2: { position: 'absolute', top: 14, right: -2, zIndex: 4 },
+kingAvatar: { width: 36, height: 36, borderRadius: 18, marginRight: 10, backgroundColor: '#222' },
+kingName: { color: '#fff', fontWeight: '900', fontSize: 15, flexShrink: 1 },
+kingStars: { color: '#fff', fontWeight: '700', fontSize: 14, marginLeft: 4 },
 allOverlay: {
   ...StyleSheet.absoluteFillObject,
   backgroundColor: '#08080a',

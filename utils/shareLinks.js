@@ -1,8 +1,7 @@
 // Share links ek hi jagah se banate hain.
 // SHARE_HOST = wo domain jo tum Vercel (ya kisi hosting) pe lagaoge.
-// Agar topking.app tumhara nahi hai to yahan apna domain likho
-// (jaise "topking-short.vercel.app") aur app.json me bhi wahi host rakho.
-export const SHARE_HOST = "topking.app";
+// Domain wahi hai jo Vercel pe lagi hai (topking-short.vercel.app); app.json me bhi wahi host hai.
+export const SHARE_HOST = "topking-short.vercel.app";
 export const PLAY_STORE_URL =
   "https://play.google.com/store/apps/details?id=com.gufran.topking";
 

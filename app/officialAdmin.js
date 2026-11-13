@@ -11,7 +11,8 @@ import {
   Alert,
   BackHandler,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { scopedBackHandler } from "../utils/scopedBack";
+import { useRouter } from "../utils/safeRouter";
 import { callApi } from "../utils/api";
 import useIsAdmin from "./useIsAdmin";
 
@@ -28,7 +29,7 @@ export default function OfficialAdmin() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+    const sub = scopedBackHandler('/officialAdmin', "hardwareBackPress", () => {
       router.back();
       return true;
     });

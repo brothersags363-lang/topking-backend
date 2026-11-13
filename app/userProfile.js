@@ -24,19 +24,18 @@ import {
   ActivityIndicator,
   BackHandler,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { Image as ExpoImage } from "expo-image";
 
-import {
-  useLocalSearchParams,
-  useFocusEffect,
-  useRouter,
-} from "expo-router";
+import { useLocalSearchParams, useFocusEffect } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 
 import { db, auth } from "./firebaseConfig";
 import { profileLink } from "../utils/shareLinks";
+import { formatCount, levelThemeFor } from "../utils/profileHelpers";
 import UserTick, { isFaceVerified } from "../components/UserTick";
 
 import {
@@ -58,7 +57,7 @@ import {
 
 import TopKingLogo from "../assets/images/topking-logo.png";
 
-import BottomNav from "../components/BottomNav";
+import AppBottomNav from "../components/AppBottomNav";
 import FamilyCell from "../components/FamilyCell";
 import { AvatarFrame } from "../components/FramedAvatar";
 import { useLiveHost, openLiveRoom } from "../components/liveHosts";
@@ -68,7 +67,7 @@ import { useLiveHost, openLiveRoom } from "../components/liveHosts";
 /* ------------------------------------------------------------------ */
 
 const { width } = Dimensions.get("window");
-const ITEM_WIDTH = width / 3 - 9;
+const ITEM_SIZE = width / 3;
 
 const AVATAR_FALLBACK = "https://avatar.iran.liara.run/public/65";
 const THUMB_FALLBACK =
@@ -169,10 +168,16 @@ const getLevelTheme = (level) => {
 
 const tickColor = (color) => (color === "yellow" ? "#FFD700" : "#f9fdff");
 
+const isPinnedVideo = (v) => !!(v.pinned || v.isPinned);
+
+// Pinned sabse pehle, baaki newest first
 const sortNewest = (arr) =>
-  arr.sort(
-    (a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)
-  );
+  arr.sort((a, b) => {
+    const pa = isPinnedVideo(a) ? 1 : 0;
+    const pb = isPinnedVideo(b) ? 1 : 0;
+    if (pa !== pb) return pb - pa;
+    return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
+  });
 
 const videoKeyExtractor = (item, index) => item.id || String(index);
 
@@ -235,28 +240,26 @@ const FastImage = memo(function FastImage({
 // every card, only the ones whose data actually changed.
 const VideoItem = memo(function VideoItem({ item, onPress }) {
   return (
-    <TouchableOpacity style={styles.videoCard} onPress={() => onPress(item)}>
+    <TouchableOpacity
+      style={styles.videoCard}
+      activeOpacity={0.85}
+      onPress={() => onPress(item)}
+    >
       <FastImage
         uri={item.thumbnail}
         fallback={THUMB_FALLBACK}
         style={styles.video}
       />
 
-      <View style={styles.videoOverlayViews}>
-        <Ionicons name="eye-outline" size={12} color="#fff" />
-        <Text style={styles.viewCountText}>{item.views || 0}</Text>
-      </View>
-
-      <View style={styles.videoTitleRow}>
-        <View style={styles.userRow}>
-          <MaterialCommunityIcons name="play" size={16} color="#FFD700" />
-
-          <Text style={styles.videoItemTitle} numberOfLines={1}>
-            {item.title || "video"}
-          </Text>
+      {isPinnedVideo(item) && (
+        <View style={styles.pinnedBadge}>
+          <Text style={styles.pinnedText}>Pinned</Text>
         </View>
+      )}
 
-        <MaterialCommunityIcons name="dots-vertical" size={16} color="#fff" />
+      <View style={styles.videoOverlayViews}>
+        <Ionicons name="play-outline" size={14} color="#fff" />
+        <Text style={styles.viewCountText}>{formatCount(item.views || 0)}</Text>
       </View>
     </TouchableOpacity>
   );
@@ -329,7 +332,8 @@ export default function UserProfile() {
 
 
   const [topGifters, setTopGifters] = useState([]);
-  const [giftUserCount, setGiftUserCount] = useState(0);
+  const [hasStars, setHasStars] = useState(false);
+  const [familyShown, setFamilyShown] = useState(false);
 
   const [isBlocked, setIsBlocked] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -372,7 +376,6 @@ export default function UserProfile() {
       (snap) => {
         if (!snap.exists()) {
           setTopGifters([]);
-          setGiftUserCount(0);
           return;
         }
 
@@ -381,7 +384,6 @@ export default function UserProfile() {
 
         setUserData(data);
         setIsVerified(data.verified === true);
-        setGiftUserCount(gifters.length);
         const top = gifters.slice(0, ANGEL_SHOW);
         setTopGifters(top);
 
@@ -431,7 +433,7 @@ export default function UserProfile() {
 
   // Hardware back button
   useEffect(() => {
-    const backHandler = BackHandler.addEventListener(
+    const backHandler = scopedBackHandler('/userProfile', 
       "hardwareBackPress",
       () => {
         router.back();
@@ -483,6 +485,7 @@ export default function UserProfile() {
       if (walletSnap.exists()) {
         const wallet = walletSnap.data();
         setUserLevel(wallet.level || 0);
+        setHasStars((wallet.receivedStars || 0) > 0);
         loadUserRank(wallet.receivedStars || 0);
       } else {
         loadUserRank(0);
@@ -803,6 +806,19 @@ export default function UserProfile() {
     [router, userId]
   );
 
+  // StarUp: us user ki sabse nayi video khulti hai (wahin star bhej sakte ho)
+  const openStarUp = useCallback(() => {
+    const list = latest.current.videos || [];
+    if (!list.length) {
+      Alert.alert("StarUp", "Is user ki abhi koi video nahi hai.");
+      return;
+    }
+    const newest = list.reduce((a, b) =>
+      (b.createdAt?.seconds || 0) > (a.createdAt?.seconds || 0) ? b : a
+    );
+    openVideo(newest);
+  }, [openVideo]);
+
   // Video tab profile me hi rehta hai; "Like" dabane par alag Like page khulta hai
   const handleTabPress = useCallback(
     (tab) => {
@@ -858,7 +874,7 @@ export default function UserProfile() {
 
   // Header only re-renders when something it shows actually changes
   const listHeader = useMemo(() => {
-    const levelTheme = getLevelTheme(userLevel || 1);
+    const levelTheme = levelThemeFor(userLevel || 1);
     const verifiedTickColor = tickColor(verifiedColor);
 
     const rankText =
@@ -874,10 +890,20 @@ export default function UserProfile() {
       ? "Follow Back"
       : "Follow";
 
+    const displayName = (userData?.name || "").trim();
+    const showName =
+      !!displayName &&
+      displayName.toLowerCase() !== (username || "").toLowerCase();
+    const bioClean = cleanBio(bioText);
+    // Rank/Angels card tabhi dikhe jab user ko star mila ho ya Angels (gifters) hon
+    const showStarCard = hasStars || topGifters.length > 0;
+    const isMutual = isFollowing && isFollowBack;
+    // StarUp: sirf jab star mila ho (showStarCard); apni profile par nahi, aur family me join ho to bhi nahi
+    const showStarUp = showStarCard && !isOwnProfile && !familyShown;
+
     return (
-      <>
-        {/* Profile Section */}
-        <View style={styles.profileRow}>
+      <View style={styles.profileHeader}>
+        <View style={styles.mainInfoSection}>
           <TouchableOpacity
             activeOpacity={liveRoom ? 0.8 : 1}
             disabled={!liveRoom}
@@ -897,50 +923,14 @@ export default function UserProfile() {
             )}
           </TouchableOpacity>
 
-          <View style={styles.rightSection}>
-            <View style={styles.nameRow}>
-              <Text
-                style={styles.profileName}
-                numberOfLines={1}
-                ellipsizeMode="tail"
-              >
-                @{username}
-              </Text>
-
-              <UserTick verified={isVerified} verifiedColor={verifiedColor} faceVerified={faceVerified} size={18} style={styles.profileTick} />
-
-              <View
-                style={[
-                  styles.levelPill,
-                  {
-                    backgroundColor: levelTheme.bg,
-                    borderColor: levelTheme.border,
-                  },
-                ]}
-              >
-                <MaterialCommunityIcons
-                  name="diamond-stone"
-                  size={11}
-                  color={levelTheme.icon}
-                />
-
-                <Text
-                  style={[styles.levelPillText, { color: levelTheme.text }]}
-                >
-                  LV {userLevel}
-                </Text>
-              </View>
-            </View>
-
-            <Text style={styles.category}>{category || "User"}</Text>
-
+          <View style={styles.infoRight}>
             <View style={styles.statsRow}>
               <TouchableOpacity
                 style={styles.statBox}
                 activeOpacity={0.7}
                 onPress={() => openFollowPage("followers")}
               >
-                <Text style={styles.statNumber}>{followersCount}</Text>
+                <Text style={styles.statNumber}>{formatCount(followersCount)}</Text>
                 <Text style={styles.statLabel}>Followers</Text>
               </TouchableOpacity>
 
@@ -949,39 +939,50 @@ export default function UserProfile() {
                 activeOpacity={0.7}
                 onPress={() => openFollowPage("following")}
               >
-                <Text style={styles.statNumber}>{followingCount}</Text>
+                <Text style={styles.statNumber}>{formatCount(followingCount)}</Text>
                 <Text style={styles.statLabel}>Following</Text>
               </TouchableOpacity>
 
               <View style={styles.statBox}>
-                <Text style={styles.statNumber}>{totalLikes}</Text>
+                <Text style={styles.statNumber}>{formatCount(totalLikes)}</Text>
                 <Text style={styles.statLabel}>Likes</Text>
               </View>
             </View>
           </View>
         </View>
 
-        {/* Bio */}
-        {!!cleanBio(bioText) && (
-          <View style={styles.bioBox}>
-            <BioText
-              text={cleanBio(bioText)}
-              style={styles.bioText}
-              moreStyle={styles.bioMore}
-            />
+        {(showName || !!bioClean) && (
+          <View style={styles.identityBlock}>
+            {showName && (
+              <Text style={styles.displayName} numberOfLines={1}>
+                {displayName}
+              </Text>
+            )}
+            {!!bioClean && (
+              <View style={styles.bioSection}>
+                <BioText text={bioClean} style={styles.bioText} moreStyle={styles.bioMore} />
+              </View>
+            )}
           </View>
         )}
 
-        {/* Follow / Message buttons */}
+        {/* Follow / Message buttons (TopKing logo button waisa hi) */}
         {!isBlocked && (
           <View style={styles.buttonRow}>
-            {isFollowing && isFollowBack ? (
-              <TouchableOpacity style={styles.messageBtn} onPress={openChat}>
+            {isMutual ? (
+              <TouchableOpacity style={styles.messageBtn} activeOpacity={0.8} onPress={openChat}>
                 <Text style={styles.messageText}>Message</Text>
               </TouchableOpacity>
             ) : (
-              <TouchableOpacity style={styles.followBtn} onPress={handleFollow}>
-                <Text style={styles.followText}>{followLabel}</Text>
+              <TouchableOpacity
+                style={[styles.followBtn, isFollowing && styles.followingBtn]}
+                activeOpacity={0.85}
+                onPress={handleFollow}
+              >
+                {!isFollowing && <Ionicons name="add" size={20} color="#000" />}
+                <Text style={[styles.followText, isFollowing && styles.followingText]}>
+                  {followLabel}
+                </Text>
               </TouchableOpacity>
             )}
 
@@ -991,132 +992,107 @@ export default function UserProfile() {
           </View>
         )}
 
-        {/* Badges / Rank Block */}
-        <View style={styles.premiumCard}>
-          {/* Rank */}
-          <TouchableOpacity style={styles.premiumItem} activeOpacity={0.8}>
-            <MaterialCommunityIcons
-              name="star-four-points"
-              size={20}
-              color="#FFD700"
-            />
-
-            <View style={styles.rankTextWrap}>
-              <Text style={styles.premiumSmallText}>Rank</Text>
-              <Text style={styles.premiumTitle}>{rankText}</Text>
-            </View>
-
-            <Ionicons
-              name="chevron-forward"
-              size={18}
-              color="#777"
-              style={styles.rankChevron}
-            />
-          </TouchableOpacity>
-
-          <View style={styles.premiumDivider} />
-
-          {/* Angels */}
-          <TouchableOpacity style={styles.premiumItem} activeOpacity={0.8}>
-            <View>
-              <Text style={styles.premiumTitle}>Angels</Text>
-
-              <View style={styles.memberRow}>
-                <View style={styles.memberRow}>
-                  {topGifters.map((item, index) => {
-                    const rank = index + 1;
-                    const rc = getAngelRankColors(rank);
-                    return (
-                      <View
-                        key={item.uid || `gifter-${index}`}
-                        style={[
-                          styles.angelWrap,
-                          { marginLeft: index === 0 ? 0 : 10 },
-                        ]}
-                      >
-                        <FastImage
-                          uri={item.profileImg}
-                          fallback={AVATAR_FALLBACK}
-                          style={styles.angelImg}
-                        />
-                        <View
-                          style={[styles.angelBadge, { backgroundColor: rc.bg }]}
-                        >
-                          <Text
-                            style={[styles.angelBadgeText, { color: rc.text }]}
-                          >
-                            {rank}
-                          </Text>
-                        </View>
-                      </View>
-                    );
-                  })}
-
-                  <Text style={styles.gifterCount}>{giftUserCount}</Text>
+        {/* Rank | Angels | StarUp  (Rank+Angels+StarUp sirf jab star mila ho / Angels hon) | Family alag card */}
+        <View style={styles.cardsRow}>
+          {showStarCard && (
+            <View style={[styles.premiumCard, styles.starCardInner]}>
+              {showStarCard && (
+                <View style={styles.premiumItem}>
+                  <MaterialCommunityIcons name="star-four-points" size={22} color="#FFD700" />
+                  <Text style={styles.premiumTitle}>{rankText}</Text>
+                  <Ionicons name="chevron-forward" size={14} color="#9a9a9a" />
                 </View>
-              </View>
+              )}
+
+              {topGifters.length > 0 && (
+                <>
+                  <View style={styles.premiumDivider} />
+                  <View style={styles.premiumItem}>
+                    <View style={styles.memberRow}>
+                      {topGifters.slice(0, ANGEL_SHOW).map((item, index) => (
+                        <View
+                          key={item.uid || `gifter-${index}`}
+                          style={[
+                            styles.angelWrap,
+                            { marginLeft: index === 0 ? 0 : -8, zIndex: ANGEL_SHOW - index },
+                          ]}
+                        >
+                          <FastImage
+                            uri={item.profileImg}
+                            fallback={AVATAR_FALLBACK}
+                            style={styles.angelImg}
+                          />
+                        </View>
+                      ))}
+                    </View>
+                    <Text style={styles.premiumTitle}>Angels</Text>
+                    <Ionicons name="chevron-forward" size={14} color="#9a9a9a" />
+                  </View>
+                </>
+              )}
+
+              <View style={{ flex: 1 }} />
+
+              {/* StarUp: wahi star-logo + "StarUp" jo index.tsx (feed) me dikhta hai */}
+              {showStarUp && (
+                <TouchableOpacity
+                  style={styles.starPill}
+                  activeOpacity={0.8}
+                  onPress={openStarUp}
+                >
+                  <Image
+                    source={require("../assets/star-logo.png")}
+                    style={styles.starPillImg}
+                  />
+                  <Text style={styles.starPillText}>StarUp</Text>
+                </TouchableOpacity>
+              )}
             </View>
+          )}
 
-            <Ionicons
-              name="chevron-forward"
-              size={18}
-              color="#777"
-              style={styles.angelsChevron}
-            />
-          </TouchableOpacity>
-
-          <View style={styles.premiumDivider} />
-
-          {/* Share */}
-          <FamilyCell
-            userId={userId}
-            data={userData}
-            fallback={
-              <TouchableOpacity
-                style={styles.shareButton}
-                activeOpacity={0.8}
-                onPress={handleShareProfile}
-              >
-                <Ionicons name="share-social" size={18} color="#FFD700" />
-                <Text style={styles.shareText}>Share</Text>
-              </TouchableOpacity>
-            }
-          />
+          {/* FamilyCell khud decide karta hai: family hai to dikhta hai, warna kuch nahi (card bhi nahi) */}
+          <View style={familyShown ? [styles.premiumCard, styles.familyCard] : null}>
+            <View onLayout={(e) => setFamilyShown(e.nativeEvent.layout.height > 0)}>
+              <FamilyCell userId={userId} data={userData} fallback={null} />
+            </View>
+          </View>
         </View>
 
         {/* Tabs */}
         <View style={styles.tabContainer}>
           <TouchableOpacity
-            style={activeTab === "Videos" ? styles.activeTab : null}
+            style={styles.tab}
+            activeOpacity={0.8}
             onPress={() => handleTabPress("Videos")}
           >
-            <Text
-              style={
-                activeTab === "Videos" ? styles.activeTabText : styles.tabText
-              }
-            >
-              Video ({videos.length})
+            <Text style={activeTab === "Videos" ? styles.activeTabText : styles.tabText}>
+              Videos {videos.length}
             </Text>
+            <View
+              style={[
+                styles.tabUnderline,
+                activeTab !== "Videos" && { backgroundColor: "transparent" },
+              ]}
+            />
           </TouchableOpacity>
 
           <TouchableOpacity
+            style={styles.tab}
+            activeOpacity={0.8}
             onPress={() => handleTabPress("Likes")}
           >
-            <Text
-              style={styles.tabText}
-            >
-              Like ({likedCount})
-            </Text>
+            <Text style={styles.tabText}>Likes</Text>
+            <View style={[styles.tabUnderline, { backgroundColor: "transparent" }]} />
           </TouchableOpacity>
         </View>
-      </>
+      </View>
     );
   }, [
     profileImg,
     liveRoom,
     openLive,
     username,
-    category,
+    userData,
     bioText,
     verifiedColor,
     isVerified,
@@ -1130,15 +1106,17 @@ export default function UserProfile() {
     isFollowing,
     isFollowBack,
     topGifters,
-    giftUserCount,
+    hasStars,
+    familyShown,
     activeTab,
     videos.length,
     likedCount,
     handleFollow,
     openChat,
-    handleShareProfile,
     openFollowPage,
     handleTabPress,
+    openStarUp,
+    isOwnProfile,
   ]);
 
   // Videos tab me live tile sabse pehle; `videos` state untouched rehta hai
@@ -1151,28 +1129,56 @@ export default function UserProfile() {
     ];
   }, [videos, liveRoom]);
 
+  const topLevelTheme = levelThemeFor(userLevel || 1);
+
   return (
     <SafeAreaView style={styles.container}>
       {/* Header */}
       <View style={styles.topBar}>
-        <View style={styles.userRow}>
-          <FastImage
-            uri={profileImg}
-            fallback={AVATAR_FALLBACK}
-            style={styles.smallAvatar}
-          />
+        <View style={styles.topLeft}>
+          <TouchableOpacity
+            onPress={() => router.back()}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Ionicons name="chevron-back" size={26} color="#ffffff" />
+          </TouchableOpacity>
 
-          <View style={styles.userRow}>
-            <Text style={styles.topUsername}>@{username}</Text>
+          <Text style={styles.topUsername} numberOfLines={1} ellipsizeMode="tail">
+            {username}
+          </Text>
 
-            <View style={styles.topTick}>
-                <UserTick verified={isVerified} verifiedColor={verifiedColor} faceVerified={faceVerified} size={18} style={{ marginLeft: 0 }} />
-              </View>
+          <View style={styles.topTick}>
+            <UserTick verified={isVerified} verifiedColor={verifiedColor} faceVerified={faceVerified} size={18} style={{ marginLeft: 0 }} />
+          </View>
+
+          <View
+            style={[
+              styles.levelPill,
+              {
+                backgroundColor: topLevelTheme.bg,
+                borderColor: topLevelTheme.border,
+                marginLeft: 6,
+                flexShrink: 0,
+              },
+            ]}
+          >
+            <MaterialCommunityIcons
+              name="diamond-stone"
+              size={10}
+              color={topLevelTheme.icon}
+            />
+            <Text style={[styles.levelPillText, { color: topLevelTheme.text }]}>
+              LV {userLevel || 1}
+            </Text>
           </View>
         </View>
 
-        <TouchableOpacity onPress={() => setMenuVisible(true)}>
-          <Ionicons name="ellipsis-vertical" size={23} color="#ffffff" />
+        {/* 3-line menu icon (share icon ki jagah) */}
+        <TouchableOpacity
+          onPress={() => setMenuVisible(true)}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Ionicons name="menu" size={26} color="#ffffff" />
         </TouchableOpacity>
       </View>
 
@@ -1272,7 +1278,7 @@ export default function UserProfile() {
       </Modal>
 
       {/* Bottom Navigation */}
-      <BottomNav />
+      <AppBottomNav />
     </SafeAreaView>
   );
 }
@@ -1287,18 +1293,101 @@ const styles = StyleSheet.create({
     backgroundColor: "#000",
   },
 
+  profileHeader: {
+    paddingHorizontal: 16,
+    paddingTop: 5,
+  },
+
+  mainInfoSection: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 10,
+  },
+
+  infoRight: {
+    flex: 1,
+    marginLeft: 14,
+  },
+
+  usernameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  identityBlock: {
+    marginTop: 10,
+  },
+
+  displayName: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+
+  bioSection: {
+    marginTop: 4,
+  },
+
+  followingBtn: {
+    backgroundColor: "#2a2a2a",
+  },
+
+  followingText: {
+    color: "#fff",
+  },
+
+  cardsRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+
+  familyCard: {
+    paddingHorizontal: 10,
+  },
+
+  tab: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: 8,
+  },
+
+  tabUnderline: {
+    width: 22,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: "#FFD700",
+    marginTop: 6,
+  },
+
+  pinnedBadge: {
+    position: "absolute",
+    top: 6,
+    left: 6,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 3,
+  },
+
+  pinnedText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "600",
+  },
+
   listContent: {
     paddingBottom: 150,
+    paddingHorizontal: 1,
   },
 
   topBar: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 20,
+    paddingHorizontal: 14,
     paddingTop: 15,
     marginTop: 35,
-    marginBottom: 40,
+    marginBottom: 8,
   },
 
   userRow: {
@@ -1314,13 +1403,24 @@ const styles = StyleSheet.create({
 
   topUsername: {
     color: "#fff",
-    fontSize: 10,
+    fontSize: 18,
     fontWeight: "bold",
-    marginLeft: 10,
+    marginLeft: 8,
+    flexShrink: 1,
+    maxWidth: width * 0.45,
+  },
+
+  // top bar ka left part: menu icon ke liye jagah chhodta hai, naam lamba ho to "..." se kat jata hai
+  topLeft: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    marginRight: 12,
   },
 
   topTick: {
     marginLeft: 5,
+    flexShrink: 0,
   },
 
   profileRow: {
@@ -1331,9 +1431,8 @@ const styles = StyleSheet.create({
   profileImage: {
     width: 80,
     height: 80,
-    borderRadius: 50,
-    borderWidth: 1,
-    borderColor: "#FFD700",
+    borderRadius: 30, // profile.tsx jaisa rounded-square (gol nahi)
+    backgroundColor: "#222",
   },
 
   // Face-verified user ka logo: photo ke side (neeche-right) me chipka hua
@@ -1410,29 +1509,30 @@ const styles = StyleSheet.create({
 
   profileName: {
     color: "#fff",
-    fontSize: 17,
+    fontSize: 18,
     fontWeight: "bold",
     flexShrink: 1,
   },
 
   profileTick: {
-    marginLeft: 3,
+    marginLeft: 5,
   },
 
   levelPill: {
     marginLeft: 4,
     borderWidth: 1,
-    paddingHorizontal: 8,
+    paddingHorizontal: 6,
     paddingVertical: 2,
-    borderRadius: 15,
+    borderRadius: 20,
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
   },
 
   levelPillText: {
     fontWeight: "bold",
-    marginLeft: 2,
-    fontSize: 10,
+    marginLeft: 3,
+    fontSize: 9,
   },
 
   category: {
@@ -1443,26 +1543,28 @@ const styles = StyleSheet.create({
 
   statsRow: {
     flexDirection: "row",
-    justifyContent: "flex-start",
+    justifyContent: "space-around",
     alignItems: "center",
-    marginTop: 20,
+    marginTop: 6,
   },
 
   statBox: {
     alignItems: "center",
-    marginRight: 30,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    minWidth: 64,
   },
 
   statNumber: {
     color: "#fff",
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: "bold",
   },
 
   statLabel: {
-    color: "#777",
-    fontSize: 13.5,
-    marginTop: 5,
+    color: "#8a8a8a",
+    fontSize: 13,
+    marginTop: 2,
   },
 
   bioBox: {
@@ -1479,7 +1581,6 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 14,
     lineHeight: 19,
-    marginTop: 8,
   },
 
   bioMore: {
@@ -1489,19 +1590,18 @@ const styles = StyleSheet.create({
 
   buttonRow: {
     flexDirection: "row",
-    paddingHorizontal: 20,
-    marginTop: 25,
+    marginTop: 16,
+    gap: 10,
   },
 
   followBtn: {
     flex: 1,
-    height: 45,
-    borderRadius: 12,
-    justifyContent: "center",
-    alignItems: "center",
     backgroundColor: "#FFD700",
-    borderWidth: 1,
-    borderColor: "#E6C200",
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
   },
 
   followText: {
@@ -1512,13 +1612,11 @@ const styles = StyleSheet.create({
 
   messageBtn: {
     flex: 1,
-    height: 45,
-    borderRadius: 12,
-    justifyContent: "center",
+    backgroundColor: "#2a2a2a",
+    paddingVertical: 12,
+    borderRadius: 10,
     alignItems: "center",
-    backgroundColor: "#2c2929",
-    borderWidth: 2,
-    borderColor: "#FFD700",
+    justifyContent: "center",
   },
 
   messageText: {
@@ -1528,10 +1626,9 @@ const styles = StyleSheet.create({
   },
 
   instaBtn: {
-    width: 100,
-    marginLeft: 15,
-    backgroundColor: "#111",
-    borderRadius: 18,
+    backgroundColor: "#2a2a2a",
+    paddingHorizontal: 14,
+    borderRadius: 10,
     justifyContent: "center",
     alignItems: "center",
   },
@@ -1544,26 +1641,24 @@ const styles = StyleSheet.create({
 
   tabContainer: {
     flexDirection: "row",
-    marginHorizontal: 20,
-    marginTop: 10,
-    borderRadius: 0,
-    paddingVertical: 12,
-    justifyContent: "space-around",
+    marginTop: 18,
   },
 
   activeTab: {
-    borderBottomWidth: 2,
-    borderBottomColor: "#FFD700",
+    flex: 1,
+    alignItems: "center",
+    paddingBottom: 10,
   },
 
   activeTabText: {
     color: "#fff",
-    fontSize: 16,
     fontWeight: "bold",
+    fontSize: 16,
   },
 
   tabText: {
-    color: "#ecc815",
+    color: "#8a8a8a",
+    fontWeight: "bold",
     fontSize: 16,
   },
 
@@ -1572,11 +1667,11 @@ const styles = StyleSheet.create({
   },
 
   videoCard: {
-    width: ITEM_WIDTH,
-    height: 170,
-    backgroundColor: "#0b0b0b",
-    borderRadius: 5,
-    margin: 4,
+    width: ITEM_SIZE - 6,
+    height: (ITEM_SIZE - 6) * 1.45,
+    margin: 3,
+    borderRadius: 8,
+    backgroundColor: "#111",
     overflow: "hidden",
   },
 
@@ -1587,16 +1682,20 @@ const styles = StyleSheet.create({
 
   videoOverlayViews: {
     position: "absolute",
-    top: 8,
-    left: 8,
+    bottom: 6,
+    left: 6,
     flexDirection: "row",
     alignItems: "center",
   },
 
   viewCountText: {
     color: "#fff",
-    marginLeft: 4,
     fontSize: 12,
+    marginLeft: 3,
+    fontWeight: "bold",
+    textShadowColor: "rgba(0,0,0,0.7)",
+    textShadowRadius: 3,
+    textShadowOffset: { width: 0, height: 1 },
   },
 
   videoTitleRow: {
@@ -1665,44 +1764,68 @@ const styles = StyleSheet.create({
 
   /* rank / angels / share card */
   premiumCard: {
-    marginTop: 20,
-    marginHorizontal: 18,
-    backgroundColor: "#181818",
-    borderRadius: 12,
+    marginTop: 14,
+    backgroundColor: "#2a2a2a",
+    borderRadius: 10,
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 5,
-    borderWidth: 1,
-    borderColor: "#2c2c2c",
-    shadowColor: "#FFD700",
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    gap: 14,
   },
 
   premiumItem: {
-    flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    gap: 6,
   },
 
   premiumSmallText: {
-    color: "#888",
+    color: "#8a8a8a",
     fontSize: 11,
   },
 
   premiumTitle: {
     color: "#fff",
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: "700",
   },
 
   premiumDivider: {
     width: 1,
-    height: 34,
-    backgroundColor: "#333",
+    height: 24,
+    backgroundColor: "#3a3a3a",
+  },
+
+  starCardInner: {
+    flex: 1,
+    minWidth: 0,
+    overflow: "hidden",
+    gap: 8,
+    paddingHorizontal: 10,
+  },
+
+  starPill: {
+    flexShrink: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#3d3200",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 14,
+  },
+
+  starPillImg: {
+    width: 18,
+    height: 18,
+    resizeMode: "contain",
+  },
+
+  starPillText: {
+    color: "#FFD700",
+    fontSize: 13,
+    fontWeight: "bold",
+    marginLeft: 4,
   },
 
   rankTextWrap: {
@@ -1735,7 +1858,7 @@ const styles = StyleSheet.create({
 
   memberRow: {
     flexDirection: "row",
-    marginTop: 6,
+    alignItems: "center",
   },
 
   memberImg: {
@@ -1747,16 +1870,16 @@ const styles = StyleSheet.create({
   },
 
   angelWrap: {
-    width: 28,
-    height: 28,
+    width: 22,
+    height: 22,
   },
 
   angelImg: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    borderWidth: 2,
-    borderColor: "#181818",
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    borderColor: "#2a2a2a",
   },
 
   angelBadge: {

@@ -9,9 +9,13 @@ import {
   BackHandler,
   ActivityIndicator,
   Alert,
+  Image,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
+
+const GREY_V = require("../assets/images/grey-v-tick.png");
 import { MaterialIcons, Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import {
@@ -33,6 +37,7 @@ try {
 }
 
 import { auth, db, storage } from "./firebaseConfig";
+import { callApi } from "../utils/api";
 
 /*
   Firestore: users/{uid}
@@ -89,7 +94,27 @@ export default function Creator() {
 
   const [screen, setScreen] = useState("home"); // home | quiz | result | face
   const [data, setData] = useState(null);
-  const [stats, setStats] = useState({ totalViews: 0, videosWith300: 0 });
+  const [stats, setStats] = useState({ videosWith3000: 0 });
+  const [checkingDevice, setCheckingDevice] = useState(false);
+
+  // Ek mobile = ek verified ID: "Step 1: Verify your face" dabate hi check
+  const openFace = async () => {
+    if (checkingDevice) return;
+    setCheckingDevice(true);
+    try {
+      await callApi("/device/verified-check", {});
+    } catch (e) {
+      if (e && e.code === "DEVICE_ALREADY_VERIFIED") {
+        setCheckingDevice(false);
+        return Alert.alert(
+          "Already verified",
+          e.message || "Already verified on another ID. Ek mobile par sirf ek hi ID verify ho sakti hai."
+        );
+      }
+    }
+    setCheckingDevice(false);
+    setScreen("face");
+  };
 
   // ---------- live user data ----------
   useEffect(() => {
@@ -106,14 +131,11 @@ export default function Creator() {
     const unsub = onSnapshot(
       query(collection(db, "all_videos"), where("userId", "==", uid)),
       (snap) => {
-        let total = 0;
-        let ok300 = 0;
+        let ok3000 = 0; // Grey V: har video par 3000+ views
         snap.docs.forEach((d) => {
-          const v = Number(d.data().views || 0);
-          total += v;
-          if (v >= 300) ok300 += 1;
+          if (Number(d.data().views || 0) >= 3000) ok3000 += 1;
         });
-        setStats({ totalViews: total, videosWith300: ok300 });
+        setStats({ videosWith3000: ok3000 });
       },
       () => {}
     );
@@ -122,7 +144,7 @@ export default function Creator() {
 
   // ---------- hardware back ----------
   useEffect(() => {
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+    const sub = scopedBackHandler('/creator', "hardwareBackPress", () => {
       if (screen !== "home") setScreen("home");
       else router.back();
       return true;
@@ -140,8 +162,7 @@ export default function Creator() {
 
   const faceDone = data.faceStatus === "submitted" || data.faceStatus === "approved";
   const quizDone = !!data.quizPassed;
-  const videosWith300 = stats.videosWith300;
-  const totalViews = stats.totalViews;
+  const videosWith3000 = stats.videosWith3000;
   // real photo + bio profile me lagayi hai? (default icon nahi hona chahiye)
   const profileDone =
     !!data.profileImg &&
@@ -150,7 +171,7 @@ export default function Creator() {
   const goEditProfile = () =>
     router.push({ pathname: "/(tabs)/profile", params: { edit: "1" } });
   const yellowEligible =
-    faceDone && profileDone && quizDone && videosWith300 >= 5 && totalViews >= 4500;
+    faceDone && profileDone && quizDone && videosWith3000 >= 5;
   // Asli tick sirf wahi jo admin/backend ne users/{uid} me set kiya hai
   const tick = !data.verified
     ? "none"
@@ -193,10 +214,10 @@ export default function Creator() {
 
   // ---------- main button logic ----------
   let btnLabel = "Participate to get verified";
-  let btnAction = () => setScreen("face");
+  let btnAction = () => openFace();
   if (!faceDone) {
     btnLabel = "Step 1: Verify your face";
-    btnAction = () => setScreen("face");
+    btnAction = () => openFace();
   } else if (!profileDone) {
     btnLabel = "Step 2: Add real photo & bio";
     btnAction = goEditProfile;
@@ -208,9 +229,9 @@ export default function Creator() {
       tick === "blue"
         ? "You are Blue Verified 🎉"
         : tick === "yellow"
-        ? "You are Yellow Verified 🎉"
+        ? "You are Grey V Verified 🎉"
         : yellowEligible
-        ? "Eligible! Waiting for TopKing approval"
+        ? "Eligible! Grey V is being applied..."
         : "Complete videos & views";
     btnAction = () => {
       if (tick === "none" || tick === "white") router.push("/camera");
@@ -232,11 +253,15 @@ export default function Creator() {
             <Text style={s.bigYellow2}>Creator{"\n"}Verification</Text>
             <Text style={s.grey}>Verification gives you privileges and more traffic</Text>
           </View>
-          <MaterialIcons
-            name="verified"
-            size={110}
-            color={tick === "blue" ? "#1E90FF" : tick === "yellow" ? YELLOW : tick === "white" ? "#fff" : "#555"}
-          />
+          {tick === "yellow" ? (
+            <Image source={GREY_V} style={{ width: 110, height: 110 }} resizeMode="contain" />
+          ) : (
+            <MaterialIcons
+              name="verified"
+              size={110}
+              color={tick === "blue" ? "#1E90FF" : tick === "white" ? "#fff" : "#555"}
+            />
+          )}
         </View>
 
         {/* Steps checklist */}
@@ -245,7 +270,7 @@ export default function Creator() {
           n="1"
           title="Face verification"
           done={faceDone}
-          onPress={faceDone ? undefined : () => setScreen("face")}
+          onPress={faceDone ? undefined : () => openFace()}
         />
         <Step
           n="2"
@@ -257,16 +282,10 @@ export default function Creator() {
         <Step n="3" title="Quiz (score 60+)" done={quizDone} lock={!faceDone} />
         <Step
           n="4"
-          title={`5 videos with 300+ views  (${Math.min(videosWith300, 5)}/5)`}
-          done={videosWith300 >= 5}
+          title={`5 videos with 3000+ views  (${Math.min(videosWith3000, 5)}/5)`}
+          done={videosWith3000 >= 5}
           lock={locked}
           onPress={faceDone ? () => router.push("/camera") : undefined}
-        />
-        <Step
-          n="5"
-          title={`4500+ total views  (${totalViews}/4500)`}
-          done={totalViews >= 4500}
-          lock={locked}
         />
 
         {/* Privileges timeline */}
@@ -281,9 +300,9 @@ export default function Creator() {
         />
 
         <Level
-          icon={<MaterialIcons name="verified" size={30} color={YELLOW} />}
-          label="Yellow Tick"
-          title="5 videos + 4500 views • Family Creator, priority reports (24h), more visibility, higher earning"
+          icon={<Image source={GREY_V} style={{ width: 30, height: 30 }} resizeMode="contain" />}
+          label="Grey V Tick"
+          title="5 videos × 3000+ views • Family Creator, priority reports (24h), more visibility, higher earning"
           unlocked={tick === "yellow" || tick === "blue"}
           lock={locked}
         />
@@ -387,10 +406,14 @@ function DotRing({ progress }) {
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Face verify ka total time (pehle 60 sec tha, kam padta tha). Yahin se badlo.
+const FACE_TIMEOUT_MS = 180000; // 3 minute
+
 function FaceScreen({ uid, onBack }) {
   const footerStyle = useFooterStyle();
   const [perm, requestPerm] = useCameraPermissions();
   const [phase, setPhase] = useState("intro"); // intro | scan | done | fail
+  const [rewardStars, setRewardStars] = useState(0);
   const [progress, setProgress] = useState(0);
   const [title, setTitle] = useState("Look straight");
   const [hint, setHint] = useState("Please look straight at the camera");
@@ -404,7 +427,18 @@ function FaceScreen({ uid, onBack }) {
 
   useEffect(() => () => { alive.current = false; }, []);
 
+  // Ek mobile = ek verified ID: screen khulte hi background me check (start button me delay nahi)
+  const deviceBlockRef = useRef("");
+  useEffect(() => {
+    callApi("/device/verified-check", {}).catch((e) => {
+      if (e && e.code === "DEVICE_ALREADY_VERIFIED") deviceBlockRef.current = e.message;
+    });
+  }, []);
+
   const start = async () => {
+    if (deviceBlockRef.current) {
+      return Alert.alert("Verify nahi ho sakta", deviceBlockRef.current);
+    }
     if (!FaceDetection) {
       return Alert.alert(
         "Face module install nahi hai",
@@ -447,22 +481,16 @@ function FaceScreen({ uid, onBack }) {
       errRef.current = "upload: " + (e?.code || e?.message || String(e));
     }
     try {
-      await setDoc(
-        doc(db, "users", uid),
-        {
-          faceStatus: "submitted",
-          faceSelfie: url,
-          faceLiveness: true,
-          faceVerifiedAt: Date.now(),
-        },
-        { merge: true }
-      );
+      // Server hi faceStatus likhta hai aur check karta hai ki is mobile par dusri ID verified to nahi
+      const fr = await callApi("/face/submit", { faceSelfie: url });
+      if (fr && fr.rewardStars > 0) setRewardStars(fr.rewardStars);
       alive.current = false;
       setProgress(1);
       setPhase("done");
     } catch (e) {
       console.log("FACE SAVE ERROR =", e);
-      fail("Save nahi hua: " + (e?.code || e?.message || String(e)));
+      if (e && e.code === "DEVICE_ALREADY_VERIFIED") return fail(e.message);
+      fail("Save nahi hua: " + (e?.message || e?.code || String(e)));
     }
   };
 
@@ -497,7 +525,7 @@ function FaceScreen({ uid, onBack }) {
     await wait(500);
 
     while (alive.current) {
-      if (Date.now() - t0 > 60000) {
+      if (Date.now() - t0 > FACE_TIMEOUT_MS) {
         const st = statRef.current;
         return fail(
           `Time out. (photos: ${st.shots}, face mila: ${st.faces}` +
@@ -656,6 +684,7 @@ function FaceScreen({ uid, onBack }) {
           <Text style={[s.grey, { textAlign: "center", marginTop: 8 }]}>
             {phase === "done"
               ? "Face verification complete. Ab apni real photo aur bio profile me lagao." +
+                (rewardStars > 0 ? `\n🎁 ${rewardStars} sending stars mil gaye!` : "") +
                 (errRef.current ? `\n(${errRef.current})` : "")
               : phase === "fail"
               ? failMsg
@@ -706,7 +735,7 @@ function FaceScreen({ uid, onBack }) {
       </Text>
 
       <View style={s.pill}>
-        <MaterialIcons name="verified" size={22} color={YELLOW} />
+        <Image source={GREY_V} style={{ width: 22, height: 22 }} resizeMode="contain" />
         <Text style={s.pillText}>Exclusive badge</Text>
       </View>
       <View style={s.pill}>

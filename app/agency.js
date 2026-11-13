@@ -14,10 +14,12 @@ Modal,
 ActivityIndicator,
  BackHandler,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 
 import { auth, db } from "./firebaseConfig";
 
-import { useRouter, useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import useIsAdmin from "./useIsAdmin";
 import useIsOfficial from "./useIsOfficial";
 import { callApi } from "../utils/api";
@@ -229,7 +231,7 @@ export default function Agency(){
 
 
     const subscription =
-      BackHandler.addEventListener(
+      scopedBackHandler('/agency', 
         "hardwareBackPress",
         backAction
       );

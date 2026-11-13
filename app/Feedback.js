@@ -12,9 +12,10 @@ import {
     ScrollView,
     BackHandler,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 
 import { db, auth } from "./firebaseConfig";
 
@@ -38,7 +39,7 @@ useEffect(() => {
     return true;
   };
 
-  const subscription = BackHandler.addEventListener(
+  const subscription = scopedBackHandler('/Feedback', 
     "hardwareBackPress",
     handleBackPress
   );

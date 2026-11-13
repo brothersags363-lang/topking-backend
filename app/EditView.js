@@ -27,10 +27,8 @@ import {
   useVideoPlayer,
 } from "expo-video";
 
-import {
-  useRouter,
-  useLocalSearchParams,
-} from "expo-router";
+import { useLocalSearchParams } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 
 import {
   useIsFocused,

@@ -6,13 +6,14 @@ import {
   View, Text, FlatList, StyleSheet, Platform, StatusBar,
   RefreshControl, ActivityIndicator, InteractionManager, Dimensions,
 } from 'react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
+import { useRouter } from '../../utils/safeRouter';
 import { auth } from '../firebaseConfig';
 import { useBlockedIds } from '../../utils/useBlockedIds';
 import useTabBack from '../../utils/useTabBack';
 import useSwipeTabs from '../../utils/useSwipeTabs';
 import { loadFollow, followCache } from '../../utils/homeData';
-import BottomNav from '../../components/BottomNav';
+import AppBottomNav from '../../components/AppBottomNav';
 import TopTabs from '../../components/TopTabs';
 import { GridTile, LiveBubble, GRID_GAP, GRID_PAD } from '../../components/GridParts';
 
@@ -159,7 +160,7 @@ export default function FollowScreen() {
         overScrollMode="never"
       />
 
-      <BottomNav />
+      <AppBottomNav />
     </View>
   );
 }

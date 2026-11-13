@@ -1,5 +1,5 @@
 import { blockIfProfane } from "../../utils/guardText";
-import { checkVideoAction } from "../../utils/videoLocks";
+import { checkVideoAction, getVideoLocks } from "../../utils/videoLocks";
 // ==========================
 // IMPORTS
 // ==========================
@@ -22,6 +22,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Share,
+  Linking,
   Alert,
   TextInput,
   BackHandler,
@@ -31,7 +32,11 @@ import {
   AppState,
   PanResponder,
   InteractionManager,
+  unstable_batchedUpdates,
 } from 'react-native';
+import { scopedBackHandler } from '../../utils/scopedBack';
+import StarToastView from '../../utils/StarToastView';
+import { rewardShare } from '../../utils/shareReward';
 
 
 
@@ -68,7 +73,9 @@ import {
   Ionicons,
   MaterialCommunityIcons,
 } from "@expo/vector-icons";
-import { useRouter, usePathname, useFocusEffect } from 'expo-router';
+import { usePathname, useFocusEffect } from 'expo-router';
+import { useRouter } from '../../utils/safeRouter';
+import { getRecentRooms } from '../../utils/recentRooms';
 
 // ==========================
 // FIREBASE
@@ -198,6 +205,45 @@ const saveLastTop = async (id) => {
     await AsyncStorage.setItem(lastTopStorageKey(), id);
   } catch (e) {}
 };
+
+// ---------- VIEWS: ek hi user ek hi video ko har 30 minute baad dobara dekhe to view +1 ----------
+const VIEW_GAP_MS = 30 * 60 * 1000;
+const viewStampKey = () => `view_ts_v1_${keyUid()}`;
+let viewStampCache = null; // { [videoId]: lastCountedTimestamp }
+let viewStampUid = null;
+
+const loadViewStamps = async () => {
+  const uid = keyUid();
+  if (viewStampCache && viewStampUid === uid) return viewStampCache;
+  viewStampUid = uid;
+  try {
+    const raw = await AsyncStorage.getItem(viewStampKey());
+    const parsed = raw ? JSON.parse(raw) : {};
+    const now = Date.now();
+    const out = {};
+    // 30 min se purani entry ki zaroorat nahi -> map hamesha chhota rehta hai
+    Object.keys(parsed).forEach((id) => {
+      if (typeof parsed[id] === 'number' && now - parsed[id] < VIEW_GAP_MS) out[id] = parsed[id];
+    });
+    viewStampCache = out;
+  } catch (e) {
+    viewStampCache = {};
+  }
+  return viewStampCache;
+};
+
+// true = view gino (pehli baar ya pichle count se 30 min ho gaye), false = abhi nahi
+const shouldCountView = async (videoId) => {
+  if (!videoId) return false;
+  const map = await loadViewStamps();
+  const now = Date.now();
+  const last = map[videoId];
+  if (typeof last === 'number' && now - last < VIEW_GAP_MS) return false;
+  map[videoId] = now;
+  AsyncStorage.setItem(viewStampKey(), JSON.stringify(map)).catch(() => {});
+  return true;
+};
+
 
 // ==========================
 // RESUME: jahan video roka tha wahi se dobara chalu
@@ -501,7 +547,10 @@ const rankFeed = (
 // kam RAM wale phone atkenge. 10 ek saath safe nahi, isliye 1 peeche + 3 aage.)
 // SPEED: 1 peeche + 2 aage ke players ready -> fast swipe par bhi video turant chalta hai.
 const PRELOAD_BEHIND = 1; // INSTA: peeche ka 1 video ready -> upar scroll karte hi turant chalta hai
-const PRELOAD_AHEAD = 2; // SMOOTH: current video ke time agle 2 videos background me ready
+// INSTA: naye phone (iOS / Android 10+) par agle 3 videos ready -> tez swipe par bhi
+// black/loader nahi. Purane/kam RAM wale Android par 2 (decoder limit).
+const PRELOAD_AHEAD =
+  Platform.OS === 'ios' || (typeof Platform.Version === 'number' && Platform.Version >= 29) ? 3 : 2;
 
 // STALL FIX: minBufferForPlayback 1 sec par network ek baar slow hote hi video
 // 1 sec chalke dobara ruk jata tha (ruk-ruk ke chalna). Active video ko 2 sec
@@ -509,23 +558,29 @@ const PRELOAD_AHEAD = 2; // SMOOTH: current video ke time agle 2 videos backgrou
 const ACTIVE_BUFFER = {
   maxBufferBytes: 30 * 1024 * 1024,
   preferredForwardBufferDuration: 20,
-  minBufferForPlayback: 2,
+  minBufferForPlayback: 1,
   prioritizeTimeOverSizeThreshold: true,
+  // iOS: pehle poora buffer bharne ka wait nahi -> play turant shuru
+  waitsToMinimizeStalling: false,
 };
 // Agla video (index+1): itna buffer ki scroll karte hi turant chal pade
 const NEAR_BUFFER = {
-  maxBufferBytes: 8 * 1024 * 1024,
-  preferredForwardBufferDuration: 8,
+  maxBufferBytes: 10 * 1024 * 1024,
+  preferredForwardBufferDuration: 10,
   minBufferForPlayback: 1,
   prioritizeTimeOverSizeThreshold: true,
+  waitsToMinimizeStalling: false,
 };
 // Door ke videos (pichla / index+2, +3): shuru ke ~3 sec,
 // taaki active video ka bandwidth na khayein
+// Sirf shuru ke ~4 sec: itna kaafi hai ki swipe par turant chal pade,
+// aur 3 videos ek saath download karke active video ka network na khayein.
 const PRELOAD_BUFFER = {
-  maxBufferBytes: 6 * 1024 * 1024,
-  preferredForwardBufferDuration: 6,
+  maxBufferBytes: 4 * 1024 * 1024,
+  preferredForwardBufferDuration: 4,
   minBufferForPlayback: 1,
   prioritizeTimeOverSizeThreshold: true,
+  waitsToMinimizeStalling: false,
 };
 
 // ======================================================
@@ -684,10 +739,18 @@ const silenceOthers = (activeId: string | null | undefined) => {
   });
 };
 
+// FOCUS GUARD: feed screen jab focus me NAHI hai to koi bhi code video play
+// na kar sake. Blur hote hi sab players turant pause + mute.
+let feedFocused = true;
+const setFeedFocused = (v: boolean) => {
+  feedFocused = v;
+  if (!v) silenceOthers(null); // null = koi exception nahi -> sab band
+};
+
 // INSTA: swipe par naya video React re-render ka wait kiye bina TURANT chalu
 // (registry ke player par seedha unmute + play)
 const playActiveNow = (activeId: string | null | undefined) => {
-  if (!activeId) return;
+  if (!activeId || !feedFocused) return;
   const p = feedPlayers.get(activeId);
   if (!p) return;
   try { p.muted = false; } catch (e) {}
@@ -728,6 +791,8 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
     if (!videoId) return;
     feedPlayers.set(videoId, player);
     return () => {
+      try { player.muted = true; } catch (e) {}
+      try { player.pause(); } catch (e) {}
       if (feedPlayers.get(videoId) === player) feedPlayers.delete(videoId);
     };
   }, [player, videoId]);
@@ -782,6 +847,7 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
     // Tap se pause hone par `active` false hota hai, isliye wo yahan nahi chhedta.
     const nudge = () => {
       try {
+        if (!feedFocused) return;
         if (player.status === 'readyToPlay' && !player.playing) player.play();
       } catch (e) {}
     };
@@ -799,7 +865,7 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
   useEffect(() => {
     if (!active) return;
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') {
+      if (state === 'active' && feedFocused) {
         try { player.play(); } catch (e) {}
       }
     });
@@ -821,7 +887,7 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
   // Sirf play / pause. (Pehle yahan pause hote hi video 0 par chala jata tha -
   // isi wajah se screen badalne / tap-pause ke baad video shuru se start hota tha.)
   useEffect(() => {
-    if (active) {
+    if (active && feedFocused) {
       try { player.muted = false; } catch (e) {}
       player.play();
     } else {
@@ -1264,6 +1330,119 @@ const HeartPopup = memo(function HeartPopup() {
 });
 
 // ======================================================
+// FollowPill — username ke aage PEELA "Follow" button (Insta style)
+// ======================================================
+// followState: undefined = abhi check ho raha hai (button NAHI dikhega -> flash nahi)
+//              true      = pehle se follow kiya hai (button NAHI dikhega)
+//              false     = follow nahi kiya (button dikhega)
+// Follow dabate hi button chhota hoke halke se gayab ho jata hai.
+const FollowPill = memo(function FollowPill({ userId, followState, onFollow }) {
+  const show = followState === false && !!userId && auth.currentUser?.uid !== userId;
+  const anim = useRef(new Animated.Value(0)).current;
+  const [mounted, setMounted] = useState(show);
+
+  useEffect(() => {
+    if (show) {
+      setMounted(true);
+      Animated.timing(anim, {
+        toValue: 1,
+        duration: 160,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }).start();
+    } else if (mounted) {
+      Animated.timing(anim, {
+        toValue: 0,
+        duration: 200,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) setMounted(false);
+      });
+    }
+  }, [show, anim]);
+
+  if (!mounted) return null;
+
+  return (
+    <Animated.View
+      pointerEvents={show ? 'auto' : 'none'}
+      style={{
+        opacity: anim,
+        transform: [{ scale: anim.interpolate({ inputRange: [0, 1], outputRange: [0.6, 1] }) }],
+      }}
+    >
+      <TouchableOpacity
+        style={styles.followPill}
+        activeOpacity={0.8}
+        hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+        onPress={() => onFollow(userId)}
+      >
+        <Text style={styles.followPillText}>Follow</Text>
+      </TouchableOpacity>
+    </Animated.View>
+  );
+});
+
+// ======================================================
+// ProfilePlus — profile photo ke neeche chhota PEELA "+" (follow ke liye)
+// ======================================================
+// FollowPill wali hi logic: followState === false hone par hi dikhta hai.
+// Dabate hi onFollow chalta hai (optimistic, instant) aur "+" chhota hoke
+// gayab ho jata hai. Native driver -> scroll / like par koi lag nahi.
+const ProfilePlus = memo(function ProfilePlus({ userId, followState, onFollow }) {
+  const show = followState === false && !!userId && auth.currentUser?.uid !== userId;
+  const anim = useRef(new Animated.Value(show ? 1 : 0)).current;
+  const [mounted, setMounted] = useState(show);
+
+  useEffect(() => {
+    if (show) {
+      setMounted(true);
+      Animated.timing(anim, {
+        toValue: 1,
+        duration: 160,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }).start();
+    } else if (mounted) {
+      Animated.timing(anim, {
+        toValue: 0,
+        duration: 200,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) setMounted(false);
+      });
+    }
+  }, [show, anim]);
+
+  if (!mounted) return null;
+
+  return (
+    <Animated.View
+      pointerEvents={show ? 'auto' : 'none'}
+      style={[
+        styles.profilePlus,
+        {
+          opacity: anim,
+          transform: [{ scale: anim.interpolate({ inputRange: [0, 1], outputRange: [0.5, 1] }) }],
+        },
+      ]}
+    >
+      <TouchableOpacity
+        activeOpacity={0.8}
+        hitSlop={{ top: 10, bottom: 10, left: 12, right: 12 }}
+        style={styles.profilePlusBtn}
+        onPress={() => onFollow(userId)}
+      >
+        <View style={styles.profilePlusH} />
+        <View style={styles.profilePlusV} />
+      </TouchableOpacity>
+    </Animated.View>
+  );
+});
+
+// ======================================================
 // VideoItem — memoized single feed row
 // ======================================================
 // FIX (biggest perf change): pehle ye poora JSX seedha renderItem
@@ -1295,7 +1474,7 @@ const VideoItem = memo(function VideoItem({
   showStar,
   starCount,
   isLiked,
-  isFollowing,
+  followState,
   rotateAnim,
   textAnim,
   starScale,
@@ -1427,11 +1606,13 @@ const VideoItem = memo(function VideoItem({
       <View style={styles.bottomLeft}>
 
         <View style={styles.userRow}>
-          <Text style={styles.userName}>
+          <Text style={[styles.userName, { flexShrink: 1 }]} numberOfLines={1}>
             {item.username || "@user"}
           </Text>
 
           <UserTick uid={item.userId} verified={item.verified} verifiedColor={item.verifiedColor} faceVerified={isFaceVerified(item)} size={17} />
+
+          <FollowPill userId={item.userId} followState={followState} onFollow={onFollow} />
         </View>
 
         <Text style={styles.caption} numberOfLines={1} ellipsizeMode="tail">{item.caption}</Text>
@@ -1488,18 +1669,8 @@ const VideoItem = memo(function VideoItem({
             )}
           </TouchableOpacity>
 
-          {auth.currentUser?.uid !== item.userId && !isFollowing && (
-            <TouchableOpacity
-              style={styles.plusIconSmall}
-              onPress={() => onFollow(item.userId)}
-            >
-              <Ionicons
-                name="add"
-                size={15}
-                color="#000"
-              />
-            </TouchableOpacity>
-          )}
+          <ProfilePlus userId={item.userId} followState={followState} onFollow={onFollow} />
+
         </View>
 
         <LikeButton
@@ -1702,12 +1873,12 @@ const BottomBar = memo(function BottomBar({ pathname, onLayout }) {
 
           {/* HOME */}
           <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/')}>
-            <Ionicons name="home-outline" size={26} color={color('/')} />
+            <Ionicons name="home-outline" size={26} color="#fff" />
           </TouchableOpacity>
 
           {/* SEARCH */}
           <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/explore')}>
-            <Ionicons name="search" size={26} color={color('/explore')} />
+            <Ionicons name="search" size={28} color="#fff" />
           </TouchableOpacity>
 
           {/* CENTER PLUS BUTTON */}
@@ -1719,7 +1890,7 @@ const BottomBar = memo(function BottomBar({ pathname, onLayout }) {
 
           {/* MESSAGES */}
           <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/messages')}>
-            <Ionicons name="chatbubble-ellipses" size={26} color={color('/messages')} />
+            <Ionicons name="mail-outline" size={26} color="#fff" />
           </TouchableOpacity>
 
           {/* PROFILE */}
@@ -1733,7 +1904,7 @@ const BottomBar = memo(function BottomBar({ pathname, onLayout }) {
               router.replace('/profile');
             }}
           >
-            <Ionicons name="person-outline" size={26} color={color('/profile')} />
+            <Ionicons name="person-outline" size={26} color="#fff" />
           </TouchableOpacity>
 
         </View>
@@ -1832,7 +2003,7 @@ useEffect(() => {
 
   const endIndex = Math.min(
     videos.length - 1,
-    currentIndex + 2
+    currentIndex + 3
   );
 
   const nearbyVideos = videos.slice(
@@ -1992,7 +2163,8 @@ useEffect(() => {
             if (pendingFollowRef.current[userId]) return;
 
             const next = nearbyFollowing[userId] === true;
-            if (!!prev[userId] !== next) changed = true;
+            // strict compare: undefined -> false bhi 'badlav' hai (button tabhi dikhe jab pakka pata ho)
+            if (prev[userId] !== next) changed = true;
             updated[userId] = next;
 
           });
@@ -2022,7 +2194,7 @@ useEffect(() => {
 
   // SPEED: fast swipe karte waqt har video par Firestore query nahi chalegi.
   // Swipe ruke (350ms) tab hi like/follow check hoga. Pehli baar turant.
-  const delay = likeFollowWindowRef.current === "" ? 0 : 350;
+  const delay = likeFollowWindowRef.current === "" ? 0 : 200;
   const timer = setTimeout(() => {
     likeFollowWindowRef.current = windowKey;
     loadNearbyLikesAndFollowing();
@@ -2243,10 +2415,11 @@ const textAnim = useRef(new Animated.Value(0)).current;
 
 
 
+// HEAT FIX: disc ghoomna sirf tab jab Home screen focus me ho (Live room/dusri screen upar ho to band).
 useEffect(() => {
-
-  Animated.loop(
-
+  if (!isFocused) return;
+  rotateAnim.setValue(0);
+  const spinLoop = Animated.loop(
     Animated.timing(
       rotateAnim,
       {
@@ -2256,36 +2429,34 @@ useEffect(() => {
         isInteraction: false,
       }
     )
+  );
+  spinLoop.start();
+  return () => spinLoop.stop();
+}, [isFocused]);
 
-  ).start();
-
-}, []);
-
+// HEAT FIX: marquee text bhi sirf focus me chale.
 useEffect(() => {
-
-  Animated.loop(
-
+  if (!isFocused) return;
+  textAnim.setValue(0);
+  const marqueeLoop = Animated.loop(
     Animated.sequence([
-
       Animated.timing(textAnim,{
         toValue:-180,
         duration:5000,
         useNativeDriver:true,
         isInteraction:false,
       }),
-
       Animated.timing(textAnim,{
         toValue:0,
         duration:0,
         useNativeDriver:true,
         isInteraction:false,
       }),
-
     ])
-
-  ).start();
-
-},[]);
+  );
+  marqueeLoop.start();
+  return () => marqueeLoop.stop();
+},[isFocused]);
 
 
   // AUDIO SETUP
@@ -3022,11 +3193,13 @@ useEffect(() => {
   // PAGE FOCUS LOGIC (Back aane par auto-resume karega)
   useFocusEffect(
     useCallback(() => {
+      setFeedFocused(true);
       setIsFocused(true);
-  return () => {
-  setIsFocused(false);
-  persistResume();
-};
+      return () => {
+        setFeedFocused(false); // sab video turant pause + mute
+        setIsFocused(false);
+        persistResume();
+      };
     }, [])
   );
 
@@ -3057,7 +3230,7 @@ if (showSharePopup) {
     return true;
   };
 
-  const backHandler = BackHandler.addEventListener(
+  const backHandler = scopedBackHandler('/', 
     'hardwareBackPress',
     backAction
   );
@@ -3199,24 +3372,24 @@ useEffect(() => {
   // =====================================================
   pendingLikeRef.current[videoId] = true;
 
-  setLocalLikes(prev => ({
-    ...prev,
-    [videoId]: nextLiked,
-  }));
+  // BATCH: like + count ek hi render me (pehle 2 baar poori screen re-render hoti thi)
+  unstable_batchedUpdates(() => {
+    setLocalLikes(prev => ({
+      ...prev,
+      [videoId]: nextLiked,
+    }));
 
-  setVideos(prev =>
-    prev.map(video =>
-      video.id === videoId
-        ? {
-            ...video,
-            likes: Math.max(
-              0,
-              (video.likes || 0) + (nextLiked ? 1 : -1)
-            ),
-          }
-        : video
-    )
-  );
+    setVideos(prev => {
+      const i = prev.findIndex(v => v.id === videoId);
+      if (i < 0) return prev;
+      const next = prev.slice();
+      next[i] = {
+        ...prev[i],
+        likes: Math.max(0, (prev[i].likes || 0) + (nextLiked ? 1 : -1)),
+      };
+      return next;
+    });
+  });
 
   // Same video ke Firebase operations ko order me chalao.
   const previousOperation =
@@ -3386,8 +3559,10 @@ const handleFollow = async (targetUserId) => {
 const handleDoubleTapLike = (videoId) => {
 
   // Heart animation (tick badalne se popup dobara mount -> animation replay)
-  setHeartVideoId(videoId);
-  setHeartTick((t) => t + 1);
+  unstable_batchedUpdates(() => {
+    setHeartVideoId(videoId);
+    setHeartTick((t) => t + 1);
+  });
 
   if (heartTimeout.current) {
     clearTimeout(heartTimeout.current);
@@ -3473,7 +3648,7 @@ const loadFollowGrid = useCallback(async (force) => {
           getDocs(query(collection(db, "all_videos"), where("userId", "in", c), limit(20))).catch(() => null)
         )
       ),
-      getDocs(collection(db, "rooms")).catch(() => null),
+      getRecentRooms(db).catch(() => null), // sirf pichhle 24 ghante ke rooms
     ]);
 
     const list = [];
@@ -3712,35 +3887,59 @@ const onOpenMusic = useCallback((item) => {
 
 // Ye sab sirf useState setters call karte hain, jo hamesha stable
 // hote hain -- isliye empty dependency array safe hai.
-const onOpenComments = useCallback(async (item) => {
-  // Owner ne comments lock kiye hon to panel nahi khulega
-  const chk = await checkVideoAction(item.userId, "comments");
-  if (!chk.ok) { Alert.alert("Comments Off", chk.message); return; }
-  setComments([]);
-  setReplies({});
-  setExpandedReplies({});
-  setReplyingTo(null);
-  setCommentLimit(COMMENT_PAGE_SIZE);
-  setCommentsLoading(true);
-  setSelectedVideoId(item.id);
-  setSelectedVideoData({
-    username: item.username,
-    profile: item.profile,
-    caption: item.caption,
-    userId: item.userId,
-    verified: item.verified || false,
-    verifiedColor: item.verifiedColor || "",
-    faceVerified: isFaceVerified(item),
+const commentsOpeningRef = useRef(false);
+const onOpenComments = useCallback((item) => {
+  // SPEED: pehle checkVideoAction (network) ka intezaar hota tha, tab tak panel
+  // nahi khulta tha aur user 3-4 baar click karta tha. Ab panel TURANT khulta hai,
+  // lock check peeche chalta hai; lock ho to panel band + message.
+  if (commentsOpeningRef.current) return; // double click ignore
+  commentsOpeningRef.current = true;
+  setTimeout(() => { commentsOpeningRef.current = false; }, 400);
+
+  unstable_batchedUpdates(() => {
+    setComments([]);
+    setReplies({});
+    setExpandedReplies({});
+    setReplyingTo(null);
+    setCommentLimit(COMMENT_PAGE_SIZE);
+    setCommentsLoading(true);
+    setSelectedVideoId(item.id);
+    setSelectedVideoData({
+      username: item.username,
+      profile: item.profile,
+      caption: item.caption,
+      userId: item.userId,
+      verified: item.verified || false,
+      verifiedColor: item.verifiedColor || "",
+      faceVerified: isFaceVerified(item),
+    });
+    setShowComments(true);
   });
-  setShowComments(true);
+
+  Promise.resolve(checkVideoAction(item.userId, "comments"))
+    .then((chk) => {
+      if (chk && !chk.ok) {
+        setShowComments(false);
+        Alert.alert("Comments Off", chk.message);
+      }
+    })
+    .catch(() => {});
 }, []);
 
-const onOpenShare = useCallback(async (item) => {
-  // Owner ne share lock kiya ho to share popup nahi khulega
-  const chk = await checkVideoAction(item.userId, "share");
-  if (!chk.ok) { Alert.alert("Share Off", chk.message); return; }
-  setSelectedShareVideo(item);
-  setShowSharePopup(true);
+const onOpenShare = useCallback((item) => {
+  // SPEED: popup turant, lock check background me
+  unstable_batchedUpdates(() => {
+    setSelectedShareVideo(item);
+    setShowSharePopup(true);
+  });
+  Promise.resolve(checkVideoAction(item.userId, "share"))
+    .then((chk) => {
+      if (chk && !chk.ok) {
+        setShowSharePopup(false);
+        Alert.alert("Share Off", chk.message);
+      }
+    })
+    .catch(() => {});
 }, []);
 
 const onOpenStar = useCallback((videoId) => {
@@ -3811,27 +4010,148 @@ const playStarAnimation = () => {
 
 
 
+  // ---- SHARE: count + star reward (ek hi jagah) ----
+  const countShare = (videoId) => {
+    setVideos(prev => prev.map(video =>
+      video.id === videoId
+        ? { ...video, shares: (video.shares || 0) + 1 }
+        : video
+    ));
+    // Star reward pehle, alag se: shares count fail ho to bhi star mile
+    try { rewardShare(videoId); } catch (e) {}
+    updateDoc(doc(db, 'all_videos', videoId), { shares: increment(1), engagementScore: increment(10) })
+      .catch((e) => { __DEV__ && console.log("Share count error", e); });
+  };
+
+  // ---- Star sirf tab jab user sach me share karke wapas aaye ----
+  // Android share sheet cancel ho ya app khulte hi "shared" bata deta he, isliye
+  // app ke background jaane ka time napte hain: kam se kam 4 sec bahar raha tabhi count.
+  const pendingShareRef = useRef(null);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (st) => {
+      const p = pendingShareRef.current;
+      if (!p) return;
+      if (st === 'background' || st === 'inactive') {
+        if (!p.leftAt) p.leftAt = Date.now();
+      } else if (st === 'active') {
+        if (p.leftAt) {
+          const away = Date.now() - p.leftAt;
+          pendingShareRef.current = null;
+          if (away >= 4000) countShare(p.videoId);
+        }
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  const armShare = (videoId) => {
+    const p = { videoId, leftAt: null };
+    pendingShareRef.current = p;
+    // 10 min me wapas na aaye to cancel
+    setTimeout(() => { if (pendingShareRef.current === p) pendingShareRef.current = null; }, 10 * 60 * 1000);
+  };
+
+  // Phone ka normal share sheet (More / Instagram / fallback)
   const handleShare = async (videoUrl, videoId) => {
-
-
-
     try {
-      const result = await Share.share({ 
+      armShare(videoId);
+      const result = await Share.share({
         message: `Check out this amazing video on TopKing 👑\n${videoLink(videoId)}`,
       });
-      if (result.action === Share.sharedAction) {
-        setVideos(prev => prev.map(video =>
-          video.id === videoId
-            ? { ...video, shares: (video.shares || 0) + 1 }
-            : video
-        ));
-        await updateDoc(doc(db, 'all_videos', videoId), { shares: increment(1), engagementScore: increment(10) });
+      if (result.action === Share.dismissedAction) {
+        pendingShareRef.current = null; // cancel kiya -> koi star nahi
+      } else if (Platform.OS === 'ios' && result.action === Share.sharedAction) {
+        pendingShareRef.current = null;
+        countShare(videoId); // iOS me sahi se pata chalta he
       }
-    } catch (e) { __DEV__ && console.log("Share Error", e); }
+      // Android: AppState wala check upar decide karega
+    } catch (e) {
+      pendingShareRef.current = null;
+      __DEV__ && console.log("Share Error", e);
+    }
+  };
+
+  // Kisi bhi app me seedha share (WhatsApp, Telegram, Facebook, SMS...)
+  // Agar app install nahi ho to phone ka normal share sheet khul jata he
+  const shareToApp = async (appKey, videoId) => {
+    const link = videoLink(videoId);
+    const text = `Check out this amazing video on TopKing 👑\n${link}`;
+    const enc = encodeURIComponent(text);
+    const encLink = encodeURIComponent(link);
+    const urls = {
+      whatsapp: `whatsapp://send?text=${enc}`,
+      telegram: `tg://msg?text=${enc}`,
+      facebook: `https://www.facebook.com/sharer/sharer.php?u=${encLink}`,
+      messenger: `fb-messenger://share?link=${encLink}`,
+      twitter: `twitter://post?message=${enc}`,
+      sms: Platform.OS === 'ios' ? `sms:&body=${enc}` : `sms:?body=${enc}`,
+    };
+    const url = urls[appKey];
+    try {
+      if (!url) throw new Error('no-url');
+      armShare(videoId);          // star abhi nahi, wapas aane par
+      await Linking.openURL(url);
+    } catch (e) {
+      pendingShareRef.current = null;
+      // app nahi mila -> system share sheet
+      handleShare(null, videoId);
+    }
+  };
+
+  const copyVideoLink = async (videoId) => {
+    const link = videoLink(videoId);
+    try {
+      const Clipboard = require('expo-clipboard');
+      await Clipboard.setStringAsync(link);
+      Alert.alert('Link copied', 'Video link copy ho gaya');
+    } catch (e) {
+      // expo-clipboard install nahi he -> share sheet se link do
+      Share.share({ message: link }).catch(() => {});
+    }
+  };
+
+  const SHARE_APPS = [
+    { key: 'friends',   label: 'TopKing\nFriends', icon: 'people',        lib: 'ion', bg: '#FFD700', color: '#000' },
+    { key: 'whatsapp',  label: 'WhatsApp',   icon: 'whatsapp',      lib: 'mci', bg: '#25D366', color: '#fff' },
+    { key: 'telegram',  label: 'Telegram',   icon: 'telegram',      lib: 'mci', bg: '#229ED9', color: '#fff' },
+    { key: 'facebook',  label: 'Facebook',   icon: 'facebook',      lib: 'mci', bg: '#1877F2', color: '#fff' },
+    { key: 'messenger', label: 'Messenger',  icon: 'facebook-messenger', lib: 'mci', bg: '#A033FF', color: '#fff' },
+    { key: 'instagram', label: 'Instagram',  icon: 'instagram',     lib: 'mci', bg: '#E1306C', color: '#fff' },
+    { key: 'twitter',   label: 'X',          icon: 'twitter',       lib: 'mci', bg: '#000',    color: '#fff' },
+    { key: 'sms',       label: 'SMS',        icon: 'message-text',  lib: 'mci', bg: '#34C759', color: '#fff' },
+    { key: 'more',      label: 'More',       icon: 'ellipsis-horizontal', lib: 'ion', bg: '#333', color: '#fff' },
+  ];
+
+  const onSharePick = (appKey) => {
+    const v = selectedShareVideo;
+    if (!v) return;
+    setShowSharePopup(false);
+    if (appKey === 'friends') {
+      router.push({
+        pathname: "../ShareVideo",
+        params: {
+          videoId: v.id,
+          videoUrl: v.videoUrl || v.video,
+          thumbnail: v.thumbnail,
+        },
+      });
+    } else if (appKey === 'more' || appKey === 'instagram') {
+      // Instagram text-share link support nahi karta -> system sheet (usme Instagram milta he)
+      handleShare(v.videoUrl, v.id);
+    } else {
+      shareToApp(appKey, v.id);
+    }
   };
 
   const trackView = async (videoId) => {
     try {
+      // 30 min ke andar dobara dekhne par view nahi badhega; 30 min baad dekhte hi turant +1
+      if (!(await shouldCountView(videoId))) return;
+      // UI me bhi turant badhao
+      setVideos(prev => prev.map(v =>
+        v.id === videoId ? { ...v, views: (Number(v.views) || 0) + 1 } : v
+      ));
       await updateDoc(doc(db, 'all_videos', videoId), { views: increment(1), engagementScore: increment(2) });
     } catch (error) {}
   };
@@ -4196,6 +4516,8 @@ const renderComment = useCallback(({ item: rawItem }) => {
   // SCROLL DETECTION
   const onViewableItemsChanged = useRef(({ viewableItems }) => {
 
+  if (!feedFocused) return; // dusre page par ho to kuch bhi play mat karo
+
   if (viewableItems && viewableItems.length > 0) {
 
     const index = viewableItems[0].index;
@@ -4216,19 +4538,32 @@ const renderComment = useCallback(({ item: rawItem }) => {
 
     // requestIdleCallback hata diya: wo play shuru hone me delay
     // karta tha. Ab video turant chalta hai.
-    setCurrentIndex(index);
-    setActiveVideo(index);
-    setPausedVideoId(null);
+    // BATCH: 3 alag setState = 3 baar poora bhaari screen re-render (scroll me lag).
+    // Ab ek hi baar.
+    unstable_batchedUpdates(() => {
+      setCurrentIndex(index);
+      setActiveVideo(index);
+      setPausedVideoId(null);
+    });
 
     // Players ka window swipe settle hone ke baad badlo (heavy mount scroll me nahi)
     // SMOOTH: naye players (decoder) swipe animation khatam hone ke BAAD mount hon.
     // Pehle 60ms me mount hota tha -> scroll ke beech JS/native thread busy -> jhatka.
     if (mountTimeoutRef.current) clearTimeout(mountTimeoutRef.current);
+    // SMOOTH: 80ms me snap animation abhi chal rahi hoti hai -> decoder start se jhatka.
+    // 220ms: swipe settle hone ke baad hi naya player mount. (Agle 2 videos pehle se ready hain.)
     mountTimeoutRef.current = setTimeout(() => {
       setMountIndex(index);
-    }, 80);
+    }, 150);
 
     const currentItem = viewableItems[0].item;
+
+    // WARM: is video ke owner ka lock cache me pehle se -> comment/share check turant (0 wait)
+    try {
+      if (currentItem?.userId) getVideoLocks(currentItem.userId);
+      const nextItem = videosRef.current?.[index + 1];
+      if (nextItem?.userId) getVideoLocks(nextItem.userId);
+    } catch (e) {}
 
     if (currentItem) {
 
@@ -4375,7 +4710,7 @@ const renderItem = useCallback(({ item, index }) => {
       showStar={starAnimationVideoId === item.id}
       starCount={starAnimationVideoId === item.id ? starAnimationCount : 0}
       isLiked={!!localLikes[item.id]}
-      isFollowing={!!followingUsers[item.userId]}
+      followState={followingUsers[item.userId]}
       rotateAnim={rotateAnim}
       textAnim={textAnim}
       starScale={starScale}
@@ -4428,6 +4763,7 @@ const renderItem = useCallback(({ item, index }) => {
           upar ek black strip status bar ki height ki lagayi hai. */}
       <StatusBar translucent backgroundColor="#000000" barStyle="light-content" />
       <View style={styles.statusBarBlack} pointerEvents="none" />
+      <StarToastView />
 
       {/* BACKGROUND REEL UPLOAD — top-left percent indicator.
           Standalone component below re-renders on its own; ye line
@@ -4456,9 +4792,9 @@ disableIntervalMomentum={true}
            karta tha (black flash + atakna) -> band. */
         removeClippedSubviews={false}
         windowSize={5}
-        initialNumToRender={2}
+        initialNumToRender={3}
         maxToRenderPerBatch={3}
-        updateCellsBatchingPeriod={30}
+        updateCellsBatchingPeriod={50}
         scrollEventThrottle={16}
         bounces={false}
         overScrollMode="never"
@@ -4667,113 +5003,98 @@ starSending.current=false;
 
 <View style={styles.sharePopupContainer}>
 
- <Pressable
-  style={StyleSheet.absoluteFill}
-  onPress={() => setShowSharePopup(false)}
-/>
+  <Pressable
+    style={StyleSheet.absoluteFill}
+    onPress={() => setShowSharePopup(false)}
+  />
 
   <View style={styles.sharePopup}>
 
-    <View style={styles.actionRow}>
-
-      {/* Report */}
-      <TouchableOpacity
-  style={styles.reportBtn}
-  onPress={() => {
-
-    setShowSharePopup(false);
-
-    router.push({
-      pathname: "/report",
-      params: {
-        videoId: selectedShareVideo?.id
-      }
-    });
-
-  }}
->
-
-
-        <Text style={styles.reportText}>
-          Report Video
-        </Text>
+    {/* Header */}
+    <View style={styles.shareHeader}>
+      <Text style={styles.shareTitle}>Share to</Text>
+      <TouchableOpacity onPress={() => setShowSharePopup(false)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+        <Ionicons name="chevron-down" size={24} color="#fff" />
       </TouchableOpacity>
-
-
-      {/* Save */}
-      <TouchableOpacity
-        style={styles.saveBtn}
-        onPress={() => {
-
-          setShowSharePopup(false);
-
-          // Save Video Logic
-
-        }}
-      >
-        <Text style={styles.saveText}>
-          Video Save
-        </Text>
-      </TouchableOpacity>
-
     </View>
 
+    {/* Row 1: apps */}
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.shareAppsRow}
+      keyboardShouldPersistTaps="handled"
+    >
+      {SHARE_APPS.map((a) => (
+        <TouchableOpacity
+          key={a.key}
+          style={styles.shareItem}
+          activeOpacity={0.7}
+          onPress={() => onSharePick(a.key)}
+        >
+          <View style={[styles.shareCircle, { backgroundColor: a.bg }]}>
+            {a.lib === 'ion'
+              ? <Ionicons name={a.icon} size={28} color={a.color} />
+              : <MaterialCommunityIcons name={a.icon} size={28} color={a.color} />}
+          </View>
+          <Text style={styles.shareItemText} numberOfLines={2}>{a.label}</Text>
+        </TouchableOpacity>
+      ))}
+    </ScrollView>
 
-    {/* Share */}
-<View style={styles.shareRow}>
+    {/* Row 2: actions */}
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.shareAppsRow}
+      keyboardShouldPersistTaps="handled"
+    >
+      <TouchableOpacity
+        style={styles.shareItem}
+        activeOpacity={0.7}
+        onPress={() => {
+          setShowSharePopup(false);
+          // Save Video Logic
+        }}
+      >
+        <View style={styles.shareCircleDark}>
+          <Ionicons name="download" size={24} color="#fff" />
+        </View>
+        <Text style={styles.shareItemText}>Save</Text>
+      </TouchableOpacity>
 
-  {/* Share Video Button */}
-  <TouchableOpacity
-    style={styles.shareBtn}
-    onPress={() => {
+      <TouchableOpacity
+        style={styles.shareItem}
+        activeOpacity={0.7}
+        onPress={() => {
+          const id = selectedShareVideo?.id;
+          setShowSharePopup(false);
+          if (id) copyVideoLink(id);
+        }}
+      >
+        <View style={styles.shareCircleDark}>
+          <Ionicons name="link" size={24} color="#fff" />
+        </View>
+        <Text style={styles.shareItemText}>Copy link</Text>
+      </TouchableOpacity>
 
-      setShowSharePopup(false);
-
-      handleShare(
-        selectedShareVideo.videoUrl,
-        selectedShareVideo.id
-      );
-
-    }}
-  >
-    <Text style={styles.shareText}>
-      Share Video
-    </Text>
-  </TouchableOpacity>
-
-
-  {/* TopKing Logo */}
-  <TouchableOpacity
-    style={styles.logoBtn}
-    onPress={() => {
-
-      setShowSharePopup(false);
-
-    router.push({
-  pathname: "../ShareVideo",
-  params: {
-    videoId: selectedShareVideo?.id,
-
-    videoUrl:
-      selectedShareVideo?.videoUrl ||
-      selectedShareVideo?.video,
-
-    thumbnail:
-      selectedShareVideo?.thumbnail,
-  },
-});
-
-    }}
-  >
-
-    <Image
-      source={require('../../assets/logo.png')}
-      style={styles.shareLogo}
-    />
-
-  </TouchableOpacity>
-
-</View>
+      <TouchableOpacity
+        style={styles.shareItem}
+        activeOpacity={0.7}
+        onPress={() => {
+          setShowSharePopup(false);
+          router.push({
+            pathname: "/report",
+            params: { videoId: selectedShareVideo?.id },
+          });
+        }}
+      >
+        <View style={styles.shareCircleDark}>
+          <Ionicons name="warning" size={24} color="#fff" />
+        </View>
+        <Text style={styles.shareItemText}>Report</Text>
+      </TouchableOpacity>
+    </ScrollView>
 
   </View>
 
@@ -5003,6 +5324,8 @@ const styles = StyleSheet.create({
 
 
   userName: { color: '#ffffff', fontSize: 18, fontWeight: 'bold', textShadowColor: 'rgba(0,0,0,0.5)', textShadowOffset: {width: 1, height: 1}, textShadowRadius: 2 },
+  followPill: { marginLeft: 10, paddingHorizontal: 12, height: 26, borderRadius: 7, backgroundColor: '#FFD700', justifyContent: 'center', alignItems: 'center' },
+  followPillText: { color: '#000', fontSize: 13, fontWeight: '700', letterSpacing: 0.2 },
   caption: { color: '#ffffff', fontSize: 14, marginTop: 5, textShadowColor: 'rgba(0,0,0,0.5)', textShadowOffset: {width: 1, height: 1}, textShadowRadius: 1 },
 
 
@@ -5075,6 +5398,10 @@ backgroundColor:"#fff",
   iconText: { color: '#ffffff', fontWeight: '700', marginTop: 2, fontSize: 14, textShadowColor: 'rgba(0,0,0,0.6)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
   profileImage: { width: 50, height: 50, borderRadius: 18, borderWidth: 1.5, borderColor: '#ffffff' },
   profileImageLive: { borderWidth: 3, borderColor: '#FFD700' },
+  profilePlus: { position: 'absolute', bottom: -11, alignSelf: 'center', zIndex: 40, elevation: 40 },
+  profilePlusBtn: { width: 23, height: 18, borderRadius: 5, backgroundColor: '#FFD700', justifyContent: 'center', alignItems: 'center' },
+  profilePlusH: { position: 'absolute', width: 10, height: 2.4, borderRadius: 2, backgroundColor: '#000' },
+  profilePlusV: { position: 'absolute', width: 2.5, height: 11, borderRadius: 2, backgroundColor: '#000' },
   liveTagFeed: {
     zIndex: 30,        // frame (zIndex 5) ke UPAR dikhe
     elevation: 30,     // Android me bhi upar
@@ -5146,7 +5473,7 @@ zIndex:9999,
   bottomNavContainer: { width: '100%', height: 60, justifyContent: 'center', marginBottom: Platform.OS === 'ios' ? 10 : 20 },
   bottomNav: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   navItem: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  plusBtn: { backgroundColor: '#f1c40f', width: 48, height: 35, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
+  plusBtn: { backgroundColor: '#FFD400', width: 48, height: 34, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
   plusText: { fontSize: 28, fontWeight: 'bold', color: '#000', marginTop: -4 },
   // Seek bar (menu se chipka peela line)
   seekWrap: { width: '100%', height: 10, justifyContent: 'flex-start' },
@@ -5361,10 +5688,54 @@ zIndex: 9999,
 },
 
 sharePopup: {
-backgroundColor: '#111',
+backgroundColor: '#1c1c1e',
 borderTopLeftRadius: 20,
 borderTopRightRadius: 20,
-padding: 30,
+paddingTop: 16,
+paddingBottom: 24,
+},
+
+shareHeader: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  justifyContent: 'center',
+  paddingHorizontal: 16,
+  marginBottom: 14,
+},
+shareTitle: {
+  color: '#fff',
+  fontSize: 16,
+  fontWeight: 'bold',
+},
+shareAppsRow: {
+  paddingHorizontal: 10,
+  paddingVertical: 10,
+},
+shareItem: {
+  width: 74,
+  alignItems: 'center',
+  marginHorizontal: 2,
+},
+shareCircle: {
+  width: 52,
+  height: 52,
+  borderRadius: 26,
+  justifyContent: 'center',
+  alignItems: 'center',
+},
+shareCircleDark: {
+  width: 52,
+  height: 52,
+  borderRadius: 26,
+  backgroundColor: '#3a3a3c',
+  justifyContent: 'center',
+  alignItems: 'center',
+},
+shareItemText: {
+  color: '#ddd',
+  fontSize: 11,
+  marginTop: 6,
+  textAlign: 'center',
 },
 
 

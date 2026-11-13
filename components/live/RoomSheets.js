@@ -24,7 +24,7 @@ const Sheet = ({ visible, onClose, title, children, tall, extraBottom = 0 }) => 
 );
 
 // Tick sirf tab jab verified === true ('true' string bhi chalega).
-// Color: yellow -> yellow tick, baaki sab -> white tick. Blue kabhi nahi.
+// Color: yellow -> Grey V tick, baaki sab -> white tick. Blue kabhi nahi.
 const isTrue = (v) => v === true || v === 'true';
 
 const Verified = ({ user }) => (

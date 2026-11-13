@@ -17,8 +17,11 @@ import {
   Dimensions,
   Easing,
   FlatList,
+  AppState,
   Keyboard,
+  Linking,
   Platform,
+  ScrollView,
   Share,
   StatusBar,
   StyleSheet,
@@ -27,6 +30,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { scopedBackHandler } from '../../utils/scopedBack';
 import Image from '../../components/FastImage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -55,19 +59,58 @@ import {
   where,
 } from 'firebase/firestore';
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { db } from '../firebaseConfig';
 import { callApi } from '../../utils/api';
 import { videoLink } from '../../utils/shareLinks';
+import StarToastView from '../../utils/StarToastView';
+import { rewardShare } from '../../utils/shareReward';
 
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import UserTick, { isFaceVerified } from '../../components/UserTick';
 import { AvatarFrame } from '../../components/FramedAvatar';
 
-import {
-  useFocusEffect,
-  useLocalSearchParams,
-  useRouter,
-} from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useRouter } from '../../utils/safeRouter';
+
+// ---------- VIEWS: ek hi user ek hi video ko har 5 minute baad dobara dekhe to view +1 ----------
+const VIEW_GAP_MS = 5 * 60 * 1000;
+const viewStampKey = (uid) => `view_ts_v1_${uid || 'guest'}`;
+let viewStampCache = null; // { [videoId]: lastCountedTimestamp }
+let viewStampUid = null;
+
+const loadViewStamps = async (uid) => {
+  const key = uid || 'guest';
+  if (viewStampCache && viewStampUid === key) return viewStampCache;
+  viewStampUid = key;
+  try {
+    const raw = await AsyncStorage.getItem(viewStampKey(key));
+    const parsed = raw ? JSON.parse(raw) : {};
+    const now = Date.now();
+    const out = {};
+    // 5 min se purani entry ki zaroorat nahi -> map chhota rehta hai
+    Object.keys(parsed).forEach((id) => {
+      if (typeof parsed[id] === 'number' && now - parsed[id] < VIEW_GAP_MS) out[id] = parsed[id];
+    });
+    viewStampCache = out;
+  } catch (e) {
+    viewStampCache = {};
+  }
+  return viewStampCache;
+};
+
+// true = view gino (pehli baar ya pichle count se 5 min ho gaye), false = abhi nahi
+const shouldCountView = async (videoId, uid) => {
+  if (!videoId) return false;
+  const key = uid || 'guest';
+  const map = await loadViewStamps(key);
+  const now = Date.now();
+  const last = map[videoId];
+  if (typeof last === 'number' && now - last < VIEW_GAP_MS) return false;
+  map[videoId] = now;
+  AsyncStorage.setItem(viewStampKey(key), JSON.stringify(map)).catch(() => {});
+  return true;
+};
 
 // ======================================================
 // CONSTANTS (module level = ek baar bante hain, re-render me nahi)
@@ -150,7 +193,20 @@ const STAR_OPTIONS = [1, 3, 10];
 // Ek baar me kitne comments live load honge (zyada = slow).
 const COMMENTS_LIMIT = 50;
 
-const DOUBLE_TAP_MS = 260;
+const DOUBLE_TAP_MS = 350;
+
+// Share sheet ke apps (row 1)
+const SHARE_APPS = [
+  { key: 'friends',   label: 'TopKing\nFriends', icon: 'people',             lib: 'ion', bg: '#FFD700', color: '#000' },
+  { key: 'whatsapp',  label: 'WhatsApp',  icon: 'whatsapp',           lib: 'mci', bg: '#25D366', color: '#fff' },
+  { key: 'telegram',  label: 'Telegram',  icon: 'telegram',           lib: 'mci', bg: '#229ED9', color: '#fff' },
+  { key: 'facebook',  label: 'Facebook',  icon: 'facebook',           lib: 'mci', bg: '#1877F2', color: '#fff' },
+  { key: 'messenger', label: 'Messenger', icon: 'facebook-messenger', lib: 'mci', bg: '#A033FF', color: '#fff' },
+  { key: 'instagram', label: 'Instagram', icon: 'instagram',          lib: 'mci', bg: '#E1306C', color: '#fff' },
+  { key: 'twitter',   label: 'X',         icon: 'twitter',            lib: 'mci', bg: '#000',    color: '#fff' },
+  { key: 'sms',       label: 'SMS',       icon: 'message-text',       lib: 'mci', bg: '#34C759', color: '#fff' },
+  { key: 'more',      label: 'More',      icon: 'ellipsis-horizontal', lib: 'ion', bg: '#333',   color: '#fff' },
+];
 
 // Kitne aage ke videos ke thumbnails prefetch honge
 const PREFETCH_AHEAD = 3;
@@ -205,6 +261,8 @@ const VerifiedBadge = React.memo(
   ({ color, verified = true, face = false, uid, box = 18, icon = 18, tick = 10, top = 4.6, left = 4.2 }) =>
     !verified ? (
       <UserTick uid={uid} faceVerified={face || undefined} size={icon} />
+    ) : color === 'yellow' ? (
+      <UserTick verified verifiedColor="yellow" size={icon} style={{ marginLeft: 1 }} />
     ) : (
     <View
       style={{
@@ -219,7 +277,7 @@ const VerifiedBadge = React.memo(
       <MaterialCommunityIcons
         name="check-decagram"
         size={icon}
-        color={color === 'yellow' ? '#FFD700' : '#ffffff'}
+        color="#ffffff"
       />
       <Ionicons
         name="checkmark"
@@ -775,6 +833,32 @@ export default function App() {
     }
   });
 
+  // ---------------- VIEWS: video dekhte hi +1 (5 min me ek hi bar) ----------------
+  const activeVideoId = videoData[activeVideo]?.id;
+  useEffect(() => {
+    if (!screenFocused || !activeVideoId) return;
+    // thoda ruko taaki fast scroll me beech ke videos ka view na gine
+    const t = setTimeout(async () => {
+      try {
+        const myUid = uid || auth.currentUser?.uid || null;
+        if (!(await shouldCountView(activeVideoId, myUid))) return;
+        // UI me bhi turant badhao
+        setAllVideos((prev) =>
+          prev.map((v) =>
+            v.id === activeVideoId ? { ...v, views: (Number(v.views) || 0) + 1 } : v
+          )
+        );
+        await updateDoc(doc(db, 'all_videos', activeVideoId), {
+          views: increment(1),
+          engagementScore: increment(2),
+        });
+      } catch (e) {}
+    }, 800);
+    return () => {
+      clearTimeout(t);
+    };
+  }, [activeVideoId, screenFocused, uid]);
+
   // ---------------- ANIMATIONS (screen focus me hi chalen) ----------------
   useEffect(() => {
     if (!screenFocused) return;
@@ -1176,38 +1260,150 @@ export default function App() {
     }
   }, []);
 
+  // ---- SHARE: count + star reward (ek hi jagah) ----
+  const countShare = useCallback((videoId) => {
+    setAllVideos((prev) =>
+      prev.map((v) =>
+        v.id === videoId ? { ...v, shares: (v.shares || 0) + 1 } : v
+      )
+    );
+    // Star reward alag se: shares count fail ho to bhi star mile
+    try { rewardShare(videoId); } catch (e) {}
+    updateDoc(doc(db, 'all_videos', videoId), { shares: increment(1) })
+      .catch((e) => console.log('Share count error', e));
+  }, []);
+
+  // Star sirf tab jab user sach me share karke wapas aaye.
+  // Android share sheet cancel ho ya app khulte hi "shared" bata deta he, isliye
+  // app ke bahar kam se kam 4 sec raha ho tabhi count.
+  const pendingShareRef = useRef(null);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (st) => {
+      const p = pendingShareRef.current;
+      if (!p) return;
+      if (st === 'background' || st === 'inactive') {
+        if (!p.leftAt) p.leftAt = Date.now();
+      } else if (st === 'active') {
+        if (p.leftAt) {
+          const away = Date.now() - p.leftAt;
+          pendingShareRef.current = null;
+          if (away >= 4000) countShare(p.videoId);
+        }
+      }
+    });
+    return () => sub.remove();
+  }, [countShare]);
+
+  const armShare = useCallback((videoId) => {
+    const p = { videoId, leftAt: null };
+    pendingShareRef.current = p;
+    setTimeout(() => {
+      if (pendingShareRef.current === p) pendingShareRef.current = null;
+    }, 10 * 60 * 1000);
+  }, []);
+
+  // Phone ka normal share sheet (More / Instagram / fallback)
   const handleShare = useCallback(async (videoUrl, videoId) => {
     try {
+      armShare(videoId);
       const result = await Share.share({
         message: `Check out this video on TopKing 👑\n${videoLink(videoId)}`,
       });
-
-      if (result.action === Share.sharedAction) {
-        await updateDoc(doc(db, 'all_videos', videoId), {
-          shares: increment(1),
-        });
+      if (result.action === Share.dismissedAction) {
+        pendingShareRef.current = null; // cancel -> koi star nahi
+      } else if (Platform.OS === 'ios' && result.action === Share.sharedAction) {
+        pendingShareRef.current = null;
+        countShare(videoId); // iOS me sahi pata chalta he
       }
+      // Android: AppState wala check decide karega
     } catch (e) {
+      pendingShareRef.current = null;
       console.log(e);
+    }
+  }, [armShare, countShare]);
+
+  // Kisi bhi app me seedha share; app na mile to system share sheet
+  const shareToApp = useCallback(async (appKey, videoId) => {
+    const link = videoLink(videoId);
+    const text = `Check out this video on TopKing 👑\n${link}`;
+    const enc = encodeURIComponent(text);
+    const encLink = encodeURIComponent(link);
+    const urls = {
+      whatsapp: `whatsapp://send?text=${enc}`,
+      telegram: `tg://msg?text=${enc}`,
+      facebook: `https://www.facebook.com/sharer/sharer.php?u=${encLink}`,
+      messenger: `fb-messenger://share?link=${encLink}`,
+      twitter: `twitter://post?message=${enc}`,
+      sms: Platform.OS === 'ios' ? `sms:&body=${enc}` : `sms:?body=${enc}`,
+    };
+    const url = urls[appKey];
+    try {
+      if (!url) throw new Error('no-url');
+      armShare(videoId); // star abhi nahi, wapas aane par
+      await Linking.openURL(url);
+    } catch (e) {
+      pendingShareRef.current = null;
+      handleShare(null, videoId);
+    }
+  }, [armShare, handleShare]);
+
+  const copyVideoLink = useCallback(async (videoId) => {
+    const link = videoLink(videoId);
+    try {
+      const Clipboard = require('expo-clipboard');
+      await Clipboard.setStringAsync(link);
+      Alert.alert('Link copied', 'Video link copy ho gaya');
+    } catch (e) {
+      Share.share({ message: link }).catch(() => {});
     }
   }, []);
 
+  const onSharePick = useCallback((appKey) => {
+    const v = selectedShareVideo;
+    if (!v) return;
+    setShowSharePopup(false);
+    if (appKey === 'friends') {
+      router.push({
+        pathname: '../ShareVideo',
+        params: {
+          videoId: v.id,
+          videoUrl: v.videoUrl || v.video,
+          thumbnail: v.thumbnail,
+        },
+      });
+    } else if (appKey === 'more' || appKey === 'instagram') {
+      // Instagram link-text share support nahi karta -> system sheet
+      handleShare(v.videoUrl, v.id);
+    } else {
+      shareToApp(appKey, v.id);
+    }
+  }, [selectedShareVideo, router, handleShare, shareToApp]);
+
   // 1 tap = pause/play, 2 tap = like (heart)
+  // Double tap ab pakka pakadta he: 350ms window, aur single-tap ka pause
+  // pehle ho chuka ho to wapas play kar deta he (pehle 260ms me chhoot jata tha)
+  const tapFiredRef = useRef(false);
+
   const handleItemPress = useCallback(
     (videoId) => {
       const now = Date.now();
 
       // Double tap
-      if (lastTap.current && now - lastTap.current < DOUBLE_TAP_MS) {
+      if (lastTap.current && now - lastTap.current.t < DOUBLE_TAP_MS && lastTap.current.id === videoId) {
+        const timerPending = !!tapTimeout.current;
         if (tapTimeout.current) {
           clearTimeout(tapTimeout.current);
           tapTimeout.current = null;
         }
-
+        // Single-tap ka pause lag chuka tha to wapas hata do
+        if (!timerPending && tapFiredRef.current) {
+          setPausedVideoId((prev) => (prev === videoId ? null : videoId));
+        }
+        tapFiredRef.current = false;
         lastTap.current = null;
 
         setHeartVideoId(videoId);
-
         if (heartTimeout.current) clearTimeout(heartTimeout.current);
         heartTimeout.current = setTimeout(() => setHeartVideoId(null), 1000);
 
@@ -1218,14 +1414,15 @@ export default function App() {
       }
 
       // Single tap (thoda wait taaki double tap pehchana ja sake)
-      lastTap.current = now;
+      lastTap.current = { t: now, id: videoId };
+      tapFiredRef.current = false;
 
+      if (tapTimeout.current) clearTimeout(tapTimeout.current);
       tapTimeout.current = setTimeout(() => {
         tapTimeout.current = null;
-        lastTap.current = null;
-
+        tapFiredRef.current = true;
         setPausedVideoId((prev) => (prev === videoId ? null : videoId));
-      }, DOUBLE_TAP_MS);
+      }, DOUBLE_TAP_MS - 60);
     },
     [handleLike]
   );
@@ -1616,7 +1813,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    const backHandler = BackHandler.addEventListener('hardwareBackPress', goBack);
+    const backHandler = scopedBackHandler('/allvideo', 'hardwareBackPress', goBack);
 
     return () => backHandler.remove();
   }, [
@@ -1684,6 +1881,7 @@ export default function App() {
   return (
     <View style={styles.container}>
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
+      <StarToastView />
 
       {/* TOP BLACK STATUS BAR AREA */}
       <View
@@ -1829,71 +2027,95 @@ export default function App() {
           />
 
           <View style={styles.sharePopup}>
-            <View style={styles.actionRow}>
-              {/* REPORT */}
+            <View style={styles.shareHeader}>
+              <Text style={styles.shareTitle}>Share to</Text>
               <TouchableOpacity
-                style={styles.reportBtn}
+                onPress={() => setShowSharePopup(false)}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
+                <Ionicons name="chevron-down" size={24} color="#fff" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Row 1: apps */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.shareAppsRow}
+              keyboardShouldPersistTaps="handled"
+            >
+              {SHARE_APPS.map((a) => (
+                <TouchableOpacity
+                  key={a.key}
+                  style={styles.shareItem}
+                  activeOpacity={0.7}
+                  onPress={() => onSharePick(a.key)}
+                >
+                  <View style={[styles.shareCircle, { backgroundColor: a.bg }]}>
+                    {a.lib === 'ion' ? (
+                      <Ionicons name={a.icon} size={28} color={a.color} />
+                    ) : (
+                      <MaterialCommunityIcons name={a.icon} size={28} color={a.color} />
+                    )}
+                  </View>
+                  <Text style={styles.shareItemText} numberOfLines={2}>{a.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            {/* Row 2: actions */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.shareAppsRow}
+              keyboardShouldPersistTaps="handled"
+            >
+              <TouchableOpacity
+                style={styles.shareItem}
+                activeOpacity={0.7}
                 onPress={() => {
                   setShowSharePopup(false);
+                  // Save Logic
+                }}
+              >
+                <View style={styles.shareCircleDark}>
+                  <Ionicons name="download" size={24} color="#fff" />
+                </View>
+                <Text style={styles.shareItemText}>Save</Text>
+              </TouchableOpacity>
 
+              <TouchableOpacity
+                style={styles.shareItem}
+                activeOpacity={0.7}
+                onPress={() => {
+                  const id = selectedShareVideo?.id;
+                  setShowSharePopup(false);
+                  if (id) copyVideoLink(id);
+                }}
+              >
+                <View style={styles.shareCircleDark}>
+                  <Ionicons name="link" size={24} color="#fff" />
+                </View>
+                <Text style={styles.shareItemText}>Copy link</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.shareItem}
+                activeOpacity={0.7}
+                onPress={() => {
+                  setShowSharePopup(false);
                   router.push({
                     pathname: '/report',
                     params: { videoId: selectedShareVideo?.id },
                   });
                 }}
               >
-                <Text style={styles.reportText}>Report Video</Text>
+                <View style={styles.shareCircleDark}>
+                  <Ionicons name="warning" size={24} color="#fff" />
+                </View>
+                <Text style={styles.shareItemText}>Report</Text>
               </TouchableOpacity>
-
-              {/* SAVE */}
-              <TouchableOpacity
-                style={styles.saveBtn}
-                onPress={() => {
-                  setShowSharePopup(false);
-                  // Save Logic
-                }}
-              >
-                <Text style={styles.saveText}>Video Save</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* SHARE */}
-            <View style={styles.shareRow}>
-              <TouchableOpacity
-                style={styles.shareBtn}
-                onPress={() => {
-                  setShowSharePopup(false);
-
-                  handleShare(
-                    selectedShareVideo?.videoUrl,
-                    selectedShareVideo?.id
-                  );
-                }}
-              >
-                <Text style={styles.shareText}>Share Video</Text>
-              </TouchableOpacity>
-
-              {/* TopKing Logo */}
-              <TouchableOpacity
-                style={styles.logoBtn}
-                onPress={() => {
-                  setShowSharePopup(false);
-
-                  router.push({
-                    pathname: '../ShareVideo',
-                    params: {
-                      videoId: selectedShareVideo?.id,
-                      videoUrl:
-                        selectedShareVideo?.videoUrl ||
-                        selectedShareVideo?.video,
-                      thumbnail: selectedShareVideo?.thumbnail,
-                    },
-                  });
-                }}
-              >
-                <Image source={APP_LOGO} style={styles.shareLogo} />
-              </TouchableOpacity>
-            </View>
+            </ScrollView>
           </View>
         </View>
       )}
@@ -2285,11 +2507,39 @@ const styles = StyleSheet.create({
   },
 
   sharePopup: {
-    backgroundColor: '#111',
+    backgroundColor: '#1c1c1e',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    padding: 30,
+    paddingTop: 16,
+    paddingBottom: 24,
   },
+
+  shareHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    marginBottom: 14,
+  },
+  shareTitle: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  shareAppsRow: { paddingHorizontal: 10, paddingVertical: 10 },
+  shareItem: { width: 74, alignItems: 'center', marginHorizontal: 2 },
+  shareCircle: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  shareCircleDark: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#3a3a3c',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  shareItemText: { color: '#ddd', fontSize: 11, marginTop: 6, textAlign: 'center' },
 
   actionRow: {
     flexDirection: 'row',

@@ -3,7 +3,7 @@
 // ye hook sirf achha message dikhane aur chalte hue user ko nikalne ke liye hai.
 import { useEffect, useRef } from "react";
 import { Alert } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter } from "./safeRouter";
 import { doc, onSnapshot } from "firebase/firestore";
 import { auth, db } from "../app/firebaseConfig";
 

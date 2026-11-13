@@ -1,15 +1,16 @@
 import useBackStep from '../utils/useBackStep';
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import {
   collection,
-  doc,
-  getDoc,
+  documentId,
   getDocs,
+  query,
+  where,
 } from "firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useCallback, useEffect, useState, memo } from "react";
+import { useCallback, useEffect, useMemo, useState, memo } from "react";
 import {
   ActivityIndicator,
   Dimensions,
@@ -177,10 +178,13 @@ const TopCard = memo(function TopCard({ user, rank, onPress }) {
           />
         </LinearGradient>
         {/* FRAME: is user ka frame (ring ke upar) */}
-        <AvatarFrame uid={user.uid} size={isFirst ? 70 : 60} ratio={1.3} animated={false} />
+        {/* Frame DP ke upar overlay hota hai, layout me jagah nahi leta */}
+        <View pointerEvents="none" style={styles.frameOverlay}>
+          <AvatarFrame uid={user.uid} size={isFirst ? 70 : 60} ratio={1.3} animated={false} />
+        </View>
       </View>
 
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+      <View style={styles.nameRow}>
 
       <Text numberOfLines={1} style={[
           styles.topUsername,
@@ -229,14 +233,11 @@ const LeaderRow = memo(function LeaderRow({ item, index, onPress }) {
       onPress={() => onPress(item)}
     >
       <View style={styles.rankRing}>
-        <LinearGradient
-          colors={["#20154B", "#0F1733"]}
-          style={styles.rankCircle}
-        >
+        <View style={styles.rankCircle}>
           <Text style={styles.rankText}>
             {rank}
           </Text>
-        </LinearGradient>
+        </View>
       </View>
 
       <Image
@@ -245,7 +246,7 @@ const LeaderRow = memo(function LeaderRow({ item, index, onPress }) {
       />
 
       <View style={styles.rowInfo}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+        <View style={styles.nameRow}>
         <Text numberOfLines={1} style={styles.rowUsername}>@{getName(item)}</Text>
         <UserTick uid={item.uid} verified={!!item.verified} verifiedColor={item.verifiedColor} size={13} />
         </View>
@@ -274,6 +275,91 @@ const LeaderRow = memo(function LeaderRow({ item, index, onPress }) {
   );
 });
 
+
+// PERF: sirf wahi fields rakho jo UI use karti hai -> memory, JSON.stringify
+// aur AsyncStorage write/read teeno halke.
+const slimUser = (id, data, followersCount) => ({
+  id,
+  uid: data.uid,
+  username: data.username,
+  userName: data.userName,
+  name: data.name,
+  displayName: data.displayName,
+  profileImg: data.profileImg,
+  profileImage: data.profileImage,
+  profileImageUrl: data.profileImageUrl,
+  photoURL: data.photoURL,
+  avatar: data.avatar,
+  verified: data.verified,
+  verifiedColor: data.verifiedColor,
+  followersCount,
+});
+
+// 5-5 users ke batch: jaise hi pehle 5 aate hain screen par dikh jate hain,
+// baaki peeche se judte jate hain. Rank order stable rehta hai (sirf
+// continuous prefix publish hota hai).
+const CHUNK_SIZE = 5;
+
+const fetchTopFollowers = async (onProgress) => {
+  const followsSnap = await getDocs(collection(db, "follows"));
+
+  const countByUser = {};
+  const docs = followsSnap.docs;
+  for (let i = 0; i < docs.length; i++) {
+    const followingId = docs[i].data()?.followingId;
+    if (followingId) countByUser[followingId] = (countByUser[followingId] || 0) + 1;
+    // har 1500 docs par UI thread ko chhodo -> scroll/animation atakti nahi
+    if (i % 1500 === 1499) await new Promise((r) => setTimeout(r, 0));
+  }
+
+  const topIds = Object.entries(countByUser)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, MAX_PROFILE_READS)
+    .map(([id]) => id);
+
+  const chunks = [];
+  for (let i = 0; i < topIds.length; i += CHUNK_SIZE) {
+    chunks.push(topIds.slice(i, i + CHUNK_SIZE));
+  }
+
+  const results = new Array(chunks.length).fill(undefined);
+  let published = 0;
+
+  const publish = () => {
+    let n = 0;
+    while (n < chunks.length && results[n] !== undefined) n++;
+    if (n > published) {
+      published = n;
+      onProgress?.(results.slice(0, n).flat());
+    }
+  };
+
+  await Promise.all(
+    chunks.map(async (ids, i) => {
+      let arr = [];
+      try {
+        const snap = await getDocs(
+          query(collection(db, "users"), where(documentId(), "in", ids))
+        );
+        snap.forEach((d) =>
+          arr.push(slimUser(d.id, d.data(), countByUser[d.id] || 0))
+        );
+        arr.sort((x, y) => y.followersCount - x.followersCount);
+      } catch (error) {
+        console.log("User chunk load error:", error);
+        arr = [];
+      }
+      results[i] = arr;
+      publish();
+    })
+  );
+
+  const users = results.flat();
+  topFollowersCache = users;
+  topFollowersCacheTime = Date.now();
+  return users;
+};
+
 export default function TopFollowersPage() {
   const router = useRouter();
   useBackStep('/');
@@ -281,112 +367,60 @@ export default function TopFollowersPage() {
   const [leaders, setLeaders] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const loadTopFollowers = async () => {
-    const now = Date.now();
+  useEffect(() => {
+    let alive = true;
 
-    // 1) Show memory cache instantly.
-    if (topFollowersCache) {
-      setLeaders(topFollowersCache);
-      setLoading(false);
-
-      if (now - topFollowersCacheTime < TOP_FOLLOWERS_CACHE_MS) {
-        return;
-      }
-    }
-
-    // 2) If memory cache is empty, show persistent cache instantly.
-    // Firebase refresh continues in the background.
-    if (!topFollowersCache) {
-      try {
-        const stored = await AsyncStorage.getItem(TOP_FOLLOWERS_STORAGE_KEY);
-
-        if (stored) {
-          const parsed = JSON.parse(stored);
-
-          if (Array.isArray(parsed) && parsed.length) {
-            topFollowersCache = parsed;
-            topFollowersCacheTime = now;
-            setLeaders(parsed);
-            setLoading(false);
-          }
-        }
-      } catch (cacheError) {
-        console.log("TOP FOLLOWERS CACHE READ ERROR:", cacheError);
-      }
-    }
-
-    try {
-      // Do NOT show the full-screen loader when cached data is already visible.
-      if (!topFollowersCache) {
-        setLoading(true);
+    const run = async () => {
+      // 1) Memory cache: instant. Fresh hai to network bilkul nahi.
+      if (topFollowersCache) {
+        setLeaders(topFollowersCache);
+        setLoading(false);
+        if (Date.now() - topFollowersCacheTime < TOP_FOLLOWERS_CACHE_MS) return;
       }
 
-      const followsSnap = await getDocs(collection(db, "follows"));
-
-      const followerCountByUser = {};
-
-      followsSnap.docs.forEach((followDoc) => {
-        const followingId = followDoc.data()?.followingId;
-        if (!followingId) return;
-
-        followerCountByUser[followingId] =
-          (followerCountByUser[followingId] || 0) + 1;
+      // 2) Network PEHLE start, storage read uske PARALLEL (pehle sequential tha).
+      let gotFresh = false;
+      const networkPromise = fetchTopFollowers((partial) => {
+        if (!alive) return;
+        gotFresh = true;
+        setLeaders(partial);
+        setLoading(false);
       });
 
-      const topUserIds = Object.entries(followerCountByUser)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, MAX_PROFILE_READS)
-        .map(([userId]) => userId);
-
-      const users = await Promise.all(
-        topUserIds.map(async (userId) => {
-          try {
-            const userSnap = await getDoc(doc(db, "users", userId));
-
-            if (!userSnap.exists()) return null;
-
-            return {
-              id: userId,
-              ...userSnap.data(),
-              followersCount: followerCountByUser[userId] || 0,
-            };
-          } catch (error) {
-            console.log("User load error:", userId, error);
-            return null;
+      if (!topFollowersCache) {
+        try {
+          const stored = await AsyncStorage.getItem(TOP_FOLLOWERS_STORAGE_KEY);
+          if (stored && alive && !gotFresh && !topFollowersCache) {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed) && parsed.length) {
+              setLeaders(parsed);
+              setLoading(false);
+            }
           }
-        })
-      );
-
-      const sorted = users
-        .filter(Boolean)
-        .sort(
-          (a, b) =>
-            (b.followersCount || 0) - (a.followersCount || 0)
-        );
-
-      topFollowersCache = sorted;
-      topFollowersCacheTime = Date.now();
-
-      setLeaders(sorted);
-
-      // Save latest result so next opening can render immediately.
-      try {
-        await AsyncStorage.setItem(
-          TOP_FOLLOWERS_STORAGE_KEY,
-          JSON.stringify(sorted)
-        );
-      } catch (cacheError) {
-        console.log("TOP FOLLOWERS CACHE WRITE ERROR:", cacheError);
+        } catch (cacheError) {
+          console.log("TOP FOLLOWERS CACHE READ ERROR:", cacheError);
+        }
       }
-    } catch (error) {
-      console.log("TOP FOLLOWERS ERROR:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
 
-  useEffect(() => {
-    loadTopFollowers();
+      try {
+        const fresh = await networkPromise;
+        if (!alive) return;
+        setLeaders(fresh);
+        // write ka intezaar nahi -> UI block nahi hota
+        AsyncStorage.setItem(TOP_FOLLOWERS_STORAGE_KEY, JSON.stringify(fresh)).catch(
+          (e) => console.log("TOP FOLLOWERS CACHE WRITE ERROR:", e)
+        );
+      } catch (error) {
+        console.log("TOP FOLLOWERS ERROR:", error);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    };
+
+    run();
+    return () => {
+      alive = false;
+    };
   }, []);
 
   // UI order:
@@ -396,6 +430,7 @@ export default function TopFollowersPage() {
   const second = leaders[1];
   const first = leaders[0];
   const third = leaders[2];
+  const restLeaders = useMemo(() => leaders.slice(3), [leaders]);
 
   const openProfile = useCallback((user) => {
     if (!user?.id) return;
@@ -505,7 +540,7 @@ export default function TopFollowersPage() {
           </View>
         ) : (
           <FlatList
-            data={leaders.slice(3)}
+            data={restLeaders}
             keyExtractor={keyExtractor}
             renderItem={renderLeaderRow}
             showsVerticalScrollIndicator={false}
@@ -597,6 +632,12 @@ export default function TopFollowersPage() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  frameOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  nameRow: { flexDirection: "row", alignItems: "center", justifyContent: "center" },
   safe: { flex: 1 },
 
   loadingScreen: {
@@ -805,7 +846,7 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 10,
     fontWeight: "800",
-    marginTop: 4,
+    marginTop: 3,
     maxWidth: "94%",
   },
   firstUsername: { fontSize: 12 },
@@ -813,7 +854,7 @@ const styles = StyleSheet.create({
   followersInfo: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 3,
+    marginTop: 1,
   },
   followersText: {
     color: "#C6D0E7",
@@ -875,6 +916,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     justifyContent: "center",
     alignItems: "center",
+    backgroundColor: "#18194A",
   },
   rankText: {
     color: "#FFFFFF",

@@ -10,7 +10,7 @@
 //   Sirf usi host ka component re-render hota hai jiski live state badli.
 // ------------------------------------------------------------------
 import { useCallback, useSyncExternalStore } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, Timestamp } from 'firebase/firestore';
 import { db } from '../app/firebaseConfig';
 import { useBlockedIds } from '../utils/useBlockedIds';
 
@@ -54,8 +54,10 @@ const validUrl = (v) =>
 let rawRooms = {};          // roomId -> raw firestore data
 let liveByHost = {};        // hostId -> stable entry object
 const listeners = new Set();
-let unsubscribeFs = null;
+let unsubscribeFs = null;   // ab functions ki list (do listener)
 let recheckTimer = null;
+let rawNum = {};            // createdAt number wale rooms (LiveStart)
+let rawTs = {};             // createdAt Timestamp wale rooms (livevideostart)
 
 const sameEntry = (a, b) =>
   a && b &&
@@ -105,21 +107,32 @@ const recompute = () => {
 const start = () => {
   if (unsubscribeFs || !db) return;
   try {
-    unsubscribeFs = onSnapshot(
-      collection(db, 'rooms'),
-      (snap) => {
-        const m = {};
-        snap.forEach((docItem) => {
-          if (docItem.exists()) m[docItem.id] = docItem.data();
-        });
-        rawRooms = m;
-        recompute();
-      },
-      () => {
-        rawRooms = {};
-        recompute();
-      }
+    // SPEED: pehle poori `rooms` collection (purane ended rooms samet) har change par
+    // JS thread par decode hoti thi -> app jam. Ab sirf pichhle 24 ghante ke rooms
+    // (isAlive pehle se 1 din se purane rooms ko band maanta tha, to natija same).
+    // createdAt kahin number (Date.now) aur kahin Timestamp (serverTimestamp) hai,
+    // isliye dono type ke liye alag query.
+    const since = Date.now() - ONE_DAY;
+    const read = (snap) => {
+      const m = {};
+      snap.forEach((docItem) => {
+        if (docItem.exists()) m[docItem.id] = docItem.data();
+      });
+      return m;
+    };
+    const merge = () => { rawRooms = { ...rawTs, ...rawNum }; recompute(); };
+
+    const u1 = onSnapshot(
+      query(collection(db, 'rooms'), where('createdAt', '>', since)),
+      (snap) => { rawNum = read(snap); merge(); },
+      () => { rawNum = {}; merge(); }
     );
+    const u2 = onSnapshot(
+      query(collection(db, 'rooms'), where('createdAt', '>', Timestamp.fromMillis(since))),
+      (snap) => { rawTs = read(snap); merge(); },
+      () => { rawTs = {}; merge(); }
+    );
+    unsubscribeFs = () => { u1(); u2(); };
   } catch (e) {
     unsubscribeFs = null;
   }
@@ -131,6 +144,8 @@ const stop = () => {
   if (unsubscribeFs) { unsubscribeFs(); unsubscribeFs = null; }
   if (recheckTimer) { clearInterval(recheckTimer); recheckTimer = null; }
   rawRooms = {};
+  rawNum = {};
+  rawTs = {};
   liveByHost = {};
 };
 

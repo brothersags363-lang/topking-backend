@@ -15,7 +15,7 @@ import {
 
 import { Ionicons } from "@expo/vector-icons";
 
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 
 import {
   collection,

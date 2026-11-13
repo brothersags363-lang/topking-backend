@@ -7,7 +7,9 @@
 //
 // Use:  <UserTick verified={x.verified} verifiedColor={x.verifiedColor} faceVerified={x.faceVerified} size={17} />
 import React, { useEffect, useState } from "react";
-import { View } from "react-native";
+import { View, Image } from "react-native";
+
+export const GREY_V_TICK = require("../assets/images/grey-v-tick.png");
 import { MaterialCommunityIcons, Ionicons } from "@expo/vector-icons";
 import { doc, getDoc } from "firebase/firestore";
 import { db } from "../app/firebaseConfig";
@@ -83,11 +85,21 @@ function UserTick({
 
   // 1) Admin tick (white / yellow) — iske saath face tick KABHI nahi
   if (adminOn) {
+    // "yellow" tick ki jagah ab Grey V badge (photo wala) dikhta hai
+    if (color === "yellow") {
+      return (
+        <Image
+          source={GREY_V_TICK}
+          style={[{ width: size, height: size, marginLeft: 4 }, style]}
+          resizeMode="contain"
+        />
+      );
+    }
     return (
       <MaterialCommunityIcons
         name="check-decagram"
         size={size}
-        color={color === "yellow" ? "#FFD700" : whiteColor}
+        color={whiteColor}
         style={[{ marginLeft: 4 }, style]}
       />
     );

@@ -1,6 +1,7 @@
 import useBackStep from '../utils/useBackStep';
 import { Ionicons } from '@expo/vector-icons';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 import {
   collection,
   deleteDoc,

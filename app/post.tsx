@@ -19,12 +19,14 @@ import {
 
 import { Ionicons, Feather, MaterialIcons } from '@expo/vector-icons';
 import { VideoView, useVideoPlayer } from 'expo-video';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 import axios from 'axios';
 
 
 
 import { BackHandler } from 'react-native';
+import { scopedBackHandler } from '../utils/scopedBack';
 import { useFocusEffect } from '@react-navigation/native';
 import { useCallback } from 'react';
 import { useNavigation } from "@react-navigation/native";
@@ -195,7 +197,7 @@ useFocusEffect(
       return true;
     };
 
-    const subscription = BackHandler.addEventListener(
+    const subscription = scopedBackHandler('/post', 
       "hardwareBackPress",
       backAction
     );

@@ -10,9 +10,10 @@ import {
   Alert,
   BackHandler,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 
 const LANGUAGES = [
   {
@@ -92,7 +93,7 @@ useEffect(() => {
     return true;
   };
 
-  const subscription = BackHandler.addEventListener(
+  const subscription = scopedBackHandler('/language', 
     "hardwareBackPress",
     handleBackPress
   );

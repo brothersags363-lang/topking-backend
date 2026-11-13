@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import {
   collection,
   doc,
@@ -26,6 +26,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { auth, db } from "./firebaseConfig";
@@ -260,7 +261,7 @@ export default function VideoRank() {
   }, [router]);
 
   useEffect(() => {
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+    const sub = scopedBackHandler('/Videorank', "hardwareBackPress", () => {
       goBack();
       return true;
     });

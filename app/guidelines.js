@@ -1,7 +1,8 @@
 import React, { useEffect } from "react";
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Image, BackHandler } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { Ionicons } from "@expo/vector-icons";
 import AppLogo from "../assets/images/topking-logo.png";
 
@@ -19,10 +20,10 @@ const RULES = [
       "Copied or re-uploaded videos will be removed and action may be taken on your account.",
     ],
     tick: "300+ views = White Tick",
-    note: "When your original video reaches 300+ views, you get the white verified tick. See the next point for the Yellow and Blue ticks. A tick stays only while your content is original and you follow the rules. Fake views are not counted.",
+    note: "When your original video reaches 300+ views, you get the white verified tick. See the next point for the Grey V and Blue ticks. A tick stays only while your content is original and you follow the rules. Fake views are not counted.",
   },
   {
-    n: 2, t: "Verified Tick – White, Yellow and Blue",
+    n: 2, t: "Verified Tick – White, Grey V and Blue",
     p: "TopKing has 3 kinds of verified ticks. Each has its own requirements and benefits.",
     ticks: [
       {
@@ -34,14 +35,14 @@ const RULES = [
         ],
       },
       {
-        color: "#FFE600", name: "Yellow Tick", sub: "Verified Creator",
+        color: "#A99BD6", grey: true, name: "Grey V Tick", sub: "Verified Creator",
         how: [
           "Open Creator Verification from the Profile menu.",
           "Face verification: submit a selfie and get it approved.",
           "Add a real photo and bio to your profile.",
           "Take the quiz and score 60 or more.",
-          "Get 5 videos with 300+ views and 4500+ total views.",
-          "Once everything is complete, the TopKing team reviews and approves your Yellow tick.",
+          "Get 5 videos with 3000+ views each.",
+          "As soon as everything is complete, your Grey V tick is applied automatically.",
         ],
         perks: "Benefits: become a Family Creator, priority reports within 24 hours, more visibility, higher earnings.",
       },
@@ -49,7 +50,7 @@ const RULES = [
         color: "#1E90FF", name: "Blue Tick", sub: "Premium Creator",
         how: [
           "The Blue tick is approved only by the TopKing team.",
-          "You need to already have the Yellow tick and a clean guidelines record.",
+          "You need to already have the Grey V tick and a clean guidelines record.",
           "The team selects top creators itself, so keep making great original content.",
         ],
         perks: "Benefits: full TopKing support, events and creator programs, monthly salary opportunities, premium creator account.",
@@ -177,7 +178,11 @@ const Rule = ({ r }) => {
         {r.ticks && r.ticks.map((t) => (
           <View key={t.name} style={s.tickCard}>
             <View style={s.tickHead}>
-              <Ionicons name="checkmark-circle" size={30} color={t.color} />
+              {t.grey ? (
+                <Image source={require("../assets/images/grey-v-tick.png")} style={{ width: 30, height: 30 }} resizeMode="contain" />
+              ) : (
+                <Ionicons name="checkmark-circle" size={30} color={t.color} />
+              )}
               <View style={{ marginLeft: 10 }}>
                 <Text style={s.tickName}>{t.name}</Text>
                 <Text style={s.tickSub}>{t.sub}</Text>
@@ -218,7 +223,7 @@ export default function Guidelines() {
 
   // Phone back button: own handler so the profile tab handler does not take over
   useEffect(() => {
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+    const sub = scopedBackHandler('/guidelines', "hardwareBackPress", () => {
       goBack();
       return true;
     });

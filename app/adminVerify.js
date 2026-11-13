@@ -15,10 +15,12 @@ import { collection, query, where, limit, getDocs } from "firebase/firestore";
 import { Ionicons } from "@expo/vector-icons";
 import { db } from "./firebaseConfig";
 import useIsAdmin from "./useIsAdmin";
+
+const GREY_V = require("../assets/images/grey-v-tick.png");
 import { callApi } from "../utils/api";
 
 const PLACEHOLDER = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
-const COLORS = { white: "#ffffff", yellow: "#FFD700" };
+const COLORS = { white: "#ffffff", yellow: "#A99BD6" };
 
 export default function AdminVerify() {
   const isAdmin = useIsAdmin();
@@ -151,8 +153,12 @@ export default function AdminVerify() {
                       style={[styles.btn, cur === k && { borderColor: COLORS[k], borderWidth: 2 }]}
                       onPress={() => apply(item, true, k)}
                     >
-                      <Ionicons name="checkmark-circle" size={20} color={COLORS[k]} />
-                      <Text style={styles.btnText}>{k === "white" ? "White" : "Yellow"}</Text>
+                      {k === "yellow" ? (
+                        <Image source={GREY_V} style={{ width: 20, height: 20 }} resizeMode="contain" />
+                      ) : (
+                        <Ionicons name="checkmark-circle" size={20} color={COLORS[k]} />
+                      )}
+                      <Text style={styles.btnText}>{k === "white" ? "White" : "Grey V"}</Text>
                     </TouchableOpacity>
                   ))}
                   {cur && (

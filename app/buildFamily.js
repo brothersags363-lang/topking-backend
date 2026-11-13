@@ -5,7 +5,7 @@ import {
   ScrollView, Modal, KeyboardAvoidingView, Platform,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import {
@@ -114,7 +114,7 @@ export default function BuildFamily() {
       <Modal visible={done} transparent animationType="fade">
         <View style={s.overlay}>
           <View style={s.modal}>
-            <Ionicons name="checkmark-circle" size={56} color={Y} />
+            <Image source={require("../assets/images/grey-v-tick.png")} style={{ width: 56, height: 56 }} resizeMode="contain" />
             <Text style={s.mTitle}>Request Submit Ho Gayi!</Text>
             <Text style={s.mText}>Aapki family ka review {REVIEW_HOURS} ghante me hoga. Approve hote hi family ranking me dikhne lagegi aur log join kar payenge.</Text>
             <TouchableOpacity style={[s.cta, { alignSelf: "stretch" }]} onPress={() => { setDone(false); router.replace("/family"); }}>

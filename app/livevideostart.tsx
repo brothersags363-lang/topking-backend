@@ -32,7 +32,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { useLiveBanGuard } from "../utils/liveBan";
 
 import { getAuth } from "firebase/auth";

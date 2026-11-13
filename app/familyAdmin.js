@@ -4,7 +4,7 @@ import {
   View, Text, FlatList, TouchableOpacity, StyleSheet, Image, Alert, Modal, TextInput, ActivityIndicator,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { Ionicons } from "@expo/vector-icons";
 import { collection, onSnapshot, doc, updateDoc, serverTimestamp, increment } from "firebase/firestore";
 import { auth, db } from "./firebaseConfig";

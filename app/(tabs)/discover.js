@@ -7,12 +7,13 @@ import {
   View, Text, FlatList, StyleSheet, Platform, StatusBar,
   RefreshControl, ActivityIndicator, InteractionManager, Dimensions,
 } from 'react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
+import { useRouter } from '../../utils/safeRouter';
 import { useBlockedIds } from '../../utils/useBlockedIds';
 import useTabBack from '../../utils/useTabBack';
 import useSwipeTabs from '../../utils/useSwipeTabs';
 import { loadDiscover, discoverCache } from '../../utils/homeData';
-import BottomNav from '../../components/BottomNav';
+import AppBottomNav from '../../components/AppBottomNav';
 import TopTabs from '../../components/TopTabs';
 import { GridTile, GRID_PAD, GRID_GAP } from '../../components/GridParts';
 
@@ -150,7 +151,7 @@ export default function DiscoverScreen() {
         overScrollMode="never"
       />
 
-      <BottomNav />
+      <AppBottomNav />
     </View>
   );
 }

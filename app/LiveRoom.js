@@ -28,6 +28,7 @@ import { blockIfProfane } from "../utils/guardText";
   Share,
   Alert,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 
 
 import { notifyNewFollower } from "../utils/pushNotify";
@@ -42,7 +43,8 @@ import ReAnimated,{
   Easing,
 } from "react-native-reanimated";
 
-import { useLocalSearchParams, useRouter, useFocusEffect, Stack } from 'expo-router';
+import { useLocalSearchParams, useFocusEffect, Stack } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 import { useLive } from '../context/LiveContext';
 
 import { Ionicons, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
@@ -99,6 +101,7 @@ import GreedyGame from '../components/live/GreedyGame';
 import LottieView from "lottie-react-native";
 import { WebView } from "react-native-webview";
 import { giftHtml } from "../assets/giftWeb";
+import GiftImage, { isImgGift } from "../components/GiftImage";
 
 import { useSafeAreaInsets, SafeAreaProvider } from 'react-native-safe-area-context';
 import { callApi } from '../utils/api';
@@ -127,6 +130,8 @@ if (TextInput.defaultProps == null) TextInput.defaultProps = {};
 TextInput.defaultProps.allowFontScaling = false;
 // Bottom bar ki fixed unchai (input/buttons) - har phone par same
 const BOTTOM_BAR_H = 60;
+// Chat ke upar dikhne wala welcome message (TopKing) - yahin se badlo
+const WELCOME_TEXT = "Welcome to TopKing Live, where you can interact with hosts and other viewers in real time. Please abide by our community guidelines to help us maintain a good community environment";
 // Join animation: 'auto' (level se) | 'slide' | 'lv10' | 'lv20' | 'lv30' | 'lv40' | 'lv50'
 const JOIN_ANIM_VARIANT = 'auto';
 const log = __DEV__ ? console.log.bind(console) : () => {};
@@ -326,12 +331,19 @@ const useSettled = (delay = 0) => {
 };
 // three.js WebView warm-up (gift 3D ke liye). Ye Android par naya WebView process banata hai ->
 // 1 baar ~200ms atak. Smooth chahiye to false, pehli 3D gift turant chahiye to true.
-const WARM_GIFT_WEBVIEW = true;
+// HEAT FIX: gift WebView (canvas) me pixel ratio 1.5 par cap -> canvas fill ~40-60% kam (phone me DPR 2.6-3 hota hai).
+// Gift ka look lagbhag same, bas thoda soft. Pura sharp chahiye to 1.5 ko 2 kar do.
+const GIFT_WEB_PRE_JS = "try{var __r=window.devicePixelRatio||1;Object.defineProperty(window,'devicePixelRatio',{get:function(){return Math.min(__r,1.5)}})}catch(e){}true;";
+const WARM_GIFT_WEBVIEW = false; // HEAT FIX: room khulte hi extra hidden WebView nahi banta. Pehli 3D gift jaldi chahiye to true
 const WARM_GIFT_WEBVIEW_DELAY_MS = 12000;
 // PERF: chat ki har row me 22-36px frame animate hota tha (40-80 rows = bahut load).
 // false = chat me frame static (smooth). Seat/profile ke frames animated hi rehte hain.
 // Pehle jaisa chahiye to true kar do.
 const CHAT_FRAME_ANIM = false;
+// HEAT FIX: seat par 9-12 animated .webp frames (1.3-3.7MB each) ek saath decode hote the = phone garam.
+// 'host' = sirf host seat ka frame animated, baaki static (default, thanda)
+// 'all'  = pehle jaisa, sab seat animated      |  'off' = koi bhi animated nahi
+const SEAT_FRAME_ANIM_MODE = 'host';
 // Seat ka size yahin se badlo: photo, seat aur frame sab isi se chalte hain
 // Chhoti screen (kam height) wale phones par seats apne-aap thodi chhoti ho jati hain taaki chat dikhe
 const SEAT_SCALE = UI_SCALE;
@@ -539,7 +551,7 @@ const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress, cellW
                 level={seat.level}
                 special={seat.special}
                 uid={seat.userId}
-                animated={frameAnimOk}
+                animated={frameAnimOk && (SEAT_FRAME_ANIM_MODE === 'all' || (SEAT_FRAME_ANIM_MODE === 'host' && isHostSeat))}
                 pointerEvents="none"
                 style={SEAT_FRAME_STYLE}
               />
@@ -617,6 +629,30 @@ const SpeakingSeat = memo(({ seatKey, index, seat, stars, onPress, cellW }) => {
   p.seatKey === n.seatKey && p.index === n.index && p.stars === n.stars && p.cellW === n.cellW &&
   p.onPress === n.onPress && seatEqual(p.seat, n.seat)
 );
+
+// HEAT FIX: gift button ka Lottie (192KB json) pehle 24x7 loop me chalta tha (live room me hamesha).
+// Ab ek baar chalta hai, 6 sec rukta hai, phir dobara -> animation dikhta hai par CPU/GPU free rehta hai.
+const GiftButtonLottie = memo(function GiftButtonLottie() {
+  const ref = useRef(null);
+  const timerRef = useRef(null);
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+  const onFinish = useCallback(() => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => { try { ref.current && ref.current.play(); } catch (_) {} }, 6000);
+  }, []);
+  return (
+    <LottieView
+      ref={ref}
+      source={require("../assets/animations/giftButton.json")}
+      autoPlay
+      loop={false}
+      onAnimationFinish={onFinish}
+      renderMode="HARDWARE"
+      cacheComposition={true}
+      style={{ width: 50, height: 50 }}
+    />
+  );
+});
 
 const LiveTimer = memo(({ startTime }) => {
   const [label, setLabel] = useState("00:00:00");
@@ -830,9 +866,12 @@ const GiftLayer = memo(forwardRef(function GiftLayer(_props, ref) {
               androidLayerType="hardware"
               scrollEnabled={false}
               pointerEvents="none"
+              injectedJavaScriptBeforeContentLoaded={GIFT_WEB_PRE_JS}
               onLoadEnd={onWebGiftLoaded}
             />
-          ) : (
+          ) : isImgGift(activeGift) ? (
+<GiftImage key={playKey} name={activeGift.slice(4)} />
+) : (
             <LottieView
               key={playKey}
               source={activeGift}
@@ -2320,6 +2359,7 @@ const audSeenRef = useRef({});             // uid -> { v: lastSeen, at: LOCAL ti
 const [viewersVisible, setViewersVisible] = useState(false);
 const [giftersVisible, setGiftersVisible] = useState(false);
 const [menuVisible, setMenuVisible] = useState(false);
+const [moreVisible, setMoreVisible] = useState(false); // 3-line menu
 // ===== TEEN PATTI GAME (aadhi screen, nav bar ke upar) =====
 // gameOpen: false | 'teen' | 'greedy'
 const [gameOpen, setGameOpen] = useState(false);
@@ -3470,7 +3510,7 @@ const profileLevel = previewLevel ?? selectedSpeaker?.level ?? 1;
   };
 
   const subscription =
-    BackHandler.addEventListener(
+    scopedBackHandler('/LiveRoom', 
       "hardwareBackPress",
       backAction
     );
@@ -3500,12 +3540,20 @@ useEffect(() => {
 // ---------- LIVE REWARD PING ----------
 // Host ka live time SERVER gintta hai (2h reward). App sirf "main live hu"
 // bolta hai; minutes / viewers server khud nikalta hai, yahan se fake nahi hota.
+// Private live ya room lock ho to 2h target me time count NAHI hoga.
+// (Final check server bhi karta hai; yahan sirf ping band rakhte hain.)
+const rewardBlockedRef = useRef(false);
+useEffect(() => {
+  rewardBlockedRef.current = !!(roomData?.isPrivate || roomData?.roomLocked);
+}, [roomData?.isPrivate, roomData?.roomLocked]);
+
 useEffect(() => {
   if (!roomId || currentUserRole !== "host") return;
   let stopped = false;
   const ping = () => {
     if (stopped || AppState.currentState !== "active") return;
-    callApi("/reward/live-ping", { roomId }).catch(() => {});
+    if (rewardBlockedRef.current) return; // private / locked => count band
+    /* live reward sirf videolive me */
   };
   ping();
   const timer = setInterval(ping, 30000);
@@ -3581,7 +3629,7 @@ useEffect(() => {
     return true;
   };
 
-  const subscription = BackHandler.addEventListener(
+  const subscription = scopedBackHandler('/LiveRoom', 
     "hardwareBackPress",
     backAction
   );
@@ -3829,10 +3877,7 @@ log("Audience Added =", audiencePayload);
 
         // DEBUG (seat ke neeche stars): seatStars ke keys aur seat ke userId yahan match hone chahiye.
         // Problem solve hone ke baad ye 3 line hata dena.
-        try {
-          console.log("SEATSTARS_DEBUG", JSON.stringify(data?.seatStars || {}),
-            "SEAT_UIDS", JSON.stringify(Object.values(data?.seatsData || {}).map((x) => x && x.userId).filter(Boolean)));
-        } catch (_) {}
+        // (HEAT FIX) SEATSTARS_DEBUG console.log hata diya - har snapshot par 2 JSON.stringify chalte the
 
         setRoomData(data);
         setLoading(false);
@@ -4719,6 +4764,7 @@ const startSpeaking = async (e, muted = false) => {
   if (!e) return;
   await e.setClientRole(ClientRoleType.ClientRoleBroadcaster);
   await e.enableLocalAudio(true);
+  try { await e.setAINSMode(true, AudioAinsMode?.AinsModeBalanced ?? 0); } catch (_) {}
   try {
     e.updateChannelMediaOptions({
       clientRoleType: ClientRoleType.ClientRoleBroadcaster,
@@ -4736,6 +4782,7 @@ const stopSpeaking = (e) => {
   if (!e) return;
   try { e.muteLocalAudioStream(true); } catch (_) {}
   try { e.enableLocalAudio(false); } catch (_) {}
+  try { e.setAINSMode(false, AudioAinsMode?.AinsModeBalanced ?? 0); } catch (_) {}
   try {
     e.updateChannelMediaOptions({
       clientRoleType: ClientRoleType.ClientRoleAudience,
@@ -4879,7 +4926,11 @@ const initAgora = async (userRole) => {
       // ===== BACKGROUND VOICE / NOISE BLOCK =====
       // AI noise suppression: bolne wale ki awaz rakhta hai, peeche ki awaz
       // (TV, log, gaadi, pankha, hiss) kaat deta hai. Purane SDK me na ho to skip.
+      // HEAT FIX: AI noise suppression (AINS) bhaari CPU kaam hai aur sirf MIC wale (host/speaker) ke
+      // kaam ka hai. Sunne wale (audience) ke liye pehle bhi chalta tha = bekaar garmi.
+      // Ab sirf broadcaster ke liye ON; seat par baithte (startSpeaking) ON, utarte (stopSpeaking) OFF.
       const applyNoiseBlock = async () => {
+        if (role !== ClientRoleType.ClientRoleBroadcaster) return;
         try {
           await engine.setAINSMode(true, AudioAinsMode?.AinsModeBalanced ?? 0);
         } catch (_) {}
@@ -4962,7 +5013,7 @@ const initAgora = async (userRole) => {
       await engine.enableAudio();
       await engine.setEnableSpeakerphone(true);
       await engine.setClientRole(role);
-      engine.enableAudioVolumeIndication(400, 3, false);
+      engine.enableAudioVolumeIndication(500, 3, false);
 
       if (role === ClientRoleType.ClientRoleBroadcaster) {
         await engine.enableLocalAudio(true);
@@ -5096,7 +5147,7 @@ onPickEmojiRef.current = onPickEmoji;
 
 const handleShare = async () => {
   try {
-    const shareLink = `https://topking.app/live/${roomId}`;
+    const shareLink = `https://topking-short.vercel.app/live/${roomId}`;
     const res = await Share.share({
       message: `🎙 Join my Live Room\n${shareLink}`,
     });
@@ -5145,7 +5196,7 @@ const sendOneInvite = (uid) => {
       senderId: currentUid,
       receiverId: uid,
       roomId: roomId,
-      roomLink: `https://topking.app/live/${roomId}`,
+      roomLink: `https://topking-short.vercel.app/live/${roomId}`,
       text: `${currentName} invited you to join live`,
       createdAt: serverTimestamp(),
     }),
@@ -6034,6 +6085,8 @@ const topInset = insets.top > 0 ? insets.top : (Platform.OS === 'android' ? (Sta
 // bottom: gesture/nav bar ki asli unchai (kam se kam 10) - keyboard khula ho to sirf 6
 const bottomGap = keyboardOpen ? 6 : Math.max(insets.bottom, 10) + 6;
 const bottomBarTotal = BOTTOM_BAR_H + bottomGap;
+// 3-line menu band karke doosra popup kholo (Android Modal overlap na ho)
+const moreGo = (fn) => { setMoreVisible(false); setTimeout(fn, 260); };
 
 return (
   <View
@@ -6126,36 +6179,13 @@ return (
       </View>
     </View>
 
-    {/* ================= QUICK TOOLBAR ================= */}
-    <View style={styles.toolbar}>
-      <View style={styles.monthlyChip}>
+    {/* ================= MONTHLY HOST (TopKing style, left) ================= */}
+    <View style={styles.monthlyRow}>
+      <View style={[styles.monthlyChip, { marginLeft: 0 }]}>
         <Ionicons name="stats-chart" size={11} color="#f1c40f" style={{ flexShrink: 0 }} />
         <Text allowFontScaling={false} style={styles.monthlyTxt} numberOfLines={1}>Monthly Host</Text>
       </View>
-      {canManage && (
-        <TouchableOpacity
-          style={[styles.chip, chatLocked && { backgroundColor: 'rgba(241,196,15,0.25)' }]}
-          onPress={() => setHostPanelVisible(true)}
-        >
-          <Ionicons name={chatLocked ? "lock-closed" : "construct"} size={12} color={chatLocked ? "#f1c40f" : "#fff"} />
-          <Text allowFontScaling={false} style={styles.chipTxt} numberOfLines={1}>{isHost ? 'Host' : 'Admin'}</Text>
-        </TouchableOpacity>
-      )}
-      <View style={styles.chip}>
-        <Ionicons name="heart" size={12} color={T.pink} />
-        <Text allowFontScaling={false} style={styles.chipTxt} numberOfLines={1}>{fmtCount(heartTotal)}</Text>
-      </View>
-      <TouchableOpacity style={styles.chip} onPress={() => setGiftersVisible(true)}>
-        <MaterialCommunityIcons name="trophy" size={12} color={T.gold} />
-        <Text allowFontScaling={false} style={styles.chipTxt} numberOfLines={1}>Top</Text>
-      </TouchableOpacity>
-      <TouchableOpacity style={styles.chip} onPress={() => setFriendShareVisible(true)}>
-        <Ionicons name="share-social" size={12} color="#fff" />
-        <Text allowFontScaling={false} style={styles.chipTxt} numberOfLines={1}>Share</Text>
-      </TouchableOpacity>
-      <TouchableOpacity style={[styles.chip, { paddingHorizontal: 8, flexShrink: 0 }]} onPress={() => setMenuVisible(true)}>
-        <Ionicons name="ellipsis-horizontal" size={16} color="#fff" />
-      </TouchableOpacity>
+
     </View>
 
     {/* ================= MAIN CONTENT ================= */}
@@ -6204,7 +6234,7 @@ return (
     showsVerticalScrollIndicator={false}
     initialNumToRender={10}
     maxToRenderPerBatch={6}
-    windowSize={5}
+    windowSize={3}
     removeClippedSubviews={false}
     updateCellsBatchingPeriod={50}
     overScrollMode="never"
@@ -6214,6 +6244,11 @@ return (
 
 
     renderItem={renderChatItem}
+    ListFooterComponent={
+      <View style={styles.welcomeBox}>
+        <Text allowFontScaling={false} style={styles.welcomeTxt}>{WELCOME_TEXT}</Text>
+      </View>
+    }
 />
 
 
@@ -6274,94 +6309,6 @@ return (
     )}
 
     {/* ================= BOTTOM BAR ================= */}
-{/* ===== GAME LOGO (song button ke UPAR) - sabko dikhta hai ===== */}
-{!keyboardOpen && !gameOpen && (
-  <TouchableOpacity
-    activeOpacity={0.8}
-    onPress={() => { Keyboard.dismiss(); setEmojiOpen(false); setGamePickerOpen((v) => !v); }}
-    style={{
-      position: 'absolute',
-      right: 12,
-      bottom: keyboardHeight + bottomBarTotal + 24 + 62,
-      width: 48,
-      height: 48,
-      borderRadius: 24,
-      zIndex: 60,
-      elevation: 12,
-      shadowColor: '#000',
-      shadowOpacity: 0.35,
-      shadowRadius: 6,
-      shadowOffset: { width: 0, height: 3 },
-    }}
-  >
-    <LinearGradient
-      colors={['#ffd54a', '#ff8a00']}
-      start={{ x: 0.2, y: 0 }}
-      end={{ x: 0.8, y: 1 }}
-      style={{
-        flex: 1, borderRadius: 24, borderWidth: 2, borderColor: '#fff3b0',
-        alignItems: 'center', justifyContent: 'center',
-      }}
-    >
-      <Text allowFontScaling={false} style={{ fontSize: 22 }}>🎴</Text>
-    </LinearGradient>
-    <View
-      style={{
-        position: 'absolute', bottom: -4, alignSelf: 'center', backgroundColor: '#e0152b',
-        paddingHorizontal: 6, borderRadius: 8, borderWidth: 1, borderColor: '#fff',
-      }}
-    >
-      <Text allowFontScaling={false} style={{ color: '#fff', fontSize: 8, fontWeight: '900' }}>GAME</Text>
-    </View>
-  </TouchableOpacity>
-)}
-
-{/* ===== GAME PICKER (logo ke upar) ===== */}
-{gamePickerOpen && !keyboardOpen && !gameOpen && (
-  <View
-    style={{
-      position: 'absolute',
-      right: 12,
-      bottom: keyboardHeight + bottomBarTotal + 24 + 62 + 56,
-      zIndex: 61,
-      elevation: 13,
-      backgroundColor: 'rgba(20,10,60,0.95)',
-      borderRadius: 16,
-      padding: 8,
-      borderWidth: 1,
-      borderColor: 'rgba(255,255,255,0.25)',
-    }}
-  >
-    <TouchableOpacity
-      activeOpacity={0.8}
-      onPress={() => { setGamePickerOpen(false); setGameOpen('teen'); }}
-      style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 8, paddingHorizontal: 10 }}
-    >
-      <Text allowFontScaling={false} style={{ fontSize: 22, marginRight: 8 }}>🎴</Text>
-      <Text allowFontScaling={false} style={{ color: '#fff', fontSize: 13, fontWeight: '800' }}>Teen Patti</Text>
-    </TouchableOpacity>
-    <TouchableOpacity
-      activeOpacity={0.8}
-      onPress={() => { setGamePickerOpen(false); setGameOpen('greedy'); }}
-      style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 8, paddingHorizontal: 10 }}
-    >
-      <Text allowFontScaling={false} style={{ fontSize: 22, marginRight: 8 }}>🐰</Text>
-      <Text allowFontScaling={false} style={{ color: '#fff', fontSize: 13, fontWeight: '800' }}>Greedy</Text>
-    </TouchableOpacity>
-  </View>
-)}
-
-{/* ===== SONG BUTTON (gift button ke upar) - sirf host/speaker ===== */}
-{currentUserRole !== 'listener' && !keyboardOpen && !gameOpen && (
-  <MusicFab
-    playing={music.playing}
-    onPress={() => setMusicSheetVisible(true)}
-    style={{
-      right: 12,
-      bottom: keyboardHeight + bottomBarTotal + 24,
-    }}
-  />
-)}
 <MusicSheet
   visible={musicSheetVisible}
   onClose={() => setMusicSheetVisible(false)}
@@ -6378,70 +6325,48 @@ return (
   ]}
 >
 
-      <View style={[styles.inputBox, keyboardOpen && { marginRight: 0 }]}>
+      <View style={[styles.inputBox, keyboardOpen ? { marginRight: 0 } : styles.inputBoxIdle]}>
+        <Ionicons name="chatbubble-outline" size={20} color="#fff" style={{ marginRight: 7 }} />
         <ChatTextInput onSend={stableSendChat} locked={chatLocked && !canManage} onFocus={onChatFocus} onBlur={onChatBlur} />
-        <TouchableOpacity onPress={() => setEmojiOpen(v => !v)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Ionicons name={emojiOpen ? "happy" : "happy-outline"} size={22} color={T.sub} />
-        </TouchableOpacity>
+        {keyboardOpen && (
+          <TouchableOpacity onPress={() => setEmojiOpen(v => !v)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons name={emojiOpen ? "happy" : "happy-outline"} size={22} color={T.sub} />
+          </TouchableOpacity>
+        )}
       </View>
 
-
-{currentUserRole !== 'listener' && !keyboardOpen && (
-  <TouchableOpacity style={styles.actionCircle} onPress={muteSelf} activeOpacity={0.7}>
-    <Ionicons name={iAmMuted ? "mic-off" : "mic"} size={22} color={iAmMuted ? T.live : "#fff"} />
-  </TouchableOpacity>
-)}
-
-{!keyboardOpen && (
-<TouchableOpacity
-  style={[styles.actionCircle, { backgroundColor: 'rgba(255,77,141,0.18)' }]}
-  onPress={sendHeart}
-  activeOpacity={0.7}
->
-  <Ionicons name="heart" size={24} color={T.pink} />
-</TouchableOpacity>
-)}
-
-
-      {currentUserRole === 'listener' && !keyboardOpen && (
-        <TouchableOpacity style={[styles.raiseHandBtn, myReqSent && { opacity: 0.55 }]} onPress={handleRaiseHand}>
-          <Text style={styles.raiseHandText}>{myReqSent ? '⏳' : '✋'}</Text>
+      {/* TopKing order: Chat -> Share -> Accept request -> 3 line -> Gift */}
+      {!keyboardOpen && true && (
+        <TouchableOpacity style={styles.tikiIcon} onPress={() => setFriendShareVisible(true)} activeOpacity={0.7}>
+          <Ionicons name="arrow-redo-outline" size={22} color="#fff" />
         </TouchableOpacity>
       )}
 
       {canManage && !keyboardOpen && (
-
-
-       <TouchableOpacity
-  style={styles.actionCircle}
-  onPress={() => setRequestModalVisible(true)}
->
-
-  <Ionicons
-    name="people-outline"
-    size={24}
-    color="#fff"
-  />
-
-  {requestsArray.length > 0 && (
-
-    <View style={styles.requestBadge}>
-
-      <Text style={styles.requestBadgeText}>
-        {requestsArray.length}
-      </Text>
-
-    </View>
-
-  )}
-
-</TouchableOpacity> 
-
-        
+        <TouchableOpacity style={styles.tikiIcon} onPress={() => setRequestModalVisible(true)} activeOpacity={0.7}>
+          <Ionicons name="link" size={24} color="#f5c518" style={{ transform: [{ rotate: '-45deg' }] }} />
+          {requestsArray.length > 0 && (
+            <View style={styles.requestBadge}>
+              <Text style={styles.requestBadgeText}>{requestsArray.length}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
       )}
 
-     
-{!keyboardOpen && (
+      {currentUserRole === 'listener' && !keyboardOpen && (
+        <TouchableOpacity style={[styles.raiseHandBtn, { marginRight: 0, marginLeft: 8 }, myReqSent && { opacity: 0.55 }]} onPress={handleRaiseHand}>
+          <Text style={styles.raiseHandText}>{myReqSent ? '⏳' : '✋'}</Text>
+        </TouchableOpacity>
+      )}
+
+      {!keyboardOpen && (
+        <TouchableOpacity style={styles.tikiIcon} onPress={() => { Keyboard.dismiss(); setEmojiOpen(false); setMoreVisible(true); }} activeOpacity={0.7}>
+          <Ionicons name="menu" size={24} color="#fff" />
+        </TouchableOpacity>
+      )}
+      {!keyboardOpen && <View style={{ flex: 1 }} />}
+
+      {!keyboardOpen && (
      <TouchableOpacity
   style={styles.giftCircle}
   onPress={() => {
@@ -6452,19 +6377,10 @@ return (
   }}
 >
   
-<LottieView
-  source={require("../assets/animations/giftButton.json")}
-  autoPlay
-  loop
-  style={{
-    width: 50,
-    height: 50,
-  }}
-/>
+<GiftButtonLottie />
 
 </TouchableOpacity>
 )}
-
     </ReAnimated.View>
 
     {/* ================= EXIT MODAL ================= */}
@@ -7155,12 +7071,87 @@ onPress={sendInvite}
     {/* Official / Admin: live ke andar hi search + ID/device ban + live band */}
     <OfficialLiveTools roomId={roomId} hostId={roomData?.hostId} />
 
+    {/* ================= 3-LINE MENU (saare options yahan) ================= */}
+    <SafeModal
+      visible={moreVisible}
+      transparent
+      animationType="slide"
+      statusBarTranslucent
+      hardwareAccelerated
+      onRequestClose={() => setMoreVisible(false)}
+    >
+      <View style={styles.bottomSheetOverlay}>
+        <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={() => setMoreVisible(false)} />
+        <View style={[styles.moreSheet, { paddingBottom: navGap + 14 }]}>
+          <View style={styles.moreHandle} />
+          <View style={styles.moreGrid}>
+            <TouchableOpacity style={styles.moreTile} activeOpacity={0.7} onPress={sendHeart}>
+              <View style={styles.moreIcon}><Ionicons name="heart" size={22} color={T.pink} /></View>
+              <Text allowFontScaling={false} style={styles.moreTxt} numberOfLines={1}>{fmtCount(heartTotal)}</Text>
+            </TouchableOpacity>
+
+            {canManage && (
+              <TouchableOpacity style={styles.moreTile} activeOpacity={0.7} onPress={() => moreGo(() => setHostPanelVisible(true))}>
+                <View style={styles.moreIcon}><Ionicons name={chatLocked ? "lock-closed" : "construct"} size={22} color={chatLocked ? "#f1c40f" : "#fff"} /></View>
+                <Text allowFontScaling={false} style={styles.moreTxt} numberOfLines={1}>{isHost ? 'Host' : 'Admin'}</Text>
+              </TouchableOpacity>
+            )}
+
+            <TouchableOpacity style={styles.moreTile} activeOpacity={0.7} onPress={() => moreGo(() => setGiftersVisible(true))}>
+              <View style={styles.moreIcon}><MaterialCommunityIcons name="trophy" size={22} color={T.gold} /></View>
+              <Text allowFontScaling={false} style={styles.moreTxt} numberOfLines={1}>Top</Text>
+            </TouchableOpacity>
+
+            {currentUserRole !== 'listener' && (
+              <TouchableOpacity style={styles.moreTile} activeOpacity={0.7} onPress={muteSelf}>
+                <View style={styles.moreIcon}><Ionicons name={iAmMuted ? "mic-off" : "mic"} size={22} color={iAmMuted ? T.live : "#fff"} /></View>
+                <Text allowFontScaling={false} style={styles.moreTxt} numberOfLines={1}>{iAmMuted ? 'Unmute' : 'Mute'}</Text>
+              </TouchableOpacity>
+            )}
+
+            {currentUserRole !== 'listener' && (
+              <TouchableOpacity style={styles.moreTile} activeOpacity={0.7} onPress={() => moreGo(() => setMusicSheetVisible(true))}>
+                <View style={styles.moreIcon}><Ionicons name="musical-notes" size={22} color={music.playing ? "#2ee6a6" : "#fff"} /></View>
+                <Text allowFontScaling={false} style={styles.moreTxt} numberOfLines={1}>Music</Text>
+              </TouchableOpacity>
+            )}
+
+            <TouchableOpacity style={styles.moreTile} activeOpacity={0.7} onPress={() => moreGo(() => setGameOpen('teen'))}>
+              <View style={styles.moreIcon}><Text allowFontScaling={false} style={{ fontSize: 22 }}>🎴</Text></View>
+              <Text allowFontScaling={false} style={styles.moreTxt} numberOfLines={1}>Teen Patti</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.moreTile} activeOpacity={0.7} onPress={() => moreGo(() => setGameOpen('greedy'))}>
+              <View style={styles.moreIcon}><Text allowFontScaling={false} style={{ fontSize: 22 }}>🐰</Text></View>
+              <Text allowFontScaling={false} style={styles.moreTxt} numberOfLines={1}>Greedy</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.moreTile} activeOpacity={0.7} onPress={() => moreGo(() => setMenuVisible(true))}>
+              <View style={styles.moreIcon}><Ionicons name="ellipsis-horizontal" size={22} color="#fff" /></View>
+              <Text allowFontScaling={false} style={styles.moreTxt} numberOfLines={1}>More</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </SafeModal>
+
   </View>
 );
   
 }
 
 const styles = StyleSheet.create({
+  // ===== TopKing-style bottom bar + 3-line sheet =====
+  moreSheet: { backgroundColor: '#1C1E2E', borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingTop: 10, paddingHorizontal: 12 },
+  moreHandle: { alignSelf: 'center', width: 38, height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.25)', marginBottom: 12 },
+  moreGrid: { flexDirection: 'row', flexWrap: 'wrap' },
+  moreTile: { width: '25%', alignItems: 'center', marginBottom: 16 },
+  moreIcon: { width: 50, height: 50, borderRadius: 25, backgroundColor: 'rgba(255,255,255,0.1)', justifyContent: 'center', alignItems: 'center' },
+  moreTxt: { color: '#fff', fontSize: 11, fontWeight: '600', marginTop: 6, maxWidth: 74 },
+  welcomeBox: { alignSelf: 'flex-start', maxWidth: '78%', marginHorizontal: 14, marginBottom: 10, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: 'rgba(40,60,80,0.55)' },
+  welcomeTxt: { color: '#fff', fontSize: 14, lineHeight: 20 },
+  monthlyRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, marginTop: 8 },
+
   mainContainer: { flex: 1, backgroundColor: '#14465f' },
 
   toolbar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', paddingHorizontal: 8, marginTop: 6 },
@@ -7283,6 +7274,8 @@ chatArea: {
   flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, paddingTop: 10,
   minHeight: BOTTOM_BAR_H, backgroundColor: 'transparent' },
   inputBox: { flex: 1, height: 40, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 22, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, marginRight: 10 },
+  inputBoxIdle: { flex: 0, width: 98, height: 38, backgroundColor: 'rgba(0,0,0,0.45)', borderRadius: 19, paddingHorizontal: 10, marginRight: 2 },
+  tikiIcon: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
   inputStyle: { color: '#fff', fontSize: 14, flex: 1 },
   actionCircle: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center' },
@@ -7327,10 +7320,10 @@ padding:20
 },
 
 giftCircle:{
-width:44,
-height:44,
-borderRadius:22,
-  backgroundColor: "transparent",
+width:40,
+height:40,
+borderRadius:20,
+  backgroundColor: "rgba(0,0,0,0.45)",
 justifyContent:'center',
 alignItems:'center',
 marginLeft:8

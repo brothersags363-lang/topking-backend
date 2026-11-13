@@ -1,7 +1,7 @@
 // ChatRoom tab: Common / Family chips + live rooms list.
 // Rooms ka Firestore listener sirf is tab ke mount rehne par chalta hai.
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter } from '../../utils/safeRouter';
 import React, { memo, useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useRooms } from '../../utils/messages/useRooms';

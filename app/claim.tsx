@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 import { doc, onSnapshot } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
 import mobileAds, {
@@ -21,6 +21,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { scopedBackHandler } from '../utils/scopedBack';
 
 import { auth, db } from './firebaseConfig';
 import { callApi } from '../utils/api';
@@ -86,7 +87,7 @@ export default function ClaimScreen() {
   // Phone ka back button: profile pe wapas jao.
   // (Profile tab ka apna handler "/" pe bhejta hai, isliye yaha alag handler zaroori hai)
   useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+    const sub = scopedBackHandler('/claim', 'hardwareBackPress', () => {
       if (router.canGoBack()) router.back();
       else router.replace('/(tabs)/profile');
       return true;

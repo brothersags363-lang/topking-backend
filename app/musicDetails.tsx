@@ -15,6 +15,7 @@ import {
   Animated,
    BackHandler,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 import { Ionicons } from "@expo/vector-icons";
 import { Audio } from "../utils/audio";
 import {
@@ -29,7 +30,8 @@ import {
 
 import { db } from "./firebaseConfig";
 
-import { useRouter, useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 
 const { width } = Dimensions.get("window");
 
@@ -157,7 +159,7 @@ return () => {
 
 useEffect(() => {
 
-  const backHandler = BackHandler.addEventListener(
+  const backHandler = scopedBackHandler('/musicDetails', 
 
     "hardwareBackPress",
 

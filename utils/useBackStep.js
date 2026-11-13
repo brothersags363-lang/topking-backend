@@ -5,7 +5,7 @@
 // - sirf focused screen ka handler active rehta hai
 import { useEffect, useRef } from 'react';
 import { BackHandler } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter } from './safeRouter';
 import { useIsFocused } from '@react-navigation/native';
 
 export default function useBackStep(fallback = '/', extra) {

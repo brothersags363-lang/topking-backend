@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { View, Text, Image, TouchableOpacity, StyleSheet } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { doc, getDoc, getDocs, collection, query, where, onSnapshot } from "firebase/firestore";
 import { auth, db } from "../app/firebaseConfig";
 import { syncMyFamily } from "../utils/familyUtils";

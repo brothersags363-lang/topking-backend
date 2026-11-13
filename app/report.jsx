@@ -9,7 +9,8 @@ import {
   Alert
 } from "react-native";
 
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 
 import {
   addDoc,

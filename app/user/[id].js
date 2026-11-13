@@ -17,11 +17,8 @@ import {
 
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { VideoView, useVideoPlayer } from 'expo-video';
-import {
-  useLocalSearchParams,
-  useRouter,
-  usePathname,
-} from 'expo-router';
+import { useLocalSearchParams, usePathname } from 'expo-router';
+import { useRouter } from '../../utils/safeRouter';
 
 // FIREBASE
 import { db } from '../firebaseConfig';

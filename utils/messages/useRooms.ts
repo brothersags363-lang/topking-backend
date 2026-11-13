@@ -4,6 +4,7 @@ import { useNavigation } from 'expo-router';
 import { collection, getFirestore, onSnapshot } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import type { Room } from '../../components/messages/data';
+import { listenRecentRooms } from '../recentRooms';
 
 const HEARTBEAT_TIMEOUT = 10 * 60 * 1000;
 const ONE_DAY = 24 * 60 * 60 * 1000;
@@ -131,18 +132,22 @@ export function useRooms() {
     const start = () => {
       if (unsub) return;
       first = true;
-      unsub = onSnapshot(
-        collection(db, 'rooms'),
-        (snapshot) => {
+      // SPEED: sirf pichhle 24 ghante ke rooms (do query: createdAt number + Timestamp)
+      const parts: { [k: string]: Room[] } = { num: [], ts: [] };
+      unsub = listenRecentRooms(
+        db,
+        (snapshot: any, key: string) => {
           const list: Room[] = [];
           const now = Date.now();
-          snapshot.forEach((d) => {
+          snapshot.forEach((d: any) => {
             if (!d.exists()) return;
             const room = parseRoom(d.id, d.data(), now);
             if (room) list.push(room);
           });
-          list.sort((a, b) => b.createdAt - a.createdAt);
-          pending = list;
+          parts[key] = list;
+          const merged = [...parts.num, ...parts.ts];
+          merged.sort((a, b) => b.createdAt - a.createdAt);
+          pending = merged;
           setLoading(false);
           if (first) {
             first = false;
@@ -151,10 +156,8 @@ export function useRooms() {
             timer = setTimeout(flush, Math.max(0, FLUSH_GAP - (Date.now() - lastFlushAt)));
           }
         },
-        (err) => {
+        (err: any) => {
           console.log('Rooms error:', err);
-          roomsCache = [];
-          setRooms([]);
           setLoading(false);
         }
       );

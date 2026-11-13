@@ -14,8 +14,9 @@ import {
   Image,
   ActivityIndicator,
 } from 'react-native';
+import { scopedBackHandler } from '../utils/scopedBack';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 
 
 import { auth, db } from "./firebaseConfig";
@@ -64,7 +65,7 @@ export default function WalletScreen() {
 
 
     const subscription =
-      BackHandler.addEventListener(
+      scopedBackHandler('/wallet', 
         "hardwareBackPress",
         backAction
       );
@@ -77,8 +78,14 @@ export default function WalletScreen() {
   }, [router]);
 
   const [withdrawAmount, setWithdrawAmount] = useState('');
+const [submittingWithdraw, setSubmittingWithdraw] = useState(false);
 const [upiId, setUpiId] = useState('');
 const [withdrawHistory, setWithdrawHistory] = useState([]);
+const [wdStatusMap, setWdStatusMap] = useState<Record<string,string>>({});
+const liveStatus = (item: any) => {
+  const raw = wdStatusMap[item.id] || item.status || "Pending";
+  return raw === "Success" || raw === "Completed" ? "Completed" : raw;
+};
 
   const [stars, setStars] = useState(0);
 
@@ -220,6 +227,25 @@ setWithdrawHistory(data);
 return ()=>unsubscribe();
 
 },[]);
+
+// Status ka asli source: withdrawals collection (admin yahin Success/Failed karta hai)
+useEffect(() => {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return;
+  const q = query(collection(db, "withdrawals"), where("userId", "==", uid));
+  const unsub = onSnapshot(
+    q,
+    (snap) => {
+      const m: Record<string, string> = {};
+      snap.docs.forEach((d) => {
+        m[d.id] = String((d.data() as any).status || "Pending");
+      });
+      setWdStatusMap(m);
+    },
+    () => {}
+  );
+  return () => unsub();
+}, []);
 
 
 const getLevel = (stars) => {
@@ -460,158 +486,46 @@ const payout =
 
 
 
+if (submittingWithdraw) return;
+
 try {
 
+setSubmittingWithdraw(true);
+
 const uid = auth.currentUser?.uid;
+if (!uid) { alert("Please login again"); return; }
 
-if(!uid) return;
+const token = await auth.currentUser?.getIdToken();
 
+const res = await fetch(`${BACKEND}/withdraw/request`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+  },
+  body: JSON.stringify({
+    tk,
+    method: withdrawMethod,
+    accountName: cleanName,
+    mobile: cleanMobile,
+    upiId: cleanUpi,
+    accountNumber: cleanAccNo,
+    ifsc: cleanIfsc,
+  }),
+});
 
-const lastWithdrawQuery = query(
-  collection(
-    db,
-    "wallets",
-    uid,
-    "withdrawHistory"
-  ),
-  orderBy("createdAt", "desc")
-);
+const data = await res.json().catch(() => ({}));
 
-const lastWithdrawSnap = await getDocs(
-  lastWithdrawQuery
-);
-
-if (!lastWithdrawSnap.empty) {
-
-  const lastData =
-    lastWithdrawSnap.docs[0].data();
-
-  if (lastData.createdAt) {
-
-    const lastDate =
-      lastData.createdAt.toDate();
-
-    const now = new Date();
-
-    const diffDays =
-      (now - lastDate) /
-      (1000 * 60 * 60 * 24);
-
-    if (diffDays < 7) {
-
-      alert(
-        `You can withdraw again after ${Math.ceil(
-          7 - diffDays
-        )} days`
-      );
-
-      return;
-    }
-  }
+if (!res.ok || !data.success) {
+  alert(data.error || "Withdrawal request fail hui, dobara try karo");
+  return;
 }
-
-
-const userSnap = await getDoc(
-  doc(db, "users", uid)
-);
-
-const userData = userSnap.exists()
-  ? userSnap.data()
-  : {};
-
-const agencyId = userData.agencyId || "";
-const agencyName = userData.agencyName || "";
-
-
-await addDoc(
-
-collection(
-db,
-"wallets",
-uid,
-"withdrawHistory"
-),
-
-{
-
-userId: uid,
-
-agencyId,
-agencyName,
-
-accountName: cleanName,
-
-mobileNumber: cleanMobile,
-
-method: withdrawMethod,
-payout,
-
-amount: Number(withdrawAmount) * 37, // ₹
-tk: Number(withdrawAmount),          // TK
-giftStars: Number(withdrawAmount) * 600,
-
-upiId: withdrawMethod === "UPI" ? cleanUpi : "",
-
-status:"Pending",
-
-createdAt:serverTimestamp()
-
-}
-
-);
-
-
-await addDoc(
-
-collection(db,"withdrawals"),
-
-{
-
-userId: uid,
-
-
-name: userData.name || "",
-
-username: userData.username || "",
-
-profileImg: userData.profileImg || "",
-
-agencyId,
-agencyName,
-
-accountName: cleanName,
-
-mobileNumber: cleanMobile,
-
-method: withdrawMethod,
-payout,
-
-amount:Number(withdrawAmount),
-
-tk:Number(withdrawAmount),
-
-giftStars:Number(withdrawAmount)*600,
-
-upiId: withdrawMethod === "UPI" ? cleanUpi : "",
-
-status:"Pending",
-
-createdAt:serverTimestamp()
-
-}
-
-);
-
-
 
 alert("Withdrawal Request Submitted");
 setWithdrawModal(false);
 
 setAccountName("");
-
 setMobileNumber("");
-
-
 setWithdrawAmount("");
 setUpiId("");
 setAccountNumber("");
@@ -623,7 +537,10 @@ setWithdrawMethod("UPI");
 catch(error){
 
 console.log(error);
+alert("Network error, try again");
 
+} finally {
+  setSubmittingWithdraw(false);
 }
 
 };
@@ -794,7 +711,7 @@ const sendGift = async () => {
       // Receiver ko Gift Stars do (ye TK me withdraw ho sakte hai)
       t.set(
         receiverRef,
-        { receivedStars: increment(amount) },
+        { earnings: increment(amount), receivedStars: increment(amount) },
         { merge: true }
       );
 
@@ -1193,12 +1110,14 @@ color:"#888"
 
       <Text
         style={
-          item.status === "Completed"
+          (liveStatus(item) === "Completed")
             ? styles.completed
+            : liveStatus(item) === "Failed"
+            ? { color: "#ff3b30", fontWeight: "bold" }
             : styles.pending
         }
       >
-        {item.status}
+        {liveStatus(item)}
       </Text>
 
     </View>

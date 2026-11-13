@@ -1,4 +1,5 @@
-import { Stack, useRouter, usePathname, useGlobalSearchParams } from 'expo-router';
+import { Stack, usePathname, useGlobalSearchParams } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 import { useEffect, useRef } from 'react';
 import { Alert, AppState, BackHandler, Platform, View, Text, TouchableOpacity } from 'react-native';
 
@@ -16,9 +17,11 @@ import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore';
 
 import LiveMiniPlayer from '../components/LiveMiniPlayer';
+import ScreenDepthGate from '../components/ScreenDepthGate';
 import { LiveProvider } from '../context/LiveContext';
 import { API_BASE, registerDevice } from '../utils/api';
 import { onDeviceBanned } from '../utils/deviceId';
+import { setCurrentPath } from '../utils/scopedBack';
 import { auth, db, getFCMToken } from './firebaseConfig';
 
 
@@ -79,20 +82,31 @@ try {
 } catch (e) {}
 
 
+// Sirf ye chhota component route badalne par re-render hota hai (UI kuch nahi dikhata).
+function RouteTracker({ currentRef, pathRef }: { currentRef: any; pathRef: any }) {
+  const pathname = usePathname();
+  const params = useGlobalSearchParams();
+  const u = Array.isArray(params.userId) ? params.userId[0] : params.userId;
+  const idp = Array.isArray(params.id) ? params.id[0] : params.id;
+
+  useEffect(() => {
+    currentRef.current = { pathname, userId: u || '', id: idp || '' };
+    pathRef.current = pathname;
+    setCurrentPath(pathname); // scoped back handlers ko batao ki abhi kaunsi screen upar hai
+  }, [pathname, u, idp]);
+
+  return null;
+}
+
+
 export default function RootLayout() {
 
   const router = useRouter();
-  const pathname = usePathname();
-  const params = useGlobalSearchParams();
 
-  // Abhi kaunsi chat khuli hai - usi ka banner nahi dikhana
+  // Abhi kaunsi chat khuli hai - usi ka banner nahi dikhana.
+  // SPEED: usePathname/useGlobalSearchParams yaha NAHI hain (har navigation par poora
+  // root + LiveProvider re-render hota tha). Unhe chhota RouteTracker component sambhalta hai.
   const currentRef = useRef({ pathname: '', userId: '', id: '' });
-
-  useEffect(() => {
-    const u = Array.isArray(params.userId) ? params.userId[0] : params.userId;
-    const idp = Array.isArray(params.id) ? params.id[0] : params.id;
-    currentRef.current = { pathname, userId: u || '', id: idp || '' };
-  }, [pathname, params.userId]);
 
 
   useEffect(() => {
@@ -103,8 +117,7 @@ export default function RootLayout() {
   // SAFETY NET: kisi bhi screen par back dabane se app band na ho.
   // History hai to normal back (return false), history nahi hai to Home par jao.
   // Screen ka apna handler (wallet jaisa) pehle chalta hai; ye sabse last me.
-  const pathRef = useRef(pathname);
-  pathRef.current = pathname;
+  const pathRef = useRef('');
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       try {
@@ -271,7 +284,13 @@ export default function RootLayout() {
         screenOptions={{
           headerShown: false,
         }}
+        // Sirf upar ki 3 screens mounted; neeche wali unload (live/editor protected)
+        screenLayout={({ route, children }: any) => (
+          <ScreenDepthGate route={route}>{children}</ScreenDepthGate>
+        )}
       />
+
+      <RouteTracker currentRef={currentRef} pathRef={pathRef} />
 
       <LiveMiniPlayer />
 

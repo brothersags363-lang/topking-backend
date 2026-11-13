@@ -15,8 +15,9 @@ FlatList,
 ActivityIndicator,
 BackHandler,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 
 import { auth, db } from "./firebaseConfig";
 
@@ -48,7 +49,7 @@ const router = useRouter();
 // (Profile tab ka apna handler "/" pe bhejta hai, isliye yaha alag handler zaroori hai)
 // NOTE: ye early return (if(!agency) return null) se pehle hona chahiye.
 useEffect(() => {
-  const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+  const sub = scopedBackHandler('/useragency', "hardwareBackPress", () => {
     if (router.canGoBack()) router.back();
     else router.replace("/(tabs)/profile");
     return true;

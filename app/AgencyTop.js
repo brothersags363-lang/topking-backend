@@ -5,7 +5,7 @@ import {
   orderBy,
   query,
 } from "firebase/firestore";
-import { useCallback, useEffect, useMemo, useState, memo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -233,16 +233,210 @@ const AgencyRow = memo(function AgencyRow({ item, index, onPress }) {
   );
 });
 
+
+// PERF: popup ki saari state (joinStatus / sending) ab is alag component me
+// hai. Pehle ye AgencyTop me thi, to har "loading -> none -> pending"
+// change par poori leaderboard screen re-render hoti thi. Ab list ko
+// popup ke state change se koi matlab nahi -> scroll/tap smooth.
+const JoinPopup = memo(function JoinPopup({ agency, onClose }) {
+  // loading | none | pending | member | owner | in_other_agency | blocked
+  const [joinStatus, setJoinStatus] = useState("loading");
+  const [sending, setSending] = useState(false);
+  const agencyId = agency?.id;
+
+  useEffect(() => {
+    if (!agencyId) return;
+    let cancelled = false; // RACE FIX: jaldi dusri agency tap karne par purana response ignore
+    setJoinStatus("loading");
+    (async () => {
+      try {
+        const res = await callApi("/agency/join-status", { agencyId });
+        if (res && res.success === false) throw new Error(res.error);
+        if (!cancelled) {
+          setJoinStatus(res?.blocked ? "blocked" : res?.status || "none");
+        }
+      } catch (e) {
+        console.log("JOIN STATUS ERROR:", e);
+        if (!cancelled) setJoinStatus("none");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [agencyId]);
+
+  const handleClose = useCallback(() => {
+    if (sending) return;
+    onClose();
+  }, [sending, onClose]);
+
+  const sendJoinRequest = useCallback(async () => {
+    if (!agencyId || sending) return;
+    try {
+      setSending(true);
+      const res = await callApi("/agency/request-join", { agencyId });
+      if (res && res.success === false) throw new Error(res.error);
+      setJoinStatus("pending");
+      Alert.alert("Request Sent", "Agency owner accept karega to aap join ho jaoge.");
+    } catch (e) {
+      Alert.alert("Error", e?.message || "Request nahi bheji ja saki");
+    } finally {
+      setSending(false);
+    }
+  }, [agencyId, sending]);
+
+  const cancelJoinRequest = useCallback(async () => {
+    if (!agencyId || sending) return;
+    try {
+      setSending(true);
+      const res = await callApi("/agency/cancel-join-request", { agencyId });
+      if (res && res.success === false) throw new Error(res.error);
+      setJoinStatus("none");
+    } catch (e) {
+      Alert.alert("Error", e?.message || "Request cancel nahi ho saki");
+    } finally {
+      setSending(false);
+    }
+  }, [agencyId, sending]);
+
+  return (
+    <Modal
+      visible={!!agency}
+      transparent
+      animationType="fade"
+      onRequestClose={handleClose}
+    >
+      <View style={styles.modalBg}>
+          <View style={styles.popup}>
+            {agency && (
+              <>
+                <AgencyAvatar agency={agency} size={84} />
+                <Text numberOfLines={1} style={styles.popupName}>
+                  {agency.agencyName || "Unnamed Agency"}
+                </Text>
+                <Text style={styles.popupOwner}>
+                  {agency.ownerName
+                    ? `Owner • ${agency.ownerName}`
+                    : "Official Agency"}
+                </Text>
+
+                <View style={styles.popupStats}>
+                  <Ionicons name="star" size={13} color="#FFD34E" />
+                  <Text style={styles.popupStatText}>
+                    {formatNumber(agency.totalStars)} stars
+                  </Text>
+                  <View style={styles.dot} />
+                  <Ionicons name="people" size={12} color="#AEB9D8" />
+                  <Text style={styles.popupStatText}>
+                    {formatNumber(agency.totalMembers)} members
+                  </Text>
+                </View>
+
+                {joinStatus === "loading" ? (
+                  <ActivityIndicator
+                    color="#FFD34E"
+                    style={{ marginVertical: 22 }}
+                  />
+                ) : joinStatus === "none" ? (
+                  <>
+                    <Text style={styles.popupQuestion}>
+                      Is agency ko join request bhejni hai?
+                    </Text>
+                    <View style={styles.popupBtnRow}>
+                      <TouchableOpacity
+                        style={[styles.popupBtn, styles.rejectPopupBtn]}
+                        onPress={handleClose}
+                        disabled={sending}
+                      >
+                        <Text style={styles.rejectPopupText}>Reject</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.popupBtn, styles.sendPopupBtn]}
+                        onPress={sendJoinRequest}
+                        disabled={sending}
+                      >
+                        {sending ? (
+                          <ActivityIndicator color="#000" />
+                        ) : (
+                          <Text style={styles.sendPopupText}>Send Request</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                ) : joinStatus === "pending" ? (
+                  <>
+                    <Text style={styles.popupQuestion}>
+                      Request bhej di gayi hai. Agency owner ke accept karne ka
+                      intezaar hai.
+                    </Text>
+                    <View style={styles.popupBtnRow}>
+                      <TouchableOpacity
+                        style={[styles.popupBtn, styles.rejectPopupBtn]}
+                        onPress={cancelJoinRequest}
+                        disabled={sending}
+                      >
+                        {sending ? (
+                          <ActivityIndicator color="#fff" />
+                        ) : (
+                          <Text style={styles.rejectPopupText}>
+                            Cancel Request
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.popupBtn, styles.sendPopupBtn]}
+                        onPress={handleClose}
+                      >
+                        <Text style={styles.sendPopupText}>OK</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.popupQuestion}>
+                      {joinStatus === "member"
+                        ? "Aap is agency ke member ho."
+                        : joinStatus === "owner"
+                        ? "Ye aapki apni agency hai."
+                        : joinStatus === "blocked"
+                        ? "Ye agency abhi available nahi hai."
+                        : "Aap pehle se kisi agency me ho."}
+                    </Text>
+                    <TouchableOpacity
+                      style={[styles.popupBtn, styles.sendPopupBtn, { alignSelf: "stretch" }]}
+                      onPress={handleClose}
+                    >
+                      <Text style={styles.sendPopupText}>OK</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+              </>
+            )}
+          </View>
+      </View>
+    </Modal>
+  );
+});
+
+// Snapshot dubara aane par jo agency badli nahi, uska purana object reuse
+// hota hai -> memo() rows/podium cards re-render hi nahi karte.
+const SAME_KEYS = [
+  "agencyName",
+  "logo",
+  "ownerName",
+  "ownerUserId",
+  "totalMembers",
+  "totalStars",
+  "status",
+];
+const sameAgency = (old, data) => SAME_KEYS.every((k) => old[k] === data[k]);
+
 export default function AgencyTop({ navigation, router }) {
   const [agencies, setAgencies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAll, setShowAll] = useState(false);
-
-  // JOIN REQUEST POPUP
   const [selectedAgency, setSelectedAgency] = useState(null);
-  // loading | none | pending | member | owner | in_other_agency | blocked
-  const [joinStatus, setJoinStatus] = useState("loading");
-  const [sending, setSending] = useState(false);
+  const prevRef = useRef(new Map());
 
   useEffect(() => {
     const q = query(
@@ -253,10 +447,20 @@ export default function AgencyTop({ navigation, router }) {
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
-        const rows = snapshot.docs
-          .map((item) => ({ id: item.id, ...item.data() }))
-          .filter((item) => item.status !== "blocked");
+        const prev = prevRef.current;
+        const next = new Map();
+        const rows = [];
 
+        snapshot.docs.forEach((d) => {
+          const data = d.data();
+          if (data.status === "blocked") return;
+          const old = prev.get(d.id);
+          const item = old && sameAgency(old, data) ? old : { id: d.id, ...data };
+          next.set(d.id, item);
+          rows.push(item);
+        });
+
+        prevRef.current = next;
         setAgencies(rows);
         setLoading(false);
       },
@@ -269,11 +473,6 @@ export default function AgencyTop({ navigation, router }) {
     return unsubscribe;
   }, []);
 
-  // BUG FIX: topThree agencies podium me alag se dikhti hain, lekin list
-  // (FlatList) pehle "agencies"/"visibleAgencies" (index 0 se) use kar rahi
-  // thi -> top 3 agencies list me DUPLICATE ho rahi thi aur galat rank
-  // number dikha rahi thi (offset +3 lagne ke bawajood data start index 0
-  // se tha). Ab list sirf "rest" (index 3 se aage) dikhayegi.
   const topThree = useMemo(() => agencies.slice(0, 3), [agencies]);
   const rest = useMemo(() => agencies.slice(3), [agencies]);
 
@@ -287,57 +486,9 @@ export default function AgencyTop({ navigation, router }) {
     else if (navigation?.goBack) navigation.goBack();
   }, [router, navigation]);
 
-  // Agency par tap -> popup khulta hai (request bhejo ya cancel karo)
-  const openAgency = useCallback(async (agency) => {
-    setSelectedAgency(agency);
-    setJoinStatus("loading");
-    try {
-      const res = await callApi("/agency/join-status", { agencyId: agency.id });
-      if (res && res.success === false) throw new Error(res.error);
-      setJoinStatus(res?.blocked ? "blocked" : res?.status || "none");
-    } catch (e) {
-      console.log("JOIN STATUS ERROR:", e);
-      setJoinStatus("none");
-    }
-  }, []);
-
-  const closePopup = useCallback(() => {
-    if (sending) return;
-    setSelectedAgency(null);
-  }, [sending]);
-
-  const sendJoinRequest = useCallback(async () => {
-    if (!selectedAgency || sending) return;
-    try {
-      setSending(true);
-      const res = await callApi("/agency/request-join", {
-        agencyId: selectedAgency.id,
-      });
-      if (res && res.success === false) throw new Error(res.error);
-      setJoinStatus("pending");
-      Alert.alert("Request Sent", "Agency owner accept karega to aap join ho jaoge.");
-    } catch (e) {
-      Alert.alert("Error", e?.message || "Request nahi bheji ja saki");
-    } finally {
-      setSending(false);
-    }
-  }, [selectedAgency, sending]);
-
-  const cancelJoinRequest = useCallback(async () => {
-    if (!selectedAgency || sending) return;
-    try {
-      setSending(true);
-      const res = await callApi("/agency/cancel-join-request", {
-        agencyId: selectedAgency.id,
-      });
-      if (res && res.success === false) throw new Error(res.error);
-      setJoinStatus("none");
-    } catch (e) {
-      Alert.alert("Error", e?.message || "Request cancel nahi ho saki");
-    } finally {
-      setSending(false);
-    }
-  }, [selectedAgency, sending]);
+  // Tap -> sirf agency set hoti hai (instant). Status fetch popup khud karta hai.
+  const openAgency = useCallback((agency) => setSelectedAgency(agency), []);
+  const closePopup = useCallback(() => setSelectedAgency(null), []);
 
   // Stable renderItem reference for FlatList -> kam re-renders, smooth scroll.
   // "rest" list ka pehla item asal me overall #4 rank hai (top 3 podium me
@@ -480,121 +631,7 @@ export default function AgencyTop({ navigation, router }) {
       </View>
 
       {/* Agency join request popup */}
-      <Modal
-        visible={!!selectedAgency}
-        transparent
-        animationType="fade"
-        onRequestClose={closePopup}
-      >
-        <View style={styles.modalBg}>
-          <View style={styles.popup}>
-            {selectedAgency && (
-              <>
-                <AgencyAvatar agency={selectedAgency} size={84} />
-                <Text numberOfLines={1} style={styles.popupName}>
-                  {selectedAgency.agencyName || "Unnamed Agency"}
-                </Text>
-                <Text style={styles.popupOwner}>
-                  {selectedAgency.ownerName
-                    ? `Owner • ${selectedAgency.ownerName}`
-                    : "Official Agency"}
-                </Text>
-
-                <View style={styles.popupStats}>
-                  <Ionicons name="star" size={13} color="#FFD34E" />
-                  <Text style={styles.popupStatText}>
-                    {formatNumber(selectedAgency.totalStars)} stars
-                  </Text>
-                  <View style={styles.dot} />
-                  <Ionicons name="people" size={12} color="#AEB9D8" />
-                  <Text style={styles.popupStatText}>
-                    {formatNumber(selectedAgency.totalMembers)} members
-                  </Text>
-                </View>
-
-                {joinStatus === "loading" ? (
-                  <ActivityIndicator
-                    color="#FFD34E"
-                    style={{ marginVertical: 22 }}
-                  />
-                ) : joinStatus === "none" ? (
-                  <>
-                    <Text style={styles.popupQuestion}>
-                      Is agency ko join request bhejni hai?
-                    </Text>
-                    <View style={styles.popupBtnRow}>
-                      <TouchableOpacity
-                        style={[styles.popupBtn, styles.rejectPopupBtn]}
-                        onPress={closePopup}
-                        disabled={sending}
-                      >
-                        <Text style={styles.rejectPopupText}>Reject</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={[styles.popupBtn, styles.sendPopupBtn]}
-                        onPress={sendJoinRequest}
-                        disabled={sending}
-                      >
-                        {sending ? (
-                          <ActivityIndicator color="#000" />
-                        ) : (
-                          <Text style={styles.sendPopupText}>Send Request</Text>
-                        )}
-                      </TouchableOpacity>
-                    </View>
-                  </>
-                ) : joinStatus === "pending" ? (
-                  <>
-                    <Text style={styles.popupQuestion}>
-                      Request bhej di gayi hai. Agency owner ke accept karne ka
-                      intezaar hai.
-                    </Text>
-                    <View style={styles.popupBtnRow}>
-                      <TouchableOpacity
-                        style={[styles.popupBtn, styles.rejectPopupBtn]}
-                        onPress={cancelJoinRequest}
-                        disabled={sending}
-                      >
-                        {sending ? (
-                          <ActivityIndicator color="#fff" />
-                        ) : (
-                          <Text style={styles.rejectPopupText}>
-                            Cancel Request
-                          </Text>
-                        )}
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={[styles.popupBtn, styles.sendPopupBtn]}
-                        onPress={closePopup}
-                      >
-                        <Text style={styles.sendPopupText}>OK</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </>
-                ) : (
-                  <>
-                    <Text style={styles.popupQuestion}>
-                      {joinStatus === "member"
-                        ? "Aap is agency ke member ho."
-                        : joinStatus === "owner"
-                        ? "Ye aapki apni agency hai."
-                        : joinStatus === "blocked"
-                        ? "Ye agency abhi available nahi hai."
-                        : "Aap pehle se kisi agency me ho."}
-                    </Text>
-                    <TouchableOpacity
-                      style={[styles.popupBtn, styles.sendPopupBtn, { alignSelf: "stretch" }]}
-                      onPress={closePopup}
-                    >
-                      <Text style={styles.sendPopupText}>OK</Text>
-                    </TouchableOpacity>
-                  </>
-                )}
-              </>
-            )}
-          </View>
-        </View>
-      </Modal>
+      <JoinPopup agency={selectedAgency} onClose={closePopup} />
     </SafeAreaView>
   );
 }

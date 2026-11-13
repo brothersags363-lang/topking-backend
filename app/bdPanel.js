@@ -11,7 +11,8 @@ import {
   Alert,
   BackHandler,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { scopedBackHandler } from "../utils/scopedBack";
+import { useRouter } from "../utils/safeRouter";
 import { callApi } from "../utils/api";
 import useIsAdmin from "./useIsAdmin";
 import useIsOfficial from "./useIsOfficial";
@@ -32,7 +33,7 @@ export default function BDPanel() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+    const sub = scopedBackHandler('/bdPanel', "hardwareBackPress", () => {
       router.back();
       return true;
     });

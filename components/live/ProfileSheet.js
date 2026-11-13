@@ -3,7 +3,7 @@
 // Use: LiveRoom, LivePrivate, MultiGuestRoom, videolive
 import React, { useEffect, useState } from "react";
 import { View, Text, Image, TouchableOpacity, Modal, StyleSheet } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter } from "../../utils/safeRouter";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { doc, getDoc } from "firebase/firestore";
 import LevelFrame from "../LevelFrame";

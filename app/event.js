@@ -14,9 +14,10 @@ import {
   BackHandler,
   Dimensions,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import FastImage from "../components/FastImage";
 import { callApi } from "../utils/api";
 
@@ -26,7 +27,7 @@ import { callApi } from "../utils/api";
 
 // Event 10 November se 10 December tak (month 10 = November, 11 = December)
 // NOTE: server.js me EVENT_START_MS / EVENT_END_MS bhi yahi dates hain - dono saath badalna.
-const EVENT_START = new Date(2026, 10, 1, 0, 0, 0);
+const EVENT_START = new Date(2026, 10, 10, 0, 0, 0);
 const EVENT_END = new Date(2026, 11, 10, 23, 59, 59);
 
 // Auto refresh (millisecond). Server 60 sec cache karta hai, isliye isse kam mat karo.
@@ -50,11 +51,11 @@ const getStatus = () => {
   const now = Date.now();
   if (now < EVENT_START.getTime()) {
     const days = Math.ceil((EVENT_START.getTime() - now) / 86400000);
-    return { label: `${days} din baad shuru`, color: "#FFB020" };
+    return { label: `Starts in ${days} ${days === 1 ? "day" : "days"}`, color: "#FFB020" };
   }
-  if (now > EVENT_END.getTime()) return { label: "Event khatam", color: "#999" };
+  if (now > EVENT_END.getTime()) return { label: "Event ended", color: "#999" };
   const days = Math.ceil((EVENT_END.getTime() - now) / 86400000);
-  return { label: `LIVE • ${days} din baaki`, color: "#12b886" };
+  return { label: `LIVE • ${days} ${days === 1 ? "day" : "days"} left`, color: "#12b886" };
 };
 
 /* =====================================================
@@ -278,10 +279,10 @@ const PodiumCard = memo(function PodiumCard({ rank, user, stars, tickLabel, tick
         {user ? (
           <>
             <Text style={[styles.podViewsBig, first && { color: GOLD }]}>{fmt(user.views)}</Text>
-            <Text style={styles.podViews}>total views · {fmt(user.videos)} video</Text>
+            <Text style={styles.podViews}>total views · {fmt(user.videos)} {user.videos === 1 ? "video" : "videos"}</Text>
           </>
         ) : (
-          <Text style={styles.podViews}>abhi khali</Text>
+          <Text style={styles.podViews}>empty</Text>
         )}
 
         <View style={styles.podStars}>
@@ -313,7 +314,7 @@ const BoardRow = memo(function BoardRow({ user, index, max }) {
         <Text style={styles.rowName} numberOfLines={1}>
           {user.name}
         </Text>
-        <Text style={styles.rowSub}>{fmt(user.videos)} video is event me</Text>
+        <Text style={styles.rowSub}>{fmt(user.videos)} {user.videos === 1 ? "video" : "videos"} in this event</Text>
         <View style={styles.bar}>
           <View style={[styles.barFill, { width: `${pct}%`, backgroundColor: top ? GOLD : "#5865c9" }]} />
         </View>
@@ -359,7 +360,7 @@ const AgencyTile = memo(function AgencyTile({ agency, n, ticks, first, delay }) 
                 {agency.name}
               </Text>
             ) : (
-              <Text style={styles.agSub}>Abhi koi agency nahi</Text>
+              <Text style={styles.agSub}>No agency yet</Text>
             )}
           </View>
         </View>
@@ -375,7 +376,7 @@ const AgencyTile = memo(function AgencyTile({ agency, n, ticks, first, delay }) 
               <View style={[styles.agBarFill, { width: `${Math.max(pct, 2)}%` }]} />
             </View>
             <Text style={styles.agSub}>
-              {pct}% poora · {fmt(agency.members)} member · {fmt(agency.views)} views
+              {pct}% complete · {fmt(agency.members)} {agency.members === 1 ? "member" : "members"} · {fmt(agency.views)} views
             </Text>
           </View>
         ) : null}
@@ -414,7 +415,8 @@ export default function EventScreen() {
       setBoard(r);
       setError("");
     } catch (e) {
-      if (!silent) setError((e && e.message) || "Event data load nahi hua");
+      if (!silent) console.log("Event load error:", e && e.message);
+        setError("Could not load event data. Please check your connection and try again.");
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -433,7 +435,7 @@ export default function EventScreen() {
   }, [load]);
 
   useEffect(() => {
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+    const sub = scopedBackHandler('/event', "hardwareBackPress", () => {
       router.back();
       return true;
     });
@@ -482,15 +484,15 @@ export default function EventScreen() {
           </FadeUp>
 
           <FadeUp delay={80}>
-            <Text style={styles.heroTag}>TOPKING · EK MAHINE KA BADA MUKABLA</Text>
+            <Text style={styles.heroTag}>TOPKING · THE BIGGEST 1-MONTH CONTEST</Text>
             <Text style={styles.heroH1}>TopKing</Text>
             <Text style={[styles.heroH1, { color: GOLD }]}>Event</Text>
           </FadeUp>
 
           <FadeUp delay={160}>
             <Text style={styles.heroP}>
-              TopKing ke <Text style={{ color: "#fff", fontWeight: "800" }}>saare users</Text> is event me hissa le sakte
-              hain. Sabse zyada views laao aur Stars aur Tik jeeto.
+              <Text style={{ color: "#fff", fontWeight: "800" }}>All TopKing users</Text> can join this event. Get the
+              most views and win Stars and a Tik.
             </Text>
           </FadeUp>
 
@@ -509,7 +511,7 @@ export default function EventScreen() {
           </FadeUp>
 
           <View style={styles.pills}>
-            {["Sab users participate karein", "1 mahina", "Top 3 jeetenge"].map((t) => (
+            {["Everyone can participate", "1 month", "Top 3 win"].map((t) => (
               <View key={t} style={styles.pill}>
                 <Text style={styles.pillText}>{t}</Text>
               </View>
@@ -520,12 +522,12 @@ export default function EventScreen() {
         {/* HOW TO WIN */}
         <View style={styles.sec}>
           <View style={styles.how}>
-            <Text style={styles.howBig}>1 MAHINA</Text>
-            <Text style={styles.howH}>Kaise jeetna hai?</Text>
+            <Text style={styles.howBig}>1 MONTH</Text>
+            <Text style={styles.howH}>How to win?</Text>
             <Text style={styles.howP}>
-              {fmtDate(EVENT_START)} se {fmtDate(EVENT_END)} ke beech jo videos aap post karoge, un{" "}
-              <Text style={{ color: "#fff", fontWeight: "800" }}>sabhi videos ke milake total views</Text> gine jayenge.
-              Jiske total views sabse zyada honge, unme se Top 1, Top 2 aur Top 3 select kiye jayenge.
+              All videos you post between {fmtDate(EVENT_START)} and {fmtDate(EVENT_END)} are counted, and their{" "}
+              <Text style={{ color: "#fff", fontWeight: "800" }}>combined total views</Text> become your score.
+              The creators with the highest total views win Top 1, Top 2 and Top 3.
             </Text>
           </View>
         </View>
@@ -539,7 +541,7 @@ export default function EventScreen() {
             <Ionicons name="cloud-offline" size={34} color="#8a93b5" />
             <Text style={styles.errText}>{error}</Text>
             <TouchableOpacity style={styles.retryBtn} activeOpacity={0.8} onPress={() => { setLoading(true); load(false); }}>
-              <Text style={styles.retryText}>Dobara try karo</Text>
+              <Text style={styles.retryText}>Try again</Text>
             </TouchableOpacity>
           </View>
         ) : (
@@ -559,9 +561,9 @@ export default function EventScreen() {
                     <>
                       <Text style={styles.meRank}>#{me.rank}</Text>
                       <View style={{ flex: 1, marginLeft: 12 }}>
-                        <Text style={styles.meTitle}>Aapki rank</Text>
+                        <Text style={styles.meTitle}>Your rank</Text>
                         <Text style={styles.meSub}>
-                          {fmt(me.videos)} video · {fmt(me.views)} total views
+                          {fmt(me.videos)} {me.videos === 1 ? "video" : "videos"} · {fmt(me.views)} total views
                         </Text>
                       </View>
                     </>
@@ -569,8 +571,8 @@ export default function EventScreen() {
                     <>
                       <Ionicons name="videocam" size={26} color={GOLD} />
                       <View style={{ flex: 1, marginLeft: 12 }}>
-                        <Text style={styles.meTitle}>Aap abhi race me nahi ho</Text>
-                        <Text style={styles.meSub}>Event ke dauran video daalo, views judte jayenge.</Text>
+                        <Text style={styles.meTitle}>You are not in the race yet</Text>
+                        <Text style={styles.meSub}>Post a video during the event and your views will add up.</Text>
                       </View>
                     </>
                   )}
@@ -580,8 +582,8 @@ export default function EventScreen() {
 
             {/* CREATOR PRIZES */}
             <View style={styles.sec}>
-              <Text style={styles.label}>CREATORS KE INAAM</Text>
-              <Text style={styles.h2}>Top 3 ko Stars aur Tik</Text>
+              <Text style={styles.label}>CREATOR PRIZES</Text>
+              <Text style={styles.h2}>Top 3 win Stars and a Tik</Text>
 
               {/* Top 1, 2, 3 - ek hi line me (2 | 1 | 3 podium) */}
               <View style={styles.podRow}>
@@ -616,9 +618,9 @@ export default function EventScreen() {
             {/* LIVE RANKING */}
             <View style={styles.sec}>
               <Text style={styles.label}>LIVE RANKING</Text>
-              <Text style={styles.h2}>Top 10 me kaun kis number par</Text>
+              <Text style={styles.h2}>Top 10 standings</Text>
               <Text style={styles.sub}>
-                Har creator ke is event me dale gaye saare videos ke views milake total. Har 1 minute me apne aap update hota hai.
+                Each creator's score is the combined views of all videos posted during this event. Updates automatically every minute.
               </Text>
 
               {top10.length === 0 ? (
@@ -626,8 +628,8 @@ export default function EventScreen() {
                   <Ionicons name="hourglass" size={28} color="#8a93b5" />
                   <Text style={styles.emptyText}>
                     {started
-                      ? "Abhi tak kisi ne event me video nahi dala. Pehle video daalo aur No.1 bano!"
-                      : `Event ${fmtDate(EVENT_START)} se shuru hoga. Shuru hote hi yahan naam, photo aur total views dikhenge.`}
+                      ? "Nobody has posted an event video yet. Post the first one and take the No.1 spot!"
+                      : `The event starts on ${fmtDate(EVENT_START)}. Once it begins, names, photos and total views will appear here.`}
                   </Text>
                 </View>
               ) : (
@@ -637,10 +639,10 @@ export default function EventScreen() {
 
             {/* AGENCY */}
             <View style={[styles.sec, styles.agency]}>
-              <Text style={[styles.label, { color: GOLD }]}>AGENCY KE INAAM</Text>
-              <Text style={styles.h2}>Agency Top 3 ko White Tik</Text>
+              <Text style={[styles.label, { color: GOLD }]}>AGENCY PRIZES</Text>
+              <Text style={styles.h2}>Top 3 agencies win White Tik</Text>
               <Text style={[styles.sub, { color: "#b7bfe4" }]}>
-                Agency ke saare members ko jitne stars mile, un sabko jodke agency ka total banta hai (jaise 5 member ko 10+50+60+70+2 = 192 stars). Sabse upar wali agency ko double White Tik.
+                An agency's score is the total Stars received by all its members (for example, 5 members who received 10 + 50 + 60 + 70 + 2 = 192 Stars). The top agency gets a double White Tik.
               </Text>
               <AgencyTile n={1} ticks={2} first delay={60} agency={agencies[0]} />
               <AgencyTile n={2} ticks={1} delay={120} agency={agencies[1]} />
@@ -652,9 +654,9 @@ export default function EventScreen() {
         {/* FOOTER */}
         <View style={styles.cta}>
           <Ionicons name="ribbon" size={34} color={GOLD} />
-          <Text style={styles.ctaH}>Taaj aapka intezaar kar raha hai</Text>
-          <Text style={styles.ctaP}>Aaj se hi videos daalo, views badhao aur TopKing banne ki race me aa jao.</Text>
-          <Text style={styles.ctaP}>Koi sawal ho to humse sampark karein.</Text>
+          <Text style={styles.ctaH}>The crown is waiting for you</Text>
+          <Text style={styles.ctaP}>Start posting videos today, grow your views and join the race to become TopKing.</Text>
+          <Text style={styles.ctaP}>Contact us if you have any questions.</Text>
           <Text style={styles.ctaBy}>TopKing Team</Text>
         </View>
       </ScrollView>

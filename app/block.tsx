@@ -10,10 +10,11 @@ import {
   Alert,
   BackHandler
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 
 import { Ionicons } from "@expo/vector-icons";
 
-import { useRouter, } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 
 import {
   collection,
@@ -37,7 +38,7 @@ useEffect(() => {
     return true;
   };
 
-  const subscription = BackHandler.addEventListener(
+  const subscription = scopedBackHandler('/block', 
     "hardwareBackPress",
     handleBackPress
   );

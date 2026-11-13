@@ -21,19 +21,24 @@ const BET_MS = { greedy: 15000, teenPatti: 26000 }; // client ke BET_MS se SAME.
 const EARLY_GRACE_MS = 400; // client clock ki chhoti galti ke liye
 const ROUND_TOLERANCE = 1; // client clock thoda aage/peeche ho ya network slow ho to bhi round accept ho
 const PAYOUT_MULT = 2.9;
-// Wheel (ring order, upar se clockwise). Client GreedyGame.js ke ITEMS se SAME mult rakhna.
-// Weights fixed aur sabke liye same (bet dekhkar result nahi badalta). NOTE: 8 ke 8 khane paying hain => house edge sirf ~0.5%.
+// Wheel (ring order, upar se clockwise). Client GreedyGame.js ke ITEMS se BILKUL SAME mult: [10,15,25,45,5,5,5,5]
+// 0-3 = meat (Pizza group), 4-7 = veg (Salad group).
+// ODDS: har khane ki probability = (1/mult) / sum(1/mult)  => har khane ka RTP ~97.2% (house edge ~2.8%),
+// chahe user kisi bhi khane par bet lagaye. Bada mult (45x) apne aap bahut kam aata hai (~2.2% = lagbhag 46 round me 1 baar).
+// Weights bet dekhkar kabhi nahi badalte. Winner crypto-secure randomInt se aata hai => andaza lagana possible nahi.
 const ITEMS = [
-  { mult: 12, weight: 0.0812, type: 'meat' },
-  { mult: 8, weight: 0.1218, type: 'meat' },
-  { mult: 5, weight: 0.1949, type: 'meat' },
-  { mult: 28, weight: 0.0348, type: 'meat' },
-  { mult: 3, weight: 0.3316, type: 'veg' },
-  { mult: 12, weight: 0.0829, type: 'veg' },
-  { mult: 8, weight: 0.1243, type: 'veg' },
-  { mult: 35, weight: 0.0285, type: 'veg' },
+  { mult: 10, weight: 0.09719, type: 'meat' },
+  { mult: 15, weight: 0.06479, type: 'meat' },
+  { mult: 25, weight: 0.03888, type: 'meat' },
+  { mult: 45, weight: 0.02160, type: 'meat' },
+  { mult: 5, weight: 0.19438, type: 'veg' },
+  { mult: 5, weight: 0.19438, type: 'veg' },
+  { mult: 5, weight: 0.19438, type: 'veg' },
+  { mult: 5, weight: 0.19438, type: 'veg' },
 ];
-const SALAD_MULT = 1.5;
+// Group bets (client SALAD_MULT / PIZZA_MULT se SAME). Salad = veg jeete (77.7% chance) => 1.2x par RTP ~93%.
+// Pehle 1.5x tha jo company ko loss karata (0.777*1.5 = 116%). Pizza = meat jeete (22.2%) => 2.3x par RTP ~51%.
+const SALAD_MULT = 1.2;
 const PIZZA_MULT = 2.3;
 const SUITS = ['♠', '♥', '♣', '♦'];
 const HAND_NAME = { 6: 'Trail', 5: 'Pure Seq', 4: 'Sequence', 3: 'Color', 2: 'Pair', 1: 'High Card' };
@@ -56,7 +61,7 @@ function validateBets(game, raw) {
 }
 
 function greedyResult(bets) {
-  const r = randomInt(0, 1000000) / 1000000;
+  const r = randomInt(0, 100000000) / 100000000;
   let sum = 0, winner = ITEMS.length - 1;
   for (let i = 0; i < ITEMS.length; i++) { sum += ITEMS[i].weight; if (r < sum) { winner = i; break; } }
   const item = ITEMS[winner];

@@ -13,8 +13,9 @@ Modal,
 BackHandler,
 Alert,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 
 import {
 collection,
@@ -124,7 +125,7 @@ return false;
 
 };
 
-const backHandler = BackHandler.addEventListener(
+const backHandler = scopedBackHandler('/agencyPanel', 
 "hardwareBackPress",
 backAction
 );

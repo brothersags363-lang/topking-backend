@@ -13,7 +13,8 @@ import {
   Alert,
   BackHandler,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { scopedBackHandler } from "../utils/scopedBack";
+import { useRouter } from "../utils/safeRouter";
 import * as ImagePicker from "expo-image-picker";
 import { callApi } from "../utils/api";
 
@@ -44,7 +45,7 @@ export default function BDPage() {
   const [hostsLoading, setHostsLoading] = useState(false);
 
   useEffect(() => {
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+    const sub = scopedBackHandler('/bd', "hardwareBackPress", () => {
       if (showForm) {
         setShowForm(false);
         return true;

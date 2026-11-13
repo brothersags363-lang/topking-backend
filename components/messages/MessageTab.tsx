@@ -1,5 +1,5 @@
 // Message tab: Followers/Comments/Likes + static rows (header) aur friends chats (list)
-import { useRouter } from 'expo-router';
+import { useRouter } from '../../utils/safeRouter';
 import React, { memo, useCallback, useMemo } from 'react';
 import { ActivityIndicator, FlatList, StyleSheet, View } from 'react-native';
 import FriendRow from './FriendRow';

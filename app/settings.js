@@ -12,9 +12,10 @@ import {
   Linking,
   Switch,
 } from "react-native";
+import { scopedBackHandler } from "../utils/scopedBack";
 
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
@@ -154,7 +155,7 @@ export default function Settings() {
       return true;
     };
 
-    const subscription = BackHandler.addEventListener(
+    const subscription = scopedBackHandler('/settings', 
       "hardwareBackPress",
       handleBackButton
     );

@@ -1,4 +1,5 @@
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
+import { useRouter } from "../utils/safeRouter";
 import { doc, getDoc } from "firebase/firestore";
 import { useEffect } from "react";
 import { ActivityIndicator, Alert, View } from "react-native";

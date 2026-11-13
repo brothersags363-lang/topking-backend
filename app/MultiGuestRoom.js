@@ -20,10 +20,12 @@ import {
   Keyboard, KeyboardAvoidingView, Modal, PermissionsAndroid, Platform, SafeAreaView, ScrollView,
   Share, StatusBar, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View,
 } from 'react-native';
+import { scopedBackHandler } from '../utils/scopedBack';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import * as ScreenCapture from 'expo-screen-capture';
 import LottieView from 'lottie-react-native';
@@ -42,6 +44,7 @@ import { useLiveBanGuard } from '../utils/liveBan';
 import { useBlockedIds } from '../utils/useBlockedIds';
 import { gifts } from '../assets/giftsData';
 import { giftHtml } from '../assets/giftWeb';
+import GiftImage, { isImgGift } from '../components/GiftImage';
 import LevelFrame, { getSpecialKey } from '../components/LevelFrame';
 import JoinEntry from '../components/live/JoinEntry';
 import UserTick from '../components/UserTick';
@@ -513,7 +516,9 @@ const GiftOverlay = memo(({ activeGift, playKey, onFinish }) => {
           scrollEnabled={false}
           pointerEvents="none"
         />
-      ) : (
+      ) : isImgGift(activeGift) ? (
+<GiftImage key={playKey} name={activeGift.slice(4)} />
+) : (
         <LottieView
           key={playKey}
           source={activeGift}
@@ -601,7 +606,7 @@ const ChatItem = memo(({ chat, onUser }) => {
         <TouchableOpacity activeOpacity={0.8} onPress={openUser}>
           <Image source={{ uri: chat.userImg || DEFAULT_AVATAR }} style={styles.sysAva} />
           {(chat.level >= 10 || chat.special || !!chat.senderId) && (
-            <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated style={styles.sysFrame} />
+            <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated={CHAT_FRAME_ANIM} style={styles.sysFrame} />
           )}
         </TouchableOpacity>
         <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginLeft: 6 }}>
@@ -644,7 +649,7 @@ const ChatItem = memo(({ chat, onUser }) => {
       <TouchableOpacity activeOpacity={0.8} onPress={openUser} style={{ width: 38, height: 38, justifyContent: 'center', alignItems: 'center' }}>
         <Image source={{ uri: chat.userImg || DEFAULT_AVATAR }} style={styles.chatAva} />
         {(chat.level >= 10 || chat.special || !!chat.senderId) && (
-          <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated style={styles.chatFrame} />
+          <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated={CHAT_FRAME_ANIM} style={styles.chatFrame} />
         )}
       </TouchableOpacity>
       <View style={styles.chatContent}>
@@ -1068,7 +1073,7 @@ export default function MultiGuestRoom() {
     const t = setInterval(beat, HEARTBEAT_INTERVAL);
     const ping = () => {
       if (AppState.currentState !== 'active') return;
-      callApi('/reward/live-ping', { roomId }).catch(() => {});
+      /* live reward sirf videolive me */
     };
     ping();
     const t2 = setInterval(ping, 30000);
@@ -1503,7 +1508,7 @@ export default function MultiGuestRoom() {
   };
 
   useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+    const sub = scopedBackHandler('/MultiGuestRoom', 'hardwareBackPress', () => {
       if (chatOpen) { setChatOpen(false); Keyboard.dismiss(); return true; }
       setExitVisible(true);
       return true;
@@ -1545,7 +1550,7 @@ export default function MultiGuestRoom() {
 
   const shareRoom = async () => {
     try {
-      await Share.share({ message: `🎥 Join ${room?.hostName || 'Host'}'s Live now!\nhttps://topking.app/live/${roomId}` });
+      await Share.share({ message: `🎥 Join ${room?.hostName || 'Host'}'s Live now!\nhttps://topking-short.vercel.app/live/${roomId}` });
     } catch (e) {}
   };
 
@@ -1979,7 +1984,7 @@ export default function MultiGuestRoom() {
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
               <View style={styles.weeklyChip}>
                 <Ionicons name="stats-chart" size={13} color={YELLOW} />
-                <Text style={styles.weeklyText}>Weekly Host</Text>
+                <Text style={styles.weeklyText}>Monthly Host</Text>
               </View>
               {isHost && <WeeklyMinutesPill startTime={roomStartTime || startFallbackRef.current} />}
               {agora.netQuality > 0 && (
@@ -2096,34 +2101,38 @@ export default function MultiGuestRoom() {
           ) : (
             <View style={[styles.bottomBar, { paddingBottom: bottomPad }]}>
               <TouchableOpacity style={styles.chatPill} activeOpacity={0.85} onPress={openChat}>
-                <Ionicons name="chatbubble-outline" size={18} color="#fff" />
+                <Ionicons name="chatbubble-outline" size={20} color="#fff" />
                 <Text style={styles.chatPillText}>Chat</Text>
               </TouchableOpacity>
 
-              <View style={{ flex: 1 }} />
-
-              <TouchableOpacity style={styles.plainBtn} onPress={shareRoom}>
-                <Ionicons name="arrow-redo-outline" size={24} color="#fff" />
+              {/* Tiki order: Chat -> Share -> Accept request / Link -> 3 line -> (khali jagah) -> Gift */}
+              <TouchableOpacity style={styles.tikiIcon} onPress={shareRoom} activeOpacity={0.7}>
+                <Ionicons name="arrow-redo-outline" size={22} color="#fff" />
               </TouchableOpacity>
-              <TouchableOpacity style={styles.plainBtn} onPress={() => (isMod && seatRequests.length ? setRequestsVisible(true) : setMenuOpen(true))}>
-                <Ionicons name="menu" size={26} color="#fff" />
+
+              {/* host/mod: seat requests (badge) | guest: seat lo / mic on-off */}
+              <TouchableOpacity
+                style={styles.tikiIcon}
+                activeOpacity={0.7}
+                onPress={() => (isMod ? setRequestsVisible(true) : (mySeatKey ? toggleMyMic() : joinFirstFree()))}
+              >
+                {!isMod && mySeatKey ? (
+                  <Ionicons name={myMicOn ? 'mic' : 'mic-off'} size={20} color="#f5c518" />
+                ) : (
+                  <Ionicons name="link" size={24} color="#f5c518" style={{ transform: [{ rotate: '-45deg' }] }} />
+                )}
                 {isMod && seatRequests.length > 0 && (
-                  <View style={{ position: 'absolute', top: 2, right: 0, minWidth: 16, height: 16, borderRadius: 8, backgroundColor: '#ff4d6d', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 3 }}>
+                  <View style={{ position: 'absolute', top: -4, right: -4, minWidth: 18, height: 18, borderRadius: 9, backgroundColor: '#ff0000', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 4, borderWidth: 2, borderColor: '#1a0b2e' }}>
                     <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800' }}>{seatRequests.length}</Text>
                   </View>
                 )}
               </TouchableOpacity>
-              <TouchableOpacity style={styles.plainBtn} onPress={sendLike}>
-                <Text style={{ fontSize: 22 }}>❤️</Text>
+
+              <TouchableOpacity style={styles.tikiIcon} onPress={() => setMenuOpen(true)} activeOpacity={0.7}>
+                <Ionicons name="menu" size={24} color="#fff" />
               </TouchableOpacity>
 
-              {/* yellow button: seat nahi hai -> baith jao, seat par hai -> mic on/off */}
-              <TouchableOpacity
-                style={[styles.circleBtn, { backgroundColor: YELLOW, marginLeft: 4 }]}
-                onPress={() => (mySeatKey ? toggleMyMic() : joinFirstFree())}
-              >
-                <Ionicons name={mySeatKey ? (myMicOn ? 'mic' : 'mic-off') : 'link'} size={20} color="#000" />
-              </TouchableOpacity>
+              <View style={{ flex: 1 }} />
 
               <TouchableOpacity style={styles.giftCircle} onPress={() => openGiftModal()}>
                 <LottieView
@@ -2133,7 +2142,7 @@ export default function MultiGuestRoom() {
                   renderMode="HARDWARE"
                   hardwareAccelerationAndroid
                   cacheComposition
-                  style={{ width: 46, height: 46 }}
+                  style={{ width: 40, height: 40 }}
                 />
               </TouchableOpacity>
             </View>
@@ -2684,6 +2693,10 @@ export default function MultiGuestRoom() {
   );
 }
 
+// PERF: live chat ki har row me animated frame (40-80 rows) bahut load deta tha.
+// false = chat me frame static (smooth). Seat/profile/host ke frames animated hi rehte hain.
+const CHAT_FRAME_ANIM = false;
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#1a0b2e' },
 
@@ -2764,8 +2777,8 @@ const styles = StyleSheet.create({
   sysAva: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#2a2b38' },
   sysFrame: { position: 'absolute', width: 30, height: 30, top: -4, left: -4 },
   sysText: { color: '#e0e0e0', fontSize: 13, fontWeight: '600' },
-  welcomeBox: { backgroundColor: 'rgba(110,90,125,0.62)', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 10, alignSelf: 'flex-start', maxWidth: '92%' },
-  welcomeTxt: { color: '#fff', fontSize: 13, fontWeight: '500' },
+  welcomeBox: { backgroundColor: 'rgba(40,60,80,0.55)', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 10, alignSelf: 'flex-start', maxWidth: '92%' },
+  welcomeTxt: { color: '#fff', fontSize: 14, lineHeight: 20, fontWeight: '500' },
   levelBadge: { marginLeft: 6, flexDirection: 'row', alignItems: 'center', borderWidth: 1, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 20 },
   levelText: { fontSize: 8, fontWeight: 'bold', marginLeft: 2 },
   roleTag: { borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1, marginLeft: 5 },
@@ -2775,11 +2788,12 @@ const styles = StyleSheet.create({
 
   // bottom
   bottomBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingTop: 70 },
-  chatPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 20, paddingHorizontal: 14, height: 38 },
+  chatPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.45)', borderRadius: 19, paddingHorizontal: 12, height: 38, width: 98 },
   chatPillText: { color: '#fff', fontSize: 14, fontWeight: '600', marginLeft: 6 },
   plainBtn: { width: 38, height: 38, justifyContent: 'center', alignItems: 'center' },
   circleBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.18)', justifyContent: 'center', alignItems: 'center' },
-  giftCircle: { width: 46, height: 46, borderRadius: 23, justifyContent: 'center', alignItems: 'center', marginLeft: 4 },
+  giftCircle: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center', marginLeft: 8, overflow: 'hidden' },
+  tikiIcon: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
   inputWrap: { flex: 1, flexDirection: 'row', alignItems: 'center', height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.15)', paddingHorizontal: 14, marginRight: 8 },
   input: { flex: 1, color: '#fff', fontSize: 14 },
 
