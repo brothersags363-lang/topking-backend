@@ -404,19 +404,37 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
       const wRef = walletRef(uid);
       const vRef = db.collection("all_videos").doc(videoId);
       const uRef = db.collection("users").doc(uid);
+      // DEVICE LOCK: ek device par din me sirf EK account ko share star milega
+      const dh = req.deviceHash || "";
+      const dRef = dh ? db.collection("shareRewardsDevice").doc(`${dh}_${today}`) : null;
 
       const result = await db.runTransaction(async (tx) => {
-        const [sSnap, wSnap, vSnap, uSnap] = await Promise.all([
+        const [sSnap, wSnap, vSnap, uSnap, dSnap] = await Promise.all([
           tx.get(sRef),
           tx.get(wRef),
           tx.get(vRef),
           tx.get(uRef),
+          dRef ? tx.get(dRef) : Promise.resolve(null),
         ]);
 
         if (!uSnap.exists || (uSnap.data() || {}).banned === true) {
           throw httpErr(403, "Account not allowed");
         }
         if (!vSnap.exists) throw httpErr(404, "Video not found");
+
+        // Is device par aaj kisi DUSRE account ko share star mil chuka hai -> star nahi
+        if (dSnap && dSnap.exists) {
+          const owner = (dSnap.data() || {}).ownerUid;
+          if (owner && owner !== uid) {
+            return {
+              awarded: false,
+              stars: 0,
+              todayCount: 0,
+              reason: "device_used",
+              total: wSnap.exists ? num(wSnap.data().stars) : 0,
+            };
+          }
+        }
 
         const d = sSnap.exists ? sSnap.data() : { date: today, count: 0, videoIds: [] };
         const count = num(d.count);
@@ -444,6 +462,15 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
           updatedAt: FieldValue.serverTimestamp(),
         });
 
+        if (dRef) {
+          tx.set(dRef, {
+            deviceHash: dh,
+            ownerUid: uid,
+            date: today,
+            updatedAt: FieldValue.serverTimestamp(),
+          }, { merge: true });
+        }
+
         if (wSnap.exists) {
           tx.update(wRef, { stars: total });
         } else {
@@ -469,6 +496,7 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
         success: true,
         awarded: result.awarded,
         stars: result.stars,
+        reason: result.reason || undefined,
         todayCount: result.todayCount,
         dailyMax: REWARD.SHARE_DAILY_MAX,
         total: result.total,
