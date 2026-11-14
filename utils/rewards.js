@@ -434,6 +434,7 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
         }
         if (!vSnap.exists) throw httpErr(404, "Video not found");
 
+        console.log(`SHARE CHECK uid=${uid} dev=${dh.slice(0, 8)} deviceDoc=${dSnap && dSnap.exists ? "yes owner=" + ((dSnap.data() || {}).ownerUid) : "no"}`);
         // Is device par aaj kisi DUSRE account ko share star mil chuka hai -> star nahi
         if (dSnap && dSnap.exists) {
           const owner = (dSnap.data() || {}).ownerUid;
