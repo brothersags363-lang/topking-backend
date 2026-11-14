@@ -406,6 +406,18 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
       const uRef = db.collection("users").doc(uid);
       // DEVICE LOCK: ek device par din me sirf EK account ko share star milega
       const dh = req.deviceHash || "";
+      // Device ID ke bina (purani/modified app) share star nahi milega
+      if (!dh) {
+        return res.json({
+          success: true,
+          awarded: false,
+          stars: 0,
+          todayCount: 0,
+          reason: "device_required",
+          dailyMax: REWARD.SHARE_DAILY_MAX,
+          total: 0,
+        });
+      }
       const dRef = dh ? db.collection("shareRewardsDevice").doc(`${dh}_${today}`) : null;
 
       const result = await db.runTransaction(async (tx) => {
