@@ -3,7 +3,7 @@
 //   utils/messages/*        -> Firestore hooks (friends, rooms, notifications)
 import { useRouter } from '../../utils/safeRouter';
 import { doc, getDoc, getFirestore } from 'firebase/firestore';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { StatusBar, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -16,6 +16,8 @@ import MessageTab from '../../components/messages/MessageTab';
 import NotifModal from '../../components/messages/NotifModal';
 import { BG } from '../../components/messages/theme';
 import useTabBack from '../../utils/useTabBack';
+import { markInboxSeen } from '../../utils/messages/useInboxBadge';
+import { useFocusEffect } from 'expo-router';
 import { useAuthUid } from '../../utils/messages/useAuthUid';
 import { useFriends } from '../../utils/messages/useFriends';
 import { useLiveProfiles } from '../../utils/messages/useLiveProfiles';
@@ -33,6 +35,14 @@ export default function MessagesPage() {
   // Mobile back (Message + ChatRoom dono tab): app band nahi hogi, For You (Home) khulega.
   // Popups (Notif/Info) apna back khud sambhalte hain.
   useTabBack();
+
+  // Messages khulte hi (aur jab tak khula hai, naya aaye tab bhi) bottom icon ka count 0
+  useFocusEffect(
+    useCallback(() => {
+      markInboxSeen();
+      return () => markInboxSeen();
+    }, [])
+  );
 
   const [tab, setTab] = useState<'chatroom' | 'message'>('chatroom');
   const [staticRows, setStaticRows] = useState<MessageRow[]>(STATIC_ROWS);
@@ -104,6 +114,10 @@ export default function MessagesPage() {
     [rows, friends]
   );
 
+  useEffect(() => {
+    markInboxSeen();
+  }, [totalUnread]);
+
   // ---- popup open/close ----
   const openNotifType = useCallback(
     (type: string) => {
@@ -174,7 +188,7 @@ export default function MessagesPage() {
           } as any);
         }, 300);
       } catch (e) {
-        console.log('OPEN VIDEO ERROR =', e);
+        __DEV__ && console.log('OPEN VIDEO ERROR =', e);
       }
     },
     [router, uid]

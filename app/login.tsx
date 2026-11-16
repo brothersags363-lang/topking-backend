@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   getAuth as getNativeAuth,
-  signInWithPhoneNumber,
+  verifyPhoneNumber,
 } from '@react-native-firebase/auth';
 import {
   GoogleSignin,
@@ -135,7 +135,7 @@ export default function LoginScreen() {
   const [otp, setOtp] = useState('');
   const [otpSent, setOtpSent] = useState(false);
   const [resendIn, setResendIn] = useState(0);
-  const confirmation = useRef<any>(null);
+  const verificationIdRef = useRef<string | null>(null);
 
   // email
   const [emailSignup, setEmailSignup] = useState(false);
@@ -252,9 +252,34 @@ export default function LoginScreen() {
     busy.current = true;
     try {
       if (await guardBanned()) return;
-      const conf = await signInWithPhoneNumber(getNativeAuth(), `+91${phone}`);
-      confirmation.current = conf;
+      verificationIdRef.current = null;
       setOtp('');
+      // verifyPhoneNumber: native side khud login nahi karta, isliye OTP "use" nahi hota
+      // aur neeche JS auth se verify karna safe rehta hai.
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const done = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          fn();
+        };
+        const listener: any = verifyPhoneNumber(getNativeAuth(), `+91${phone}`, 60, true);
+        listener.on(
+          'state_changed',
+          (snap: any) => {
+            if (snap?.verificationId) verificationIdRef.current = snap.verificationId;
+            if (snap?.state === 'sent') {
+              done(resolve);
+            } else if (snap?.state === 'verified') {
+              if (snap?.code) setOtp(String(snap.code)); // SMS auto-read hua to box me bhar do
+              done(resolve);
+            } else if (snap?.state === 'error') {
+              done(() => reject(snap?.error || new Error('OTP send failed')));
+            }
+          },
+          (err: any) => done(() => reject(err))
+        );
+      });
       setOtpSent(true);
       setResendIn(30);
     } catch (e: any) {
@@ -267,18 +292,19 @@ export default function LoginScreen() {
 
   const verifyOtp = async () => {
     if (loading) return;
-    if (otp.length !== 6 || !confirmation.current?.verificationId) {
+    if (otp.length !== 6 || !verificationIdRef.current) {
       return Alert.alert('OTP', '6 digit ka OTP daalo.');
     }
     setLoading(true);
     busy.current = true;
     try {
       // native se bheja OTP, app ke JS auth me login (poori app JS auth use karti hai)
-      const cred = PhoneAuthProvider.credential(confirmation.current.verificationId, otp);
+      const cred = PhoneAuthProvider.credential(verificationIdRef.current, otp);
       const result = await signInWithCredential(auth, cred);
       await finishLogin(result.user, `user${phone.slice(-4)}`);
     } catch (e: any) {
-      Alert.alert('Login Error', friendlyAuthError(e?.code, e?.message));
+      console.log('VERIFY ERR', e?.code, e?.message);
+      Alert.alert('Login Error', `${friendlyAuthError(e?.code, e?.message)}\n\n[${e?.code || 'no-code'}]`);
     } finally {
       setLoading(false);
       busy.current = false;

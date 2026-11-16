@@ -318,7 +318,7 @@ const PlayerView = React.memo(
           prioritizeTimeOverSizeThreshold: true,
         };
       } catch (error) {
-        console.log('BUFFER OPTIONS ERROR =', error);
+        __DEV__ && console.log('BUFFER OPTIONS ERROR =', error);
       }
     });
 
@@ -341,7 +341,7 @@ const PlayerView = React.memo(
           if (!active || !focused) player.muted = true;
         }
       } catch (error) {
-        console.log('VIDEO CONTROL ERROR =', error);
+        __DEV__ && console.log('VIDEO CONTROL ERROR =', error);
         if (active) {
           setIsLoading(false);
           setHasError(true);
@@ -365,7 +365,7 @@ const PlayerView = React.memo(
           setIsLoading(false);
           setHasError(false);
         } else if (status === 'error') {
-          console.log('VIDEO ERROR =', error);
+          __DEV__ && console.log('VIDEO ERROR =', error);
           setIsLoading(false);
           setHasError(true);
         }
@@ -960,7 +960,7 @@ export default function App() {
           });
         }
       } catch (e) {
-        console.log(e);
+        __DEV__ && console.log(e);
       }
     });
 
@@ -1057,7 +1057,7 @@ export default function App() {
         setCommentsLoading(false);
       },
       (e) => {
-        console.log('COMMENTS ERROR =', e);
+        __DEV__ && console.log('COMMENTS ERROR =', e);
         setCommentsLoading(false);
       }
     );
@@ -1103,7 +1103,7 @@ export default function App() {
           const arr = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
           setReplies((prev) => ({ ...prev, [id]: arr }));
         },
-        (e) => console.log('REPLIES ERROR =', e)
+        (e) => __DEV__ && console.log('REPLIES ERROR =', e)
       );
     });
   }, [comments, showReplies, replyCommentId, selectedVideoId, showComments]);
@@ -1132,7 +1132,7 @@ export default function App() {
       .then((res) => {
         if (!cancelled) setLiveUsers((prev) => ({ ...prev, ...res }));
       })
-      .catch((e) => console.log('LIVE USERS ERROR =', e));
+      .catch((e) => __DEV__ && console.log('LIVE USERS ERROR =', e));
 
     return () => {
       cancelled = true;
@@ -1161,7 +1161,7 @@ export default function App() {
       .then((res) => {
         if (!cancelled) setLiveUsers((prev) => ({ ...prev, ...res }));
       })
-      .catch((e) => console.log('LIVE COMMENT USERS ERROR =', e));
+      .catch((e) => __DEV__ && console.log('LIVE COMMENT USERS ERROR =', e));
 
     return () => {
       cancelled = true;
@@ -1256,7 +1256,7 @@ export default function App() {
         )
       );
 
-      console.log(e);
+      __DEV__ && console.log(e);
     }
   }, []);
 
@@ -1270,7 +1270,7 @@ export default function App() {
     // Star reward alag se: shares count fail ho to bhi star mile
     try { rewardShare(videoId); } catch (e) {}
     updateDoc(doc(db, 'all_videos', videoId), { shares: increment(1) })
-      .catch((e) => console.log('Share count error', e));
+      .catch((e) => __DEV__ && console.log('Share count error', e));
   }, []);
 
   // Star sirf tab jab user sach me share karke wapas aaye.
@@ -1319,7 +1319,7 @@ export default function App() {
       // Android: AppState wala check decide karega
     } catch (e) {
       pendingShareRef.current = null;
-      console.log(e);
+      __DEV__ && console.log(e);
     }
   }, [armShare, countShare]);
 
@@ -1583,7 +1583,7 @@ export default function App() {
       // myStars wallet snapshot se khud update hota hai
       // (pehle yahan manual minus hota tha => double minus ho jata tha)
     } catch (e) {
-      console.log(e);
+      __DEV__ && console.log(e);
       Alert.alert('Star', (e && e.message) || 'Could not send star');
     } finally {
       starSending.current = false;
@@ -1623,7 +1623,7 @@ export default function App() {
         }),
       ]);
     } catch (e) {
-      console.log(e);
+      __DEV__ && console.log(e);
     }
   };
 
@@ -1665,7 +1665,7 @@ export default function App() {
         }
       );
     } catch (e) {
-      console.log(e);
+      __DEV__ && console.log(e);
     }
   };
 
@@ -1688,7 +1688,7 @@ export default function App() {
                 commentsCount: increment(-1),
               });
             } catch (e) {
-              console.log(e);
+              __DEV__ && console.log(e);
             }
           },
         },
@@ -1717,7 +1717,7 @@ export default function App() {
           [commentId]: prev[commentId]?.filter((item) => item.id !== replyId),
         }));
       } catch (e) {
-        console.log('Delete Reply Error', e);
+        __DEV__ && console.log('Delete Reply Error', e);
       }
     },
     [selectedVideoId]

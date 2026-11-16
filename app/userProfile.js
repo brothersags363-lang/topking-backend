@@ -35,6 +35,7 @@ import { useRouter } from "../utils/safeRouter";
 
 import { db, auth } from "./firebaseConfig";
 import { profileLink } from "../utils/shareLinks";
+import { callApi } from "../utils/api";
 import { formatCount, levelThemeFor } from "../utils/profileHelpers";
 import UserTick, { isFaceVerified } from "../components/UserTick";
 
@@ -302,6 +303,233 @@ const LiveTile = memo(function LiveTile({ live, fallbackImg, onPress }) {
 });
 
 /* ------------------------------------------------------------------ */
+/* Agency card (sirf agency owner ki profile par)                      */
+/* ------------------------------------------------------------------ */
+
+// Agency owner ki profile par agency ka logo + naam dikhta hai.
+// Tap karne par popup khulta hai -> "Send Request" se us agency me join
+// request jati hai (backend: /agency/request-join, wahi jo AgencyTop me hai).
+// Jis user ke paas agency nahi hai, uski profile par ye kuch bhi render
+// nahi karta (purani profile jaisi hi rehti hai).
+const AgencyJoinCard = memo(function AgencyJoinCard({ ownerId, agencyId }) {
+  const [agency, setAgency] = useState(null);
+  const [open, setOpen] = useState(false);
+  // loading | none | pending | member | owner | in_other_agency | blocked
+  const [joinStatus, setJoinStatus] = useState("loading");
+  const [sending, setSending] = useState(false);
+
+  // Agency ka data (logo / naam) lao. Agar ye agency is owner ki nahi
+  // ya blocked hai to card dikhana hi nahi.
+  useEffect(() => {
+    let cancelled = false;
+    setAgency(null);
+    if (!agencyId) return undefined;
+    (async () => {
+      try {
+        const snap = await getDoc(doc(db, "agencies", String(agencyId)));
+        if (cancelled || !snap.exists()) return;
+        const d = snap.data();
+        if (d.ownerUserId && d.ownerUserId !== ownerId) return;
+        if (d.status === "blocked") return;
+        setAgency({
+          id: snap.id,
+          name: d.agencyName || "Agency",
+          logo: d.logo || d.agencyLogo || "",
+          ownerName: d.ownerName || "",
+          totalMembers: d.totalMembers || 0,
+        });
+      } catch (e) {
+        // rules/network issue: card chhupa rahe, profile normal dikhe
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [agencyId, ownerId]);
+
+  // Popup khulte hi is user ka is agency ke saath status check karo
+  useEffect(() => {
+    if (!open || !agency?.id) return undefined;
+    let cancelled = false;
+    setJoinStatus("loading");
+    (async () => {
+      try {
+        const res = await callApi("/agency/join-status", { agencyId: agency.id });
+        if (res && res.success === false) throw new Error(res.error);
+        if (!cancelled) {
+          setJoinStatus(res?.blocked ? "blocked" : res?.status || "none");
+        }
+      } catch (e) {
+        if (!cancelled) setJoinStatus("none");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, agency?.id]);
+
+  const close = useCallback(() => {
+    if (!sending) setOpen(false);
+  }, [sending]);
+
+  const sendRequest = useCallback(async () => {
+    if (!agency?.id || sending) return;
+    try {
+      setSending(true);
+      const res = await callApi("/agency/request-join", { agencyId: agency.id });
+      if (res && res.success === false) throw new Error(res.error);
+      setJoinStatus("pending");
+      Alert.alert("Request Sent", "Agency owner accept karega to aap join ho jaoge.");
+    } catch (e) {
+      Alert.alert("Error", e?.message || "Request nahi bheji ja saki");
+    } finally {
+      setSending(false);
+    }
+  }, [agency?.id, sending]);
+
+  const cancelRequest = useCallback(async () => {
+    if (!agency?.id || sending) return;
+    try {
+      setSending(true);
+      const res = await callApi("/agency/cancel-join-request", {
+        agencyId: agency.id,
+      });
+      if (res && res.success === false) throw new Error(res.error);
+      setJoinStatus("none");
+    } catch (e) {
+      Alert.alert("Error", e?.message || "Request cancel nahi ho saki");
+    } finally {
+      setSending(false);
+    }
+  }, [agency?.id, sending]);
+
+  if (!agency) return null;
+
+  const infoText =
+    joinStatus === "member"
+      ? "Aap is agency ke member ho."
+      : joinStatus === "owner"
+      ? "Ye aapki apni agency hai."
+      : joinStatus === "blocked"
+      ? "Ye agency abhi available nahi hai."
+      : "Aap pehle se kisi agency me ho.";
+
+  return (
+    <>
+      <TouchableOpacity
+        style={styles.agencyCard}
+        activeOpacity={0.8}
+        onPress={() => setOpen(true)}
+      >
+        <FastImage
+          uri={agency.logo}
+          fallback={AVATAR_FALLBACK}
+          style={styles.agencyLogo}
+        />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.agencyLabel}>Agency</Text>
+          <Text style={styles.agencyName} numberOfLines={1}>
+            {agency.name}
+          </Text>
+        </View>
+        <Ionicons name="chevron-forward" size={14} color="#9a9a9a" />
+      </TouchableOpacity>
+
+      <Modal
+        visible={open}
+        transparent
+        animationType="fade"
+        onRequestClose={close}
+      >
+        <View style={styles.agencyModalBg}>
+          <View style={styles.agencyPopup}>
+            <FastImage
+              uri={agency.logo}
+              fallback={AVATAR_FALLBACK}
+              style={styles.agencyPopupLogo}
+            />
+            <Text style={styles.agencyPopupName} numberOfLines={1}>
+              {agency.name}
+            </Text>
+            <Text style={styles.agencyPopupSub}>
+              {agency.ownerName
+                ? `Owner • ${agency.ownerName}`
+                : "Official Agency"}
+            </Text>
+
+            {joinStatus === "loading" ? (
+              <ActivityIndicator color="#FFD700" style={{ marginVertical: 22 }} />
+            ) : joinStatus === "none" ? (
+              <>
+                <Text style={styles.agencyPopupText}>
+                  Is agency ko join request bhejni hai?
+                </Text>
+                <View style={styles.agencyBtnRow}>
+                  <TouchableOpacity
+                    style={[styles.agencyBtn, styles.agencyBtnGhost]}
+                    onPress={close}
+                    disabled={sending}
+                  >
+                    <Text style={styles.agencyBtnGhostText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.agencyBtn, styles.agencyBtnGold]}
+                    onPress={sendRequest}
+                    disabled={sending}
+                  >
+                    {sending ? (
+                      <ActivityIndicator color="#000" />
+                    ) : (
+                      <Text style={styles.agencyBtnGoldText}>Send Request</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : joinStatus === "pending" ? (
+              <>
+                <Text style={styles.agencyPopupText}>
+                  Request bhej di gayi hai. Agency owner ke accept karne ka
+                  intezaar hai.
+                </Text>
+                <View style={styles.agencyBtnRow}>
+                  <TouchableOpacity
+                    style={[styles.agencyBtn, styles.agencyBtnGhost]}
+                    onPress={cancelRequest}
+                    disabled={sending}
+                  >
+                    {sending ? (
+                      <ActivityIndicator color="#fff" />
+                    ) : (
+                      <Text style={styles.agencyBtnGhostText}>Cancel Request</Text>
+                    )}
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.agencyBtn, styles.agencyBtnGold]}
+                    onPress={close}
+                  >
+                    <Text style={styles.agencyBtnGoldText}>OK</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.agencyPopupText}>{infoText}</Text>
+                <TouchableOpacity
+                  style={[styles.agencyBtn, styles.agencyBtnGold, { alignSelf: "stretch" }]}
+                  onPress={close}
+                >
+                  <Text style={styles.agencyBtnGoldText}>OK</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+});
+
+/* ------------------------------------------------------------------ */
 /* Screen                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -558,7 +786,7 @@ export default function UserProfile() {
       return;
     } catch (error) {
       // NOTE: ab release build me bhi dikhega (pehle sirf __DEV__ me)
-      console.log("FOLLOW COUNT (aggregate) ERROR =", error?.code, error?.message);
+      __DEV__ && console.log("FOLLOW COUNT (aggregate) ERROR =", error?.code, error?.message);
     }
 
     // 2) Fallback: documents gin lo (aggregate fail ho to bhi count dikhe)
@@ -571,7 +799,7 @@ export default function UserProfile() {
       setFollowingCount(followingDocs.size);
       return;
     } catch (error) {
-      console.log("FOLLOW COUNT (getDocs) ERROR =", error?.code, error?.message);
+      __DEV__ && console.log("FOLLOW COUNT (getDocs) ERROR =", error?.code, error?.message);
     }
 
     // 3) Last fallback: users/{uid} ke counter fields
@@ -1058,6 +1286,12 @@ export default function UserProfile() {
           </View>
         </View>
 
+        {/* Agency owner ki profile: agency logo + naam (tap -> join request).
+            Agency na ho ya apni hi profile ho to kuch nahi dikhta. */}
+        {!isOwnProfile && userData?.isAgencyOwner === true && !!userData?.agencyId && (
+          <AgencyJoinCard ownerId={userId} agencyId={userData.agencyId} />
+        )}
+
         {/* Tabs */}
         <View style={styles.tabContainer}>
           <TouchableOpacity
@@ -1117,6 +1351,7 @@ export default function UserProfile() {
     handleTabPress,
     openStarUp,
     isOwnProfile,
+    userId,
   ]);
 
   // Videos tab me live tile sabse pehle; `videos` state untouched rehta hai
@@ -1339,6 +1574,99 @@ const styles = StyleSheet.create({
   cardsRow: {
     flexDirection: "row",
     gap: 10,
+  },
+
+  agencyCard: {
+    marginTop: 10,
+    backgroundColor: "#2a2a2a",
+    borderRadius: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    gap: 10,
+  },
+  agencyLogo: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: "#3a3a3a",
+  },
+  agencyLabel: {
+    color: "#8a8a8a",
+    fontSize: 11,
+  },
+  agencyName: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  agencyModalBg: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.7)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  agencyPopup: {
+    width: "100%",
+    maxWidth: 340,
+    backgroundColor: "#1e1e1e",
+    borderRadius: 18,
+    padding: 20,
+    alignItems: "center",
+  },
+  agencyPopupLogo: {
+    width: 84,
+    height: 84,
+    borderRadius: 42,
+    backgroundColor: "#3a3a3a",
+  },
+  agencyPopupName: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "800",
+    marginTop: 12,
+  },
+  agencyPopupSub: {
+    color: "#aeb9d8",
+    fontSize: 12,
+    marginTop: 4,
+  },
+  agencyPopupText: {
+    color: "#ddd",
+    fontSize: 14,
+    textAlign: "center",
+    marginTop: 18,
+    marginBottom: 16,
+  },
+  agencyBtnRow: {
+    flexDirection: "row",
+    gap: 10,
+    alignSelf: "stretch",
+  },
+  agencyBtn: {
+    flex: 1,
+    height: 44,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  agencyBtnGold: {
+    backgroundColor: "#FFD700",
+  },
+  agencyBtnGoldText: {
+    color: "#000",
+    fontWeight: "800",
+    fontSize: 14,
+  },
+  agencyBtnGhost: {
+    backgroundColor: "#3a3a3a",
+  },
+  agencyBtnGhostText: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 14,
   },
 
   familyCard: {

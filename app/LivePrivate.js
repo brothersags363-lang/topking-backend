@@ -82,6 +82,7 @@ import {
 } from "react-native-agora";
 
 import { gifts } from "../assets/giftsData";
+import GiftSheet from "../components/live/GiftSheet";
 import { isGifReaction, gifSource } from '../assets/emojiGifs';
 import { Image as ExpoImage } from 'expo-image';
 import FastImage from '../components/FastImage';
@@ -90,7 +91,8 @@ import { useAdminFrame } from '../components/adminFrames';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { LinearGradient } from 'expo-linear-gradient';
 import SeatItem from '../components/live/SeatItem';
-import JoinEntry from '../components/live/JoinEntry';
+import JoinEntry, { PlainJoinPill } from '../components/live/JoinEntry';
+import { useJoinDelay } from '../components/live/useJoinDelay';
 import FloatingHearts from '../components/live/FloatingHearts';
 import { ViewersSheet, GiftersSheet, RoomMenuSheet, EmojiStrip } from '../components/live/RoomSheets';
 import { T } from '../components/live/liveTheme';
@@ -98,10 +100,6 @@ import { useRoomMusic, MusicFab, MusicSheet } from '../components/live/RoomMusic
 import TeenPattiGame from '../components/live/TeenPattiGame';
 import GreedyGame from '../components/live/GreedyGame';
 
-import LottieView from "lottie-react-native";
-import { WebView } from "react-native-webview";
-import { giftHtml } from "../assets/giftWeb";
-import GiftImage, { isImgGift } from "../components/GiftImage";
 
 import { useSafeAreaInsets, SafeAreaProvider } from 'react-native-safe-area-context';
 import { callApi } from '../utils/api';
@@ -630,23 +628,12 @@ const SpeakingSeat = memo(({ seatKey, index, seat, stars, onPress, cellW }) => {
 
 // HEAT FIX: gift button Lottie ek baar chalta hai, 6 sec rukta hai, phir dobara (pehle 24x7 loop).
 const GiftButtonLottie = memo(function GiftButtonLottie() {
-  const ref = useRef(null);
-  const timerRef = useRef(null);
-  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
-  const onFinish = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => { try { ref.current && ref.current.play(); } catch (_) {} }, 6000);
-  }, []);
+  // animation hata diya: static gift icon
   return (
-    <LottieView
-      ref={ref}
-      source={require("../assets/animations/giftButton.json")}
-      autoPlay
-      loop={false}
-      onAnimationFinish={onFinish}
-      renderMode="HARDWARE"
-      cacheComposition={true}
-      style={{ width: 50, height: 50 }}
+    <Image
+      source={require("../assets/giftLogo.png")}
+      style={{ width: 34, height: 34 }}
+      resizeMode="contain"
     />
   );
 });
@@ -676,347 +663,92 @@ const LiveTimer = memo(({ startTime }) => {
 });
 
 // ============================================================
-// GiftLayer (PERF): full-screen gift animation + "X send @Y x3" banner.
-// ALL gift state (activeGift, playKey, combo, banner animations, timers)
-// lives INSIDE this component. LiveRoom only calls ref.current.play(...) /
-// ref.current.showCombo(...), so a gift never re-renders the 6000-line room
-// screen (that re-render is what made gifts stutter / vanish when 8 users
-// were talking).
-//
-// Gift ab SIRF giftsData.js ki `duration` pe hatta hai:
-//  - Lottie speed = 1 (pehle 2 tha)
-//  - onAnimationFinish se hide NAHI hota (pehle jaldi khatam hoke turant
-//    gayab ho jata tha)
+// GIFT (NO ANIMATION): gift bhejne ke baad Tiki jaisa chhota PNG row left side me dikhta hai
+// [avatar + naam + "Sent"] [gift PNG] x3 . Full-screen animation / Lottie / WebView sab hata diya.
+// Koi Animated nahi -> app hang nahi hoti. Har naye tap par sirf count (x1, x2, x3...) badalta hai.
 // ============================================================
-const GiftLayer = memo(forwardRef(function GiftLayer(_props, ref) {
-  const [activeGift, setActiveGift] = useState(null);
-  const [activeMeta, setActiveMeta] = useState(null); // kisne bheja (animation ke upar dikhta hai)
-  const [playKey, setPlayKey] = useState(0);
-  const [combo, setCombo] = useState(null);
+const ComboRow = memo(({ data }) => {
+  const gd = gifts.find((g) => String(g.id) === String(data.giftId));
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 4 }}>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          paddingLeft: 0,
+          paddingRight: 34,
+          backgroundColor: "transparent",
+        }}
+      >
+        <View style={{ width: 32, height: 32, marginLeft: 12 }}>
+          <Image
+            source={{ uri: data.senderImg || STABLE_AVATAR }}
+            style={{ width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.9)", backgroundColor: "#2a2b38" }}
+          />
+          {(!!data.senderId || Number(data.level) >= 10) && (
+            <GuardedFrame level={data.level} uid={data.senderId} animated={false}
+              style={{ position: "absolute", width: 54, height: 54, top: -11, left: -11, zIndex: 10 }} />
+          )}
+        </View>
+        <View style={{ marginLeft: 6, flexShrink: 1 }}>
+          <Text numberOfLines={1} style={{ color: "#fff", fontWeight: "700", fontSize: 12, textShadowColor: "rgba(0,0,0,0.5)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 }}>{data.senderName}</Text>
+          <Text numberOfLines={1} style={{ color: "rgba(255,255,255,0.92)", fontSize: 10, marginTop: 0, textShadowColor: "rgba(0,0,0,0.5)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 }}>Sent</Text>
+        </View>
+      </View>
+      {gd?.icon ? (
+        <Image source={gd.icon} style={{ width: 46, height: 46, resizeMode: "contain", marginLeft: -26 }} />
+      ) : (
+        <View style={{ width: 20 }} />
+      )}
+      <Text
+        style={{
+          color: "#fff", fontSize: 24, fontWeight: "900", fontStyle: "italic", marginLeft: 6,
+          textShadowColor: "rgba(0,0,0,0.55)", textShadowOffset: { width: 1, height: 2 }, textShadowRadius: 3,
+        }}
+      >
+        x{data.count || 1}
+      </Text>
+    </View>
+  );
+});
 
-  const giftTimerRef = useRef(null);
-  const comboTimerRef = useRef(null);
-  const deferTimerRef = useRef(null);
-
-  const tx = useRef(new Animated.Value(-80)).current;
-  const scale = useRef(new Animated.Value(1)).current;
-  const shake = useRef(new Animated.Value(0)).current;
-  const opacity = useRef(new Animated.Value(0)).current;
-
-  // FIX: pehle gift ka timer turant shuru ho jata tha. 3D (web:) gift me WebView + three.js
-  // load hone me 1-5 sec lagte hain (slow net par zyada) -> animation dikhne se pehle hi
-  // hide ho jati thi. Ab web gift ka timer WebView load hone (onLoadEnd) par shuru hota hai;
-  // load na bhi ho to bhi max WEB_LOAD_GRACE ke baad saaf ho jata hai.
-  const WEB_LOAD_GRACE = 9000;
-  const durationRef = useRef(5000);
-
-  const armHideTimer = (ms) => {
-    if (giftTimerRef.current) clearTimeout(giftTimerRef.current);
-    giftTimerRef.current = setTimeout(() => {
-      giftTimerRef.current = null;
-      setActiveGift(null);
-      setActiveMeta(null);
-    }, ms);
-  };
-
-  const doPlay = (animation, duration, meta) => {
-    if (!animation) return;
-    durationRef.current = duration || 5000;
-    setActiveGift(animation);
-    setActiveMeta(meta || null);
-    setPlayKey((k) => k + 1);
-    const isWeb = typeof animation === "string" && animation.startsWith("web:");
-    // web gift: load hone ka wait (grace + duration), onLoadEnd par asli duration se dobara set hoga
-    armHideTimer(isWeb ? WEB_LOAD_GRACE + durationRef.current : durationRef.current);
-  };
-
-  const onWebGiftLoaded = () => {
-    // page load ho gaya -> ab se poori duration tak chalne do
-    armHideTimer(durationRef.current);
-  };
+const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBottom }, ref) {
+  const [combos, setCombos] = useState([]); // max 2 row, har sender ki apni row
+  const timersRef = useRef({});
 
   useImperativeHandle(ref, () => ({
-    play: doPlay,
-    // Real-live behaviour: jab tak gift tap hote rahein / aate rahein,
-    // full-screen animation nahi chalti (sirf combo banner x1, x2, x3...).
-    // Tap ruke (delay ms koi naya gift nahi) -> SIRF last gift ki animation chalti hai.
-    playDeferred(animation, duration, delay = 600, meta) {
-      if (!animation) return;
-      if (deferTimerRef.current) clearTimeout(deferTimerRef.current);
-      deferTimerRef.current = setTimeout(() => {
-        deferTimerRef.current = null;
-        doPlay(animation, duration, meta);
-      }, delay);
-    },
+    // animation band: play / playDeferred ab kuch nahi karte (purane call sites safe rehte hain)
+    play() {},
+    playDeferred() {},
     showCombo(data, onEnd, ms = 2200) {
-      setCombo(data);
-      if (comboTimerRef.current) clearTimeout(comboTimerRef.current);
-      comboTimerRef.current = setTimeout(() => {
-        comboTimerRef.current = null;
-        setCombo(null);
-        if (onEnd) onEnd();
+      const key = String((data && data.senderName) || "user") + "_" + String((data && data.giftId) || "g"); // har gift ki apni row
+      const entry = { key, data };
+      setCombos((prev) => {
+        const i = prev.findIndex((c) => c.key === key);
+        if (i >= 0) { const n = prev.slice(); n[i] = entry; return n; }
+        return [...prev, entry].slice(-3); // nayi row niche judti hai, max 3
+      });
+      if (timersRef.current[key]) clearTimeout(timersRef.current[key]);
+      timersRef.current[key] = setTimeout(() => {
+        delete timersRef.current[key];
+        setCombos((prev) => prev.filter((c) => c.key !== key));
+        if (onEnd && Object.keys(timersRef.current).length === 0) onEnd(); // sab rows khatam hone par combo reset
       }, ms);
     },
   }), []);
 
   useEffect(() => () => {
-    if (giftTimerRef.current) clearTimeout(giftTimerRef.current);
-    if (comboTimerRef.current) clearTimeout(comboTimerRef.current);
-    if (deferTimerRef.current) clearTimeout(deferTimerRef.current);
+    Object.values(timersRef.current).forEach((t) => clearTimeout(t));
   }, []);
 
-  // PRELOAD: 3D gifts WebView me three.js CDN se aata hai. Pehli gift animation par wo
-  // download hone me atakti thi. Room khulne ke kuch sec baad ek chhota hidden WebView
-  // three.js ko cache me daal deta hai (phir band) -> gift animation turant chalti hai.
-  const [warm, setWarm] = useState(false);
-  useEffect(() => {
-    if (!WARM_GIFT_WEBVIEW) return;
-    let t1 = null, t2 = null, dead = false;
-    runWhenIdle(() => {
-      if (dead) return;
-      t1 = setTimeout(() => setWarm(true), WARM_GIFT_WEBVIEW_DELAY_MS);
-      t2 = setTimeout(() => setWarm(false), WARM_GIFT_WEBVIEW_DELAY_MS + 8500);
-    }, 3000);
-    return () => { dead = true; if (t1) clearTimeout(t1); if (t2) clearTimeout(t2); };
-  }, []);
-
-  // banner pop-in animation (all native driver)
-  const comboShownRef = useRef(false);
-  useEffect(() => {
-    if (!combo) { comboShownRef.current = false; return; }
-    if (comboShownRef.current) {
-      // banner pehle se dikh raha hai (rapid tap x2, x3...) -> slide-in dobara nahi, bas chhota pop
-      scale.setValue(1.12);
-      Animated.spring(scale, { toValue: 1, speed: 30, bounciness: 8, useNativeDriver: true }).start();
-      return;
-    }
-    comboShownRef.current = true;
-    tx.setValue(-80);
-    scale.setValue(0.8);
-    shake.setValue(-1);
-    opacity.setValue(0);
-    Animated.parallel([
-      Animated.spring(tx, { toValue: 0, speed: 12, bounciness: 6, useNativeDriver: true }),
-      Animated.spring(scale, { toValue: 1, speed: 12, bounciness: 6, useNativeDriver: true }),
-      Animated.timing(opacity, { toValue: 1, duration: 250, useNativeDriver: true }),
-      Animated.sequence([
-        Animated.timing(shake, { toValue: 1, duration: 60, useNativeDriver: true }),
-        Animated.timing(shake, { toValue: -1, duration: 60, useNativeDriver: true }),
-        Animated.timing(shake, { toValue: 0, duration: 60, useNativeDriver: true }),
-      ]),
-    ]).start();
-  }, [combo]);
-
-  const webSource = React.useMemo(
-    () =>
-      typeof activeGift === "string" && activeGift.startsWith("web:")
-        ? { html: giftHtml(activeGift.slice(4)), baseUrl: "https://localhost" }
-        : null,
-    [activeGift]
-  );
-
-  const comboGift = combo
-    ? gifts.find((g) => String(g.id) === String(combo.giftId))
-    : null;
-
+  if (!combos.length) return null;
   return (
-    <>
-      {warm && !activeGift ? (
-        <View pointerEvents="none" style={{ position: "absolute", width: 1, height: 1, opacity: 0, top: 0, left: 0 }}>
-          <WebView
-            source={{ html: '<html><body><script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script></body></html>', baseUrl: "https://localhost" }}
-            originWhitelist={["*"]}
-            javaScriptEnabled
-            domStorageEnabled={false}
-            cacheEnabled
-            style={{ width: 1, height: 1, backgroundColor: "transparent" }}
-            pointerEvents="none"
-          />
-        </View>
-      ) : null}
-      {activeGift ? (
-        <View
-          pointerEvents="none"
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            justifyContent: "center",
-            alignItems: "center",
-            zIndex: 99999,
-            elevation: 99999,
-          }}
-        >
-          {webSource ? (
-            <WebView
-              key={playKey}
-              source={webSource}
-              originWhitelist={["*"]}
-              javaScriptEnabled
-              domStorageEnabled={false}
-              cacheEnabled
-              overScrollMode="never"
-              style={{ width: width, height: width * 1.3, backgroundColor: "transparent" }}
-              containerStyle={{ backgroundColor: "transparent" }}
-              androidLayerType="hardware"
-              scrollEnabled={false}
-              pointerEvents="none"
-              injectedJavaScriptBeforeContentLoaded={GIFT_WEB_PRE_JS}
-              onLoadEnd={onWebGiftLoaded}
-            />
-          ) : isImgGift(activeGift) ? (
-<GiftImage key={playKey} name={activeGift.slice(4)} />
-) : (
-            <LottieView
-              key={playKey}
-              source={activeGift}
-              autoPlay
-              loop={false}
-              speed={1}
-              hardwareAccelerationAndroid={true}
-              renderMode="HARDWARE"
-              cacheComposition={true}
-              resizeMode="contain"
-              style={{ width: 350, height: 350, backgroundColor: "transparent" }}
-            />
-          )}
-        </View>
-      ) : null}
-
-      {activeGift && activeMeta && activeMeta.senderName ? (
-        <View
-          pointerEvents="none"
-          style={{
-            position: "absolute",
-            top: height * 0.17,
-            alignSelf: "center",
-            left: 0,
-            right: 0,
-            alignItems: "center",
-            zIndex: 100000,
-            elevation: 100000,
-          }}
-        >
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              paddingVertical: 5,
-              paddingLeft: 5,
-              paddingRight: 14,
-              borderRadius: 24,
-              backgroundColor: "rgba(0,0,0,0.6)",
-              borderWidth: 1,
-              borderColor: "rgba(255,105,180,0.85)",
-              maxWidth: width * 0.9,
-            }}
-          >
-            <ExpoImage
-              source={{ uri: activeMeta.senderImg || STABLE_AVATAR }}
-              style={{ width: 30, height: 30, borderRadius: 15, marginRight: 8, backgroundColor: "#2a2b38" }}
-              contentFit="cover"
-              cachePolicy="memory-disk"
-              transition={0}
-            />
-            <Text numberOfLines={1} style={{ color: "#fff", fontSize: 13, flexShrink: 1 }}>
-              <Text style={{ fontWeight: "bold" }}>{activeMeta.senderName}</Text>
-              {" "}sent{" "}
-              {activeMeta.giftName ? <Text style={{ color: "#FFE600", fontWeight: "bold" }}>{activeMeta.giftName}</Text> : "a gift"}
-              {activeMeta.receiverName ? <Text>{" "}to <Text style={{ color: "#FFE600", fontWeight: "bold" }}>@{activeMeta.receiverName}</Text></Text> : null}
-            </Text>
-          </View>
-        </View>
-      ) : null}
-
-      {combo ? (
-        <Animated.View
-          pointerEvents="none"
-          style={{
-            position: "absolute",
-            top: height * 0.25,
-            left: 10,
-            zIndex: 99998,
-            elevation: 99998,
-            flexDirection: "row",
-            alignItems: "center",
-            opacity,
-            transform: [{ translateX: tx }, { scale }],
-          }}
-        >
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              paddingLeft: 6,
-              paddingRight: 14,
-              paddingVertical: 6,
-              borderRadius: 30,
-              backgroundColor: "rgba(0,0,0,0.55)",
-              borderWidth: 1.5,
-              borderColor: "rgba(255,105,180,0.8)",
-              maxWidth: width * 0.62,
-            }}
-          >
-            <Animated.View
-              style={{
-                marginRight: 8,
-                transform: [
-                  {
-                    rotate: shake.interpolate({
-                      inputRange: [-1, 1],
-                      outputRange: ["-8deg", "8deg"],
-                    }),
-                  },
-                ],
-              }}
-            >
-              <ExpoImage
-                source={{ uri: combo.senderImg || STABLE_AVATAR }}
-                style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: "#2a2b38" }}
-                contentFit="cover"
-                cachePolicy="memory-disk"
-                transition={0}
-              />
-            </Animated.View>
-            <View style={{ flexShrink: 1 }}>
-              <Text numberOfLines={1} style={{ color: "#fff", fontWeight: "bold", fontSize: 14 }}>
-                {combo.senderName}
-              </Text>
-              <Text numberOfLines={1} style={{ color: "#fff", fontSize: 13, marginTop: 1 }}>
-                send{" "}
-                <Text style={{ color: "#FFE600", fontWeight: "bold" }}>
-                  @{combo.receiverName || "user"}
-                </Text>
-              </Text>
-            </View>
-          </View>
-
-          {comboGift?.icon ? (
-            <Image
-              source={comboGift.icon}
-              style={{ width: 58, height: 58, resizeMode: "contain", marginLeft: 6 }}
-            />
-          ) : null}
-
-          <Text
-            style={{
-              color: "#FF69B4",
-              fontSize: 34,
-              fontWeight: "900",
-              fontStyle: "italic",
-              marginLeft: 4,
-              textShadowColor: "rgba(0,0,0,0.6)",
-              textShadowOffset: { width: 1, height: 1 },
-              textShadowRadius: 3,
-            }}
-          >
-            x{combo.count || 1}
-          </Text>
-        </Animated.View>
-      ) : null}
-    </>
+    <View
+      pointerEvents="none"
+      style={[{ position: "absolute", left: 10, zIndex: 99998, elevation: 99998 }, comboBottom != null ? { bottom: comboBottom } : { top: comboTop != null ? comboTop : height * 0.25 }]}
+    >
+      {combos.map((c) => <ComboRow key={c.key} data={c.data} />)}
+    </View>
   );
 }));
 
@@ -1029,8 +761,10 @@ const chatUserPressRef = { current: null };
 const pressChatUser = (chat) => { if (chatUserPressRef.current) chatUserPressRef.current(chat); };
 
 const ChatItem = memo(({ chat }) => {
+  const joinWait = useJoinDelay(chat);
 
         if (chat.type === "join") {
+  if (joinWait) return null;
 
             return (
                 <TouchableOpacity activeOpacity={0.7} onPress={() => pressChatUser(chat)}
@@ -1655,339 +1389,6 @@ const ProfileAvatar = memo(({ uri, uid, level, size = 100, style }) => {
   );
 });
 
-// ============================================================
-// GIFT SHEET (PERF)
-// Pehle ye poora popup LiveRoom ke andar tha -> room me har snapshot /
-// chat / seat update pe re-render, aur horizontal ScrollView ek saath
-// SAARE gift images render karta tha -> left/right swipe pe lag.
-// Ab: memo component + FlatList (sirf paas ke pages render hote hain)
-// + memo GiftCard + native-driver animation.
-// ============================================================
-const GIFT_GOLD = '#F5C451';   // premium gold accent
-const GIFTS_PER_PAGE = 8;   // 4 columns x 2 rows (pehle 3x2 bade cards)
-const GIFT_PAGE_W = width - 24;
-const SHEET_OFFSET = 420;
-const GIFT_PAGES = (() => {
-  const pages = [];
-  for (let i = 0; i < gifts.length; i += GIFTS_PER_PAGE) {
-    pages.push({ key: 'p' + i, items: gifts.slice(i, i + GIFTS_PER_PAGE) });
-  }
-  return pages;
-})();
-
-const GiftCard = memo(({ item, onSend }) => (
-  <TouchableOpacity
-    style={styles.giftCard}
-    activeOpacity={0.6}
-    delayPressIn={0}
-    onPress={() => onSend(item)}
-  >
-    <Image
-      source={item.icon}
-      style={{ width: 42, height: 42 }}
-      resizeMode="contain"
-      fadeDuration={0}
-    />
-    <Text style={styles.giftName} numberOfLines={1}>{item.name}</Text>
-    <Text style={styles.giftCoin}>{item.price}</Text>
-  </TouchableOpacity>
-));
-
-const GiftPage = memo(({ page, onSend }) => (
-  <View
-    style={{
-      width: GIFT_PAGE_W,
-      flexDirection: 'row',
-      flexWrap: 'wrap',
-      justifyContent: 'flex-start',
-      paddingHorizontal: 0,
-    }}
-  >
-    {page.items.map((item) => (
-      <GiftCard key={item.id} item={item} onSend={onSend} />
-    ))}
-  </View>
-));
-
-const GiftUserChip = memo(({ user, selected, onSelect }) => (
-  <TouchableOpacity
-    onPress={() => onSelect(user.uid)}
-    style={{ alignItems: 'center', marginRight: 10 }}
-  >
-    <View>
-      <ExpoImage cachePolicy="memory-disk" transition={0}
-        source={{ uri: user.img || STABLE_AVATAR }}
-        style={{
-          width: 44,
-          height: 44,
-          borderRadius: 22,
-          borderWidth: selected ? 3 : 1,
-          borderColor: selected ? GIFT_GOLD : 'rgba(255,255,255,0.25)',
-        }}
-      />
-      {(user.level >= 10 || !!user.uid) && (
-        <GuardedFrame level={user.level} uid={user.uid} pointerEvents="none"
-          style={FRAME_GIFT44} />
-      )}
-    </View>
-    <Text
-      style={{ color: '#fff', fontSize: 9, width: 52, textAlign: 'center', marginTop: 2 }}
-      numberOfLines={1}
-    >
-      {user.name}
-    </Text>
-  </TouchableOpacity>
-));
-
-// "All" chip: seat pe baithe sab users ek saath select
-const GiftAllChip = memo(({ selected, onPress }) => (
-  <TouchableOpacity onPress={onPress} style={{ alignItems: 'center', marginRight: 10 }}>
-    <View
-      style={{
-        width: 44,
-        height: 44,
-        borderRadius: 22,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: selected ? GIFT_GOLD : 'rgba(255,255,255,0.08)',
-        borderWidth: selected ? 3 : 1,
-        borderColor: selected ? '#FFE08A' : 'rgba(255,255,255,0.25)',
-      }}
-    >
-      <Text style={{ color: selected ? '#2b1055' : '#fff', fontWeight: 'bold', fontSize: 12 }}>ALL</Text>
-    </View>
-    <Text style={{ color: '#fff', fontSize: 9, width: 52, textAlign: 'center', marginTop: 2 }}>
-      All
-    </Text>
-  </TouchableOpacity>
-));
-
-// Pending (abhi write na hue) gift kharcha: chhota store + chhota component.
-const giftPendingStore = {
-  v: 0,
-  subs: new Set(),
-  set(n) {
-    giftPendingStore.v = n;
-    giftPendingStore.subs.forEach((f) => f(n));
-  },
-};
-const GiftBalance = memo(({ stars }) => {
-  const [pending, setPending] = useState(giftPendingStore.v);
-  useEffect(() => {
-    setPending(giftPendingStore.v);
-    giftPendingStore.subs.add(setPending);
-    return () => { giftPendingStore.subs.delete(setPending); };
-  }, []);
-  return (
-    <Text style={{ color: GIFT_GOLD, fontSize: 15, fontWeight: 'bold', marginLeft: 4 }}>
-      {Math.max(0, stars - pending)}
-    </Text>
-  );
-});
-
-// SMOOTH OPEN: sheet ka open/close state ab is component ke ANDAR hai (ref.open()/ref.close()).
-// Pehle `giftModalVisible` poori LiveRoom screen ka state tha -> gift button dabate hi
-// 6000 line ki screen re-render hoti thi aur popup atak kar khulta tha. Ab sirf ye
-// chhota sheet render hota hai. Band hone par bhi neeche slide + backdrop fade hota hai.
-const GiftSheet = memo(
-  forwardRef(({ stars, giftUsers, selectedGiftUser, onSelectUser, onSendGift }, ref) => {
-    const insets = useSafeAreaInsets();
-    // Phone ke navigation bar (neeche wali bar) ke UPAR dikhane ke liye bottom gap
-    const bottomGap = 10;
-    const [visible, setVisible] = useState(false);
-    const anim = useRef(new Animated.Value(400)).current;
-    const fade = useRef(new Animated.Value(0)).current;
-    const closingRef = useRef(false);
-    const [pageIdx, setPageIdx] = useState(0);
-    // pending spend ab <GiftBalance/> ke andar -> har gift tap par sirf wo ek chhota number
-    // re-render hota hai (pehle poori sheet: chips + pages + dots sab dobara render hote the)
-    const setPending = giftPendingStore.set;
-    const openStartedRef = useRef(false);
-
-    // Swipe khatam hone par hi page dot update (per-frame setState nahi -> smooth)
-    const onPageEnd = useCallback((e) => {
-      const x = e.nativeEvent.contentOffset.x;
-      const idx = Math.max(0, Math.min(GIFT_PAGES.length - 1, Math.round(x / GIFT_PAGE_W)));
-      setPageIdx((prev) => (prev === idx ? prev : idx));
-    }, []);
-
-    const open = useCallback(() => {
-      closingRef.current = false;
-      anim.setValue(SHEET_OFFSET);
-      fade.setValue(0);
-      setPageIdx(0);
-      setVisible(true);
-    }, [anim, fade]);
-
-    const onClose = useCallback(() => {
-      if (closingRef.current) return;
-      closingRef.current = true;
-      Animated.parallel([
-        Animated.timing(anim, { toValue: SHEET_OFFSET, duration: 140, easing: RNEasing.in(RNEasing.quad), useNativeDriver: true }),
-        Animated.timing(fade, { toValue: 0, duration: 140, useNativeDriver: true }),
-      ]).start(() => {
-        closingRef.current = false;
-        setVisible(false);
-      });
-    }, [anim, fade]);
-
-    useImperativeHandle(ref, () => ({ open, close: onClose, setPending }), [open, onClose]);
-
-    // SMOOTH OPEN: animation tab shuru hota hai jab Modal window sach me screen par aa jaye (onShow).
-    // Pehle effect me chalta tha -> window ready hone se pehle chal kar shuruat ke frames kat jate the
-    // aur popup "jhatke" se khulta tha. Fallback timer: onShow na aaye to bhi khul jaye.
-    const startOpenAnim = useCallback(() => {
-      if (openStartedRef.current) return;
-      openStartedRef.current = true;
-      Animated.parallel([
-        Animated.spring(anim, { toValue: 0, damping: 24, stiffness: 300, mass: 0.7, overshootClamping: true, useNativeDriver: true }),
-        Animated.timing(fade, { toValue: 1, duration: 150, useNativeDriver: true }),
-      ]).start();
-    }, [anim, fade]);
-
-    useEffect(() => {
-      if (!visible) { openStartedRef.current = false; return; }
-      openStartedRef.current = false;
-      const t = setTimeout(startOpenAnim, 220);
-      return () => clearTimeout(t);
-    }, [visible, startOpenAnim]);
-
-    const renderPage = useCallback(
-      ({ item }) => <GiftPage page={item} onSend={onSendGift} />,
-      [onSendGift]
-    );
-    const getItemLayout = useCallback(
-      (_, index) => ({ length: GIFT_PAGE_W, offset: GIFT_PAGE_W * index, index }),
-      []
-    );
-
-    return (
-      <SafeModal
-        visible={visible}
-        transparent
-        animationType="none"
-        statusBarTranslucent
-        hardwareAccelerated
-        onShow={startOpenAnim}
-        onRequestClose={onClose}
-      >
-        <View style={[styles.giftOverlay, { backgroundColor: 'transparent' }]}>
-          <Animated.View
-            pointerEvents="none"
-            style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(5,0,15,0.55)', opacity: fade }]}
-          />
-          <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={onClose} />
-
-          <Animated.View
-            renderToHardwareTextureAndroid
-            style={[styles.giftSheet, { paddingBottom: bottomGap, transform: [{ translateY: anim }] }]}
-          >
-            <LinearGradient
-              pointerEvents="none"
-              colors={['#2b1055', '#1a0b38', '#0d0618']}
-              locations={[0, 0.5, 1]}
-              start={{ x: 0.2, y: 0 }}
-              end={{ x: 0.8, y: 1 }}
-              style={StyleSheet.absoluteFill}
-            />
-            <View style={styles.giftGoldLine} pointerEvents="none" />
-            <View
-              style={{
-                flexDirection: 'row',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: 6,
-              }}
-            >
-              <Text style={styles.giftTitle}>🎁 Send Gifts</Text>
-              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <Text style={{ fontSize: 16 }}>⭐</Text>
-                <GiftBalance stars={stars} />
-              </View>
-            </View>
-
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={{ marginBottom: 6, flexGrow: 0 }}
-              contentContainerStyle={{ paddingHorizontal: 6, paddingVertical: 4 }}
-              nestedScrollEnabled
-              keyboardShouldPersistTaps="handled"
-              decelerationRate="normal"
-            >
-              {giftUsers.length > 1 && (
-                <GiftAllChip
-                  selected={selectedGiftUser === 'ALL'}
-                  onPress={() => onSelectUser(selectedGiftUser === 'ALL' ? null : 'ALL')}
-                />
-              )}
-              {giftUsers.map((user) => (
-                <GiftUserChip
-                  key={user.uid}
-                  user={user}
-                  selected={selectedGiftUser === user.uid || selectedGiftUser === 'ALL'}
-                  onSelect={onSelectUser}
-                />
-              ))}
-            </ScrollView>
-
-            <FlatList
-              data={GIFT_PAGES}
-              keyExtractor={(p) => p.key}
-              renderItem={renderPage}
-              horizontal
-              // pagingEnabled hata ke snapToInterval: ek swipe = ek page, smooth snap
-              snapToInterval={GIFT_PAGE_W}
-              snapToAlignment="start"
-              disableIntervalMomentum
-              decelerationRate="fast"
-              showsHorizontalScrollIndicator={false}
-              getItemLayout={getItemLayout}
-              // aas-paas ke pages pehle se render -> swipe pe blank/flicker nahi
-              initialNumToRender={2}
-              maxToRenderPerBatch={2}
-              updateCellsBatchingPeriod={16}
-              windowSize={5}
-              // Android pe ye gift icons ko gayab kar deta tha
-              removeClippedSubviews={false}
-              bounces={Platform.OS === 'ios'}
-              overScrollMode="never"
-              nestedScrollEnabled
-              keyboardShouldPersistTaps="handled"
-              onMomentumScrollEnd={onPageEnd}
-            />
-
-            {GIFT_PAGES.length > 1 && (
-              <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingTop: 2 }}>
-                {GIFT_PAGES.map((p, i) => (
-                  <View
-                    key={p.key}
-                    style={{
-                      width: i === pageIdx ? 14 : 6,
-                      height: 6,
-                      borderRadius: 3,
-                      marginHorizontal: 3,
-                      backgroundColor: i === pageIdx ? GIFT_GOLD : 'rgba(255,255,255,0.25)',
-                    }}
-                  />
-                ))}
-              </View>
-            )}
-          </Animated.View>
-        </View>
-      </SafeModal>
-    );
-  }),
-  (a, b) =>
-    a.stars === b.stars &&
-    a.selectedGiftUser === b.selectedGiftUser &&
-    a.onSelectUser === b.onSelectUser &&
-    a.onSendGift === b.onSendGift &&
-    (a.giftUsers === b.giftUsers ||
-      a.giftUsers.map((u) => u.uid + '|' + u.img + '|' + u.name).join(',') ===
-        b.giftUsers.map((u) => u.uid + '|' + u.img + '|' + u.name).join(','))
-);
-
 // ===== TIME-BASED ROOM BACKGROUND =====
 // Subah / Dopahar / Sham / Raat - phone ke time ke hisaab se apne aap badalta hai.
 // 5am-12pm morning | 12pm-5pm afternoon | 5pm-8pm evening | 8pm-5am night
@@ -2091,8 +1492,13 @@ const inflightSpendRef = useRef(0);  // write ho gaye, wallet snapshot abhi nahi
 // pendingSpend ab sheet ke andar hai (ref.setPending) -> har gift tap pe poori room re-render nahi hoti
 const setPendingSpend = useCallback((v) => { if (giftSheetRef.current) giftSheetRef.current.setPending(v); }, []);
 const onSendGiftStable = useCallback((item) => {
-  if (handleSendGiftRef.current) handleSendGiftRef.current(item);
+  if (handleSendGiftRef.current) return handleSendGiftRef.current(item);
+  return false;
 }, []);
+const goRecharge = useCallback(() => {
+  if (giftSheetRef.current) giftSheetRef.current.close();
+  setTimeout(() => { try { router.push('/recharge'); } catch (e) {} }, 180);
+}, [router]);
 
 
 const [speakerModalVisible, setSpeakerModalVisible] = useState(false);
@@ -2164,6 +1570,7 @@ const liveContextSigRef = useRef("");
 
 // ===== JOIN BANNER ("Nawed joined") =====
 const [joinBanner, setJoinBanner] = useState(null);
+const [chatTopY, setChatTopY] = useState(null);
 const joinHideTimeoutRef = useRef(null);
 const chatsReadyRef = useRef(false);
 // ids of "joined" messages that already existed BEFORE I entered -> never shown to me
@@ -2182,6 +1589,7 @@ const handleJoinDone = useCallback(() => setJoinBanner(null), []);
 const [selectedGiftUser, setSelectedGiftUser] = useState(null);
 
 const [stars, setStars] = useState(0);
+const [walletInfo, setWalletInfo] = useState({ level: 1, totalSpent: 0, nextLevelSpent: null, levelStartSpent: 0 });
 
 
 
@@ -2926,6 +2334,12 @@ if(snap.exists()){
 
 const v = snap.data()?.stars || 0;
 setStars(v);
+{
+  const _w = snap.data() || {};
+  setWalletInfo((p) => (p.level === (_w.level || 1) && p.totalSpent === (_w.totalSpent || 0) && p.nextLevelSpent === (_w.nextLevelSpent ?? null))
+    ? p
+    : { level: _w.level || 1, totalSpent: _w.totalSpent || 0, nextLevelSpent: _w.nextLevelSpent ?? null, levelStartSpent: _w.levelStartSpent || 0 });
+}
 setMyStars(v);
 // wallet server/local se update ho gaya -> in-flight spend ab v me included hai
 inflightSpendRef.current = 0;
@@ -4340,6 +3754,8 @@ useEffect(() => {
     giftLayerRef.current.showCombo({
       senderName: gift.senderName,
       senderImg: gift.senderImg,
+      senderId: gift.senderId,
+      level: gift.senderLevel,
       receiverName: gift.receiverName,
       giftId: gift.giftId,
       giftName: gift.giftName,
@@ -5692,7 +5108,7 @@ const handleSendGift = (item) => {
 
   if (!selectedGiftUser || typeof selectedGiftUser !== "string") {
     alert("Please select user");
-    return;
+    return false;
   }
 
   const isAll = selectedGiftUser === "ALL";
@@ -5704,7 +5120,7 @@ const handleSendGift = (item) => {
 
   if (targetIds.length === 0) {
     alert("Please select another user");
-    return;
+    return false;
   }
 
   // har receiver ko poora gift -> kharcha = price x receivers
@@ -5714,7 +5130,7 @@ const handleSendGift = (item) => {
   const available = stars - pendingSpendRef.current - inflightSpendRef.current;
   if (available < price) {
     alert("Not enough stars");
-    return;
+    return false;
   }
 
   const receiverId = isAll ? "ALL" : selectedGiftUser;
@@ -5726,7 +5142,7 @@ const handleSendGift = (item) => {
     (receiverId === currentUid || !giftUsers.some(u => u.uid === receiverId))
   ) {
     alert("Please select another user");
-    return;
+    return false;
   }
 
   // NOTE: sheet ab band nahi hoti -> user lagatar 10-20 gift tap kar sakta hai.
@@ -5776,6 +5192,8 @@ const handleSendGift = (item) => {
     giftLayerRef.current.showCombo({
       senderName: _senderDisplay,
       senderImg: currentAvatar || STABLE_AVATAR,
+      senderId: currentUid,
+      level: hostLevel,
       receiverName: _receiverName,
       giftId: item.id,
       giftName: item.name,
@@ -5823,6 +5241,7 @@ const handleSendGift = (item) => {
     }, 1000);
   }
 
+  return true;
 };
 
 const flushGiftBatch = () => {
@@ -5893,6 +5312,7 @@ const sendGiftInBackground = async ({
       senderId: currentUid,
       senderName: senderDisplay,
       senderImg: currentAvatar || STABLE_AVATAR,
+      senderLevel: hostLevel,
       receiverId,
       receiverName,
       timestamp: giftTimestamp,
@@ -6267,10 +5687,12 @@ return (
         })}
       </View>
 
-      {!!roomData?.description && (
-        <View style={styles.pinned}>
-          <Ionicons name="megaphone" size={13} color={T.gold} />
-          <Text numberOfLines={2} ellipsizeMode="tail" style={styles.pinnedTxt}>{roomData.description}</Text>
+      {/* JOIN PILL (Lv<35): seats ke theek niche, jahan pehle pinned welcome tha. Height 0 => chat hilti nahi */}
+      {joinBanner && (Number(joinBanner.level) || 1) < 35 && (
+        <View pointerEvents="none" style={{ height: 0, zIndex: 50, elevation: 50 }}>
+          <View style={{ position: 'absolute', top: 4, left: 0, right: 0 }}>
+            <PlainJoinPill key={joinBanner._k} data={{ ...joinBanner, level: Number(joinBanner.level) || 1 }} onDone={handleJoinDone} />
+          </View>
         </View>
       )}
 
@@ -6280,6 +5702,13 @@ return (
     data={chatListData}
     inverted
     style={styles.chatArea}
+    onLayout={() => {
+      // Lv<35 join pill ko chat ke theek upar rakhne ke liye chat ka screen par top nikalo
+      try {
+        const n = chatScrollRef.current && chatScrollRef.current.getNativeScrollRef && chatScrollRef.current.getNativeScrollRef();
+        n && n.measureInWindow && n.measureInWindow((x, y) => { if (y > 0) setChatTopY(Math.round(y)); });
+      } catch (e) {}
+    }}
     keyboardShouldPersistTaps="handled"
     contentContainerStyle={{
         paddingTop: 6,
@@ -6315,7 +5744,7 @@ return (
 
 
 
-<GiftLayer ref={giftLayerRef} />
+<GiftLayer ref={giftLayerRef} comboBottom={Math.round(height * 0.42)} />
 
 {/* ================= JOIN ENTRY ANIMATION ================= */}
 {joinBanner && (
@@ -6323,6 +5752,7 @@ return (
     data={joinBanner}
     variant={JOIN_ANIM_VARIANT}
     onDone={handleJoinDone}
+    hideLow
   />
 )}
 
@@ -6627,6 +6057,12 @@ user?.seatKey
   selectedGiftUser={selectedGiftUser}
   onSelectUser={setSelectedGiftUser}
   onSendGift={onSendGiftStable}
+  hostId={roomData?.hostId}
+  fallbackAvatar={STABLE_AVATAR}
+  onRecharge={goRecharge}
+  level={walletInfo.nextLevelSpent != null ? walletInfo.level : undefined}
+  levelProgress={walletInfo.nextLevelSpent != null ? Math.max(0, Math.min(1, (walletInfo.totalSpent - walletInfo.levelStartSpent) / Math.max(1, walletInfo.nextLevelSpent - walletInfo.levelStartSpent))) : 0}
+  starsToUpgrade={walletInfo.nextLevelSpent != null ? Math.max(0, walletInfo.nextLevelSpent - walletInfo.totalSpent) : 0}
 />
 
 

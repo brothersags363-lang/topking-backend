@@ -28,8 +28,6 @@ import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useRouter } from '../utils/safeRouter';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import * as ScreenCapture from 'expo-screen-capture';
-import LottieView from 'lottie-react-native';
-import { WebView } from 'react-native-webview';
 import {
   addDoc, collection, deleteDoc, deleteField, doc, getDoc, getDocs, increment, limit, onSnapshot,
   orderBy, query, runTransaction, setDoc, updateDoc, writeBatch, serverTimestamp,
@@ -43,12 +41,13 @@ import { callApi } from '../utils/api';
 import { useLiveBanGuard } from '../utils/liveBan';
 import { useBlockedIds } from '../utils/useBlockedIds';
 import { gifts } from '../assets/giftsData';
-import { giftHtml } from '../assets/giftWeb';
-import GiftImage, { isImgGift } from '../components/GiftImage';
+import GiftSheet from '../components/live/GiftSheet';
 import LevelFrame, { getSpecialKey } from '../components/LevelFrame';
 import JoinEntry from '../components/live/JoinEntry';
+import { useJoinDelay } from '../components/live/useJoinDelay';
 import UserTick from '../components/UserTick';
 import ProfileSheet, { SheetChip } from '../components/live/ProfileSheet';
+import { Image as ExpoImage } from 'expo-image';
 
 let db = null;
 let auth = null;
@@ -62,7 +61,7 @@ try {
     db = fb2.db;
     auth = fb2.auth;
   } catch (err) {
-    console.log('Firebase config not found (MultiGuestRoom).');
+    __DEV__ && console.log('Firebase config not found (MultiGuestRoom).');
   }
 }
 
@@ -193,7 +192,7 @@ const fetchAgoraToken = async (channel, uid, isCancelled = () => false, onRetry)
     try {
       return await fetchAgoraTokenOnce(channel, uid);
     } catch (e) {
-      console.log(`AGORA TOKEN FETCH FAILED (try ${attempt}/${TOKEN_RETRIES}):`, e);
+      __DEV__ && console.log(`AGORA TOKEN FETCH FAILED (try ${attempt}/${TOKEN_RETRIES}):`, e);
       if (attempt < TOKEN_RETRIES) {
         onRetry && onRetry(attempt);
         await new Promise((r) => setTimeout(r, 1200 * attempt));
@@ -258,13 +257,13 @@ const useAgoraRoom = ({ roomId, myUid, publishing, micOn, camOn, soundMuted, onP
         autoSubscribeAudio: true,
         autoSubscribeVideo: true,
       });
-      if (typeof ret === 'number' && ret < 0) console.log('AGORA joinChannel returned', ret);
+      if (typeof ret === 'number' && ret < 0) __DEV__ && console.log('AGORA joinChannel returned', ret);
     };
 
     const renewToken = async () => {
       const res = await fetchAgoraToken(roomId, numericUid, isCancelled);
       if (res.token && mounted && engine) {
-        try { engine.renewToken(res.token); } catch (e) { console.log('RENEW TOKEN ERROR:', e); }
+        try { engine.renewToken(res.token); } catch (e) { __DEV__ && console.log('RENEW TOKEN ERROR:', e); }
       }
     };
 
@@ -328,7 +327,7 @@ const useAgoraRoom = ({ roomId, myUid, publishing, micOn, camOn, soundMuted, onP
           onTokenPrivilegeWillExpire: () => renewToken(),
           onRequestToken: () => renewToken(),
           onError: (err, msg) => {
-            console.log('Agora Error:', err, msg);
+            __DEV__ && console.log('Agora Error:', err, msg);
             if (!mounted) return;
             if (err === 109 || err === 110) {
               if (mainLive) { renewToken(); return; }
@@ -356,7 +355,7 @@ const useAgoraRoom = ({ roomId, myUid, publishing, micOn, camOn, soundMuted, onP
         await getTokenAndJoin();
         if (mounted) setReady(true);
       } catch (e) {
-        console.log('MULTI ROOM AGORA INIT ERROR:', e?.message || e);
+        __DEV__ && console.log('MULTI ROOM AGORA INIT ERROR:', e?.message || e);
         setSt(`Failed: ${e?.message || e}`);
       }
     })();
@@ -433,7 +432,7 @@ const useAgoraRoom = ({ roomId, myUid, publishing, micOn, camOn, soundMuted, onP
           try { engine.setClientRole(ClientRoleType.ClientRoleAudience); } catch (_) {}
         }
       } catch (e) {
-        console.log('PUBLISH ERROR:', e?.message || e);
+        __DEV__ && console.log('PUBLISH ERROR:', e?.message || e);
         errRef.current && errRef.current(e?.message || 'Camera / mic could not start.');
       }
     })();
@@ -448,7 +447,7 @@ const useAgoraRoom = ({ roomId, myUid, publishing, micOn, camOn, soundMuted, onP
   }, [ready, soundMuted]);
 
   const flip = useCallback(() => {
-    try { engineRef.current?.switchCamera(); } catch (e) { console.log('FLIP ERROR:', e); }
+    try { engineRef.current?.switchCamera(); } catch (e) { __DEV__ && console.log('FLIP ERROR:', e); }
   }, []);
 
   const applyBeauty = useCallback((f) => {
@@ -457,13 +456,13 @@ const useAgoraRoom = ({ roomId, myUid, publishing, micOn, camOn, soundMuted, onP
     try {
       if (f.beauty) engine.setBeautyEffectOptions(true, f.beauty);
       else engine.setBeautyEffectOptions(false, { lighteningContrastLevel: 1, lighteningLevel: 0, smoothnessLevel: 0, rednessLevel: 0, sharpnessLevel: 0 });
-    } catch (e) { console.log('BEAUTY ERROR:', e); }
+    } catch (e) { __DEV__ && console.log('BEAUTY ERROR:', e); }
     try {
       if (engine.setColorEnhanceOptions) {
         if (f.color) engine.setColorEnhanceOptions(true, f.color);
         else engine.setColorEnhanceOptions(false, { strengthLevel: 0, skinProtectLevel: 1 });
       }
-    } catch (e) { console.log('COLOR ENHANCE ERROR:', e); }
+    } catch (e) { __DEV__ && console.log('COLOR ENHANCE ERROR:', e); }
   }, []);
 
   const retry = useCallback(() => { setStatus('Connecting...'); setRetryKey((k) => k + 1); }, []);
@@ -488,51 +487,6 @@ const WeeklyMinutesPill = memo(({ startTime }) => {
     <View style={styles.minPill}>
       <View style={[styles.minFill, { width: `${(shown / WEEKLY_TARGET_MIN) * 100}%` }]} />
       <Text style={styles.minTxt}>{shown}/{WEEKLY_TARGET_MIN} min</Text>
-    </View>
-  );
-});
-
-const GiftOverlay = memo(({ activeGift, playKey, onFinish }) => {
-  const webSource = useMemo(
-    () => (typeof activeGift === 'string' && activeGift.startsWith('web:')
-      ? { html: giftHtml(activeGift.slice(4)), baseUrl: 'https://localhost' } : null),
-    [activeGift]
-  );
-  if (!activeGift) return null;
-  return (
-    <View pointerEvents="none" style={styles.giftAnimWrap}>
-      {webSource ? (
-        <WebView
-          key={playKey}
-          source={webSource}
-          originWhitelist={['*']}
-          javaScriptEnabled
-          domStorageEnabled={false}
-          cacheEnabled
-          overScrollMode="never"
-          style={{ width, height: width * 1.3, backgroundColor: 'transparent' }}
-          containerStyle={{ backgroundColor: 'transparent' }}
-          androidLayerType="hardware"
-          scrollEnabled={false}
-          pointerEvents="none"
-        />
-      ) : isImgGift(activeGift) ? (
-<GiftImage key={playKey} name={activeGift.slice(4)} />
-) : (
-        <LottieView
-          key={playKey}
-          source={activeGift}
-          autoPlay
-          loop={false}
-          speed={2}
-          hardwareAccelerationAndroid
-          renderMode="HARDWARE"
-          cacheComposition
-          resizeMode="contain"
-          onAnimationFinish={(cancelled) => { if (!cancelled) onFinish && onFinish(); }}
-          style={{ width: 350, height: 350, backgroundColor: 'transparent' }}
-        />
-      )}
     </View>
   );
 });
@@ -592,6 +546,7 @@ const HeartsLayer = memo(forwardRef(({ bottom }, ref) => {
 }));
 
 const ChatItem = memo(({ chat, onUser }) => {
+  const joinWait = useJoinDelay(chat);
   const theme = getLevelTheme(chat.level || 1);
   const openUser = () =>
     onUser && chat.senderId && onUser({
@@ -601,10 +556,11 @@ const ChatItem = memo(({ chat, onUser }) => {
   const tick = (size) => <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={size} />;
 
   if (chat.type === 'join') {
+  if (joinWait) return null;
     return (
       <View style={styles.sysRow}>
         <TouchableOpacity activeOpacity={0.8} onPress={openUser}>
-          <Image source={{ uri: chat.userImg || DEFAULT_AVATAR }} style={styles.sysAva} />
+          <ExpoImage source={{ uri: chat.userImg || DEFAULT_AVATAR }} style={styles.sysAva} cachePolicy="memory-disk" transition={0} />
           {(chat.level >= 10 || chat.special || !!chat.senderId) && (
             <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated={CHAT_FRAME_ANIM} style={styles.sysFrame} />
           )}
@@ -627,7 +583,7 @@ const ChatItem = memo(({ chat, onUser }) => {
     return (
       <View style={[styles.sysRow, { flexWrap: 'wrap' }]}>
         <TouchableOpacity activeOpacity={0.8} onPress={openUser}>
-          <Image source={{ uri: chat.userImg || DEFAULT_AVATAR }} style={styles.sysAva} />
+          <ExpoImage source={{ uri: chat.userImg || DEFAULT_AVATAR }} style={styles.sysAva} cachePolicy="memory-disk" transition={0} />
         </TouchableOpacity>
         <Text style={[styles.sysText, { marginLeft: 6 }]}>{chat.senderName}</Text>
         {tick(15)}
@@ -647,7 +603,7 @@ const ChatItem = memo(({ chat, onUser }) => {
   return (
     <View style={styles.chatRow}>
       <TouchableOpacity activeOpacity={0.8} onPress={openUser} style={{ width: 38, height: 38, justifyContent: 'center', alignItems: 'center' }}>
-        <Image source={{ uri: chat.userImg || DEFAULT_AVATAR }} style={styles.chatAva} />
+        <ExpoImage source={{ uri: chat.userImg || DEFAULT_AVATAR }} style={styles.chatAva} cachePolicy="memory-disk" transition={0} />
         {(chat.level >= 10 || chat.special || !!chat.senderId) && (
           <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated={CHAT_FRAME_ANIM} style={styles.chatFrame} />
         )}
@@ -671,27 +627,6 @@ const ChatItem = memo(({ chat, onUser }) => {
 
 const chatKeyExtractor = (item, index) => item.id || String(index);
 
-// ---- gift sheet pieces ----
-const GIFTS_PER_PAGE = 8;
-const GIFT_PAGE_W = width - 24;
-const GIFT_PAGES = (() => {
-  const pages = [];
-  for (let i = 0; i < gifts.length; i += GIFTS_PER_PAGE) pages.push({ key: 'p' + i, items: gifts.slice(i, i + GIFTS_PER_PAGE) });
-  return pages;
-})();
-const GiftCard = memo(({ item, qty, onSend }) => (
-  <TouchableOpacity style={styles.giftCard} activeOpacity={0.7} onPress={() => onSend(item)}>
-    <Image source={item.icon} style={{ width: 42, height: 42 }} resizeMode="contain" fadeDuration={0} />
-    <Text style={styles.giftName} numberOfLines={1}>{item.name}</Text>
-    <Text style={styles.giftCoin}>{Number(item.price || 0) * qty}</Text>
-  </TouchableOpacity>
-));
-const GiftPage = memo(({ page, qty, onSend }) => (
-  <View style={{ width: GIFT_PAGE_W, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-start' }}>
-    {page.items.map((item) => <GiftCard key={item.id} item={item} qty={qty} onSend={onSend} />)}
-  </View>
-));
-
 // ------------------------------------------------------------------
 // TILE
 // ------------------------------------------------------------------
@@ -714,7 +649,7 @@ const Tile = memo(function Tile({ index, seat, score, extraGifters, mine, speaki
         <RtcTextureView style={StyleSheet.absoluteFill} canvas={{ uid: canvasUid }} />
       ) : taken ? (
         <View style={[styles.avatarWrap, speaking && styles.avatarSpeaking]}>
-          <Image source={{ uri: seat.userImg || DEFAULT_AVATAR }} style={styles.avatarImg} />
+          <ExpoImage source={{ uri: seat.userImg || DEFAULT_AVATAR }} style={styles.avatarImg} cachePolicy="memory-disk" transition={0} />
         </View>
       ) : (
         <View style={styles.emptyWrap}>
@@ -862,6 +797,7 @@ export default function MultiGuestRoom() {
   const lastLikesSeenRef = useRef(null);
 
   // ---------- gifts ----------
+  const giftSheetRef = useRef(null);
   const [giftModalVisible, setGiftModalVisible] = useState(false);
   const [selectedGiftUser, setSelectedGiftUser] = useState(null);
   const [giftQty, setGiftQty] = useState(1);
@@ -892,8 +828,8 @@ export default function MultiGuestRoom() {
     if (isHost) return;
     const TAG = "multiguest-secure";
     ScreenCapture.preventScreenCaptureAsync(TAG)
-      .then(() => console.log("SECURE: screen capture BLOCKED for viewer"))
-      .catch((e) => console.log("SECURE: block FAILED", e?.message || e));
+      .then(() => __DEV__ && console.log("SECURE: screen capture BLOCKED for viewer"))
+      .catch((e) => __DEV__ && console.log("SECURE: block FAILED", e?.message || e));
     return () => {
       ScreenCapture.allowScreenCaptureAsync(TAG).catch(() => {});
     };
@@ -983,7 +919,7 @@ export default function MultiGuestRoom() {
           setMySpecial(getSpecialKey(d));
         }
         if (walletSnap.exists()) setMyLevel(walletSnap.data()?.level || 1);
-      } catch (e) { console.log('MY PROFILE LOAD ERROR:', e); }
+      } catch (e) { __DEV__ && console.log('MY PROFILE LOAD ERROR:', e); }
       if (alive) setProfileReady(true);
     })();
     return () => { alive = false; };
@@ -1101,7 +1037,7 @@ export default function MultiGuestRoom() {
           }));
         }
         await Promise.all(jobs);
-      } catch (e) { console.log('JOIN ERROR:', e); }
+      } catch (e) { __DEV__ && console.log('JOIN ERROR:', e); }
     })();
     return () => { deleteDoc(audRef).catch(() => {}); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1150,19 +1086,13 @@ export default function MultiGuestRoom() {
         });
       }
       chatsReadyRef.current = true;
-    }, (e) => console.log('Chat listener error:', e));
+    }, (e) => __DEV__ && console.log('Chat listener error:', e));
     return () => unsub();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
   // ---------- remote gift animation ----------
-  const playGift = useCallback((animation, duration) => {
-    if (!animation) return;
-    setActiveGift(animation);
-    setGiftPlayKey((k) => k + 1);
-    if (giftTimeoutRef.current) clearTimeout(giftTimeoutRef.current);
-    giftTimeoutRef.current = setTimeout(() => setActiveGift(null), duration || 5000);
-  }, []);
+  const playGift = useCallback(() => {}, []); // animation band: sirf PNG combo row dikhti hai
   const handleGiftFinish = useCallback(() => {
     if (giftTimeoutRef.current) clearTimeout(giftTimeoutRef.current);
     setActiveGift(null);
@@ -1192,30 +1122,6 @@ export default function MultiGuestRoom() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room?.liveGift?.timestamp]);
 
-  useEffect(() => {
-    if (!giftCombo) return;
-    giftTranslateX.setValue(-80);
-    giftScale.setValue(0.8);
-    giftShake.setValue(-1);
-    giftOpacity.setValue(0);
-    Animated.parallel([
-      Animated.spring(giftTranslateX, { toValue: 0, speed: 12, bounciness: 6, useNativeDriver: true }),
-      Animated.spring(giftScale, { toValue: 1, speed: 12, bounciness: 6, useNativeDriver: true }),
-      Animated.timing(giftOpacity, { toValue: 1, duration: 250, useNativeDriver: true }),
-      Animated.sequence([
-        Animated.timing(giftShake, { toValue: 1, duration: 60, useNativeDriver: true }),
-        Animated.timing(giftShake, { toValue: -1, duration: 60, useNativeDriver: true }),
-        Animated.timing(giftShake, { toValue: 0, duration: 60, useNativeDriver: true }),
-      ]),
-    ]).start();
-  }, [giftCombo]);
-
-  useEffect(() => {
-    if (!giftModalVisible) return;
-    giftModalAnim.setValue(400);
-    setGiftPageIdx(0);
-    Animated.timing(giftModalAnim, { toValue: 0, duration: 230, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
-  }, [giftModalVisible]);
 
   // ---------- keyboard ----------
   useEffect(() => {
@@ -1257,7 +1163,7 @@ export default function MultiGuestRoom() {
         if (!key || key === 'seat_1') return;
         tx.update(ref, { [`seatsData.${key}`]: { ...data[key], ...EMPTY_SEAT } });
       });
-    } catch (e) { console.log('freeMySeat', e); }
+    } catch (e) { __DEV__ && console.log('freeMySeat', e); }
   }, [roomId, myUid]);
 
   const freeSeatRef = useRef(null);
@@ -1374,7 +1280,7 @@ export default function MultiGuestRoom() {
     if (!free) { Alert.alert('Room full', 'Saari seats bhar gayi hain.'); return; }
     try {
       await updateDoc(doc(db, 'rooms', roomId, 'seatRequests', req.uid), { status: 'accepted', seatKey: free });
-    } catch (e) { console.log('ACCEPT ERROR:', e); }
+    } catch (e) { __DEV__ && console.log('ACCEPT ERROR:', e); }
   };
 
   const rejectRequest = (req) => {
@@ -1474,7 +1380,7 @@ export default function MultiGuestRoom() {
         all.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
         await batch.commit();
       }
-    } catch (e) { console.log(`Clear ${name} error:`, e); }
+    } catch (e) { __DEV__ && console.log(`Clear ${name} error:`, e); }
   };
 
   const doLeaveNow = () => {
@@ -1592,7 +1498,7 @@ export default function MultiGuestRoom() {
         updateDoc(doc(db, 'users', myUid), { followingCount: increment(-1) }).catch(() => {});
       }
       return true;
-    } catch (e) { console.log('FOLLOW ERROR:', e); return false; }
+    } catch (e) { __DEV__ && console.log('FOLLOW ERROR:', e); return false; }
   };
 
   useEffect(() => {
@@ -1655,7 +1561,7 @@ export default function MultiGuestRoom() {
   const muteUserChat = async (t, mute) => {
     if (!db || !roomId) return;
     try { await updateDoc(doc(db, 'rooms', roomId), { [`mutedUsers.${t.uid}`]: mute ? true : deleteField() }); }
-    catch (e) { console.log('MUTE ERROR:', e); }
+    catch (e) { __DEV__ && console.log('MUTE ERROR:', e); }
     setProfileCard(null);
   };
 
@@ -1674,7 +1580,7 @@ export default function MultiGuestRoom() {
               updateDoc(doc(db, 'rooms', roomId), { [`seatsData.${key}`]: { ...sd[key], ...EMPTY_SEAT } }).catch(() => {});
             }
             deleteDoc(doc(db, 'rooms', roomId, 'audience', t.uid)).catch(() => {});
-          } catch (e) { console.log('KICK ERROR:', e); }
+          } catch (e) { __DEV__ && console.log('KICK ERROR:', e); }
           setProfileCard(null);
           setSeatMenuKey(null);
         },
@@ -1685,7 +1591,7 @@ export default function MultiGuestRoom() {
   const toggleMod = async (t) => {
     if (!isHost || !db || !roomId) return;
     try { await updateDoc(doc(db, 'rooms', roomId), { [`mods.${t.uid}`]: mods[t.uid] ? deleteField() : true }); }
-    catch (e) { console.log('MOD ERROR:', e); }
+    catch (e) { __DEV__ && console.log('MOD ERROR:', e); }
     setProfileCard(null);
     setSeatMenuKey(null);
   };
@@ -1730,7 +1636,7 @@ export default function MultiGuestRoom() {
         chatLocked: lockDraft,
         pinned: pinDraft.trim() ? { text: pinDraft.trim().slice(0, 140), by: currentName, at: Date.now() } : deleteField(),
       });
-    } catch (e) { console.log('SETTINGS ERROR:', e); }
+    } catch (e) { __DEV__ && console.log('SETTINGS ERROR:', e); }
     setSettingsVisible(false);
   };
 
@@ -1738,7 +1644,7 @@ export default function MultiGuestRoom() {
   // GIFTING
   // ============================================================
   const goRecharge = () => {
-    setGiftModalVisible(false);
+    if (giftSheetRef.current) giftSheetRef.current.close();
     try { router.push(RECHARGE_ROUTE); }
     catch (e) { Alert.alert('Recharge', 'Recharge screen is not linked yet (set RECHARGE_ROUTE).'); }
   };
@@ -1755,23 +1661,21 @@ export default function MultiGuestRoom() {
     else if (!giftUsers.some((u) => u.uid === selectedGiftUser)) {
       setSelectedGiftUser((giftUsers.find((u) => u.uid === hostId) || giftUsers[0]).uid);
     }
-    setGiftQty(1);
-    setGiftModalVisible(true);
+    if (giftSheetRef.current) giftSheetRef.current.open();
   };
 
-  const handleSendGift = (item) => {
-    if (!selectedGiftUser || typeof selectedGiftUser !== 'string') { Alert.alert('Gift', 'Please select a user'); return; }
-    const qty = giftQty;
+  const handleSendGift = (item, qtyArg) => {
+    if (!selectedGiftUser || typeof selectedGiftUser !== 'string') { Alert.alert('Gift', 'Please select a user'); return false; }
+    const qty = Math.max(1, Number(qtyArg) || 1);
     if (stars < Number(item.price || 0) * qty) {
       Alert.alert('Gift', 'Not enough stars', [{ text: 'Cancel', style: 'cancel' }, { text: 'Recharge', onPress: goRecharge }]);
-      return;
+      return false;
     }
     const receiverId = selectedGiftUser;
     if (receiverId === myUid || !giftUsers.some((u) => u.uid === receiverId)) {
       Alert.alert('Gift', 'Please select another user');
-      return;
+      return false;
     }
-    setGiftModalVisible(false);
     if (item.animation) playGift(item.animation, item.duration);
 
     const isComboContinue = lastGiftRef.current && lastGiftRef.current.senderId === myUid
@@ -1798,10 +1702,11 @@ export default function MultiGuestRoom() {
     const giftTimestamp = Date.now();
     lastSeenGiftKeyRef.current = `${myUid}_${giftTimestamp}`;
     sendGiftInBackground({ item, receiverId, receiverName, senderDisplay, comboCount, giftTimestamp, qty });
+    return true;
   };
   const handleSendGiftRef = useRef(null);
   handleSendGiftRef.current = handleSendGift;
-  const stableSendGift = useCallback((item) => handleSendGiftRef.current && handleSendGiftRef.current(item), []);
+  const stableSendGift = useCallback((item, qty) => (handleSendGiftRef.current ? handleSendGiftRef.current(item, qty) : false), []);
 
   const sendGiftInBackground = async ({ item, receiverId, receiverName, senderDisplay, comboCount, giftTimestamp, qty = 1 }) => {
     if (!db || !roomId || !myUid) return;
@@ -1948,7 +1853,7 @@ export default function MultiGuestRoom() {
           <View style={styles.topBar}>
             <View style={styles.hostPill}>
               <TouchableOpacity activeOpacity={0.85} onPress={openHostCard}>
-                <Image source={{ uri: room?.hostImg || DEFAULT_AVATAR }} style={styles.hostPillImg} />
+                <ExpoImage source={{ uri: room?.hostImg || DEFAULT_AVATAR }} style={styles.hostPillImg} cachePolicy="memory-disk" transition={0} />
               </TouchableOpacity>
               <View style={{ marginLeft: 7, maxWidth: width * 0.28 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -2135,15 +2040,7 @@ export default function MultiGuestRoom() {
               <View style={{ flex: 1 }} />
 
               <TouchableOpacity style={styles.giftCircle} onPress={() => openGiftModal()}>
-                <LottieView
-                  source={require('../assets/animations/giftButton.json')}
-                  autoPlay
-                  loop
-                  renderMode="HARDWARE"
-                  hardwareAccelerationAndroid
-                  cacheComposition
-                  style={{ width: 40, height: 40 }}
-                />
+                <Image source={require('../assets/giftLogo.png')} style={{ width: 30, height: 30 }} resizeMode="contain" />
               </TouchableOpacity>
             </View>
           )}
@@ -2151,24 +2048,19 @@ export default function MultiGuestRoom() {
       </SafeAreaView>
 
       <HeartsLayer ref={heartsRef} bottom={bottomPad + 52} />
-      <GiftOverlay activeGift={activeGift} playKey={giftPlayKey} onFinish={handleGiftFinish} />
 
       {giftCombo && (
-        <Animated.View
+        <View
           pointerEvents="none"
           style={{
             position: 'absolute', top: height * 0.55, left: 10, zIndex: 99998, elevation: 99998,
-            flexDirection: 'row', alignItems: 'center', opacity: giftOpacity,
-            transform: [{ translateX: giftTranslateX }, { scale: giftScale }],
+            flexDirection: 'row', alignItems: 'center',
           }}
         >
           <View style={styles.comboPill}>
-            <Animated.Image
+            <Image
               source={{ uri: giftCombo.senderImg || DEFAULT_AVATAR }}
-              style={{
-                width: 44, height: 44, borderRadius: 22, marginRight: 8, backgroundColor: '#2a2b38',
-                transform: [{ rotate: giftShake.interpolate({ inputRange: [-1, 1], outputRange: ['-8deg', '8deg'] }) }],
-              }}
+              style={{ width: 44, height: 44, borderRadius: 22, marginRight: 8, backgroundColor: '#2a2b38' }}
             />
             <View style={{ flexShrink: 1 }}>
               <Text numberOfLines={1} style={{ color: '#fff', fontWeight: 'bold', fontSize: 14 }}>{giftCombo.senderName}</Text>
@@ -2182,7 +2074,7 @@ export default function MultiGuestRoom() {
             return gd?.icon ? <Image source={gd.icon} style={{ width: 58, height: 58, resizeMode: 'contain', marginLeft: 6 }} /> : null;
           })()}
           <Text style={styles.comboX}>x{giftCombo.count || 1}</Text>
-        </Animated.View>
+        </View>
       )}
 
       {joinBanner && <JoinEntry key={joinBanner._k} data={joinBanner} variant={JOIN_ANIM_VARIANT} onDone={handleJoinDone} />}
@@ -2248,7 +2140,7 @@ export default function MultiGuestRoom() {
             {seatMenuSeat?.userId ? (
               <>
                 <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10, paddingHorizontal: 6 }}>
-                  <Image source={{ uri: seatMenuSeat.userImg || DEFAULT_AVATAR }} style={styles.pkRowAva} />
+                  <ExpoImage source={{ uri: seatMenuSeat.userImg || DEFAULT_AVATAR }} style={styles.pkRowAva} cachePolicy="memory-disk" transition={0} />
                   <Text style={[styles.sheetTitle, { marginLeft: 12, flex: 1 }]} numberOfLines={1}>{seatMenuSeat.userName || 'Guest'}</Text>
                 </View>
                 <TouchableOpacity style={styles.actionRow} onPress={() => {
@@ -2303,7 +2195,7 @@ export default function MultiGuestRoom() {
                   const th = getLevelTheme(item.level || 1);
                   return (
                     <View style={styles.pkRow}>
-                      <Image source={{ uri: item.img || DEFAULT_AVATAR }} style={styles.pkRowAva} />
+                      <ExpoImage source={{ uri: item.img || DEFAULT_AVATAR }} style={styles.pkRowAva} cachePolicy="memory-disk" transition={0} />
                       <View style={{ flex: 1, marginLeft: 12 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                           <Text style={styles.pkRowName} numberOfLines={1}>{item.name || item.username || 'User'}</Text>
@@ -2329,92 +2221,20 @@ export default function MultiGuestRoom() {
       </Modal>
 
       {/* ===== gift sheet ===== */}
-      <Modal visible={giftModalVisible} transparent animationType="fade" statusBarTranslucent hardwareAccelerated onRequestClose={() => setGiftModalVisible(false)}>
-        <View style={styles.giftOverlay}>
-          <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={() => setGiftModalVisible(false)} />
-          <Animated.View
-            style={[styles.giftSheet, {
-              paddingBottom: Math.max(insets.bottom, Platform.OS === 'android' ? 28 : 14) + 10,
-              transform: [{ translateY: giftModalAnim }],
-            }]}
-          >
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <Text style={styles.giftTitle}>🎁 Send Gifts</Text>
-              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <Text style={{ fontSize: 16 }}>⭐</Text>
-                <Text style={{ color: '#fff', fontSize: 15, fontWeight: 'bold', marginLeft: 4 }}>{stars}</Text>
-                <TouchableOpacity style={styles.rechargeBtn} onPress={goRecharge}>
-                  <Text style={styles.rechargeTxt}>+ Recharge</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 6, flexGrow: 0 }}
-              contentContainerStyle={{ paddingHorizontal: 6, paddingVertical: 4 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
-              {giftUsers.map((user) => (
-                <TouchableOpacity key={user.uid} onPress={() => setSelectedGiftUser(user.uid)} style={{ alignItems: 'center', marginRight: 10 }}>
-                  <Image
-                    source={{ uri: user.img || DEFAULT_AVATAR }}
-                    style={{
-                      width: 44, height: 44, borderRadius: 22,
-                      borderWidth: selectedGiftUser === user.uid ? 3 : 1,
-                      borderColor: selectedGiftUser === user.uid ? '#ff1493' : '#555',
-                    }}
-                  />
-                  <Text style={{ color: '#fff', fontSize: 9, width: 52, textAlign: 'center', marginTop: 2 }} numberOfLines={1}>
-                    {user.uid === hostId ? 'Host' : user.name}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
-            <View style={[styles.qtyRow, { marginBottom: 6 }]}>
-              <Text style={styles.qtyLbl}>Qty</Text>
-              {GIFT_QTY.map((q) => (
-                <TouchableOpacity key={q} onPress={() => setGiftQty(q)} style={[styles.qtyChip, giftQty === q && styles.qtyChipOn]}>
-                  <Text style={[styles.qtyChipTxt, giftQty === q && { color: '#fff' }]}>x{q}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <FlatList
-              data={GIFT_PAGES}
-              keyExtractor={(p) => p.key}
-              renderItem={({ item }) => <GiftPage page={item} qty={giftQty} onSend={stableSendGift} />}
-              extraData={giftQty}
-              horizontal
-              snapToInterval={GIFT_PAGE_W}
-              snapToAlignment="start"
-              disableIntervalMomentum
-              decelerationRate="fast"
-              showsHorizontalScrollIndicator={false}
-              getItemLayout={(_, index) => ({ length: GIFT_PAGE_W, offset: GIFT_PAGE_W * index, index })}
-              initialNumToRender={2}
-              maxToRenderPerBatch={2}
-              windowSize={5}
-              removeClippedSubviews={false}
-              bounces={Platform.OS === 'ios'}
-              overScrollMode="never"
-              nestedScrollEnabled
-              keyboardShouldPersistTaps="handled"
-              onMomentumScrollEnd={(e) => {
-                const idx = Math.max(0, Math.min(GIFT_PAGES.length - 1, Math.round(e.nativeEvent.contentOffset.x / GIFT_PAGE_W)));
-                setGiftPageIdx((prev) => (prev === idx ? prev : idx));
-              }}
-            />
-            {GIFT_PAGES.length > 1 && (
-              <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingTop: 2 }}>
-                {GIFT_PAGES.map((p, i) => (
-                  <View key={p.key} style={{
-                    width: i === giftPageIdx ? 14 : 6, height: 6, borderRadius: 3, marginHorizontal: 3,
-                    backgroundColor: i === giftPageIdx ? '#ff1493' : 'rgba(255,255,255,0.3)',
-                  }} />
-                ))}
-              </View>
-            )}
-          </Animated.View>
-        </View>
-      </Modal>
+      <GiftSheet
+        ref={giftSheetRef}
+        stars={stars}
+        giftUsers={giftUsers}
+        selectedGiftUser={selectedGiftUser}
+        onSelectUser={setSelectedGiftUser}
+        onSendGift={stableSendGift}
+        sendWithQty
+        closeOnSend
+        showAll={false}
+        hostId={hostId}
+        fallbackAvatar={DEFAULT_AVATAR}
+        onRecharge={goRecharge}
+      />
 
       {/* ===== viewers ===== */}
       <Modal transparent visible={viewerListVisible} animationType="slide" onRequestClose={() => setViewerListVisible(false)}>
@@ -2453,7 +2273,7 @@ export default function MultiGuestRoom() {
                         });
                       }}
                     >
-                      <Image source={{ uri: item.img || DEFAULT_AVATAR }} style={styles.pkRowAva} />
+                      <ExpoImage source={{ uri: item.img || DEFAULT_AVATAR }} style={styles.pkRowAva} cachePolicy="memory-disk" transition={0} />
                       <View style={{ flex: 1, marginLeft: 12 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                           <Text style={styles.pkRowName} numberOfLines={1}>{item.name || item.username || 'User'}</Text>
@@ -2506,7 +2326,7 @@ export default function MultiGuestRoom() {
                     }}
                   >
                     <Text style={[styles.rankNum, index < 3 && { color: ['#FFD700', '#C0C0C0', '#CD7F32'][index] }]}>{index + 1}</Text>
-                    <Image source={{ uri: item.img || DEFAULT_AVATAR }} style={styles.pkRowAva} />
+                    <ExpoImage source={{ uri: item.img || DEFAULT_AVATAR }} style={styles.pkRowAva} cachePolicy="memory-disk" transition={0} />
                     <View style={{ flex: 1, marginLeft: 12 }}>
                       <Text style={styles.pkRowName} numberOfLines={1}>{item.name || 'User'}</Text>
                       <Text style={styles.pkRowSub}>LV {item.level || 1}</Text>

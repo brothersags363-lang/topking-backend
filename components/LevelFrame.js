@@ -35,6 +35,10 @@ const ANIM = {
 // Sirf: level se (lv10+), admin ka diya adminFrame, ya admin ka set kiya special (crown / vip1).
 const SPECIAL_TIER = { crown: 40, vip1: 50 };
 
+// 35 se niche ke level (10/20/30) ke frames hata diye gaye - ab sirf Lv35+ ko level frame milta hai.
+// Admin ka diya frame (adminFrame) isse alag hai, wo chalta rahega.
+export const MIN_FRAME_LEVEL = 35;
+
 export const getTier = (level = 1) => {
   const lv = Number(level) || 0;
   return lv >= 50 ? 50 : lv >= 45 ? 45 : lv >= 40 ? 40 : lv >= 35 ? 35
@@ -80,7 +84,7 @@ export const getMaxTier = (info, levelProp) => {
 };
 export const getOwnedTiers = (info, levelProp) => {
   const max = getMaxTier(info, levelProp);
-  return FRAME_TIERS.filter((t) => t <= max);
+  return FRAME_TIERS.filter((t) => t >= MIN_FRAME_LEVEL && t <= max);
 };
 
 // Choice string: 'lv30' (level frame)  ya  'adm:gold_heart' (admin ka diya frame)
@@ -99,7 +103,7 @@ export const computeFrame = (info, levelProp, specialProp) => {
       if (inf.adminFrame === k && ADMIN_FRAMES[k]) return { kind: 'admin', key: k };
     } else if (/^lv\d+$/.test(choice)) {
       const t = Number(choice.slice(2));
-      if (STATIC[t] && t <= maxTier) return { kind: 'tier', tier: t };
+      if (STATIC[t] && t >= MIN_FRAME_LEVEL && t <= maxTier) return { kind: 'tier', tier: t };
     }
     // choice ab valid nahi (frame hat gaya) -> neeche auto
   }
@@ -116,7 +120,7 @@ export const computeFrame = (info, levelProp, specialProp) => {
     ? specialProp
     : getSpecialKey({ ...inf, adminFrame: null });
   const tier = resolveTier(Math.max(Number(inf.level) || 0, Number(levelProp) || 0), sp);
-  return tier ? { kind: 'tier', tier } : null;
+  return tier && tier >= MIN_FRAME_LEVEL ? { kind: 'tier', tier } : null;
 };
 
 const LevelFrame = ({ level = 1, size, style, animated = true, special: specialProp, uid }) => {

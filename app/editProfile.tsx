@@ -392,6 +392,19 @@ export default function EditProfileScreen() {
               </View>
             </View>
 
+            {/* Avatar pendant */}
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={() => router.push('/avatarPendant')}
+              style={[styles.inputBox, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}
+            >
+              <Text style={styles.label}>Avatar pendant</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={{ color: '#888', marginRight: 4 }}>Setting</Text>
+                <Ionicons name="chevron-forward" size={18} color="#888" />
+              </View>
+            </TouchableOpacity>
+
             {/* Email (read-only) */}
             <View style={[styles.inputBox, { borderTopWidth: 0.5, borderTopColor: '#222', paddingTop: 15 }]}>
               <Text style={styles.label}>Linked Account Email</Text>

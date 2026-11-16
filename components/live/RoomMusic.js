@@ -12,7 +12,9 @@
 //  - Song khatam hone ka pata Agora event se chalta hai (polling nahi).
 //  - Song list ek baar fetch hoti hai aur app me cache rehti hai (dobara kholne par instant).
 //  - Koi extra native package nahi (slider apna hai) -> naya build / dependency ki zarurat nahi.
-//  - Double-tap / fast song change safe (busy lock).
+//  - Double-tap / fast song change safe (busy lock, last request wins).
+//  - PLAYLIST: ek baar me max 10 songs select -> Play -> 1..10 chalte hain,
+//    aakhri ke baad wapas 1 se (repeat all). Next / Prev / seek / repeat mode.
 
 import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
 import {
@@ -28,96 +30,53 @@ import {
   PanResponder,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { Asset } from "expo-asset";
+import { AudioMixingStateType, AudioMixingReasonType } from "react-native-agora";
 import * as DocumentPicker from "expo-document-picker";
-import { collection, getDocs, query, orderBy, limit } from "firebase/firestore";
-import { db } from "../../app/firebaseConfig";
-import { musicData } from "../../assets/musicData";
 
 const { height } = Dimensions.get("window");
 
-// Agora AudioMixingStateType
-const MIX_STOPPED = 713;
-const MIX_FAILED = 714;
+// Agora AudioMixingStateType / Reason (enum na mile to number fallback)
+const MIX_STOPPED = AudioMixingStateType?.AudioMixingStateStopped ?? 713;
+const MIX_FAILED = AudioMixingStateType?.AudioMixingStateFailed ?? 714;
+const RS_ALL_LOOPS = AudioMixingReasonType?.AudioMixingReasonAllLoopsCompleted ?? 723;
+const MAX_SONGS = 10; // ek baar me max songs (playlist)
 
 // ---------------------------------------------------------------
-// Song list (cache) : Firestore "songs" + local assets/music
+// Songs: sirf phone / gallery se chune hue (app ke andar ke songs hata diye)
 // ---------------------------------------------------------------
-let SONG_CACHE = null;
-let SONG_PROMISE = null;
-const LOCAL_PATH_CACHE = new Map();
-const PICKED = []; // phone/gallery se chune hue songs (is session me dobara bajane ke liye)
+const PICKED = []; // phone se chune hue songs (is session me dobara bajane ke liye)
 
-function loadSongsOnce() {
-  if (SONG_CACHE) return Promise.resolve(SONG_CACHE);
-  if (SONG_PROMISE) return SONG_PROMISE;
-
-  SONG_PROMISE = (async () => {
-    const out = [];
-    let firestoreOk = true;
-    try {
-      const q = query(collection(db, "songs"), orderBy("createdAt", "desc"), limit(60));
-      const snap = await getDocs(q);
-      snap.forEach((d) => {
-        const data = d.data();
-        if (data?.audioUrl) {
-          out.push({
-            id: "fs_" + d.id,
-            title: data.title || "Song",
-            artist: data.artist || data.category || "",
-            uri: data.audioUrl,
-          });
-        }
-      });
-    } catch (e) {
-      firestoreOk = false;
-      console.log("RoomMusic: songs load error", e?.message || e);
-    }
-
-    musicData.forEach((m) => {
-      out.push({ id: "local_" + m.id, title: m.title, artist: m.category || "", localModule: m.url });
-    });
-
-    // Firestore fail hua to cache nahi karte -> agli baar dobara try hoga
-    if (firestoreOk) SONG_CACHE = out;
-    SONG_PROMISE = null;
-    return out;
-  })();
-
-  return SONG_PROMISE;
-}
-
-// require() asset ko Agora ke liye file path me badalna (ek baar, phir cache)
+// file:// path ko Agora ke liye plain path me badalna (space/%20 wale naam ke liye decode)
 async function resolveUri(song) {
-  if (song.uri) {
-    let u = song.uri;
-    if (u.startsWith("file://")) {
-      u = u.replace("file://", "");
-      try { u = decodeURIComponent(u); } catch (_) {} // space/%20 wale naam ke liye
-    }
-    return u;
+  let u = song.uri || "";
+  if (u.startsWith("file://")) {
+    u = u.replace("file://", "");
+    try { u = decodeURIComponent(u); } catch (_) {}
   }
-  if (LOCAL_PATH_CACHE.has(song.id)) return LOCAL_PATH_CACHE.get(song.id);
-  const asset = Asset.fromModule(song.localModule);
-  if (!asset.localUri) await asset.downloadAsync();
-  let p = asset.localUri || asset.uri;
-  if (p && p.startsWith("file://")) p = p.replace("file://", "");
-  LOCAL_PATH_CACHE.set(song.id, p);
-  return p;
+  return u;
 }
 
 // ---------------------------------------------------------------
 // HOOK -> LiveRoom me: const music = useRoomMusic(agoraEngineRef);
 // ---------------------------------------------------------------
 export function useRoomMusic(engineRef) {
-  const [appSongs, setSongs] = useState(SONG_CACHE || []);
   const [picked, setPicked] = useState(PICKED.slice());
-  const [loadingSongs, setLoadingSongs] = useState(false);
   const [current, setCurrent] = useState(null);
   const [playing, setPlaying] = useState(false);
   const [busy, setBusy] = useState(false);
   const [volume, setVolumeState] = useState(60);
   const [error, setError] = useState("");
+  const [queue, setQueue] = useState([]);
+  const [index, setIndex] = useState(0);
+  const [repeat, setRepeat] = useState("all"); // all | one | off
+
+  const queueRef = useRef([]);
+  const indexRef = useRef(0);
+  const repeatRef = useRef("all");
+  const failRef = useRef(0);
+  const wantRef = useRef(null);
+  const playAtRef = useRef(null);
+  const advanceRef = useRef(null);
 
   const playingRef = useRef(false);
   const busyRef = useRef(false);
@@ -149,12 +108,21 @@ export function useRoomMusic(engineRef) {
         }
       } catch (_) {}
       const h = {
-        onAudioMixingStateChanged: (state) => {
+        onAudioMixingStateChanged: (state, reason) => {
           if (state === MIX_FAILED) {
-            resetState();
-            flashError("Ye song nahi chal paaya, doosra try karo");
-          } else if (state === MIX_STOPPED && playingRef.current && Date.now() > ignoreStopUntil.current) {
-            resetState(); // song poora bajkar khatam
+            failRef.current += 1;
+            if (failRef.current < Math.max(1, queueRef.current.length)) {
+              setTimeout(() => advanceRef.current && advanceRef.current(true), 0); // kharab song skip
+            } else {
+              failRef.current = 0;
+              resetState();
+              flashError("Ye song nahi chal paaya, doosra try karo");
+            }
+          } else if (state === MIX_STOPPED && playingRef.current) {
+            // sirf "poora bajkar khatam" par agla song (manual stop/next par nahi)
+            const done = reason === RS_ALL_LOOPS ||
+              (reason == null && Date.now() > ignoreStopUntil.current);
+            if (done) setTimeout(() => advanceRef.current && advanceRef.current(false), 0);
           }
         },
       };
@@ -165,42 +133,90 @@ export function useRoomMusic(engineRef) {
     [resetState, flashError]
   );
 
-  const fetchSongs = useCallback(async () => {
-    if (SONG_CACHE) { setSongs(SONG_CACHE); return; }
-    setLoadingSongs(true);
-    try { setSongs(await loadSongsOnce()); } finally { setLoadingSongs(false); }
-  }, []);
+  // purane code ke liye (LiveRoom isse call karta hai) - ab koi loading nahi
+  const fetchSongs = useCallback(() => {}, []);
 
-  const play = useCallback(
-    async (song) => {
+  // Queue ka i-th song bajao (listOverride ho to wahi nayi queue ban jati hai)
+  const playAt = useCallback(
+    async (i, listOverride) => {
+      const q = listOverride || queueRef.current;
+      if (!q.length) return;
       const e = engineRef.current;
       if (!e) { flashError("Room abhi connect ho raha hai, thodi der baad try karo"); return; }
-      if (busyRef.current) return;
+      if (busyRef.current) { wantRef.current = { i, list: listOverride || null }; return; } // last request jeetegi
       busyRef.current = true;
       setBusy(true);
       setError("");
+      const idx = ((i % q.length) + q.length) % q.length;
+      const song = q[idx];
+      let failed = false;
       try {
         ensureHandler(e);
+        if (listOverride) { queueRef.current = listOverride; setQueue(listOverride); }
         ignoreStopUntil.current = Date.now() + 1500; // purane song ka "stopped" event ignore
         try { await e.stopAudioMixing(); } catch (_) {}
         const path = await resolveUri(song);
         const res = await e.startAudioMixing(path, false, 1);
         if (typeof res === "number" && res < 0) throw new Error("code " + res);
         try { await e.adjustAudioMixingVolume(volumeRef.current); } catch (_) {}
+        indexRef.current = idx;
+        setIndex(idx);
         playingRef.current = true;
+        failRef.current = 0;
         setCurrent(song);
         setPlaying(true);
       } catch (err) {
         console.log("RoomMusic play error:", err?.message || err);
-        resetState();
-        flashError("Song play nahi ho paaya");
+        failed = true;
       } finally {
         busyRef.current = false;
         setBusy(false);
       }
+      const want = wantRef.current;
+      if (want) { wantRef.current = null; return playAtRef.current(want.i, want.list); }
+      if (failed) {
+        failRef.current += 1;
+        if (failRef.current < q.length) return playAtRef.current(idx + 1); // is song ko chhod ke agla
+        failRef.current = 0;
+        resetState();
+        flashError("Song play nahi ho paaya");
+      }
     },
     [engineRef, ensureHandler, resetState, flashError]
   );
+  playAtRef.current = playAt;
+
+  // song khatam / skip hone par agla
+  const advance = useCallback((skipping) => {
+    const q = queueRef.current;
+    if (!q.length) return;
+    const i = indexRef.current;
+    const mode = repeatRef.current;
+    if (mode === "one" && !skipping) return playAtRef.current(i);
+    if (mode === "off" && !skipping && i >= q.length - 1) {
+      playingRef.current = false;
+      setPlaying(false);
+      return;
+    }
+    return playAtRef.current(i + 1); // aakhri ke baad 0 par wapas
+  }, []);
+  advanceRef.current = advance;
+
+  const playList = useCallback((list) => {
+    const q = (list || []).slice(0, MAX_SONGS);
+    if (!q.length) return;
+    failRef.current = 0;
+    playAtRef.current(0, q);
+  }, []);
+
+  const play = useCallback((song) => playList([song]), [playList]);
+  const next = useCallback(() => playAtRef.current(indexRef.current + 1), []);
+
+  const cycleRepeat = useCallback(() => {
+    const n = repeatRef.current === "all" ? "one" : repeatRef.current === "one" ? "off" : "all";
+    repeatRef.current = n;
+    setRepeat(n);
+  }, []);
 
   // ===== PHONE / GALLERY se song chunna =====
   const pickFromPhone = useCallback(async () => {
@@ -208,27 +224,27 @@ export function useRoomMusic(engineRef) {
       const res = await DocumentPicker.getDocumentAsync({
         type: ["audio/*"],
         copyToCacheDirectory: true,
-        multiple: false,
+        multiple: true,
       });
       if (res.canceled || !res.assets || !res.assets.length) return;
-      const a = res.assets[0];
-      const song = {
-        id: "dev_" + Date.now(),
-        title: (a.name || "Song").replace(/\.[^/.]+$/, ""),
+      const stamp = Date.now();
+      const added = res.assets.slice(0, MAX_SONGS).map((a, n) => ({
+        id: "dev_" + stamp + "_" + n,
+        title: (a.name || "Song").replace(/\.[^/.]+$/, "").replace(/_+/g, " ").trim(),
         artist: "Phone",
         uri: a.uri,
-      };
-      PICKED.unshift(song);
-      if (PICKED.length > 30) PICKED.pop();
+      }));
+      for (let n = added.length - 1; n >= 0; n--) PICKED.unshift(added[n]);
+      while (PICKED.length > 40) PICKED.pop();
       setPicked(PICKED.slice());
-      await play(song);
+      playList(added); // chune hue (max 10) seedha 1..N bajne lagte hain
     } catch (err) {
       console.log("RoomMusic pick error:", err?.message || err);
       flashError("Song select nahi ho paaya");
     }
-  }, [play, flashError]);
+  }, [playList, flashError]);
 
-  const songs = useMemo(() => [...picked, ...appSongs], [picked, appSongs]);
+  const songs = picked;
 
   const pause = useCallback(async () => {
     try { await engineRef.current?.pauseAudioMixing(); } catch (_) {}
@@ -243,6 +259,7 @@ export function useRoomMusic(engineRef) {
   }, [engineRef]);
 
   const stop = useCallback(async () => {
+    wantRef.current = null;
     playingRef.current = false; // event ko ignore karne ke liye pehle
     try { await engineRef.current?.stopAudioMixing(); } catch (_) {}
     setPlaying(false);
@@ -276,6 +293,13 @@ export function useRoomMusic(engineRef) {
     return { pos: pos > 0 ? pos : 0, dur: dur > 0 ? dur : 0 };
   }, [engineRef]);
 
+  // 3 sec se zyada chal chuka ho to usi song ko shuru se, warna pichla song
+  const prev = useCallback(async () => {
+    const p = await getProgress();
+    if (p.pos > 3000) { seek(0); return; }
+    playAtRef.current(indexRef.current - 1);
+  }, [getProgress, seek]);
+
   // room se nikalte hi song band + handler hatao
   useEffect(
     () => () => {
@@ -291,9 +315,11 @@ export function useRoomMusic(engineRef) {
   );
 
   return {
-    songs, loadingSongs, fetchSongs,
+    songs, loadingSongs: false, fetchSongs,
     current, playing, busy, volume, error,
-    play, pause, resume, stop, setVolume, seek, getProgress, pickFromPhone,
+    queue, index, repeat,
+    play, playList, playAt, next, prev, cycleRepeat,
+    pause, resume, stop, setVolume, seek, getProgress, pickFromPhone,
   };
 }
 
@@ -365,10 +391,58 @@ const Bar = memo(function Bar({ value, max, onCommit, disabled }) {
 });
 
 // ---------------------------------------------------------------
-// Song select sheet
+// Song select sheet (multi-select 10 + playlist player)
 // ---------------------------------------------------------------
+const ROW_H = 56;
+const getItemLayout = (_d, i) => ({ length: ROW_H, offset: ROW_H * i, index: i });
+
+const SongRow = memo(function SongRow({ item, order, active, playing, busy, onToggle, onPlayOne }) {
+  return (
+    <TouchableOpacity
+      style={[s.row, active && s.rowActive]}
+      onPress={() => onToggle(item.id)}
+      activeOpacity={0.7}
+    >
+      <View style={[s.chk, !!order && s.chkOn]}>
+        {!!order && <Text style={s.chkTxt}>{order}</Text>}
+      </View>
+      <View style={{ flex: 1, marginHorizontal: 12 }}>
+        <Text style={s.rowTitle} numberOfLines={1}>{item.title}</Text>
+        {!!item.artist && <Text style={s.rowSub} numberOfLines={1}>{item.artist}</Text>}
+      </View>
+      <TouchableOpacity
+        onPress={() => onPlayOne(item)}
+        disabled={busy}
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        style={s.rowPlay}
+      >
+        <Ionicons name={active && playing ? "volume-high" : "play"} size={16} color={active ? "#ff4d8d" : "#fff"} />
+      </TouchableOpacity>
+    </TouchableOpacity>
+  );
+});
+
+const QueueRow = memo(function QueueRow({ item, i, active, playing, onPress }) {
+  return (
+    <TouchableOpacity style={[s.row, active && s.rowActive]} onPress={() => onPress(i)} activeOpacity={0.7}>
+      <View style={s.qNum}>
+        {active
+          ? <Ionicons name={playing ? "volume-high" : "pause"} size={16} color="#ff4d8d" />
+          : <Text style={s.qNumTxt}>{i + 1}</Text>}
+      </View>
+      <View style={{ flex: 1, marginLeft: 12 }}>
+        <Text style={[s.rowTitle, active && { color: "#ff4d8d" }]} numberOfLines={1}>{item.title}</Text>
+        {!!item.artist && <Text style={s.rowSub} numberOfLines={1}>{item.artist}</Text>}
+      </View>
+    </TouchableOpacity>
+  );
+});
+
 export const MusicSheet = memo(function MusicSheet({ visible, onClose, onReopen, music, micMuted, onToggleMic }) {
   const [search, setSearch] = useState("");
+  const [tab, setTab] = useState("songs"); // songs | queue
+  const [sel, setSel] = useState([]);      // selected song ids (select karne ke order me)
+  const [note, setNote] = useState("");
 
   // Picker system screen hai -> pehle sheet band, phir picker, phir sheet wapas (iOS me Modal ke upar picker nahi khulta)
   const handlePick = () => {
@@ -404,29 +478,70 @@ export const MusicSheet = memo(function MusicSheet({ visible, onClose, onReopen,
     return music.songs.filter((x) => (x.title + " " + (x.artist || "")).toLowerCase().includes(q));
   }, [music.songs, search]);
 
-  const renderItem = useCallback(
-    ({ item }) => {
-      const active = music.current?.id === item.id;
-      return (
-        <TouchableOpacity
-          style={[s.row, active && s.rowActive]}
-          onPress={() => (active ? (music.playing ? music.pause() : music.resume()) : music.play(item))}
-          disabled={music.busy}
-          activeOpacity={0.7}
-        >
-          <View style={s.rowIcon}>
-            <Ionicons name={active && music.playing ? "pause" : "play"} size={18} color="#fff" />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={s.rowTitle} numberOfLines={1}>{item.title}</Text>
-            {!!item.artist && <Text style={s.rowSub} numberOfLines={1}>{item.artist}</Text>}
-          </View>
-          {active && <Ionicons name="volume-high" size={18} color="#ff4d8d" />}
-        </TouchableOpacity>
-      );
-    },
-    [music.current, music.playing, music.busy] // eslint-disable-line
+  const selMap = useMemo(() => {
+    const m = {};
+    sel.forEach((id, i) => { m[id] = i + 1; });
+    return m;
+  }, [sel]);
+
+  const toggleSel = useCallback((id) => {
+    setSel((cur) => {
+      if (cur.includes(id)) { setNote(""); return cur.filter((x) => x !== id); }
+      if (cur.length >= MAX_SONGS) { setNote("Ek baar me max " + MAX_SONGS + " songs"); return cur; }
+      setNote("");
+      return [...cur, id];
+    });
+  }, []);
+
+  const selectAll = () => {
+    if (sel.length) { setSel([]); setNote(""); return; }
+    setSel(filtered.slice(0, MAX_SONGS).map((x) => x.id));
+    if (filtered.length > MAX_SONGS) setNote("Pehle " + MAX_SONGS + " songs select hue (max " + MAX_SONGS + ")");
+  };
+
+  const playSelected = () => {
+    if (!sel.length) return;
+    const byId = {};
+    music.songs.forEach((x) => { byId[x.id] = x; });
+    music.playList(sel.map((id) => byId[id]).filter(Boolean));
+    setSel([]);
+    setNote("");
+    setTab("queue");
+  };
+
+  const playOne = useCallback((song) => {
+    if (music.current?.id === song.id && music.queue.length === 1) {
+      music.playing ? music.pause() : music.resume();
+    } else {
+      music.playList([song]);
+    }
+  }, [music.current, music.queue, music.playing]); // eslint-disable-line
+
+  const renderSong = useCallback(
+    ({ item }) => (
+      <SongRow
+        item={item}
+        order={selMap[item.id]}
+        active={music.current?.id === item.id}
+        playing={music.playing}
+        busy={music.busy}
+        onToggle={toggleSel}
+        onPlayOne={playOne}
+      />
+    ),
+    [selMap, music.current, music.playing, music.busy, toggleSel, playOne] // eslint-disable-line
   );
+
+  const renderQueue = useCallback(
+    ({ item, index }) => (
+      <QueueRow item={item} i={index} active={!!music.current && index === music.index}
+        playing={music.playing} onPress={music.playAt} />
+    ),
+    [music.current, music.index, music.playing, music.playAt] // eslint-disable-line
+  );
+
+  const hasQueue = music.queue.length > 0;
+  const listMax = height * (music.current ? 0.27 : 0.4);
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent>
@@ -439,7 +554,7 @@ export const MusicSheet = memo(function MusicSheet({ visible, onClose, onReopen,
             </TouchableOpacity>
           </View>
 
-          <Text style={s.hint}>Jo song aap bajayenge wo aapko aur room ke sabhi users ko sunayi dega.</Text>
+          <Text style={s.hint}>Jo songs aap bajayenge wo aapko aur room ke sabhi users ko sunayi denge.</Text>
 
           {micMuted && (
             <TouchableOpacity style={s.warn} onPress={onToggleMic} activeOpacity={0.8}>
@@ -456,34 +571,79 @@ export const MusicSheet = memo(function MusicSheet({ visible, onClose, onReopen,
 
           <TouchableOpacity style={s.pickBtn} onPress={handlePick} activeOpacity={0.8} disabled={music.busy}>
             <Ionicons name="folder-open" size={20} color="#fff" />
-            <Text style={s.pickText}>Phone / Gallery se song chuno</Text>
+            <Text style={s.pickText}>Phone / Gallery se songs chuno (10 tak)</Text>
           </TouchableOpacity>
 
-          <View style={s.searchBox}>
-            <Ionicons name="search" size={16} color="#9ca3af" />
-            <TextInput
-              style={s.searchInput}
-              placeholder="Song search karo"
-              placeholderTextColor="#9ca3af"
-              value={search}
-              onChangeText={setSearch}
-            />
+          <View style={s.tabs}>
+            <TouchableOpacity style={[s.tab, tab === "songs" && s.tabOn]} onPress={() => setTab("songs")}>
+              <Text style={[s.tabTxt, tab === "songs" && s.tabTxtOn]}>Songs</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[s.tab, tab === "queue" && s.tabOn]} onPress={() => setTab("queue")}>
+              <Text style={[s.tabTxt, tab === "queue" && s.tabTxtOn]}>Playlist ({music.queue.length}/{MAX_SONGS})</Text>
+            </TouchableOpacity>
           </View>
 
-          {music.loadingSongs ? (
-            <ActivityIndicator color="#ff4d8d" style={{ marginTop: 30 }} />
-          ) : (
+          {tab === "songs" ? (
+            <>
+              <View style={s.searchBox}>
+                <Ionicons name="search" size={16} color="#9ca3af" />
+                <TextInput
+                  style={s.searchInput}
+                  placeholder="Song search karo"
+                  placeholderTextColor="#9ca3af"
+                  value={search}
+                  onChangeText={setSearch}
+                />
+              </View>
+
+              {music.loadingSongs ? (
+                <ActivityIndicator color="#ff4d8d" style={{ marginTop: 30 }} />
+              ) : (
+                <FlatList
+                  data={filtered}
+                  keyExtractor={(i) => i.id}
+                  renderItem={renderSong}
+                  getItemLayout={getItemLayout}
+                  extraData={selMap}
+                  style={{ flexGrow: 0, maxHeight: listMax }}
+                  initialNumToRender={10}
+                  maxToRenderPerBatch={10}
+                  windowSize={5}
+                  keyboardShouldPersistTaps="handled"
+                  ListEmptyComponent={<Text style={s.empty}>{music.songs.length ? "Koi song nahi mila" : "Upar button se phone ke songs chuno"}</Text>}
+                />
+              )}
+
+              {!!note && <Text style={s.note}>{note}</Text>}
+              <View style={s.selBar}>
+                <TouchableOpacity style={s.selAll} onPress={selectAll} activeOpacity={0.7}>
+                  <View style={[s.chk, sel.length > 0 && s.chkOn]}>
+                    {sel.length > 0 && <Ionicons name="checkmark" size={14} color="#fff" />}
+                  </View>
+                  <Text style={s.selAllTxt}>{sel.length ? "Clear (" + sel.length + "/" + MAX_SONGS + ")" : "Select " + MAX_SONGS}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[s.playSel, !sel.length && { opacity: 0.4 }]}
+                  disabled={!sel.length || music.busy}
+                  onPress={playSelected}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="play" size={16} color="#fff" />
+                  <Text style={s.playSelTxt}>Play{sel.length ? " (" + sel.length + ")" : ""}</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          ) : hasQueue ? (
             <FlatList
-              data={filtered}
-              keyExtractor={(i) => i.id}
-              renderItem={renderItem}
-              extraData={music.current?.id + ":" + music.playing + ":" + music.busy}
-              style={{ flexGrow: 0, maxHeight: height * 0.36 }}
-              initialNumToRender={10}
-              windowSize={5}
-              keyboardShouldPersistTaps="handled"
-              ListEmptyComponent={<Text style={s.empty}>Koi song nahi mila</Text>}
+              data={music.queue}
+              keyExtractor={(x, i) => x.id + "_" + i}
+              renderItem={renderQueue}
+              getItemLayout={getItemLayout}
+              extraData={music.index + ":" + music.playing + ":" + !!music.current}
+              style={{ flexGrow: 0, maxHeight: listMax }}
             />
+          ) : (
+            <Text style={s.empty}>Phone se songs chuno, wo yahan playlist me aa jayenge</Text>
           )}
 
           {music.current && (
@@ -496,14 +656,27 @@ export const MusicSheet = memo(function MusicSheet({ visible, onClose, onReopen,
                 <Text style={s.time}>{fmt(prog.dur)}</Text>
               </View>
 
+              <View style={s.ctrlRow2}>
+                <TouchableOpacity onPress={music.cycleRepeat} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={s.iconBtn}>
+                  <Ionicons name="repeat" size={22} color={music.repeat === "off" ? "#6b7280" : "#ff4d8d"} />
+                  {music.repeat === "one" && <Text style={s.one}>1</Text>}
+                </TouchableOpacity>
+                <TouchableOpacity onPress={music.prev} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={s.iconBtn}>
+                  <Ionicons name="play-skip-back" size={24} color="#fff" />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={music.playing ? music.pause : music.resume} style={s.bigBtn} activeOpacity={0.8}>
+                  <Ionicons name={music.playing ? "pause" : "play"} size={26} color="#fff" style={{ marginLeft: music.playing ? 0 : 3 }} />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={music.next} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={s.iconBtn}>
+                  <Ionicons name="play-skip-forward" size={24} color="#fff" />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={music.stop} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={s.iconBtn}>
+                  <Ionicons name="stop-circle-outline" size={26} color="#e74c3c" />
+                </TouchableOpacity>
+              </View>
+
               <View style={s.ctrlRow}>
-                <TouchableOpacity onPress={music.playing ? music.pause : music.resume} style={s.ctrlBtn}>
-                  <Ionicons name={music.playing ? "pause" : "play"} size={22} color="#fff" />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={music.stop} style={[s.ctrlBtn, { backgroundColor: "#e74c3c" }]}>
-                  <Ionicons name="stop" size={22} color="#fff" />
-                </TouchableOpacity>
-                <Ionicons name="volume-low" size={18} color="#9ca3af" style={{ marginLeft: 10 }} />
+                <Ionicons name="volume-low" size={18} color="#9ca3af" />
                 <Bar value={music.volume} max={100} onCommit={music.setVolume} />
                 <Ionicons name="volume-high" size={18} color="#9ca3af" />
               </View>
@@ -600,6 +773,37 @@ const s = StyleSheet.create({
     alignItems: "center",
     marginRight: 10,
   },
+  // playlist UI
+  tabs: { flexDirection: "row", marginBottom: 6 },
+  tab: { flex: 1, alignItems: "center", paddingVertical: 8, borderBottomWidth: 2, borderBottomColor: "transparent" },
+  tabOn: { borderBottomColor: "#ff4d8d" },
+  tabTxt: { color: "#9ca3af", fontSize: 13, fontWeight: "700" },
+  tabTxtOn: { color: "#fff" },
+  chk: {
+    width: 24, height: 24, borderRadius: 12, borderWidth: 1.5, borderColor: "#6b7280",
+    justifyContent: "center", alignItems: "center",
+  },
+  chkOn: { backgroundColor: "#ff4d8d", borderColor: "#ff4d8d" },
+  chkTxt: { color: "#fff", fontSize: 12, fontWeight: "800" },
+  rowPlay: {
+    width: 32, height: 32, borderRadius: 16, backgroundColor: "rgba(255,255,255,0.12)",
+    justifyContent: "center", alignItems: "center",
+  },
+  qNum: { width: 24, alignItems: "center" },
+  qNumTxt: { color: "#9ca3af", fontSize: 13, fontWeight: "700" },
+  note: { color: "#fbbf24", fontSize: 12, textAlign: "center", paddingTop: 6 },
+  selBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingTop: 8 },
+  selAll: { flexDirection: "row", alignItems: "center" },
+  selAllTxt: { color: "#fff", fontSize: 13, fontWeight: "700", marginLeft: 10 },
+  playSel: {
+    flexDirection: "row", alignItems: "center", backgroundColor: "#ff4d8d",
+    paddingHorizontal: 22, paddingVertical: 10, borderRadius: 22,
+  },
+  playSelTxt: { color: "#fff", fontWeight: "800", fontSize: 14, marginLeft: 6 },
+  ctrlRow2: { flexDirection: "row", alignItems: "center", justifyContent: "space-around", marginTop: 6 },
+  iconBtn: { padding: 6, justifyContent: "center", alignItems: "center" },
+  one: { position: "absolute", color: "#ff4d8d", fontSize: 8, fontWeight: "900" },
+  bigBtn: { width: 54, height: 54, borderRadius: 27, backgroundColor: "#ff4d8d", justifyContent: "center", alignItems: "center" },
   // slider
   barHit: { flex: 1, height: 32, justifyContent: "center", marginHorizontal: 6 },
   barTrack: { height: 4, borderRadius: 2, backgroundColor: "rgba(255,255,255,0.25)", overflow: "hidden" },

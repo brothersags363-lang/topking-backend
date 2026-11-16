@@ -206,6 +206,15 @@ export default function ProfileScreen() {
   const [giftUserCount, setGiftUserCount] = useState(0);
   const [hasStars, setHasStars] = useState(false);
   const [familyShown, setFamilyShown] = useState(false);
+  // FamilyCell load hone tak Share button na dikhe (flicker se bachne ke liye)
+  const [familyChecked, setFamilyChecked] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setFamilyChecked(true), 1500);
+    return () => clearTimeout(t);
+  }, []);
+  useEffect(() => {
+    if (familyShown) setFamilyChecked(true);
+  }, [familyShown]);
 
   const firstFocusRef = useRef(true);
   const lastRefreshRef = useRef(0);
@@ -735,8 +744,21 @@ export default function ProfileScreen() {
                 </TouchableOpacity>
               )}
 
+              {/* Family nahi hai (ya add nahi kiya) => Share button */}
+              {familyChecked && !familyShown && (
+                <TouchableOpacity
+                  style={[styles.shareButton, { marginLeft: 'auto' }]}
+                  activeOpacity={0.8}
+                  onPress={handleShareProfile}
+                >
+                  <Ionicons name="share-social-outline" size={16} color="#1a1a1a" />
+                  <Text style={styles.shareText}>Share</Text>
+                </TouchableOpacity>
+              )}
             </View>
           )}
+
+          {/* Gift/star nahi mila => koi card nahi (Share sirf menu me 'Share Profile' se) */}
 
           {/* FamilyCell khud decide karta hai: family hai to dikhta hai, warna kuch nahi (card bhi nahi) */}
           <View style={familyShown ? [styles.premiumCard, styles.familyCard] : null}>
@@ -764,7 +786,7 @@ export default function ProfileScreen() {
         </View>
       </View>
     );
-  }, [profileData, likedMeCount, userRank, topGifters, giftUserCount, hasStars, familyShown, activeTab, videos.length, likedCount, push, onTabChange]);
+  }, [profileData, likedMeCount, userRank, topGifters, giftUserCount, hasStars, familyShown, familyChecked, activeTab, videos.length, likedCount, push, onTabChange]);
 
   if (loading) {
     return (

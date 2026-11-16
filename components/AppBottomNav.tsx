@@ -11,6 +11,7 @@ import { Platform, StyleSheet, Text, TouchableOpacity, View, type LayoutChangeEv
 import { Ionicons } from '@expo/vector-icons';
 import { getAuth } from 'firebase/auth';
 import { useRouter } from '../utils/safeRouter';
+import { useInboxBadge } from '../utils/messages/useInboxBadge';
 
 // Nav bar niche se kitna upar rahe (system bar ke upar).
 // Bar system bar ke andar jaye to number BADHAO, zyada upar lage to KAM karo.
@@ -23,6 +24,7 @@ type Props = {
 
 const AppBottomNav = memo(function AppBottomNav({ onLayout, children }: Props) {
   const router = useRouter();
+  const inboxCount = useInboxBadge();
 
   const goProfile = () => {
     if (!getAuth().currentUser) {
@@ -59,7 +61,14 @@ const AppBottomNav = memo(function AppBottomNav({ onLayout, children }: Props) {
 
         {/* MESSAGES */}
         <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/messages' as any)}>
-          <Ionicons name="mail-outline" size={26} color="#fff" />
+          <View>
+            <Ionicons name="mail-outline" size={26} color="#fff" />
+            {inboxCount > 0 && (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{inboxCount > 99 ? '99+' : inboxCount}</Text>
+              </View>
+            )}
+          </View>
         </TouchableOpacity>
 
         {/* PROFILE */}
@@ -96,5 +105,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  badge: {
+    position: 'absolute',
+    top: -6,
+    right: -10,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    backgroundColor: '#ff2d55',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  badgeText: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
   plusText: { fontSize: 28, fontWeight: 'bold', color: '#000', marginTop: -4 },
 });

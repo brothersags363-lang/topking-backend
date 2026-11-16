@@ -266,7 +266,7 @@ export default function FramesEntries() {
             ) : null}
 
             {/* LEVEL FRAMES */}
-            {FRAME_TIERS.map((t) => {
+            {FRAME_TIERS.filter((t) => t >= 35).map((t) => {
               const owned = t <= maxTier;
               return (
                 <PickCard

@@ -4,7 +4,7 @@
 import React, { useCallback, useMemo, useRef, useState, memo } from 'react';
 import {
   View, Text, FlatList, StyleSheet, Platform, StatusBar,
-  RefreshControl, ActivityIndicator, InteractionManager, Dimensions,
+  RefreshControl, ActivityIndicator, Dimensions,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { useRouter } from '../../utils/safeRouter';
@@ -16,6 +16,8 @@ import { loadFollow, followCache } from '../../utils/homeData';
 import AppBottomNav from '../../components/AppBottomNav';
 import TopTabs from '../../components/TopTabs';
 import { GridTile, LiveBubble, GRID_GAP, GRID_PAD } from '../../components/GridParts';
+// InteractionManager deprecated (warning aata tha) -> chhote delay se wahi kaam: UI/transition ke baad chalao.
+const runAfterIdle = (fn) => { const t = setTimeout(fn, 80); return { cancel: () => clearTimeout(t) }; };
 
 const { width } = Dimensions.get('window');
 const TILE_W = (width - GRID_PAD * 2 - GRID_GAP) / 2;
@@ -82,7 +84,7 @@ export default function FollowScreen() {
   // Focus par: pehle screen dikhe, phir data (cache purana ho tabhi fetch)
   useFocusEffect(
     useCallback(() => {
-      const task = InteractionManager.runAfterInteractions(() => load(false));
+      const task = runAfterIdle(() => load(false));
       return () => task.cancel();
     }, [load])
   );

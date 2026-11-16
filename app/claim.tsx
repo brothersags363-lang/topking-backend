@@ -2,12 +2,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from '../utils/safeRouter';
 import { doc, onSnapshot } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
-import mobileAds, {
-  AdEventType,
-  RewardedAd,
-  RewardedAdEventType,
-  TestIds,
-} from 'react-native-google-mobile-ads';
 import {
   ActivityIndicator,
   Alert,
@@ -37,48 +31,18 @@ const REWARD_2_ADS = 7; // 2 ads dekho -> 7 star
 const STAR_FIELD = 'stars';
 
 // ==========================================
-// ADS SYSTEM  (yahan apna ad SDK lagana)
+// ADS SYSTEM  (abhi BAND hai)
 // ==========================================
-// ADS_ENABLED = false karoge to claim band ho jayega (sirf message aayega).
-const ADS_ENABLED = true;
-
-// Debug build me Google ka test ad aayega. Release build me tumhara real
-// Rewarded Ad Unit ID chalega.
-// TODO: neeche XXXXXXXXXX ki jagah AdMob -> Ad units -> Rewarded wali ID daalo
-// (format: ca-app-pub-7990312046971352/1234567890)
-const AD_UNIT_ID = __DEV__
-  ? TestIds.REWARDED
-  : 'ca-app-pub-7990312046971352/XXXXXXXXXX';
+// Ads abhi band hain, isliye claim band rahega (sirf message aayega, star nahi milenge).
+// Ads wapas chalane ke liye: package install karo (react-native-google-mobile-ads),
+// app.json me plugin wapas jodo, aur showRewardedAd me ad dikhane ka code wapas lagao.
+const ADS_ENABLED = false;
 
 // Ye function ad dikhata hai aur sirf tab `true` return karta hai
 // jab user ne ad POORA dekh liya ho (reward earn hua ho).
 async function showRewardedAd(): Promise<boolean> {
-  if (!ADS_ENABLED) return false;
-
-  return new Promise<boolean>((resolve) => {
-    const ad = RewardedAd.createForAdRequest(AD_UNIT_ID);
-    let earned = false;
-    let done = false;
-    const unsubs: Array<() => void> = [];
-
-    const finish = (result: boolean) => {
-      if (done) return;
-      done = true;
-      unsubs.forEach((u) => u());
-      resolve(result);
-    };
-
-    unsubs.push(
-      ad.addAdEventListener(RewardedAdEventType.LOADED, () => ad.show()),
-      ad.addAdEventListener(RewardedAdEventType.EARNED_REWARD, () => {
-        earned = true;
-      }),
-      ad.addAdEventListener(AdEventType.CLOSED, () => finish(earned)),
-      ad.addAdEventListener(AdEventType.ERROR, () => finish(false))
-    );
-
-    ad.load();
-  });
+  // Ads band: kabhi true return nahi hoga -> star nahi milenge.
+  return false;
 }
 
 export default function ClaimScreen() {
@@ -94,11 +58,6 @@ export default function ClaimScreen() {
     });
     return () => sub.remove();
   }, [router]);
-
-  // AdMob SDK initialize
-  useEffect(() => {
-    mobileAds().initialize().catch(() => {});
-  }, []);
 
   const [balance, setBalance] = useState<number | null>(null);
   const [busy, setBusy] = useState<null | 'one' | 'two'>(null);

@@ -285,7 +285,7 @@ const fetchAllVideosPage = (reset = false): Promise<void> => {
         if (i.thumbnail) Image.prefetch(i.thumbnail).catch(() => {});
       });
     })
-    .catch((e) => console.log(e))
+    .catch((e) => __DEV__ && console.log(e))
     .finally(() => {
       allVideosPromise = null;
     });
@@ -595,7 +595,7 @@ const ensureVideoCache = (): Promise<void> => {
         videoCache = { ts: Date.now(), items, hays: items.map(buildHay) };
       })
       .catch((e) => {
-        console.log('Video cache error:', e);
+        __DEV__ && console.log('Video cache error:', e);
         // 10 sec baad dobara try karega
         videoCache = {
           ts: Date.now() - VIDEO_CACHE_TTL + 10000,
@@ -1320,7 +1320,7 @@ export default function ExplorePage() {
         setProfileImg(img);
       }
     } catch (error) {
-      console.log(error);
+      __DEV__ && console.log(error);
     }
   };
 
@@ -1337,7 +1337,7 @@ export default function ExplorePage() {
       homeCache.topVideos = arr;
       setTopVideos(arr);
     } catch (e) {
-      console.log(e);
+      __DEV__ && console.log(e);
     }
   };
 
@@ -1349,7 +1349,7 @@ export default function ExplorePage() {
       homeCache.trendingTags = rows;
       setTrendingTags(rows);
     } catch (e) {
-      console.log('Trending tags error:', e);
+      __DEV__ && console.log('Trending tags error:', e);
     }
   };
 
@@ -1436,7 +1436,7 @@ export default function ExplorePage() {
       homeCache.ts = Date.now();
       saveHomeToDisk();
     } catch (e) {
-      console.log(e);
+      __DEV__ && console.log(e);
     } finally {
       setRefreshing(false);
     }
@@ -1588,7 +1588,7 @@ export default function ExplorePage() {
         if (router.canGoBack()) router.back();
         else router.replace('/');
       } catch (error) {
-        console.log('Navigation Error: ', error);
+        __DEV__ && console.log('Navigation Error: ', error);
         router.replace('/');
       }
       return true;

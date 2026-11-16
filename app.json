@@ -102,12 +102,7 @@
       "expo-font",
       "@react-native-firebase/app",
       "@react-native-firebase/messaging",
-      [
-        "react-native-google-mobile-ads",
-        {
-          "androidAppId": "ca-app-pub-7990312046971352~3662551943"
-        }
-      ],
+     
       [
         "expo-build-properties",
         {

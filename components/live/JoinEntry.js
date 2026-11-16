@@ -1027,9 +1027,47 @@ const ws = StyleSheet.create({
 });
 
 // ============================================================
+// PLAIN JOIN PILL (Lv 35 se niche) - Tiki jaisi saaf pill, koi animation / frame nahi
+// 3.5 sec dikhti hai, phir gayab (us ke baad chat me niche wali "joined" line dikhti hai)
+// ============================================================
+export const PLAIN_JOIN_MS = 3500;
+
+export const PlainJoinPill = ({ data, onDone }) => {
+  const op = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    op.setValue(0);
+    const a = Animated.timing(op, { toValue: 1, duration: 180, useNativeDriver: true });
+    a.start();
+    const t = setTimeout(() => {
+      Animated.timing(op, { toValue: 0, duration: 250, useNativeDriver: true }).start(
+        ({ finished }) => finished && onDone && onDone()
+      );
+    }, PLAIN_JOIN_MS);
+    return () => {
+      clearTimeout(t);
+      a.stop();
+      op.stopAnimation();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data._k]);
+
+  return (
+    <Animated.View style={[styles.plainPill, { opacity: op }]}>
+      <Text numberOfLines={1} style={styles.plainTxt}>{data.senderName}</Text>
+      <Verified data={data} size={14} />
+      <View style={styles.plainLv}>
+        <Text style={styles.plainLvTxt}>LV {data.level}</Text>
+      </View>
+      <Text style={styles.plainTxt}> has joined</Text>
+    </Animated.View>
+  );
+};
+
+// ============================================================
 // PUBLIC COMPONENT
 // ============================================================
-const JoinEntry = ({ data, variant = 'auto', onDone }) => {
+// pillBottom: (optional) Lv<35 ki plain pill ko screen ke neeche se itni unchai par rakho (chat ke theek upar)
+const JoinEntry = ({ data, variant = 'auto', onDone, pillBottom, pillTop, hideLow }) => {
   // User ki Settings wali pasand (entry hatani / doosri entry chuni) yahan lagti hai.
   const uid = data ? data.senderId : undefined;
   const info = useFrameInfo(uid);
@@ -1050,9 +1088,32 @@ const JoinEntry = ({ data, variant = 'auto', onDone }) => {
     if (hidden && onDone) onDone();
   }, [hidden, key]);
 
+  const lvl = Math.max(Number(data ? data.level : 0) || 1, Number(info.level) || 0);
+  // Lv 35 se niche: koi entry animation nahi (chat me sirf plain "joined" line, tick + level ke saath)
+  const belowMin = !!data && ready && lvl < 35;
+
   if (!data || !ready || hidden) return null;
 
-  const lvl = Math.max(Number(data.level) || 1, Number(info.level) || 0);
+  // Lv 35 se niche: sirf chhoti plain pill ("naam has joined") 3.5 sec ke liye, phir chat me niche
+  // hideLow: room khud chat ke andar (neeche) pill dikha raha hai -> yahan kuch nahi
+  if (belowMin && hideLow) return null;
+  if (belowMin) {
+    return (
+      <View
+        pointerEvents="none"
+        style={
+          pillTop != null
+            ? [styles.layer, { top: pillTop }]
+            : pillBottom != null
+            ? [styles.layer, { top: undefined, bottom: pillBottom }]
+            : styles.layer
+        }
+      >
+        <PlainJoinPill key={key} data={{ ...data, level: lvl }} onDone={onDone} />
+      </View>
+    );
+  }
+
   let chosen = variant;
   // variant 'auto' ho tabhi user ki choice chale; choice wahi jo uske level se mili ho
   if ((!variant || variant === 'auto') && info.entryChoice && lvl >= entryMinLevel(info.entryChoice)) {
@@ -1084,6 +1145,28 @@ const JoinEntry = ({ data, variant = 'auto', onDone }) => {
 export default memo(JoinEntry);
 
 const styles = StyleSheet.create({
+  plainPill: {
+    alignSelf: 'flex-start',
+    marginLeft: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    maxWidth: width - 40,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  plainTxt: { color: '#d0d0d0', fontSize: 13, fontWeight: '600', flexShrink: 1 },
+  plainLv: {
+    marginLeft: 5,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 8,
+    backgroundColor: '#222',
+    borderWidth: 1,
+    borderColor: '#555',
+  },
+  plainLvTxt: { color: '#FFD700', fontSize: 8, fontWeight: 'bold' },
   layer: {
     position: 'absolute',
     top: TOP,

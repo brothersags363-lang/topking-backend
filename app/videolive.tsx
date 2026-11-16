@@ -64,16 +64,15 @@ import * as ScreenCapture from "expo-screen-capture";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
-import LottieView from "lottie-react-native";
-import { WebView } from "react-native-webview";
 import { gifts } from "../assets/giftsData";
-import { giftHtml } from "../assets/giftWeb";
-import GiftImage, { isImgGift } from "../components/GiftImage";
 import { callApi } from "../utils/api";
 import { useLiveBanGuard } from "../utils/liveBan";
+import { checkUsername } from "../utils/usernameGate";
 import { useBlockedIds } from '../utils/useBlockedIds';
 import LevelFrame, { getSpecialKey } from "../components/LevelFrame";
 import JoinEntry from "../components/live/JoinEntry";
+import { useJoinDelay, markJoinPending } from "../components/live/useJoinDelay";
+import { useRoomMusic, MusicSheet } from "../components/live/RoomMusic";
 
 import {
   doc,
@@ -103,6 +102,7 @@ import {
 } from "react-native-agora";
 import UserTick from '../components/UserTick';
 import { LinearGradient } from "expo-linear-gradient";
+import { Image as ExpoImage } from 'expo-image';
 
 // Firebase safety check (same pattern as LiveRoom.js / all-live.js)
 let db: any = null;
@@ -112,7 +112,7 @@ try {
   db = firebaseModule.db;
   auth = firebaseModule.auth;
 } catch (e) {
-  console.log("Firebase config not found.");
+  __DEV__ && console.log("Firebase config not found.");
 }
 
 const { width, height } = Dimensions.get("window");
@@ -156,9 +156,9 @@ const PK_FRIEND_LIMIT = 40; // PK sheet me max itne friends
 // Phone thanda rahe aur aur smooth chahiye to frameRate 20 try karo.
 const VIDEO_PROFILE = {
   dimensions: { width: 540, height: 960 },
-  frameRate: 20, // SMOOTH FIX: 15 -> 20 fps (motion ~33% smoother, heat thodi hi badhti hai). Aur smooth chahiye to 24.
-  bitrate: 950,
-  minBitrate: 300,
+  frameRate: 24, // SMOOTH: 20 -> 24 fps. Phone zyada garam ho to wapas 20 kar do (weak network par auto LOW profile already hai).
+  bitrate: 1100,
+  minBitrate: 400,
   orientationMode: 2, // fixed portrait
   degradationPreference: 1, // weak network → resolution pehle girta hai, motion smooth rehta hai
 };
@@ -271,10 +271,12 @@ const GIFT_WEB_PRE_JS = "try{var __r=window.devicePixelRatio||1;Object.definePro
 const GIFT_GOLD = "#F5C451";
 // Normal (non-PK) mode me gift animation kitna UPAR ho (px). Zyada upar chahiye to number badhao.
 const GIFT_NORMAL_UP = 120;
+// Gift Firestore writes ke beech minimum gap (ms). Chhota = zyada fast, par zyada writes.
+const GIFT_WRITE_GAP = 500;
 
 // ---- Compact gift sheet pieces (same look as LiveRoom.js) ----
 const GIFTS_PER_PAGE = 8; // 4 columns x 2 rows
-const GIFT_PAGE_W = width - 24;
+const GIFT_PAGE_W = width; // Tiki jaisa: sheet edge-to-edge
 const GIFT_PAGES: any[] = (() => {
   const pages: any[] = [];
   for (let i = 0; i < gifts.length; i += GIFTS_PER_PAGE) {
@@ -283,18 +285,26 @@ const GIFT_PAGES: any[] = (() => {
   return pages;
 })();
 
-const GiftCard = memo(({ item, onSend }: any) => (
-  <TouchableOpacity style={styles.giftCard} activeOpacity={0.6} delayPressIn={0} onPress={() => onSend(item)}>
-    <Image source={item.icon} style={{ width: 42, height: 42 }} resizeMode="contain" fadeDuration={0} />
+const GiftCard = memo(({ item, selected, onSelect }: any) => (
+  <TouchableOpacity
+    style={[styles.giftCard, selected && styles.giftCardSel]}
+    activeOpacity={0.7}
+    delayPressIn={0}
+    onPress={() => onSelect(item)}
+  >
+    <Image source={item.icon} style={{ width: 38, height: 38 }} resizeMode="contain" fadeDuration={0} />
     <Text style={styles.giftName} numberOfLines={1}>{item.name}</Text>
-    <Text style={styles.giftCoin}>{item.price}</Text>
+    <View style={{ flexDirection: "row", alignItems: "center", marginTop: 2 }}>
+      <Ionicons name="star" size={9} color="#8E8E93" />
+      <Text style={styles.giftCoin}>{item.price}</Text>
+    </View>
   </TouchableOpacity>
 ));
 
-const GiftPage = memo(({ page, onSend }: any) => (
+const GiftPage = memo(({ page, selectedId, onSelect }: any) => (
   <View style={{ width: GIFT_PAGE_W, flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-start" }}>
     {page.items.map((item: any) => (
-      <GiftCard key={item.id} item={item} onSend={onSend} />
+      <GiftCard key={item.id} item={item} selected={String(item.id) === String(selectedId)} onSelect={onSelect} />
     ))}
   </View>
 ));
@@ -330,9 +340,8 @@ const getLevelFrame = (level = 1) => {
   try {
     if (level >= 50) return require("../assets/frames/lv50.png");
     if (level >= 40) return require("../assets/frames/lv40.png");
-    if (level >= 30) return require("../assets/frames/lv30.png");
-    if (level >= 20) return require("../assets/frames/lv20.png");
-    if (level >= 10) return require("../assets/frames/lv10.png");
+    if (level >= 35) return require("../assets/frames/lv35.png");
+    // Lv 35 se niche koi level frame nahi
   } catch (e) {
     return null;
   }
@@ -397,7 +406,7 @@ const fetchAgoraToken = async (
     try {
       return await fetchAgoraTokenOnce(channel, uid);
     } catch (e) {
-      console.log(`AGORA TOKEN FETCH FAILED (try ${attempt}/${TOKEN_RETRIES}):`, e);
+      __DEV__ && console.log(`AGORA TOKEN FETCH FAILED (try ${attempt}/${TOKEN_RETRIES}):`, e);
       if (attempt < TOKEN_RETRIES) {
         onRetry && onRetry(attempt);
         await new Promise((r) => setTimeout(r, 1200 * attempt));
@@ -414,32 +423,13 @@ const fetchAgoraToken = async (
 
 // Gift button animation (HEAT FIX): pehle loop me 24/7 chalta tha (30 min = lagatar GPU/CPU).
 // Ab 1 baar chalta hai, phir 4 sec rukta hai -> duty cycle ~80% kam.
-const GiftButtonLottie = memo(() => {
-  const ref = useRef<any>(null);
-  const timer = useRef<any>(null);
-  useEffect(() => {
-    ref.current?.play();
-    return () => {
-      if (timer.current) clearTimeout(timer.current);
-    };
-  }, []);
-  return (
-    <LottieView
-      ref={ref}
-      source={require("../assets/animations/giftButton.json")}
-      autoPlay={false}
-      loop={false}
-      renderMode="HARDWARE"
-      hardwareAccelerationAndroid
-      cacheComposition
-      onAnimationFinish={() => {
-        if (timer.current) clearTimeout(timer.current);
-        timer.current = setTimeout(() => ref.current?.play(), 4000);
-      }}
-      style={{ width: 46, height: 46 }}
-    />
-  );
-});
+const GiftButtonLottie = memo(() => (
+  <Image
+    source={require("../assets/giftLogo.png")}
+    style={{ width: 32, height: 32 }}
+    resizeMode="contain"
+  />
+));
 
 // Live timer — only this tiny <Text> re-renders every second.
 const LiveTimer = memo(({ startTime }: { startTime: number | null }) => {
@@ -542,89 +532,71 @@ const ProgressRing = ({ pct, size = 78, stroke = 7, color = "#FFD700", track = "
 };
 
 // ============================================================
-// Tiki-style gift banner row: magenta pill (avatar + name + "Sent"), bada gift icon
-// pill ke kinare par overlap, aur bada italic "x1". Har naye tap par x count pop karta hai.
+// GIFT (NO ANIMATION): gift bhejne ke baad Tiki jaisa chhota PNG row left side me dikhta hai
+// [avatar + naam + "Sent"] [gift PNG] x3 . Full-screen animation / Lottie / WebView sab hata diya.
+// Koi Animated nahi -> app hang nahi hoti. Har naye tap par sirf count (x1, x2, x3...) badalta hai.
 // ============================================================
-const ComboRow = memo(({ data }: any) => {
-  const tx = useRef(new Animated.Value(-140)).current;
-  const pop = useRef(new Animated.Value(1)).current;
-  const mounted = useRef(false);
+const ComboRow = memo(({ data, leaving }: any) => {
   const gd = gifts.find((g: any) => String(g.id) === String(data.giftId));
-
+  const enter = useRef(new Animated.Value(0)).current; // 0 -> 1 slide/fade in
+  const pop = useRef(new Animated.Value(1)).current; // count bump
+  const fade = useRef(new Animated.Value(1)).current; // fade out
   useEffect(() => {
-    if (!mounted.current) {
-      mounted.current = true;
-      Animated.spring(tx, { toValue: 0, speed: 12, bounciness: 7, useNativeDriver: true }).start();
-      return;
-    }
-    pop.setValue(1.6);
-    Animated.spring(pop, { toValue: 1, speed: 28, bounciness: 12, useNativeDriver: true }).start();
-  }, [data.seq]);
-
+    Animated.timing(enter, { toValue: 1, duration: 220, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+  }, []);
+  useEffect(() => {
+    pop.setValue(1.35);
+    Animated.spring(pop, { toValue: 1, friction: 5, tension: 220, useNativeDriver: true }).start();
+  }, [data.count]);
+  useEffect(() => {
+    Animated.timing(fade, { toValue: leaving ? 0 : 1, duration: leaving ? 260 : 80, useNativeDriver: true }).start();
+  }, [leaving]);
   return (
     <Animated.View
       style={{
         flexDirection: "row",
         alignItems: "center",
-        marginBottom: 8,
-        transform: [{ translateX: tx }],
+        marginBottom: 4,
+        opacity: Animated.multiply(enter, fade),
+        transform: [{ translateX: enter.interpolate({ inputRange: [0, 1], outputRange: [-60, 0] }) }],
       }}
     >
-      <LinearGradient
-        colors={["#E83CA6", "#C2289F", "rgba(150,40,170,0.78)"]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 0 }}
+      <View
         style={{
-          width: width * 0.58,
-          height: 58,
-          borderRadius: 29,
           flexDirection: "row",
           alignItems: "center",
           paddingLeft: 4,
-          paddingRight: 40,
+          paddingRight: 34,
+          paddingVertical: 4,
+          borderRadius: 22,
+          backgroundColor: "rgba(0,0,0,0.28)", // halka black piche (Tiki jaisa) - zyada dark chahiye to 0.28 badhao
         }}
       >
-        <Image
-          source={{ uri: data.senderImg || STABLE_AVATAR }}
-          style={{
-            width: 50,
-            height: 50,
-            borderRadius: 25,
-            borderWidth: 2,
-            borderColor: "rgba(255,255,255,0.9)",
-            backgroundColor: "#2a2b38",
-          }}
-        />
-        <View style={{ marginLeft: 8, flexShrink: 1 }}>
-          <Text numberOfLines={1} style={{ color: "#fff", fontWeight: "800", fontSize: 15 }}>
-            {data.senderName}
-          </Text>
-          <Text numberOfLines={1} style={{ color: "rgba(255,255,255,0.92)", fontSize: 13, marginTop: 1 }}>
-            Sent
-          </Text>
+        <View style={{ width: 32, height: 32, marginLeft: 8 }}>
+          <Image
+            source={{ uri: data.senderImg || STABLE_AVATAR }}
+            style={{ width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.9)", backgroundColor: "#2a2b38" }}
+          />
+          {(!!data.senderId || Number(data.level) >= 10) && (
+            <LevelFrame level={Number(data.level) || 1} uid={data.senderId} animated={false}
+              style={{ position: "absolute", width: 54, height: 54, top: -11, left: -11, zIndex: 10 }} />
+          )}
         </View>
-      </LinearGradient>
-
+        <View style={{ marginLeft: 6, flexShrink: 1 }}>
+          <Text numberOfLines={1} style={{ color: "#fff", fontWeight: "700", fontSize: 12, textShadowColor: "rgba(0,0,0,0.5)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 }}>{data.senderName}</Text>
+          <Text numberOfLines={1} style={{ color: "rgba(255,255,255,0.92)", fontSize: 10, marginTop: 0, textShadowColor: "rgba(0,0,0,0.5)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 }}>Sent</Text>
+        </View>
+      </View>
       {gd?.icon ? (
-        <Image
-          source={gd.icon}
-          style={{ width: 64, height: 64, resizeMode: "contain", marginLeft: -44 }}
-        />
+        <Image source={gd.icon} fadeDuration={0} style={{ width: 46, height: 46, resizeMode: "contain", marginLeft: -26 }} />
       ) : (
         <View style={{ width: 20 }} />
       )}
-
       <Animated.Text
         style={{
-          color: "#fff",
-          fontSize: 38,
-          fontWeight: "900",
-          fontStyle: "italic",
-          marginLeft: 8,
-          textShadowColor: "rgba(0,0,0,0.55)",
-          textShadowOffset: { width: 1, height: 2 },
-          textShadowRadius: 3,
           transform: [{ scale: pop }],
+          color: "#fff", fontSize: 24, fontWeight: "900", fontStyle: "italic", marginLeft: 6,
+          textShadowColor: "rgba(0,0,0,0.55)", textShadowOffset: { width: 1, height: 2 }, textShadowRadius: 3,
         }}
       >
         x{data.count || 1}
@@ -633,225 +605,49 @@ const ComboRow = memo(({ data }: any) => {
   );
 });
 
-// ============================================================
-// GiftLayer (LiveRoom.js ka SAME): full-screen gift animation + "X send @Y x3" banner.
-// Saari gift state (activeGift, combo, timers, banner animation) is component ke ANDAR hai,
-// VideoLive sirf ref.current.play / playDeferred / showCombo bulata hai -> gift se poori
-// screen re-render nahi hoti.
-// ============================================================
-const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, animTop, animSize }: any, ref: any) {
-  const [activeGift, setActiveGift] = useState<any>(null);
-  const [activeMeta, setActiveMeta] = useState<any>(null); // kisne bheja (animation ke upar dikhta hai)
-  const [playKey, setPlayKey] = useState(0);
-  // Tiki: max 2 banners ek saath (alag-alag senders), har sender ka apna x1, x2, x3...
-  const [combos, setCombos] = useState<any[]>([]);
-  const comboSeqRef = useRef(0);
-
-  const giftTimerRef = useRef<any>(null);
-  const comboTimersRef = useRef<any>({});
-  const deferTimerRef = useRef<any>(null);
-
-  // 3D (web:) gift: timer WebView load hone (onLoadEnd) par shuru hota hai
-  const WEB_LOAD_GRACE = 9000;
-  const durationRef = useRef(5000);
-
-  const armHideTimer = (ms: number) => {
-    if (giftTimerRef.current) clearTimeout(giftTimerRef.current);
-    giftTimerRef.current = setTimeout(() => {
-      giftTimerRef.current = null;
-      setActiveGift(null);
-      setActiveMeta(null);
-    }, ms);
-  };
-
-  const doPlay = (animation: any, duration?: number, meta?: any) => {
-    if (!animation) return;
-    durationRef.current = duration || 5000;
-    setActiveGift(animation);
-    setActiveMeta(meta || null);
-    setPlayKey((k) => k + 1);
-    const isWeb = typeof animation === "string" && animation.startsWith("web:");
-    armHideTimer(isWeb ? WEB_LOAD_GRACE + durationRef.current : durationRef.current);
-  };
-
-  const onWebGiftLoaded = () => {
-    armHideTimer(durationRef.current);
-  };
+const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBottom }: any, ref: any) {
+  const [combos, setCombos] = useState<any[]>([]); // max 2 row, har sender ki apni row
+  const timersRef = useRef<any>({});
+  const leaveRef = useRef<any>({});
 
   useImperativeHandle(ref, () => ({
-    play: doPlay,
-    // Real-live behaviour: jab tak gift tap hote rahein, full-screen animation nahi chalti
-    // (sirf combo banner x1, x2, x3...). Tap ruke -> SIRF last gift ki animation chalti hai.
-    playDeferred(animation: any, duration?: number, delay = 600, meta?: any) {
-      if (!animation) return;
-      if (deferTimerRef.current) clearTimeout(deferTimerRef.current);
-      deferTimerRef.current = setTimeout(() => {
-        deferTimerRef.current = null;
-        doPlay(animation, duration, meta);
-      }, delay);
-    },
+    // animation band: play / playDeferred ab kuch nahi karte (purane call sites safe rehte hain)
+    play() {},
+    playDeferred() {},
     showCombo(data: any, onEnd?: () => void, ms = 2200) {
-      const key = String(data?.senderName || "user");
-      comboSeqRef.current += 1;
-      const entry = { key, data: { ...data, seq: comboSeqRef.current } };
-      setCombos((prev) => {
-        const i = prev.findIndex((c) => c.key === key);
-        if (i >= 0) {
-          const n = prev.slice();
-          n[i] = entry; // wahi jagah par update -> x count pop
-          return n;
-        }
-        return [...prev, entry].slice(-2);
+      const key = String((data && data.senderName) || "user") + "_" + String((data && data.giftId) || "g"); // har gift ki apni row
+      const entry = { key, data };
+      setCombos((prev: any[]) => {
+        const i = prev.findIndex((c: any) => c.key === key);
+        if (i >= 0) { const n = prev.slice(); n[i] = entry; return n; }
+        return [...prev, entry].slice(-3); // nayi row niche judti hai, max 3
       });
-      if (comboTimersRef.current[key]) clearTimeout(comboTimersRef.current[key]);
-      comboTimersRef.current[key] = setTimeout(() => {
-        delete comboTimersRef.current[key];
-        setCombos((prev) => prev.filter((c) => c.key !== key));
-        if (onEnd) onEnd();
+      if (timersRef.current[key]) clearTimeout(timersRef.current[key]);
+      if (leaveRef.current[key]) clearTimeout(leaveRef.current[key]);
+      leaveRef.current[key] = setTimeout(() => {
+        setCombos((prev: any[]) => prev.map((c: any) => (c.key === key ? { ...c, leaving: true } : c)));
+      }, Math.max(0, ms - 280));
+      timersRef.current[key] = setTimeout(() => {
+        delete timersRef.current[key];
+        setCombos((prev: any[]) => prev.filter((c: any) => c.key !== key));
+        if (onEnd && Object.keys(timersRef.current).length === 0) onEnd(); // sab rows khatam hone par combo reset
       }, ms);
     },
   }), []);
 
   useEffect(() => () => {
-    if (giftTimerRef.current) clearTimeout(giftTimerRef.current);
-    Object.values(comboTimersRef.current).forEach((t: any) => clearTimeout(t));
-    if (deferTimerRef.current) clearTimeout(deferTimerRef.current);
+    Object.values(timersRef.current).forEach((t: any) => clearTimeout(t));
+    Object.values(leaveRef.current).forEach((t: any) => clearTimeout(t));
   }, []);
 
-  const webSource = React.useMemo(
-    () =>
-      typeof activeGift === "string" && activeGift.startsWith("web:")
-        ? { html: giftHtml(activeGift.slice(4)), baseUrl: "https://localhost" }
-        : null,
-    [activeGift]
-  );
-
+  if (!combos.length) return null;
   return (
-    <>
-      {activeGift ? (
-        <View
-          pointerEvents="none"
-          style={{
-            position: "absolute",
-            // PK mode: chhota gift, banner ke NICHE (animTop). Normal mode: full-screen center.
-            ...(animTop != null
-              ? { top: animTop, left: 0, right: 0, height: animSize || 200 }
-              : { top: -GIFT_NORMAL_UP, left: 0, right: 0, bottom: GIFT_NORMAL_UP }),
-            justifyContent: "center",
-            alignItems: "center",
-            zIndex: 99999,
-            elevation: 99999,
-          }}
-        >
-          <View
-            style={
-              animTop != null
-                ? {
-                    width: 350,
-                    height: 350,
-                    justifyContent: "center",
-                    alignItems: "center",
-                    transform: [{ scale: (animSize || 200) / 350 }],
-                  }
-                : { justifyContent: "center", alignItems: "center" }
-            }
-          >
-          {webSource ? (
-            <WebView
-              key={playKey}
-              source={webSource}
-              originWhitelist={["*"]}
-              javaScriptEnabled
-              domStorageEnabled={false}
-              cacheEnabled
-              overScrollMode="never"
-              style={animTop != null ? { width: 350, height: 350, backgroundColor: "transparent" } : { width: width, height: width * 1.3, backgroundColor: "transparent" }}
-              containerStyle={{ backgroundColor: "transparent" }}
-              androidLayerType="hardware"
-              scrollEnabled={false}
-              pointerEvents="none"
-              injectedJavaScriptBeforeContentLoaded={GIFT_WEB_PRE_JS}
-              onLoadEnd={onWebGiftLoaded}
-            />
-          ) : isImgGift(activeGift) ? (
-            <GiftImage key={playKey} name={activeGift.slice(4)} />
-          ) : (
-            <LottieView
-              key={playKey}
-              source={activeGift}
-              autoPlay
-              loop={false}
-              speed={1}
-              hardwareAccelerationAndroid={true}
-              renderMode="HARDWARE"
-              cacheComposition={true}
-              resizeMode="contain"
-              style={{ width: 350, height: 350, backgroundColor: "transparent" }}
-            />
-          )}
-          </View>
-        </View>
-      ) : null}
-
-      {activeGift && activeMeta && activeMeta.senderName ? (
-        <View
-          pointerEvents="none"
-          style={{
-            position: "absolute",
-            top: height * 0.17,
-            alignSelf: "center",
-            left: 0,
-            right: 0,
-            alignItems: "center",
-            zIndex: 100000,
-            elevation: 100000,
-          }}
-        >
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              paddingVertical: 5,
-              paddingLeft: 5,
-              paddingRight: 14,
-              borderRadius: 24,
-              backgroundColor: "rgba(0,0,0,0.6)",
-              borderWidth: 1,
-              borderColor: "rgba(255,105,180,0.85)",
-              maxWidth: width * 0.9,
-            }}
-          >
-            <Image
-              source={{ uri: activeMeta.senderImg || STABLE_AVATAR }}
-              style={{ width: 30, height: 30, borderRadius: 15, marginRight: 8, backgroundColor: "#2a2b38" }}
-            />
-            <Text numberOfLines={1} style={{ color: "#fff", fontSize: 13, flexShrink: 1 }}>
-              <Text style={{ fontWeight: "bold" }}>{activeMeta.senderName}</Text>
-              {" "}sent{" "}
-              {activeMeta.giftName ? <Text style={{ color: "#FFE600", fontWeight: "bold" }}>{activeMeta.giftName}</Text> : "a gift"}
-              {activeMeta.receiverName ? <Text>{" "}to <Text style={{ color: "#FFE600", fontWeight: "bold" }}>@{activeMeta.receiverName}</Text></Text> : null}
-            </Text>
-          </View>
-        </View>
-      ) : null}
-
-      {combos.length > 0 ? (
-        <View
-          pointerEvents="none"
-          style={{
-            position: "absolute",
-            top: comboTop != null ? comboTop : height * 0.25,
-            left: 10,
-            zIndex: 99998,
-            elevation: 99998,
-          }}
-        >
-          {combos.map((c: any) => (
-            <ComboRow key={c.key} data={c.data} />
-          ))}
-        </View>
-      ) : null}
-    </>
+    <View
+      pointerEvents="none"
+      style={[{ position: "absolute", left: 10, zIndex: 99998, elevation: 99998 }, comboBottom != null ? { bottom: comboBottom } : { top: comboTop != null ? comboTop : height * 0.25 }]}
+    >
+      {combos.map((c: any) => <ComboRow key={c.key} data={c.data} leaving={!!c.leaving} />)}
+    </View>
   );
 }));
 
@@ -864,7 +660,7 @@ const giftPendingStore: any = {
     giftPendingStore.subs.forEach((f: any) => f(n));
   },
 };
-const GiftBalance = memo(({ stars }: any) => {
+const GiftBalance = memo(({ stars, style }: any) => {
   const [pending, setPending] = useState<number>(giftPendingStore.v);
   useEffect(() => {
     setPending(giftPendingStore.v);
@@ -872,7 +668,7 @@ const GiftBalance = memo(({ stars }: any) => {
     return () => { giftPendingStore.subs.delete(setPending); };
   }, []);
   return (
-    <Text style={{ color: GIFT_GOLD, fontSize: 15, fontWeight: "bold", marginLeft: 4 }}>
+    <Text style={style || { color: GIFT_GOLD, fontSize: 15, fontWeight: "bold", marginLeft: 4 }}>
       {Math.max(0, stars - pending)}
     </Text>
   );
@@ -952,7 +748,8 @@ const HeartsLayer = memo(
 );
 
 // One chat row: join / gift / normal message (same three types as LiveRoom.js) — Tiki pill style.
-const ChatItem = memo(({ chat, onUser }: any) => {
+const ChatItem = memo(({ chat, onUser, onMenu }: any) => {
+  const joinWait = useJoinDelay(chat);
   const theme = getLevelTheme(chat.level || 1);
   const openUser = () =>
     onUser &&
@@ -967,7 +764,10 @@ const ChatItem = memo(({ chat, onUser }: any) => {
       verifiedColor: chat.verifiedColor,
     });
 
+  const openMenu = () => onMenu && onMenu(chat);
+
   if (chat.type === "join") {
+    if (joinWait) return null;
     return (
       <View style={styles.tkRow}>
         <TouchableOpacity activeOpacity={0.8} onPress={openUser} style={styles.tkPill}>
@@ -1001,10 +801,10 @@ const ChatItem = memo(({ chat, onUser }: any) => {
 
   return (
     <View style={styles.tkRow}>
-      <TouchableOpacity activeOpacity={0.85} onPress={openUser} style={[styles.tkPill, { flexWrap: "nowrap", alignItems: "flex-start" }]}>
+      <TouchableOpacity activeOpacity={0.85} onPress={openMenu} onLongPress={openMenu} delayLongPress={250} style={[styles.tkPill, { flexWrap: "nowrap", alignItems: "flex-start" }]}>
         <View style={{ flexShrink: 1 }}>
-          {/* line 1: [HOST/MOD]  name  tick  level  (same order as LiveRoom) */}
-          <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap" }}>
+          {/* line 1: [HOST/MOD]  name  tick  level  (name par tap = profile) */}
+          <TouchableOpacity activeOpacity={0.8} onPress={openUser} onLongPress={openMenu} style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap" }}>
             {chat.role === "host" && (
               <View style={[styles.roleTag, { backgroundColor: "#F71084", marginLeft: 0, marginRight: 5 }]}>
                 <Text style={styles.roleTagTxt}>HOST</Text>
@@ -1026,14 +826,22 @@ const ChatItem = memo(({ chat, onUser }: any) => {
               <MaterialCommunityIcons name="diamond-stone" size={8} color={theme.icon} />
               <Text style={[styles.levelText, { color: theme.text, fontSize: 8 }]}>LV {chat.level || 1}</Text>
             </View>
-          </View>
-          {/* line 2: message */}
+          </TouchableOpacity>
+          {/* reply quote (Tiki jaisa) */}
+          {!!chat.replyTo && (
+            <View style={styles.tkReply}>
+              <Text numberOfLines={1} style={styles.tkReplyTxt}>
+                {"\u21A9 "}{chat.replyTo.name}: {chat.replyTo.text}
+              </Text>
+            </View>
+          )}
+          {/* line 2: message (tap = Reply / Delete menu) */}
           <Text style={styles.tkTxt}>{chat.message}</Text>
         </View>
       </TouchableOpacity>
     </View>
   );
-}, (prev: any, next: any) => prev.chat.id === next.chat.id && prev.onUser === next.onUser);
+}, (prev: any, next: any) => prev.chat.id === next.chat.id && prev.onUser === next.onUser && prev.onMenu === next.onMenu);
 // SMOOTH: chat message kabhi edit nahi hota -> sirf id compare, purani rows re-render nahi.
 
 const chatKeyExtractor = (item: any, index: number) => item.id || String(index);
@@ -2163,7 +1971,7 @@ const PkWaiting = memo(({ img, loading }: any) => (
       blurRadius={Platform.OS === "android" ? 14 : 24}
     />
     <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(28,20,70,0.55)" }]} />
-    <Image source={{ uri: img || STABLE_AVATAR }} style={styles.pkWaitAvatar} />
+    <ExpoImage source={{ uri: img || STABLE_AVATAR }} style={styles.pkWaitAvatar} cachePolicy="memory-disk" transition={0} />
     {!!loading && (
       <>
         <ActivityIndicator size="small" color="#fff" style={{ marginTop: 10 }} />
@@ -2216,8 +2024,8 @@ export default function VideoLive() {
     if (isHost) return;
     const TAG = "videolive-secure";
     ScreenCapture.preventScreenCaptureAsync(TAG)
-      .then(() => console.log("SECURE: screen capture BLOCKED for viewer"))
-      .catch((e) => console.log("SECURE: block FAILED", e?.message || e));
+      .then(() => __DEV__ && console.log("SECURE: screen capture BLOCKED for viewer"))
+      .catch((e) => __DEV__ && console.log("SECURE: block FAILED", e?.message || e));
     return () => {
       ScreenCapture.allowScreenCaptureAsync(TAG).catch(() => {});
     };
@@ -2275,6 +2083,8 @@ export default function VideoLive() {
   const giftBatchRef = useRef<any>(null);
   const giftFlushTimerRef = useRef<any>(null);
   const flushGiftBatchRef = useRef<any>(null);
+  const lastGiftWriteAtRef = useRef(0); // last gift write ka time (fast send + unique timestamp)
+  const remoteGiftHandlerRef = useRef<any>(null); // dusron ka gift turant dikhane ke liye
   const onComboEnd = useCallback(() => {
     lastGiftRef.current = null;
     giftComboCountRef.current = 0;
@@ -2309,6 +2119,14 @@ export default function VideoLive() {
 
   // ---------- tools (mute / video / filter) ----------
   const [micMuted, setMicMuted] = useState(false);
+  // ===== ROOM MUSIC (LiveRoom.js jaisa hi - Agora audio mixing) =====
+  const music = useRoomMusic(agoraEngineRef);
+  const [musicSheetVisible, setMusicSheetVisible] = useState(false);
+  useEffect(() => {
+    // sirf host song chala sakta hai (host hi mic publish karta hai); list pehle se cache -> sheet instant khule
+    if (isHost) music.fetchSongs();
+    else if (music.current) music.stop();
+  }, [isHost]); // eslint-disable-line react-hooks/exhaustive-deps
   const [videoOff, setVideoOff] = useState(false);
   const [soundMuted, setSoundMuted] = useState(false);
   const soundMutedRef = useRef(false);
@@ -2380,11 +2198,20 @@ export default function VideoLive() {
   const [summary, setSummary] = useState<any>(null);
   const [netQuality, setNetQuality] = useState(0); // 0 unknown, 1-2 good, 3 ok, 4-6 bad
   const [giftPageIdx, setGiftPageIdx] = useState(0);
+  const [giftSelId, setGiftSelId] = useState<any>(null); // selected gift in sheet (Tiki style)
+  const [giftQty, setGiftQty] = useState(1); // 1 / 9 / 99 / 199 / 999
   const [emojiOpen, setEmojiOpen] = useState(false);
   const lastChatAtRef = useRef(0);
   const peakViewersRef = useRef(0);
   const kickedHandledRef = useRef(false);
   const [reportTarget, setReportTarget] = useState<any>(null);
+  // ---------- comment reply / delete + Manage (mute / kick) ----------
+  const [chatMenu, setChatMenu] = useState<any>(null); // long-press / tap on a comment
+  const [replyTo, setReplyTo] = useState<any>(null); // { id, uid, name, text }
+  const [manageOpen, setManageOpen] = useState(false); // profile card -> Manage sheet
+  const [kickDlg, setKickDlg] = useState(false); // "Do you want to kick out this viewer?"
+  const [kickBlock, setKickBlock] = useState(false); // "Add to Blocked List"
+  const kickBaselineRef = useRef<any>(undefined);
 
   // ---------- guest seats ----------
   const [guestSheetVisible, setGuestSheetVisible] = useState(false); // host: requests / guests sheet
@@ -2496,20 +2323,20 @@ export default function VideoLive() {
     [roomData?.roomGifters]
   );
   const top3Gifters = React.useMemo(() => rankedGifters.slice(0, 3), [rankedGifters]);
-  // Header: always up to 5 people. Gifters first (most stars in front), then the other viewers by level.
+  // Header: always up to 4 people. Gifters first (most stars in front), then the other viewers by level.
   const headerFive: any[] = React.useMemo(() => {
     const seen = new Set<string>();
     const out: any[] = [];
     rankedGifters.forEach((g: any) => {
       // gifter sirf tab dikhe jab abhi room me ho (audience me); gift karke chala gaya to hat jaye,
       // wapas aaye to apne stars ke hisaab se fir aage dikhne lage
-      if (out.length < 5 && g?.uid && !!audienceMap[g.uid] && !blockedIds.has(g.uid) && !seen.has(g.uid)) {
+      if (out.length < 4 && g?.uid && !!audienceMap[g.uid] && !blockedIds.has(g.uid) && !seen.has(g.uid)) {
         seen.add(g.uid);
         out.push({ ...g, isGifter: true });
       }
     });
     audienceSorted.forEach((u: any) => {
-      if (out.length < 5 && u?.uid && !seen.has(u.uid)) {
+      if (out.length < 4 && u?.uid && !seen.has(u.uid)) {
         seen.add(u.uid);
         out.push({ ...u, isGifter: false });
       }
@@ -2519,7 +2346,7 @@ export default function VideoLive() {
 
   // ---------- guard: no room id at all ----------
   useEffect(() => {
-    if (!roomId) console.log("VideoLive opened without a room id.");
+    if (!roomId) __DEV__ && console.log("VideoLive opened without a room id.");
   }, [roomId]);
 
   // ---------- MY wallet (stars) ----------
@@ -2567,7 +2394,7 @@ export default function VideoLive() {
         }
         if (walletSnap.exists()) setMyLevel(walletSnap.data()?.level || 1);
       } catch (e) {
-        console.log("MY PROFILE LOAD ERROR:", e);
+        __DEV__ && console.log("MY PROFILE LOAD ERROR:", e);
       }
       if (alive) setProfileReady(true);
     })();
@@ -2601,6 +2428,9 @@ export default function VideoLive() {
       }
 
       roomDataRef.current = data;
+
+      // FAST: gift turant dikhao - React state / re-render ka wait nahi (baaki sab neeche pehle jaisa)
+      if (giftBaselineSetRef.current && data?.liveGift) remoteGiftHandlerRef.current?.(data.liveGift);
 
       // The host writes lastHeartbeat every 8s. That used to re-render this
       // whole screen (and every viewer's screen) each time. If nothing except
@@ -2665,7 +2495,7 @@ export default function VideoLive() {
           setHostLevel(walletSnap.data().level);
         }
       } catch (e) {
-        console.log("HOST PROFILE LOAD ERROR:", e);
+        __DEV__ && console.log("HOST PROFILE LOAD ERROR:", e);
       }
     };
     loadHostProfile();
@@ -2679,9 +2509,9 @@ export default function VideoLive() {
 
     (async () => {
       try {
-        await setDoc(roomRef, { status: "active", lastHeartbeat: serverTimestamp() }, { merge: true });
+        await setDoc(roomRef, { status: "active", hostVideoOff: false, lastHeartbeat: serverTimestamp() }, { merge: true });
       } catch (e) {
-        console.log("ROOM ACTIVATE ERROR:", e);
+        __DEV__ && console.log("ROOM ACTIVATE ERROR:", e);
       }
     })();
 
@@ -2740,6 +2570,7 @@ export default function VideoLive() {
 
     // Coalesce bursts: max 1 re-render / 300ms (first one is instant)
     let chatPending: any[] | null = null;
+    let chatCacheLocal = new Map<string, any>();
     let chatLastFlush = 0;
     let chatTimer: any = null;
     const flushChats = () => {
@@ -2752,11 +2583,34 @@ export default function VideoLive() {
     const unsubChats = onSnapshot(
       chatsQuery,
       (snap) => {
-        const msgs = snap.docs.map((d) => ({ id: d.id, ...d.data() })).reverse();
+        // NAYI join line: chat me dikhane se pehle upar pill ka time (3.5s) de do
+        if (chatsReadyRef.current) {
+          snap.docChanges().forEach((ch) => {
+            if (ch.type === "added" && (ch.doc.data() as any)?.type === "join") markJoinPending(ch.doc.id);
+          });
+        }
+        // PERF: sirf badle / naye messages ke naye objects; baaki purane object reuse
+        // (taaki memo(ChatItem) baaki rows ko dobara render na kare)
+        const changedIds = new Set<string>();
+        snap.docChanges().forEach((ch) => {
+          if (ch.type !== "removed") changedIds.add(ch.doc.id);
+        });
+        const nextCache = new Map<string, any>();
+        const msgs = snap.docs
+          .map((d) => {
+            const prev = chatCacheLocal.get(d.id);
+            const obj = prev && !changedIds.has(d.id) ? prev : { id: d.id, ...d.data() };
+            nextCache.set(d.id, obj);
+            return obj;
+          })
+          .reverse();
+        chatCacheLocal = nextCache;
         chatPending = msgs;
         const sinceFlush = Date.now() - chatLastFlush;
-        if (chatLastFlush === 0 || sinceFlush >= 300) flushChats();
-        else if (!chatTimer) chatTimer = setTimeout(flushChats, 300 - sinceFlush);
+        // SPEED: apna bheja hua / delete kiya hua comment turant dikhe (300ms wait nahi)
+        const instant = snap.docChanges().some((ch) => ch.type === "removed" || ch.doc.metadata.hasPendingWrites);
+        if (chatLastFlush === 0 || sinceFlush >= 120 || instant) flushChats();
+        else if (!chatTimer) chatTimer = setTimeout(flushChats, 120 - sinceFlush);
 
         // Skip the banner for the initial history load — only NEW joins.
         if (chatsReadyRef.current) {
@@ -2770,7 +2624,7 @@ export default function VideoLive() {
         }
         chatsReadyRef.current = true;
       },
-      (e) => console.log("Chat listener error:", e)
+      (e) => __DEV__ && console.log("Chat listener error:", e)
     );
 
     return () => {
@@ -2804,9 +2658,15 @@ export default function VideoLive() {
     const unsubAudience = onSnapshot(
       audienceQuery,
       (snap) => {
+        // PERF: badle hue users ke hi naye objects; baaki reuse
+        const changedAud = new Set<string>();
+        snap.docChanges().forEach((ch) => {
+          if (ch.type !== "removed") changedAud.add(ch.doc.id);
+        });
         const map: any = {};
         snap.forEach((d) => {
-          map[d.id] = { uid: d.id, ...d.data() };
+          const prev = latestMap[d.id];
+          map[d.id] = prev && !changedAud.has(d.id) ? prev : { uid: d.id, ...d.data() };
         });
         latestMap = map;
 
@@ -2822,7 +2682,7 @@ export default function VideoLive() {
           }, 600);
         }
       },
-      (e) => console.log("Audience listener error:", e)
+      (e) => __DEV__ && console.log("Audience listener error:", e)
     );
 
     return () => {
@@ -2850,6 +2710,12 @@ export default function VideoLive() {
 
     (async () => {
       try {
+        // USERNAME GATE: username ke bina viewer entry nahi
+        if (!(await checkUsername())) {
+          Alert.alert("Username zaruri hai", "Live me aane ke liye pehle Edit Profile me apna username set karo.");
+          try { (router as any).canGoBack?.() ? router.back() : router.replace("/"); } catch (_) {}
+          return;
+        }
         const existing = await getDoc(audRef);
         const isFirstJoin = !existing.exists();
 
@@ -2886,7 +2752,7 @@ export default function VideoLive() {
         }
         await Promise.all(jobs);
       } catch (e) {
-        console.log("JOIN ERROR:", e);
+        __DEV__ && console.log("JOIN ERROR:", e);
       }
     })();
 
@@ -2898,8 +2764,7 @@ export default function VideoLive() {
   }, [roomId, currentUid, profileReady, isHost]);
 
   // ---------- remote gift (liveGift) → combo banner + animation (LiveRoom jaisa) ----------
-  useEffect(() => {
-    const gift = roomData?.liveGift;
+  const handleRemoteGift = (gift: any) => {
     if (!gift) return;
 
     const giftKey = `${gift.senderId}_${gift.timestamp}`;
@@ -2919,6 +2784,8 @@ export default function VideoLive() {
         {
           senderName: gift.senderName,
           senderImg: gift.senderImg,
+          senderId: gift.senderId,
+          level: gift.senderLevel,
           receiverName: gift.receiverName,
           giftId: gift.giftId,
           giftName: gift.giftName,
@@ -2939,14 +2806,31 @@ export default function VideoLive() {
         giftName: gift.giftName || giftData.name,
       });
     }
+  };
+  remoteGiftHandlerRef.current = handleRemoteGift;
+  // fallback (agar snapshot se miss ho gaya to yahan se; same key dobara nahi chalegi)
+  useEffect(() => {
+    remoteGiftHandlerRef.current?.(roomData?.liveGift);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomData?.liveGift?.timestamp]);
+
+  // gift sheet: band hone ke baad sheet neeche reset (agli baar flash nahi hoga)
+  useEffect(() => {
+    if (!giftModalVisible) giftModalAnim.setValue(420);
+  }, [giftModalVisible]);
+  const closeGiftModal = useCallback(() => {
+    Animated.timing(giftModalAnim, { toValue: 420, duration: 170, easing: Easing.in(Easing.cubic), useNativeDriver: true }).start(() =>
+      setGiftModalVisible(false)
+    );
+  }, []);
 
   // gift sheet slide-up
   useEffect(() => {
     if (giftModalVisible) {
       giftModalAnim.setValue(420);
       setGiftPageIdx(0);
+      setGiftSelId((prev: any) => prev ?? (gifts[0] ? gifts[0].id : null));
+      setGiftQty(1);
       Animated.spring(giftModalAnim, { toValue: 0, damping: 24, stiffness: 300, mass: 0.7, overshootClamping: true, useNativeDriver: true }).start();
     }
   }, [giftModalVisible]);
@@ -2963,6 +2847,7 @@ export default function VideoLive() {
         setKeyboardHeight(0);
         setChatOpen(false);
         setEmojiOpen(false);
+        setReplyTo(null);
       }
     );
     return () => {
@@ -3009,6 +2894,7 @@ export default function VideoLive() {
 
   // SMOOTH: chat list ab inverted hai (newest neeche, khud bottom se start) ->
   // har message par scrollToEnd ki zarurat nahi, scroll jerk khatam.
+  const [chatH, setChatH] = useState(0);
   const chatListData = React.useMemo(() => chatMessages.slice().reverse(), [chatMessages]);
   const chatListStyle = React.useMemo(
     () => [
@@ -3106,7 +2992,7 @@ export default function VideoLive() {
       }
     } catch (e) {
       pkEndingRef.current = null;
-      console.log("PK END ERROR:", e);
+      __DEV__ && console.log("PK END ERROR:", e);
     }
   };
 
@@ -3293,7 +3179,7 @@ export default function VideoLive() {
       fs.forEach((d) => set.add(d.id));
       setFollowingIds(set);
     } catch (e) {
-      console.log("FOLLOWING LOAD ERROR:", e);
+      __DEV__ && console.log("FOLLOWING LOAD ERROR:", e);
     }
   };
 
@@ -3339,7 +3225,7 @@ export default function VideoLive() {
       );
       setFriendsList(list);
     } catch (e) {
-      console.log("FRIENDS LOAD ERROR:", e);
+      __DEV__ && console.log("FRIENDS LOAD ERROR:", e);
     }
   };
 
@@ -3352,7 +3238,7 @@ export default function VideoLive() {
     try {
       setPkCandidates(await fetchPkCandidates(true));
     } catch (e) {
-      console.log("PK LIST ERROR:", e);
+      __DEV__ && console.log("PK LIST ERROR:", e);
     }
     setPkLoading(false);
   };
@@ -3423,7 +3309,7 @@ export default function VideoLive() {
         matchTriedRef.current.add(pick.id);
         await sendPkInvite(pick);
       } catch (e) {
-        console.log("MATCH ERROR:", e);
+        __DEV__ && console.log("MATCH ERROR:", e);
       } finally {
         busy = false;
       }
@@ -3467,7 +3353,7 @@ export default function VideoLive() {
       });
       setPkListVisible(false);
     } catch (e) {
-      console.log("PK INVITE ERROR:", e);
+      __DEV__ && console.log("PK INVITE ERROR:", e);
       Alert.alert("PK", "Could not send the invite. Try again.");
       updateDoc(doc(db, "rooms", roomId), { pk: deleteField() }).catch(() => {});
     }
@@ -3486,7 +3372,7 @@ export default function VideoLive() {
         }
       }
     } catch (e) {
-      console.log("PK CANCEL ERROR:", e);
+      __DEV__ && console.log("PK CANCEL ERROR:", e);
     }
   };
 
@@ -3537,7 +3423,7 @@ export default function VideoLive() {
       });
       await batch.commit();
     } catch (e) {
-      console.log("PK ACCEPT ERROR:", e);
+      __DEV__ && console.log("PK ACCEPT ERROR:", e);
       Alert.alert("PK", "Could not start the PK.");
     }
     setPkBusy(false);
@@ -3553,7 +3439,7 @@ export default function VideoLive() {
         await updateDoc(doc(db, "rooms", inv.fromRoomId), { pk: deleteField() });
       }
     } catch (e) {
-      console.log("PK DECLINE ERROR:", e);
+      __DEV__ && console.log("PK DECLINE ERROR:", e);
     }
   };
 
@@ -3621,7 +3507,7 @@ export default function VideoLive() {
           } catch (_) {}
         }
       } catch (e) {
-        console.log("PK JOIN OPPONENT CHANNEL ERROR:", e);
+        __DEV__ && console.log("PK JOIN OPPONENT CHANNEL ERROR:", e);
       }
     })();
 
@@ -3682,7 +3568,7 @@ export default function VideoLive() {
       myAgoraUidRef.current = numericUid;
 
       if (!res.token) {
-        console.log("AGORA: no token from backend, trying to join without one");
+        __DEV__ && console.log("AGORA: no token from backend, trying to join without one");
       }
 
       // Failsafe: never spin on "Connecting..." forever.
@@ -3703,8 +3589,10 @@ export default function VideoLive() {
         publishMicrophoneTrack: isHost,
         autoSubscribeAudio: true,
         autoSubscribeVideo: true,
-      });
-      if (typeof ret === "number" && ret < 0) console.log("AGORA joinChannel returned", ret);
+        // SPEED: viewer ko ultra-low latency (host ki video jaldi + kam delay se dikhe)
+        ...(isHost ? {} : { audienceLatencyLevel: 2 }),
+      } as any);
+      if (typeof ret === "number" && ret < 0) __DEV__ && console.log("AGORA joinChannel returned", ret);
     };
 
     // token close to expiry / expired while live → get a fresh one and renew
@@ -3714,7 +3602,7 @@ export default function VideoLive() {
         try {
           engine.renewToken(res.token);
         } catch (e) {
-          console.log("RENEW TOKEN ERROR:", e);
+          __DEV__ && console.log("RENEW TOKEN ERROR:", e);
         }
       }
     };
@@ -3796,7 +3684,7 @@ export default function VideoLive() {
           },
           onJoinChannelSuccess: (connection: any) => {
             if (connection?.channelId && connection.channelId !== roomId) return; // PK channel
-            console.log("VIDEO LIVE: joined channel", roomId, "as", isHost ? "host" : "viewer");
+            __DEV__ && console.log("VIDEO LIVE: joined channel", roomId, "as", isHost ? "host" : "viewer");
             mainLive = true;
             clearJoinTimer();
             setStatus("Live");
@@ -3857,7 +3745,7 @@ export default function VideoLive() {
             renewMainToken();
           },
           onError: (err: number, msg: string) => {
-            console.log("Agora Error:", err, msg);
+            __DEV__ && console.log("Agora Error:", err, msg);
             if (!mounted) return;
             // 109 = token expired, 110 = invalid token
             if (err === 109 || err === 110) {
@@ -3898,7 +3786,7 @@ export default function VideoLive() {
           try {
             engine.setVideoEncoderConfiguration(VIDEO_PROFILE);
           } catch (e) {
-            console.log("VIDEO CONFIG ERROR:", e);
+            __DEV__ && console.log("VIDEO CONFIG ERROR:", e);
           }
           try {
             // viewers on a weak network automatically get a small stream
@@ -3910,7 +3798,7 @@ export default function VideoLive() {
             // 0 = chalu ho gaya. Kisi device par na chale to ban nahi lagayenge (galat ban se bachne ke liye)
             faceCheckOnRef.current = Number((engine as any).enableFaceDetection(true)) === 0;
             lastFaceAtRef.current = Date.now();
-            console.log("FACE DETECTION:", faceCheckOnRef.current ? "ON" : "NOT SUPPORTED");
+            __DEV__ && console.log("FACE DETECTION:", faceCheckOnRef.current ? "ON" : "NOT SUPPORTED");
           } catch (e) {
             faceCheckOnRef.current = false;
           }
@@ -3924,7 +3812,7 @@ export default function VideoLive() {
         await getTokenAndJoin();
         if (mounted) setAgoraReady(true);
       } catch (error: any) {
-        console.log("VIDEO LIVE AGORA INIT ERROR:", error?.message || error);
+        __DEV__ && console.log("VIDEO LIVE AGORA INIT ERROR:", error?.message || error);
         setStatus(`Failed: ${error?.message || error}`);
       }
     };
@@ -3941,7 +3829,7 @@ export default function VideoLive() {
           eng.leaveChannel();
           eng.release();
         } catch (e) {
-          console.log("AGORA CLEANUP ERROR:", e);
+          __DEV__ && console.log("AGORA CLEANUP ERROR:", e);
         }
       }
       agoraEngineRef.current = null;
@@ -3982,7 +3870,7 @@ export default function VideoLive() {
           lastProfileSwitchRef.current = Date.now();
         }
       } catch (e) {
-        console.log("AUTO PROFILE ERROR:", e);
+        __DEV__ && console.log("AUTO PROFILE ERROR:", e);
       }
     }, 5000);
     return () => clearInterval(t);
@@ -3995,7 +3883,7 @@ export default function VideoLive() {
     try {
       engine.muteLocalAudioStream(next);
     } catch (e) {
-      console.log("MIC TOGGLE ERROR:", e);
+      __DEV__ && console.log("MIC TOGGLE ERROR:", e);
     }
     setMicMuted(next);
     if (db && roomId) updateDoc(doc(db, "rooms", roomId), { hostMicMuted: next }).catch(() => {});
@@ -4003,6 +3891,8 @@ export default function VideoLive() {
 
   // "Video push / play" → pause & resume the camera stream
   const toggleVideo = () => {
+    // TIKI JAISA: host live ke beech video band / pause nahi kar sakta (menu se option hata diya).
+    return;
     const engine = agoraEngineRef.current;
     if (!engine || !isHost) return;
     const next = !videoOff;
@@ -4010,7 +3900,7 @@ export default function VideoLive() {
       engine.enableLocalVideo(!next);
       engine.muteLocalVideoStream(next);
     } catch (e) {
-      console.log("VIDEO TOGGLE ERROR:", e);
+      __DEV__ && console.log("VIDEO TOGGLE ERROR:", e);
     }
     setVideoOff(next);
     if (db && roomId) updateDoc(doc(db, "rooms", roomId), { hostVideoOff: next }).catch(() => {});
@@ -4021,7 +3911,7 @@ export default function VideoLive() {
       agoraEngineRef.current?.switchCamera();
       camFrontRef.current = !camFrontRef.current;
     } catch (e) {
-      console.log("FLIP CAMERA ERROR:", e);
+      __DEV__ && console.log("FLIP CAMERA ERROR:", e);
     }
   };
 
@@ -4041,7 +3931,7 @@ export default function VideoLive() {
         });
       }
     } catch (e) {
-      console.log("BEAUTY ERROR:", e);
+      __DEV__ && console.log("BEAUTY ERROR:", e);
     }
     try {
       if (engine.setColorEnhanceOptions) {
@@ -4049,7 +3939,7 @@ export default function VideoLive() {
         else engine.setColorEnhanceOptions(false, { strengthLevel: 0, skinProtectLevel: 1 });
       }
     } catch (e) {
-      console.log("COLOR ENHANCE ERROR:", e);
+      __DEV__ && console.log("COLOR ENHANCE ERROR:", e);
     }
     setFilterId(f.id);
   };
@@ -4063,7 +3953,7 @@ export default function VideoLive() {
     try {
       engine.muteAllRemoteAudioStreamsEx(next || soundMutedRef.current, pkConn);
     } catch (e) {
-      console.log("OPP MUTE ERROR:", e);
+      __DEV__ && console.log("OPP MUTE ERROR:", e);
     }
   };
 
@@ -4078,7 +3968,7 @@ export default function VideoLive() {
       engine.muteAllRemoteAudioStreams(next);
       if (pkConn) engine.muteAllRemoteAudioStreamsEx(next || oppMuted, pkConn);
     } catch (e) {
-      console.log("SOUND TOGGLE ERROR:", e);
+      __DEV__ && console.log("SOUND TOGGLE ERROR:", e);
     }
   };
 
@@ -4112,7 +4002,7 @@ export default function VideoLive() {
         await batch.commit();
       }
     } catch (e) {
-      console.log(`Clear ${subName} error:`, e);
+      __DEV__ && console.log(`Clear ${subName} error:`, e);
     }
   };
 
@@ -4207,7 +4097,7 @@ export default function VideoLive() {
       const shareLink = `https://topking-short.vercel.app/live/${roomId}`;
       await Share.share({ message: `🎥 Join ${hostName}'s Live now!\n${shareLink}` });
     } catch (e) {
-      console.log(e);
+      __DEV__ && console.log(e);
     }
   };
 
@@ -4285,7 +4175,7 @@ export default function VideoLive() {
       reqCancelledByMeRef.current = false;
       showToast("Request sent, please wait for confirmation");
     } catch (e: any) {
-      console.log("REQUEST ERROR:", e?.code, e?.message || e);
+      __DEV__ && console.log("REQUEST ERROR:", e?.code, e?.message || e);
       showToast(`Could not send the request${e?.code ? ` (${e.code})` : ""}`);
     }
   };
@@ -4342,7 +4232,7 @@ export default function VideoLive() {
     try {
       await updateDoc(doc(db, "rooms", roomId), { [`guests.${currentUid}`]: deleteField() });
     } catch (e) {
-      console.log("LEAVE SEAT ERROR:", e);
+      __DEV__ && console.log("LEAVE SEAT ERROR:", e);
     }
   };
 
@@ -4377,7 +4267,7 @@ export default function VideoLive() {
           });
           showToast("You are on the call with the host 🎤");
         } catch (e: any) {
-          console.log("GUEST PUBLISH ERROR:", e?.message || e);
+          __DEV__ && console.log("GUEST PUBLISH ERROR:", e?.message || e);
           Alert.alert("Could not join", e?.message || "Mic could not start.");
           leaveGuestSeat();
         }
@@ -4459,7 +4349,7 @@ export default function VideoLive() {
         [`guestReq.${req.uid}`]: deleteField(),
       });
     } catch (e: any) {
-      console.log("ACCEPT GUEST ERROR:", e?.code, e?.message || e);
+      __DEV__ && console.log("ACCEPT GUEST ERROR:", e?.code, e?.message || e);
       showToast(`Could not accept the request${e?.code ? ` (${e.code})` : ""}`);
     }
   };
@@ -4523,22 +4413,17 @@ export default function VideoLive() {
       setMenuVisible(true);
       return;
     }
-    if (isHost) {
-      Alert.alert(g.name || "Guest", "Guest controls", [
-        {
-          text: "View profile",
-          onPress: () => openProfile({ uid: g.uid, name: g.name, img: g.img, level: Number(g.level || 1), verified: g.verified, verifiedColor: g.verifiedColor }),
-        },
-        {
-          text: g.hostMuted ? "Unmute guest" : "Mute guest",
-          onPress: () => muteGuest(g.uid, !g.hostMuted),
-        },
-        { text: "Remove from call", style: "destructive", onPress: () => removeGuest(g.uid) },
-        { text: "Cancel", style: "cancel" },
-      ]);
-      return;
-    }
-    openProfile({ uid: g.uid, name: g.name, img: g.img, level: Number(g.level || 1) });
+    // host + viewer: dono ko pehle profile POPUP khulta hai.
+    // Mute / Remove sirf popup ke "Manage" button ke andar (host ko) milta hai.
+    openProfile({
+      uid: g.uid,
+      name: g.name,
+      img: g.img,
+      level: Number(g.level || 1),
+      verified: g.verified,
+      verifiedColor: g.verifiedColor,
+      isGuestCard: true,
+    });
   };
 
   const followGuest = async (g: any) => {
@@ -4563,19 +4448,25 @@ export default function VideoLive() {
       return;
     }
     const nowMs = Date.now();
-    if (nowMs - lastChatAtRef.current < 1200) return; // anti-spam
+    if (nowMs - lastChatAtRef.current < 600) return; // anti-spam (Tiki jaisa fast)
     lastChatAtRef.current = nowMs;
     if (blockIfProfane(chatMessage)) return;
     const messageText = cleanText(chatMessage.trim()).slice(0, 200);
+    const replySnap = replyTo;
+    setReplyTo(null);
     Keyboard.dismiss();
     setEmojiOpen(false);
     setChatMessage("");
     try {
-      await addDoc(collection(db, "rooms", roomId, "chats"), {
+      // setDoc(doc(collection)) = id pehle se pata (delete / reply ke liye) + local snapshot instant
+      await setDoc(doc(collection(db, "rooms", roomId, "chats")), {
         senderName: currentRealName,
         username: currentName,
         message: messageText,
         senderId: currentUid,
+        ...(replySnap
+          ? { replyTo: { id: replySnap.id || "", uid: replySnap.uid || "", name: replySnap.name || "User", text: String(replySnap.text || "").slice(0, 80) } }
+          : null),
         role: isHost ? "host" : mods[currentUid as string] ? "mod" : "user",
         userImg: currentAvatar || STABLE_AVATAR,
         special: mySpecial,
@@ -4585,7 +4476,7 @@ export default function VideoLive() {
         createdAt: Date.now(),
       });
     } catch (e) {
-      console.log("CHAT SEND ERROR:", e);
+      __DEV__ && console.log("CHAT SEND ERROR:", e);
     }
   };
 
@@ -4626,7 +4517,7 @@ export default function VideoLive() {
       }
       return true;
     } catch (e) {
-      console.log("FOLLOW ERROR:", e);
+      __DEV__ && console.log("FOLLOW ERROR:", e);
       return false;
     }
   };
@@ -4735,9 +4626,10 @@ export default function VideoLive() {
     });
   };
 
+  const openChatMenu = useCallback((c: any) => setChatMenu(c), []);
   const renderChat = useCallback(
-    ({ item }: any) => <ChatItem chat={item} onUser={openProfile} />,
-    [openProfile]
+    ({ item }: any) => <ChatItem chat={item} onUser={openProfile} onMenu={openChatMenu} />,
+    [openProfile, openChatMenu]
   );
 
   // ----- hearts (tap the screen) -----
@@ -4804,14 +4696,49 @@ export default function VideoLive() {
   }, []);
 
   // ----- kicked by host / moderator -----
+  // Pehle se purani (block nahi) kick entry ho to dobara aane par rok nahi; nayi kick ya blocked = bahar.
   useEffect(() => {
-    if (isHost || !currentUid || kickedHandledRef.current) return;
-    if (roomData?.kicked?.[currentUid]) {
+    if (isHost || !currentUid || !roomData || kickedHandledRef.current) return;
+    const k: any = roomData?.kicked?.[currentUid];
+    const sig = k ? (k === true ? "legacy" : String(k.id || k.at || "x")) : "";
+    const blocked = !!k && (k === true || !!k.blocked);
+    if (kickBaselineRef.current === undefined) {
+      kickBaselineRef.current = sig;
+      if (!blocked) return;
+    }
+    if (!k) return;
+    if (blocked || sig !== kickBaselineRef.current) {
       kickedHandledRef.current = true;
       Alert.alert("Removed", "You were removed from this live.");
       router.back();
     }
-  }, [roomData?.kicked, currentUid]);
+  }, [roomData?.kicked, currentUid, !!roomData]);
+
+  // host ki Blocked List me ho to live me aa hi nahi sakta
+  useEffect(() => {
+    if (isHost || !db || !hostId || !currentUid) return;
+    let alive = true;
+    getDoc(doc(db, "users", hostId, "liveBlocked", currentUid))
+      .then((sn) => {
+        if (alive && sn.exists() && !kickedHandledRef.current) {
+          kickedHandledRef.current = true;
+          Alert.alert("Blocked", "Host ne aapko is live se block kiya hai.");
+          router.back();
+        }
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [hostId, currentUid, isHost]);
+
+  // profile card band hote hi Manage / Kick popup bhi band
+  useEffect(() => {
+    if (!profileCard) {
+      setManageOpen(false);
+      setKickDlg(false);
+    }
+  }, [profileCard]);
 
   // ----- moderation -----
   const canModerate = (t: any) =>
@@ -4822,29 +4749,37 @@ export default function VideoLive() {
     try {
       await updateDoc(doc(db, "rooms", roomId), { [`mutedUsers.${t.uid}`]: mute ? true : deleteField() });
     } catch (e) {
-      console.log("MUTE ERROR:", e);
+      __DEV__ && console.log("MUTE ERROR:", e);
     }
     setProfileCard(null);
   };
 
-  const kickUser = (t: any) => {
-    Alert.alert("Remove user", `Remove ${t.name || "this user"} from the live? They can't rejoin this live.`, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Remove",
-        style: "destructive",
-        onPress: async () => {
-          if (!db || !roomId) return;
-          try {
-            await updateDoc(doc(db, "rooms", roomId), { [`kicked.${t.uid}`]: true });
-            deleteDoc(doc(db, "rooms", roomId, "audience", t.uid)).catch(() => {});
-          } catch (e) {
-            console.log("KICK ERROR:", e);
-          }
-          setProfileCard(null);
-        },
-      },
-    ]);
+  // Kick Out (Tiki jaisa): "Add to Blocked List" ho to dobara kabhi nahi aa sakta,
+  // warna sirf abhi nikalta hai (wapas aa sakta hai).
+  const kickUser = async (t: any, block = false) => {
+    if (!db || !roomId || !t?.uid) return;
+    try {
+      await updateDoc(doc(db, "rooms", roomId), {
+        [`kicked.${t.uid}`]: { id: `${Date.now()}_${Math.floor(Math.random() * 1e6)}`, at: Date.now(), blocked: !!block },
+      });
+      deleteDoc(doc(db, "rooms", roomId, "audience", t.uid)).catch(() => {});
+      if (block && hostId) {
+        setDoc(doc(db, "users", hostId, "liveBlocked", t.uid), { uid: t.uid, name: t.name || "", at: Date.now() }).catch(() => {});
+      }
+    } catch (e) {
+      __DEV__ && console.log("KICK ERROR:", e);
+      showToast("Kick nahi hua, dobara try karo");
+    }
+    setKickDlg(false);
+    setProfileCard(null);
+  };
+
+  // viewer list se Kick -> wahi Tiki wala confirm dialog
+  const askKick = (t: any) => {
+    setViewerListVisible(false);
+    setProfileCard(t);
+    setKickBlock(false);
+    setTimeout(() => setKickDlg(true), 350);
   };
 
   const toggleMod = async (t: any) => {
@@ -4852,7 +4787,7 @@ export default function VideoLive() {
     try {
       await updateDoc(doc(db, "rooms", roomId), { [`mods.${t.uid}`]: mods[t.uid] ? deleteField() : true });
     } catch (e) {
-      console.log("MOD ERROR:", e);
+      __DEV__ && console.log("MOD ERROR:", e);
     }
     setProfileCard(null);
   };
@@ -4863,8 +4798,44 @@ export default function VideoLive() {
     try {
       await updateDoc(doc(db, "rooms", roomId as string), { chatLocked: !chatLocked });
     } catch (e) {
-      console.log("CHAT LOCK ERROR:", e);
+      __DEV__ && console.log("CHAT LOCK ERROR:", e);
     }
+  };
+
+  // ----- comment: delete (user = sirf apna, host / mod = koi bhi) + reply -----
+  const canDeleteChat = (c: any) => !!c && !c.type && !!c.id && (isMod || (!!currentUid && c.senderId === currentUid));
+  const deleteChatMsg = async (c: any) => {
+    setChatMenu(null);
+    if (!db || !roomId || !canDeleteChat(c)) return;
+    setChatMessages((prev: any[]) => prev.filter((m: any) => m.id !== c.id)); // turant gayab
+    try {
+      await deleteDoc(doc(db, "rooms", roomId, "chats", c.id));
+    } catch (e) {
+      __DEV__ && console.log("DELETE CHAT ERROR:", e);
+      setChatMessages((prev: any[]) =>
+        prev.some((m: any) => m.id === c.id) ? prev : [...prev, c].sort((x: any, y: any) => Number(x.createdAt || 0) - Number(y.createdAt || 0))
+      );
+      showToast("Comment delete nahi hua");
+    }
+  };
+  const startReply = (c: any) => {
+    setChatMenu(null);
+    if (!c || c.type) return;
+    if (amMuted && !isMod) {
+      Alert.alert("Muted", "The host has muted you in this live.");
+      return;
+    }
+    if (chatLocked && !isMod) {
+      Alert.alert("Chat is off", "The host has turned chat off for viewers.");
+      return;
+    }
+    setReplyTo({
+      id: c.id,
+      uid: c.senderId || c.uid || "",
+      name: c.senderName || c.username || "User",
+      text: String(c.message || "").slice(0, 80),
+    });
+    setTimeout(() => setChatOpen(true), 120);
   };
 
   const deleteAllChats = () => {
@@ -4925,7 +4896,7 @@ export default function VideoLive() {
           : deleteField(),
       });
     } catch (e) {
-      console.log("SETTINGS ERROR:", e);
+      __DEV__ && console.log("SETTINGS ERROR:", e);
     }
     setSettingsVisible(false);
   };
@@ -5015,26 +4986,30 @@ export default function VideoLive() {
   //  2) sheet band NAHI hoti -> lagatar 10-20 tap
   //  3) taps batch hote hain, ~1s me ek Firestore write
   // ============================================================
-  const handleSendGift = (item: any) => {
+  const handleSendGift = (item: any, qtyArg: number = 1) => {
+    let qty = Math.max(1, Math.floor(Number(qtyArg) || 1));
+    const wantedQty = qty;
     const receiverId = giftUsers[0]?.uid;
     if (!receiverId || typeof receiverId !== "string") {
       Alert.alert("Gift", "Please select a user");
-      return;
+      return false;
     }
 
-    const price = Number(item.price || 0);
+    const unitPrice = Number(item.price || 0);
 
     // balance = wallet - (abhi tak write na hue taps) - (write ho chuke par snapshot pending)
     const available = stars - pendingSpendRef.current - inflightSpendRef.current;
-    if (available < price) {
+    if (unitPrice > 0) qty = Math.min(qty, Math.floor(available / unitPrice)); // jitne afford ho utne hi
+    if (qty < 1) {
       Alert.alert("Gift", "Not enough stars");
-      return;
+      return false;
     }
+    const price = unitPrice * qty;
 
     // never gift yourself, and only users that are in the list
     if (receiverId === currentUid || !giftUsers.some((u) => u.uid === receiverId)) {
       Alert.alert("Gift", "Please select another user");
-      return;
+      return false;
     }
 
     // gift ya receiver badal gaya (PK me side switch) -> pehle purana batch bhej do
@@ -5050,8 +5025,9 @@ export default function VideoLive() {
       lastGiftRef.current.receiverId === receiverId &&
       Date.now() - lastGiftRef.current.time < 3000;
 
-    if (!giftComboCountRef.current || !isComboContinue) giftComboCountRef.current = 1;
-    else giftComboCountRef.current++;
+    const startedCombo = !giftComboCountRef.current || !isComboContinue;
+    if (startedCombo) giftComboCountRef.current = qty;
+    else giftComboCountRef.current += qty;
 
     const comboCount = giftComboCountRef.current;
 
@@ -5072,6 +5048,8 @@ export default function VideoLive() {
         {
           senderName: _senderDisplay,
           senderImg: currentAvatar || STABLE_AVATAR,
+          senderId: currentUid,
+          level: myLevel,
           receiverName: _receiverName,
           giftId: item.id,
           giftName: item.name,
@@ -5108,16 +5086,22 @@ export default function VideoLive() {
       };
     }
     const batch = giftBatchRef.current;
-    batch.taps += 1;
+    batch.taps += qty;
     batch.comboCount = comboCount;
-    if (comboCount === 1) batch.chat = true; // chat line sirf combo ke pehle batch me
+    if (startedCombo) batch.chat = true; // chat line sirf combo ke pehle batch me
 
-    // lagatar tap ho to bhi har ~1s me ek write (dusron ko x count badhta dikhe)
-    if (!giftFlushTimerRef.current) {
+    // FAST: pehla tap TURANT Firestore me jata hai (pehle 1s rukta tha -> dusri taraf late dikhta tha).
+    // Lagatar tap ho to max har 500ms me ek write (x count smooth badhta dikhe).
+    const sinceWrite = Date.now() - lastGiftWriteAtRef.current;
+    if (sinceWrite >= GIFT_WRITE_GAP) {
+      flushGiftBatchRef.current?.();
+    } else if (!giftFlushTimerRef.current) {
       giftFlushTimerRef.current = setTimeout(() => {
         flushGiftBatchRef.current?.();
-      }, 1000);
+      }, GIFT_WRITE_GAP - sinceWrite);
     }
+    if (qty < wantedQty) Alert.alert("Gift", "Not enough stars");
+    return true;
   };
 
   const flushGiftBatch = () => {
@@ -5135,7 +5119,8 @@ export default function VideoLive() {
     inflightSpendRef.current += total;
 
     // Own gift timestamp: mark as seen so the Firestore echo is ignored.
-    const giftTimestamp = Date.now();
+    const giftTimestamp = Math.max(Date.now(), lastGiftWriteAtRef.current + 1);
+    lastGiftWriteAtRef.current = giftTimestamp;
     lastSeenGiftKeyRef.current = `${currentUid}_${giftTimestamp}`;
 
     sendGiftInBackground({
@@ -5159,6 +5144,14 @@ export default function VideoLive() {
   const handleSendGiftRef = useRef<any>(null);
   handleSendGiftRef.current = handleSendGift;
   const stableSendGift = useCallback((item: any) => handleSendGiftRef.current?.(item), []);
+  const stableSelectGift = useCallback((item: any) => setGiftSelId(item.id), []);
+  // Send button: selected gift ko giftQty baar bhejo (stars kam pade to wahin ruk jata hai)
+  const sendSelectedGift = () => {
+    const item = gifts.find((g: any) => String(g.id) === String(giftSelId)) || gifts[0];
+    if (!item) return;
+    // SMOOTH: pehle 999 baar loop chalta tha (UI hang). Ab ek hi call me poori qty.
+    handleSendGiftRef.current?.(item, giftQty);
+  };
 
   const sendGiftInBackground = async ({
     item,
@@ -5195,6 +5188,7 @@ export default function VideoLive() {
         senderId: currentUid,
         senderName: senderDisplay,
         senderImg: currentAvatar || STABLE_AVATAR,
+        senderLevel: myLevel,
         receiverId,
         receiverName,
         timestamp: giftTimestamp,
@@ -5227,7 +5221,7 @@ export default function VideoLive() {
     try {
       await updateDoc(roomRef, roomUpdate);
     } catch (e: any) {
-      console.log("GIFT ROOM WRITE FAILED:", e?.code, e?.message);
+      __DEV__ && console.log("GIFT ROOM WRITE FAILED:", e?.code, e?.message);
       inflightSpendRef.current = Math.max(0, inflightSpendRef.current - price);
       giftPendingStore.set(pendingSpendRef.current);
       showToast("⚠️ Gift nahi gaya, dobara try karo");
@@ -5283,7 +5277,7 @@ export default function VideoLive() {
     // one failing write must not cancel the others
     const results = await Promise.allSettled(jobs);
     results.forEach((r, idx) => {
-      if (r.status === "rejected") console.log("GIFT WRITE FAILED #" + idx, (r as any).reason?.code, (r as any).reason?.message);
+      if (r.status === "rejected") __DEV__ && console.log("GIFT WRITE FAILED #" + idx, (r as any).reason?.code, (r as any).reason?.message);
     });
 
     // agency stars: fire-and-forget (Render cold start can take 30s+)
@@ -5348,11 +5342,11 @@ export default function VideoLive() {
           onPress: toggleMic,
         },
         {
-          key: "video",
-          label: videoOff ? "Play" : "Pause",
-          active: videoOff,
-          icon: <Ionicons name={videoOff ? "play" : "pause"} size={24} color="#fff" />,
-          onPress: toggleVideo,
+          key: "music",
+          label: "Music",
+          active: !!music.playing,
+          icon: <Ionicons name="musical-notes" size={24} color={music.playing ? "#2ee6a6" : "#fff"} />,
+          onPress: () => setMusicSheetVisible(true),
         },
         {
           key: "setup",
@@ -5437,7 +5431,7 @@ export default function VideoLive() {
     return (
       <View key={item.id} style={[styles.pkListRow, (off || busy) && { opacity: off ? 0.55 : 0.85 }]}>
         <View>
-          <Image source={{ uri: item.img }} style={styles.pkListAva} />
+          <ExpoImage source={{ uri: item.img }} style={styles.pkListAva} cachePolicy="memory-disk" transition={0} />
           {!off && !busy && <View style={styles.pkLiveDot} />}
         </View>
         <View style={{ flex: 1, marginLeft: 12 }}>
@@ -5500,7 +5494,7 @@ export default function VideoLive() {
   const pausedOverlay = (label: string, style?: any, showAvatar = true) => (
     <View pointerEvents="none" style={[styles.pausedOverlay, style]}>
       {showAvatar ? (
-        <Image source={{ uri: hostImg }} style={styles.pausedAvatar} />
+        <ExpoImage source={{ uri: hostImg }} style={styles.pausedAvatar} cachePolicy="memory-disk" transition={0} />
       ) : (
         <View style={styles.pkBadge}>
           <Text style={styles.pkBadgeTxt}>PK</Text>
@@ -5748,7 +5742,14 @@ export default function VideoLive() {
 
       {/* ================= GUEST TILES (viewers on the call with the host) ================= */}
       {!showPk && guestList.length > 0 && (
-        <View pointerEvents="box-none" style={styles.guestColumn}>
+        <View
+          pointerEvents="box-none"
+          style={[
+            styles.guestColumn,
+            // TopKing Event button (bottom+62, ~58px height) ke thik upar se guests niche se start hon
+            { bottom: (Platform.OS === "android" ? insets.bottom + 8 : insets.bottom) + 62 + 60 + 40 },
+          ]}
+        >
           {guestList.map((g: any) => {
             const isMe = g.uid === currentUid;
             const aid = Number(g.agoraUid || 0);
@@ -5771,7 +5772,7 @@ export default function VideoLive() {
                 ) : (
                   <View style={styles.guestAvaWrap}>
                     <View style={styles.guestAvaRing}>
-                      <Image source={{ uri: g.img || STABLE_AVATAR }} style={styles.guestAva} />
+                      <ExpoImage source={{ uri: g.img || STABLE_AVATAR }} style={styles.guestAva} cachePolicy="memory-disk" transition={0} />
                     </View>
                   </View>
                 )}
@@ -5806,7 +5807,7 @@ export default function VideoLive() {
         <View style={styles.topRow}>
           <View style={styles.hostPill}>
             <TouchableOpacity activeOpacity={0.85} onPress={openHostCard} style={styles.hostAvatarContainer}>
-              <Image source={{ uri: hostImg }} style={styles.hostAvatarImg} />
+              <ExpoImage source={{ uri: hostImg }} style={styles.hostAvatarImg} cachePolicy="memory-disk" transition={0} />
               {(hostLevel >= 10 || !!hostId) && (
                 <LevelFrame level={hostLevel} uid={hostId} animated style={styles.hostLevelFrame} />
               )}
@@ -5819,12 +5820,15 @@ export default function VideoLive() {
                 </Text>
                 <UserTick uid={hostId} verified={!!hostVerified} verifiedColor={hostVerifiedColor} size={14} />
               </View>
-              <Text style={styles.starsText}>⭐ {hostStars}</Text>
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <Ionicons name="star" size={11} color="#FFE600" />
+                <Text style={[styles.starsText, { color: "#fff", marginLeft: 3 }]}>{hostStars}</Text>
+              </View>
             </View>
 
             {!isHost && !!hostId && hostId !== currentUid && !isFollowing && (
               <TouchableOpacity onPress={toggleFollowHost} disabled={followBusy} style={styles.followPlus}>
-                <Ionicons name="add" size={16} color="#fff" />
+                <Ionicons name="add" size={18} color="#000" />
               </TouchableOpacity>
             )}
           </View>
@@ -5951,14 +5955,15 @@ export default function VideoLive() {
         inverted
         keyExtractor={chatKeyExtractor}
         renderItem={renderChat}
-        maxToRenderPerBatch={8}
-        updateCellsBatchingPeriod={50}
+        maxToRenderPerBatch={6}
+        updateCellsBatchingPeriod={40}
         ListFooterComponent={
           <View style={styles.welcomeBox}>
             <Text style={styles.welcomeTxt}>{WELCOME_TEXT}</Text>
           </View>
         }
         style={chatListStyle}
+        onLayout={(e) => setChatH(Math.round(e.nativeEvent.layout.height))}
         showsVerticalScrollIndicator={false}
         initialNumToRender={10}
         windowSize={5}
@@ -6078,6 +6083,41 @@ export default function VideoLive() {
         )}
       </KeyboardAvoidingView>
 
+
+      {!chatOpen && keyboardHeight === 0 && (
+      <TouchableOpacity
+        activeOpacity={0.85}
+        onPress={() => router.push("/event" as any)}
+        style={{ position: "absolute", right: 7, bottom: (Platform.OS === "android" ? insets.bottom + 8 : insets.bottom) + 62, width: 56, alignItems: "center", zIndex: 50, elevation: 50 }}
+      >
+        <Image
+          source={require("../assets/images/topking-logo.png")}
+          style={{ width: 44, height: 44, borderRadius: 10, borderWidth: 1.5, borderColor: "#FFD700", backgroundColor: "#fff" }}
+          resizeMode="cover"
+        />
+        <Text style={{ color: "#fff", fontSize: 9, fontWeight: "800", textAlign: "center", marginTop: 2, textShadowColor: "rgba(0,0,0,0.9)", textShadowRadius: 3 }} numberOfLines={1}>
+          TopKing Event
+        </Text>
+      </TouchableOpacity>
+      )}
+
+      {!!replyTo && chatOpen && (
+        <View
+          style={[
+            styles.replyBar,
+            { bottom: keyboardHeight + 58 + (Platform.OS === "android" ? insets.bottom + 8 : insets.bottom) + (emojiOpen ? 52 : 0) },
+          ]}
+        >
+          <Ionicons name="arrow-undo" size={14} color="#F71084" />
+          <Text numberOfLines={1} style={styles.replyBarTxt}>
+            Replying to <Text style={{ fontWeight: "800" }}>{replyTo.name}</Text>: {replyTo.text}
+          </Text>
+          <TouchableOpacity hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} onPress={() => setReplyTo(null)}>
+            <Ionicons name="close" size={16} color="#fff" />
+          </TouchableOpacity>
+        </View>
+      )}
+
       {emojiOpen && chatOpen && (
         <View
           style={[
@@ -6113,7 +6153,7 @@ export default function VideoLive() {
       {/* ================= GIFT ANIMATION + BANNERS ================= */}
       <GiftLayer
         ref={giftLayerRef}
-        comboTop={showPk ? pkPanelTop + pkPanelH + 4 : height * 0.18}
+        comboTop={pkPanelTop + pkPanelH + 4} // PK ho ya na ho, hamesha PK panel ke niche se
         // PK: gift animation upar (banners ke upar se overlap hoga, touch-through hai) + bada size
         animTop={showPk ? pkPanelTop + pkPanelH + 44 - 65 : undefined}
         animSize={showPk ? Math.min(width * 0.9, 360) : undefined}
@@ -6126,6 +6166,7 @@ export default function VideoLive() {
           data={joinBanner}
           variant={JOIN_ANIM_VARIANT}
           onDone={handleJoinDone}
+          pillBottom={96 + keyboardHeight + chatH + 6}
         />
       )}
 
@@ -6155,13 +6196,13 @@ export default function VideoLive() {
       <Modal
         visible={giftModalVisible}
         transparent
-        animationType="fade"
+        animationType="none"
         statusBarTranslucent
         hardwareAccelerated
-        onRequestClose={() => setGiftModalVisible(false)}
+        onRequestClose={closeGiftModal}
       >
         <View style={styles.giftOverlay}>
-          <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={() => setGiftModalVisible(false)} />
+          <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={closeGiftModal} />
 
           <Animated.View
             style={[
@@ -6172,50 +6213,12 @@ export default function VideoLive() {
               },
             ]}
           >
-            <LinearGradient
-              pointerEvents="none"
-              colors={["#2b1055", "#1a0b38", "#0d0618"]}
-              locations={[0, 0.5, 1]}
-              start={{ x: 0.2, y: 0 }}
-              end={{ x: 0.8, y: 1 }}
-              style={StyleSheet.absoluteFill}
-            />
-            <View style={styles.giftGoldLine} pointerEvents="none" />
-            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-              <Text style={styles.giftTitle}>🎁 Send Gifts</Text>
-              <View style={{ flexDirection: "row", alignItems: "center" }}>
-                <Text style={{ fontSize: 16 }}>⭐</Text>
-                <GiftBalance stars={stars} />
-              </View>
-            </View>
-
-            {/* who receives the gift: sirf meri side ka host (PK me Switch se doosri side) */}
-            <View style={styles.giftToRow}>
-              <Text style={styles.giftToLbl}>To</Text>
-              {giftUsers[0] && (
-                <>
-                  <Image
-                    source={{ uri: giftUsers[0].img || STABLE_AVATAR }}
-                    style={[styles.giftToAva, { borderColor: onOppSide ? "#FF2D75" : pkActive ? "#1E8CFF" : "#F5C451" }]}
-                  />
-                  <Text style={styles.giftToName} numberOfLines={1}>
-                    {giftUsers[0].name}
-                  </Text>
-                  <UserTick uid={giftUsers[0].uid} verified={!!giftUsers[0].verified} verifiedColor={giftUsers[0].verifiedColor} size={13} />
-                </>
-              )}
-              {pkActive && !!pk?.opponentHostId && (
-                <Text style={styles.giftSideHint} numberOfLines={2}>
-                  Gift goes to this host only. To gift the other host, tap their PK screen to enter their live room.
-                </Text>
-              )}
-            </View>
-
             {/* gift pages: 4 columns x 2 rows, snap paging */}
             <FlatList
               data={GIFT_PAGES}
               keyExtractor={(p: any) => p.key}
-              renderItem={({ item }: any) => <GiftPage page={item} onSend={stableSendGift} />}
+              extraData={giftSelId}
+              renderItem={({ item }: any) => <GiftPage page={item} selectedId={giftSelId} onSelect={stableSelectGift} />}
               horizontal
               snapToInterval={GIFT_PAGE_W}
               snapToAlignment="start"
@@ -6241,21 +6244,52 @@ export default function VideoLive() {
             />
 
             {GIFT_PAGES.length > 1 && (
-              <View style={{ flexDirection: "row", justifyContent: "center", alignItems: "center", paddingTop: 2 }}>
+              <View style={{ flexDirection: "row", justifyContent: "center", alignItems: "center", paddingTop: 4, paddingBottom: 8 }}>
                 {GIFT_PAGES.map((p: any, i: number) => (
                   <View
                     key={p.key}
                     style={{
-                      width: i === giftPageIdx ? 14 : 6,
+                      width: 6,
                       height: 6,
                       borderRadius: 3,
                       marginHorizontal: 3,
-                      backgroundColor: i === giftPageIdx ? "#F5C451" : "rgba(255,255,255,0.25)",
+                      backgroundColor: i === giftPageIdx ? "#FFFFFF" : "rgba(255,255,255,0.3)",
                     }}
                   />
                 ))}
               </View>
             )}
+
+            {/* bottom bar (Tiki): [star balance / Recharge >]   [1 9 99 199 999]  [Send] */}
+            <View style={styles.giftBottomRow}>
+              <View style={{ minWidth: 70 }}>
+                <View style={{ flexDirection: "row", alignItems: "center" }}>
+                  <Ionicons name="star" size={14} color="#FFC800" />
+                  <GiftBalance stars={stars} style={styles.giftBalTxt} />
+                </View>
+                <TouchableOpacity onPress={goRecharge} activeOpacity={0.7} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Text style={styles.giftRechargeTxt}>Recharge ›</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.giftQtyPill}>
+                {[1, 9, 99, 199, 999].map((q) => (
+                  <TouchableOpacity
+                    key={q}
+                    activeOpacity={0.7}
+                    delayPressIn={0}
+                    onPress={() => setGiftQty(q)}
+                    style={[styles.giftQtyChip, giftQty === q && styles.giftQtyChipSel]}
+                  >
+                    <Text style={[styles.giftQtyTxt, giftQty === q && styles.giftQtyTxtSel]}>{q}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <TouchableOpacity style={styles.giftSendBtn} activeOpacity={0.8} delayPressIn={0} onPress={sendSelectedGift}>
+                <Text style={styles.giftSendTxt}>Send</Text>
+              </TouchableOpacity>
+            </View>
           </Animated.View>
         </View>
       </Modal>
@@ -6289,7 +6323,7 @@ export default function VideoLive() {
                   openHostCard();
                 }}
               >
-                <Image source={{ uri: hostImg }} style={styles.pkRowAva} />
+                <ExpoImage source={{ uri: hostImg }} style={styles.pkRowAva} cachePolicy="memory-disk" transition={0} />
                 <View style={{ flex: 1, marginLeft: 12 }}>
                   <Text style={styles.pkRowName} numberOfLines={1}>
                     {hostName}
@@ -6328,7 +6362,7 @@ export default function VideoLive() {
                         });
                       }}
                     >
-                      <Image source={{ uri: item.img || STABLE_AVATAR }} style={styles.pkRowAva} />
+                      <ExpoImage source={{ uri: item.img || STABLE_AVATAR }} style={styles.pkRowAva} cachePolicy="memory-disk" transition={0} />
                       <View style={{ flex: 1, marginLeft: 12 }}>
                         <View style={{ flexDirection: "row", alignItems: "center" }}>
                           <Text style={styles.pkRowName} numberOfLines={1}>
@@ -6351,7 +6385,7 @@ export default function VideoLive() {
                       {canModerate(item) ? (
                         <TouchableOpacity
                           style={styles.kickBtn}
-                          onPress={() => kickUser({ uid: item.uid, name: item.name || item.username })}
+                          onPress={() => askKick({ uid: item.uid, name: item.name || item.username, img: item.img, level: item.level, verified: item.verified, verifiedColor: item.verifiedColor })}
                         >
                           <Text style={styles.kickBtnTxt}>Kick</Text>
                         </TouchableOpacity>
@@ -6401,7 +6435,7 @@ export default function VideoLive() {
                     <Text style={[styles.rankNum, index < 3 && { color: ["#FFD700", "#C0C0C0", "#CD7F32"][index] }]}>
                       {index + 1}
                     </Text>
-                    <Image source={{ uri: item.img || STABLE_AVATAR }} style={styles.pkRowAva} />
+                    <ExpoImage source={{ uri: item.img || STABLE_AVATAR }} style={styles.pkRowAva} cachePolicy="memory-disk" transition={0} />
                     <View style={{ flex: 1, marginLeft: 12 }}>
                       <View style={{ flexDirection: "row", alignItems: "center" }}>
                         <Text style={styles.pkRowName} numberOfLines={1}>
@@ -6423,11 +6457,16 @@ export default function VideoLive() {
       {/* ================= USER PROFILE CARD (bottom sheet) ================= */}
       <Modal transparent visible={!!profileCard} animationType="slide" statusBarTranslucent onRequestClose={() => setProfileCard(null)}>
         <View style={styles.pcOverlay}>
-          <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={() => setProfileCard(null)} />
+          <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPressIn={() => setProfileCard(null)} />
           {profileCard && (
             <View style={[styles.pcSheet, { paddingBottom: 16 + insets.bottom }]}>
+              {(canModerate(profileCard) || (isHost && !!profileCard.isGuestCard && profileCard.uid !== currentUid)) && (
+                <TouchableOpacity style={styles.pcManage} activeOpacity={0.7} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} onPress={() => setManageOpen(true)}>
+                  <Text style={styles.pcManageTxt}>Manage</Text>
+                </TouchableOpacity>
+              )}
               <TouchableOpacity activeOpacity={0.85} style={styles.pcAvaWrap} onPress={() => goUserProfile(profileCard)}>
-                <Image source={{ uri: profileCard.img || STABLE_AVATAR }} style={styles.pcAva} />
+                <ExpoImage source={{ uri: profileCard.img || STABLE_AVATAR }} style={styles.pcAva} cachePolicy="memory-disk" transition={0} />
                 {(Number(profileCard.level) >= 10 || !!profileCard.uid) && (
                   <LevelFrame level={Number(profileCard.level)} uid={profileCard.uid} animated style={{ position: "absolute", width: 110, height: 110 }} />
                 )}
@@ -6476,7 +6515,7 @@ export default function VideoLive() {
                     style={[styles.pcCard, { marginLeft: 10 }]}
                     onPress={() => { const fid = pcInfo.familyId; setProfileCard(null); router.push({ pathname: "/familyDetail", params: { id: fid } } as any); }}
                   >
-                    <Image source={{ uri: pcInfo.familyLogo || STABLE_AVATAR }} style={styles.pcFamLogo} />
+                    <ExpoImage source={{ uri: pcInfo.familyLogo || STABLE_AVATAR }} style={styles.pcFamLogo} cachePolicy="memory-disk" transition={0} />
                     <View style={{ flex: 1, marginLeft: 10 }}>
                       <Text style={styles.pcFamName} numberOfLines={1}>{pcInfo.familyName}</Text>
                       <View style={{ flexDirection: "row", alignItems: "center", marginTop: 2 }}>
@@ -6513,16 +6552,6 @@ export default function VideoLive() {
                       <Text style={styles.pcChipTxt}>🎁 Send Gift</Text>
                     </TouchableOpacity>
                   )}
-                  {canModerate(profileCard) && (
-                    <>
-                      <TouchableOpacity style={[styles.pcChip, { backgroundColor: "#374151" }]} onPress={() => muteUser(profileCard, !mutedUsers[profileCard.uid])}>
-                        <Text style={styles.pcChipTxt}>{mutedUsers[profileCard.uid] ? "🔊 Unmute chat" : "🔇 Mute chat"}</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity style={[styles.pcChip, { backgroundColor: "#DC2626" }]} onPress={() => kickUser(profileCard)}>
-                        <Text style={styles.pcChipTxt}>🚫 Remove</Text>
-                      </TouchableOpacity>
-                    </>
-                  )}
                   {isHost && profileCard.uid !== hostId && (
                     <TouchableOpacity style={[styles.pcChip, { backgroundColor: "#2D9CFF" }]} onPress={() => toggleMod(profileCard)}>
                       <Text style={styles.pcChipTxt}>{mods[profileCard.uid] ? "Remove mod" : "🛡 Make mod"}</Text>
@@ -6535,7 +6564,149 @@ export default function VideoLive() {
               )}
             </View>
           )}
+
+          {/* ---- Manage sheet: Mute / Kick Out / Cancel (Tiki) ---- */}
+          {manageOpen && !!profileCard && (
+            <View style={styles.mgOverlay}>
+              <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPressIn={() => setManageOpen(false)} />
+              <View style={[styles.mgSheet, { paddingBottom: 10 + insets.bottom }]}>
+                {isHost && !!profileCard.isGuestCard && !!roomData?.guests?.[profileCard.uid] && (
+                  <>
+                    <TouchableOpacity
+                      style={styles.mgRow}
+                      activeOpacity={0.7}
+                      onPress={() => {
+                        const gm = !!roomData?.guests?.[profileCard.uid]?.hostMuted;
+                        setManageOpen(false);
+                        setProfileCard(null);
+                        muteGuest(profileCard.uid, !gm);
+                      }}
+                    >
+                      <Text style={styles.mgTxt}>{roomData?.guests?.[profileCard.uid]?.hostMuted ? "Unmute guest" : "Mute guest"}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.mgRow}
+                      activeOpacity={0.7}
+                      onPress={() => {
+                        const uid = profileCard.uid;
+                        setManageOpen(false);
+                        setProfileCard(null);
+                        removeGuest(uid);
+                      }}
+                    >
+                      <Text style={[styles.mgTxt, { color: "#DC2626" }]}>Remove from call</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.mgRow} activeOpacity={0.7} onPress={() => setManageOpen(false)}>
+                      <Text style={styles.mgTxt}>Cancel</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+                {!(isHost && !!profileCard.isGuestCard && !!roomData?.guests?.[profileCard.uid]) && (
+                <>
+                <TouchableOpacity
+                  style={styles.mgRow}
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    setManageOpen(false);
+                    muteUser(profileCard, !mutedUsers[profileCard.uid]);
+                  }}
+                >
+                  <Text style={styles.mgTxt}>{mutedUsers[profileCard.uid] ? "Unmute" : "Mute"}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.mgRow}
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    setManageOpen(false);
+                    setKickBlock(false);
+                    setKickDlg(true);
+                  }}
+                >
+                  <Text style={styles.mgTxt}>Kick Out</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.mgRow} activeOpacity={0.7} onPress={() => setManageOpen(false)}>
+                  <Text style={styles.mgTxt}>Cancel</Text>
+                </TouchableOpacity>
+                </>
+                )}
+              </View>
+            </View>
+          )}
+
+          {/* ---- Kick Out confirm: "Add to Blocked List" ---- */}
+          {kickDlg && !!profileCard && (
+            <View style={styles.kdOverlay}>
+              <View style={styles.kdBox}>
+                <Text style={styles.kdTitle}>Do you want to kick out this viewer?</Text>
+                <TouchableOpacity style={styles.kdChkRow} activeOpacity={0.7} onPress={() => setKickBlock((v) => !v)}>
+                  <View style={[styles.kdChk, kickBlock && styles.kdChkOn]}>
+                    {kickBlock && <Ionicons name="checkmark" size={12} color="#fff" />}
+                  </View>
+                  <Text style={styles.kdChkTxt}>Add to Blocked List</Text>
+                </TouchableOpacity>
+                <View style={styles.kdBtns}>
+                  <TouchableOpacity style={[styles.kdBtn, { borderRightWidth: StyleSheet.hairlineWidth, borderRightColor: "#d4d4d8" }]} onPress={() => setKickDlg(false)}>
+                    <Text style={styles.kdBtnTxt}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.kdBtn} onPress={() => kickUser(profileCard, kickBlock)}>
+                    <Text style={styles.kdBtnTxt}>Confirm</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          )}
         </View>
+      </Modal>
+
+      {/* ================= COMMENT MENU: Reply / Delete ================= */}
+      <Modal transparent visible={!!chatMenu} animationType="fade" statusBarTranslucent onRequestClose={() => setChatMenu(null)}>
+        <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={() => setChatMenu(null)}>
+          <TouchableOpacity activeOpacity={1} style={[styles.sheet, { paddingBottom: 14 + insets.bottom }]}>
+            <Text style={styles.sheetTitle} numberOfLines={1}>{chatMenu?.senderName || chatMenu?.username || "Comment"}</Text>
+            {!!chatMenu?.message && <Text style={styles.sheetSub} numberOfLines={2}>{chatMenu.message}</Text>}
+            {!chatMenu?.type && (
+              <TouchableOpacity style={styles.reasonRow} onPress={() => startReply(chatMenu)}>
+                <Text style={styles.reasonTxt}>Reply</Text>
+                <Ionicons name="arrow-undo-outline" size={16} color="#9ca3af" />
+              </TouchableOpacity>
+            )}
+            {canDeleteChat(chatMenu) && (
+              <TouchableOpacity style={styles.reasonRow} onPress={() => deleteChatMsg(chatMenu)}>
+                <Text style={[styles.reasonTxt, { color: "#f87171" }]}>Delete</Text>
+                <Ionicons name="trash-outline" size={16} color="#f87171" />
+              </TouchableOpacity>
+            )}
+            {!!(chatMenu?.senderId || chatMenu?.uid) && (
+              <TouchableOpacity
+                style={styles.reasonRow}
+                onPress={() => {
+                  const c = chatMenu;
+                  setChatMenu(null);
+                  openProfile({ uid: c.senderId || c.uid, name: c.senderName, username: c.username, img: c.userImg, level: c.level, verified: c.verified, verifiedColor: c.verifiedColor });
+                }}
+              >
+                <Text style={styles.reasonTxt}>View profile</Text>
+                <Ionicons name="person-outline" size={16} color="#9ca3af" />
+              </TouchableOpacity>
+            )}
+            {!!chatMenu?.senderId && chatMenu.senderId !== currentUid && (
+              <TouchableOpacity
+                style={styles.reasonRow}
+                onPress={() => {
+                  const c = chatMenu;
+                  setChatMenu(null);
+                  setReportTarget({ uid: c.senderId, name: c.senderName });
+                }}
+              >
+                <Text style={styles.reasonTxt}>Report</Text>
+                <Ionicons name="flag-outline" size={16} color="#9ca3af" />
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity style={styles.reasonRow} onPress={() => setChatMenu(null)}>
+              <Text style={styles.reasonTxt}>Cancel</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* ================= REPORT REASON ================= */}
@@ -6705,25 +6876,23 @@ export default function VideoLive() {
                 <Text style={styles.guestEmpty}>No one is on the call yet</Text>
               ) : (
                 guestList.map((g: any) => (
-                  <View key={g.uid} style={styles.guestRow}>
-                    <Image source={{ uri: g.img || STABLE_AVATAR }} style={styles.guestRowAva} />
+                  <TouchableOpacity
+                    key={g.uid}
+                    activeOpacity={0.7}
+                    style={styles.guestRow}
+                    onPress={() => {
+                      setGuestSheetVisible(false);
+                      setTimeout(() => onGuestTilePress(g), 250);
+                    }}
+                  >
+                    <ExpoImage source={{ uri: g.img || STABLE_AVATAR }} style={styles.guestRowAva} cachePolicy="memory-disk" transition={0} />
                     <Text numberOfLines={1} style={styles.guestRowName}>
                       {g.name || "Guest"}
                     </Text>
                     <UserTick uid={g.uid} verified={!!g.verified} verifiedColor={g.verifiedColor} size={14} />
-                    <TouchableOpacity
-                      style={[styles.guestBtn, { backgroundColor: g.hostMuted ? "#F71084" : "#2a2b38" }]}
-                      onPress={() => muteGuest(g.uid, !g.hostMuted)}
-                    >
-                      <Ionicons name={g.hostMuted ? "mic-off" : "mic"} size={16} color="#fff" />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.guestBtn, { backgroundColor: "#DC2626", marginLeft: 8 }]}
-                      onPress={() => removeGuest(g.uid)}
-                    >
-                      <Ionicons name="close" size={16} color="#fff" />
-                    </TouchableOpacity>
-                  </View>
+                    {!!g.hostMuted && <Ionicons name="mic-off" size={15} color="#F71084" style={{ marginRight: 6 }} />}
+                    <Ionicons name="chevron-forward" size={18} color="#9ca3af" />
+                  </TouchableOpacity>
                 ))
               )}
 
@@ -6733,7 +6902,7 @@ export default function VideoLive() {
               ) : (
                 pendingRequests.map((r: any) => (
                   <View key={r.uid} style={styles.guestRow}>
-                    <Image source={{ uri: r.img || STABLE_AVATAR }} style={styles.guestRowAva} />
+                    <ExpoImage source={{ uri: r.img || STABLE_AVATAR }} style={styles.guestRowAva} cachePolicy="memory-disk" transition={0} />
                     <Text numberOfLines={1} style={styles.guestRowName}>
                       {r.username || r.name || "Viewer"}
                     </Text>
@@ -6780,6 +6949,18 @@ export default function VideoLive() {
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
+
+      {/* ================= MUSIC SHEET (host) ================= */}
+      {isHost && (
+        <MusicSheet
+          visible={musicSheetVisible}
+          onClose={() => setMusicSheetVisible(false)}
+          onReopen={() => setMusicSheetVisible(true)}
+          music={music}
+          micMuted={micMuted}
+          onToggleMic={toggleMic}
+        />
+      )}
 
       {/* ================= FILTER MODAL (host) ================= */}
       <Modal
@@ -6933,7 +7114,7 @@ export default function VideoLive() {
             </TouchableOpacity>
             <View style={styles.matchRow}>
               <View style={[styles.matchAvaRing, { borderColor: "#1E90FF" }]}>
-                <Image source={{ uri: hostImg }} style={styles.matchAva} />
+                <ExpoImage source={{ uri: hostImg }} style={styles.matchAva} cachePolicy="memory-disk" transition={0} />
               </View>
               <View style={{ alignItems: "center" }}>
                 <Text style={styles.matchTitle}>Matching...</Text>
@@ -6957,7 +7138,7 @@ export default function VideoLive() {
       <Modal transparent visible={!!showInvite} animationType="fade">
         <View style={styles.overlay}>
           <View style={styles.exitBox}>
-            <Image source={{ uri: pkInvite?.fromImg || STABLE_AVATAR }} style={styles.inviteAva} />
+            <ExpoImage source={{ uri: pkInvite?.fromImg || STABLE_AVATAR }} style={styles.inviteAva} cachePolicy="memory-disk" transition={0} />
             <Text style={styles.exitTitle}>PK Invite</Text>
             <Text style={styles.exitSub}>{pkInvite?.fromName || "A host"} wants a {Math.round((Number(pkInvite?.duration) || PK_DURATION_SEC) / 60)} min PK battle with you.</Text>
             <View style={styles.btnRow}>
@@ -7020,7 +7201,7 @@ const styles = StyleSheet.create({
   },
   hostBadge: { flexDirection: "row", alignItems: "center", flexShrink: 1 },
   hostAvatarContainer: { position: "relative", justifyContent: "center", alignItems: "center" },
-  hostAvatarImg: { width: 34, height: 34, borderRadius: 17, borderWidth: 1.5, borderColor: "#fff" },
+  hostAvatarImg: { width: 34, height: 34, borderRadius: 14, borderWidth: 1.5, borderColor: "#fff" },
   hostLevelFrame: { position: "absolute", width: 52, height: 52, resizeMode: "contain" },
 
   nameRow: { flexDirection: "row", alignItems: "center", flexShrink: 1 },
@@ -7449,45 +7630,67 @@ const styles = StyleSheet.create({
   btnText: { color: "#fff", fontWeight: "bold" },
   inviteAva: { width: 70, height: 70, borderRadius: 35, borderWidth: 2, borderColor: "#fff", marginBottom: 12 },
 
-  /* GIFT MODAL */
-  giftOverlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(5,0,15,0.55)" },
+  /* GIFT MODAL (Tiki style) */
+  giftOverlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "transparent" },
   giftSheet: {
-    backgroundColor: "#12071f",
+    backgroundColor: "#141414",
     overflow: "hidden",
-    borderTopWidth: 1,
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    borderRightWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(245,196,81,0.35)",
     maxHeight: height * 0.52,
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    paddingTop: 16,
-    paddingHorizontal: 12,
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+    paddingTop: 14,
+    paddingHorizontal: 0,
     paddingBottom: 14,
   },
-  giftGoldLine: {
-    position: "absolute",
-    top: 0,
-    left: "25%",
-    right: "25%",
-    height: 2,
-    borderRadius: 2,
-    backgroundColor: "rgba(245,196,81,0.9)",
-  },
-  giftTitle: { color: "#FFE9A8", fontSize: 17, fontWeight: "bold", marginBottom: 0 },
+  giftGoldLine: { height: 0 },
+  giftTitle: { color: "#fff", fontSize: 17, fontWeight: "bold", marginBottom: 0 },
   giftCard: {
-    width: "22.5%",
-    marginRight: "2%",
-    backgroundColor: "rgba(255,255,255,0.07)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(245,196,81,0.28)",
-    borderRadius: 12,
-    padding: 5,
-    marginBottom: 10,
+    width: "25%",
+    paddingVertical: 5,
+    marginBottom: 2,
+    borderRadius: 8,
     alignItems: "center",
+    justifyContent: "center",
   },
-  giftName: { color: "#fff", fontSize: 10, marginTop: 0 },
-  giftCoin: { color: "#F5C451", fontWeight: "700", fontSize: 12, marginTop: 2 },
+  giftCardSel: { backgroundColor: "rgba(255,255,255,0.12)" },
+  giftName: { color: "#fff", fontSize: 10, marginTop: 3 },
+  giftCoin: { color: "#8E8E93", fontWeight: "600", fontSize: 10, marginLeft: 3 },
+  giftBottomRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 14,
+    paddingTop: 4,
+  },
+  giftBalTxt: { color: "#fff", fontSize: 15, fontWeight: "600", marginLeft: 5 },
+  giftRechargeTxt: { color: "#FFC800", fontSize: 13, fontWeight: "600", marginTop: 4 },
+  giftQtyPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#262626",
+    borderRadius: 24,
+    padding: 3,
+  },
+  giftQtyChip: {
+    minWidth: 30,
+    height: 30,
+    paddingHorizontal: 6,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  giftQtyChipSel: { backgroundColor: "#fff" },
+  giftQtyTxt: { color: "#fff", fontSize: 13, fontWeight: "600" },
+  giftQtyTxtSel: { color: "#000", fontWeight: "bold" },
+  giftSendBtn: {
+    backgroundColor: "#FFE100",
+    borderRadius: 22,
+    paddingHorizontal: 24,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  giftSendTxt: { color: "#000", fontSize: 16, fontWeight: "bold" },
 
   /* BOTTOM SHEETS (filter / PK list) */
   sheetOverlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.4)" },
@@ -7779,20 +7982,20 @@ const styles = StyleSheet.create({
   hostPill: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(14,12,40,0.5)",
+    backgroundColor: "rgba(0,0,0,0.6)",
     borderRadius: 22,
-    paddingLeft: 5,
-    paddingRight: 8,
+    paddingLeft: 4,
+    paddingRight: 10,
     paddingVertical: 4,
     maxWidth: width * 0.56,
     flexShrink: 1,
   },
   followPlus: {
     marginLeft: 8,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: "#F71084",
+    width: 34,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: "#FFE600",
     justifyContent: "center",
     alignItems: "center",
   },
@@ -7803,7 +8006,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "rgba(80,40,110,0.55)",
-    borderRadius: 14,
+    borderRadius: 6,
     paddingHorizontal: 9,
     paddingVertical: 4,
   },
@@ -7812,7 +8015,7 @@ const styles = StyleSheet.create({
     marginLeft: 8,
     minWidth: 96,
     height: 24,
-    borderRadius: 12,
+    borderRadius: 6,
     backgroundColor: "rgba(80,40,110,0.55)",
     overflow: "hidden",
     justifyContent: "center",
@@ -7841,7 +8044,8 @@ const styles = StyleSheet.create({
   guestColumn: {
     position: "absolute",
     right: 6,
-    top: 150,
+    // bottom NICHE se start: bottom value render me inset ke hisaab se diya hai (TopKing Event button ke upar)
+    flexDirection: "column-reverse", // pehla guest sabse niche, naye guests upar ki taraf
     width: GUEST_TILE_W,
     zIndex: 20,
     elevation: 20,
@@ -8132,6 +8336,38 @@ const styles = StyleSheet.create({
   startPkTxt: { color: "#1A1A1A", fontSize: 22, fontWeight: "800" },
 
   /* ===== TIKI CHAT PILLS ===== */
+  tkReply: { borderLeftWidth: 2, borderLeftColor: "#F71084", paddingLeft: 6, marginTop: 3, marginBottom: 2, maxWidth: "100%" },
+  tkReplyTxt: { color: "rgba(255,255,255,0.7)", fontSize: 12 },
+  replyBar: {
+    position: "absolute",
+    left: 12,
+    right: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(17,24,39,0.94)",
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    zIndex: 51,
+    elevation: 51,
+  },
+  replyBarTxt: { flex: 1, color: "#e5e7eb", fontSize: 12, marginHorizontal: 8 },
+  pcManage: { position: "absolute", top: 18, right: 20, zIndex: 5 },
+  pcManageTxt: { color: "#9ca3af", fontSize: 13, fontWeight: "600" },
+  mgOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "flex-end" },
+  mgSheet: { backgroundColor: "#1f1f21", borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingTop: 8 },
+  mgRow: { paddingVertical: 17, alignItems: "center" },
+  mgTxt: { color: "#fff", fontSize: 16, fontWeight: "700" },
+  kdOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center" },
+  kdBox: { width: "80%", backgroundColor: "#fff", borderRadius: 14, overflow: "hidden" },
+  kdTitle: { color: "#111", fontSize: 17, fontWeight: "800", textAlign: "center", paddingHorizontal: 22, paddingTop: 22 },
+  kdChkRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 14 },
+  kdChk: { width: 18, height: 18, borderRadius: 9, borderWidth: 1.5, borderColor: "#c4c4c8", marginRight: 8, justifyContent: "center", alignItems: "center" },
+  kdChkOn: { backgroundColor: "#F71084", borderColor: "#F71084" },
+  kdChkTxt: { color: "#555", fontSize: 14 },
+  kdBtns: { flexDirection: "row", borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: "#d4d4d8" },
+  kdBtn: { flex: 1, paddingVertical: 15, alignItems: "center" },
+  kdBtnTxt: { color: "#111", fontSize: 16, fontWeight: "800" },
   tkRow: { marginBottom: 6, alignItems: "flex-start" },
   tkPill: {
     flexDirection: "row",
@@ -8150,17 +8386,17 @@ const styles = StyleSheet.create({
 
   /* ===== TIKI TOP-3 CHIPS (header) ===== */
   topStack: { flexDirection: "row", alignItems: "center" },
-  topChip: { width: 27, height: 40, marginRight: 2, alignItems: "center" },
-  topChipAva: { width: 25, height: 25, borderRadius: 13, borderWidth: 2, backgroundColor: "#2a2b38", marginTop: 4 },
+  topChip: { width: 33, height: 44, marginRight: 3, alignItems: "center" },
+  topChipAva: { width: 31, height: 31, borderRadius: 12, borderWidth: 2, backgroundColor: "#2a2b38", marginTop: 4 },
   topChipCrown: { position: "absolute", top: -4, left: -3, fontSize: 13, transform: [{ rotate: "-20deg" }] },
-  topChipTag: { position: "absolute", bottom: 0, paddingHorizontal: 4, height: 11, borderRadius: 6, justifyContent: "center" },
+  topChipTag: { position: "absolute", bottom: 0, paddingHorizontal: 4, height: 11, borderRadius: 3, justifyContent: "center" },
   topChipTagTxt: { color: "#fff", fontSize: 7, fontWeight: "900", fontStyle: "italic" },
   viewerCountCircle: {
     minWidth: 30,
     height: 30,
-    borderRadius: 15,
+    borderRadius: 6,
     paddingHorizontal: 5,
-    backgroundColor: "rgba(14,12,40,0.55)",
+    backgroundColor: "transparent",
     justifyContent: "center",
     alignItems: "center",
     marginLeft: 2,

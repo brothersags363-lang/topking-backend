@@ -31,7 +31,6 @@ import {
   Easing,
   AppState,
   PanResponder,
-  InteractionManager,
   unstable_batchedUpdates,
 } from 'react-native';
 import { scopedBackHandler } from '../../utils/scopedBack';
@@ -95,6 +94,8 @@ import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { useUploadState } from '@/services/upload/uploadManager';
 import UserTick, { isFaceVerified } from '../../components/UserTick';
 import { AvatarFrame } from '../../components/FramedAvatar';
+// InteractionManager deprecated (warning aata tha) -> chhote delay se wahi kaam: UI/transition ke baad chalao.
+const runAfterIdle = (fn: () => void) => { const t = setTimeout(fn, 80); return { cancel: () => clearTimeout(t) }; };
 
 
 
@@ -4596,7 +4597,7 @@ const renderComment = useCallback(({ item: rawItem }) => {
 useEffect(() => {
   let cancelled = false;
   let timer: any = null;
-  const task = InteractionManager.runAfterInteractions(() => {
+  const task = runAfterIdle(() => {
     timer = setTimeout(() => {
       if (cancelled) return;
       try { Promise.resolve(loadDiscover(false)).catch(() => {}); } catch (e) {}
@@ -4791,7 +4792,7 @@ disableIntervalMomentum={true}
         /* removeClippedSubviews video surface ko baar-baar detach/attach
            karta tha (black flash + atakna) -> band. */
         removeClippedSubviews={false}
-        windowSize={5}
+        windowSize={3} /* MEMORY FIX: pehle 5 -> ek saath 5 video player/decoder mounted the */
         initialNumToRender={3}
         maxToRenderPerBatch={3}
         updateCellsBatchingPeriod={50}

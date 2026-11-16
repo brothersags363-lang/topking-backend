@@ -26,6 +26,7 @@ import { useNavigation } from 'expo-router';
 import { useRouter } from '../utils/safeRouter';
 import { listenRecentRooms } from '../utils/recentRooms';
 import useSwipeTabs from '../utils/useSwipeTabs';
+import { ensureUsername, hasUsernameCached } from '../utils/usernameGate';
 
 import AppBottomNav from "../components/AppBottomNav";
 
@@ -655,22 +656,32 @@ export default function AllLive() {
     navLockRef.current = now;
     setOpeningId(stream.id);
 
-    if (stream.type === 'video') {
+    const go = () => {
+      if (stream.type === 'video') {
+        router.push({
+          pathname: '/videolive',
+          params: { id: stream.id, role: 'viewer' },
+        });
+        return;
+      }
+
+      if (stream.layout === 'multiguest') {
+        router.push({ pathname: '/MultiGuestRoom', params: { id: stream.id } });
+        return;
+      }
+
       router.push({
-        pathname: '/videolive',
-        params: { id: stream.id, role: 'viewer' },
+        pathname: '/LiveRoom',
+        params: { id: stream.id, from: 'alllive', layout: stream.layout },
       });
-      return;
-    }
+    };
 
-    if (stream.layout === 'multiguest') {
-      router.push({ pathname: '/MultiGuestRoom', params: { id: stream.id } });
-      return;
-    }
-
-    router.push({
-      pathname: '/LiveRoom',
-      params: { id: stream.id, from: 'alllive', layout: stream.layout },
+    // USERNAME GATE: username ke bina live me entry nahi.
+    // Pehle confirm ho chuka ho to turant khulta hai (smooth), warna ek baar check.
+    if (hasUsernameCached()) { go(); return; }
+    ensureUsername(router).then((ok) => {
+      if (ok) { go(); }
+      else { navLockRef.current = 0; setOpeningId(null); }
     });
   }, [router]);
 
