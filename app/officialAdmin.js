@@ -127,7 +127,7 @@ export default function OfficialAdmin() {
       {loading ? (
         <ActivityIndicator size="large" color="#FFD700" style={{ marginTop: 40 }} />
       ) : (
-        <FlatList
+        <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
           data={officials}
           keyExtractor={(i) => i.uid}
           ListEmptyComponent={<Text style={styles.empty}>Abhi koi Official nahi hai</Text>}

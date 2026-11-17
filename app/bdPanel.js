@@ -131,7 +131,7 @@ export default function BDPanel() {
       {loading ? (
         <ActivityIndicator size="large" color="#FFD700" style={{ marginTop: 40 }} />
       ) : (
-        <FlatList
+        <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
           data={bds}
           keyExtractor={(i) => i.uid}
           ListEmptyComponent={<Text style={styles.empty}>Abhi koi BD nahi hai</Text>}

@@ -233,7 +233,7 @@ export default function TopKingStarPage() {
       {loading ? (
         <ActivityIndicator color="#f1c40f" style={{ marginTop: 40 }} />
       ) : (
-        <FlatList
+        <FlatList maxToRenderPerBatch={8}
           data={data}
           keyExtractor={(i) => i.id}
           renderItem={renderItem}

@@ -138,7 +138,7 @@ const JOIN_ANIM_VARIANT = "auto";
 const HEARTBEAT_INTERVAL = 8000;
 
 // PK settings
-const PK_DURATION_SEC = 300; // 5 minutes
+const PK_DURATION_SEC = 180; // 3 minutes
 const PK_RESULT_SHOW_MS = 6000; // PK ke baad 10 sec ruka rahe (loser punishment chalta hai), phir PK clear
 const PK_INVITE_TTL = 30000; // invite expires after 30s
 const PK_UID_OFFSET = 1000000; // uid used when we peek into the opponent's channel
@@ -173,7 +173,7 @@ const VIDEO_PROFILE_LOW = {
 };
 
 // PK length choices the host can pick before inviting (seconds)
-const PK_DURATIONS = [300]; // fixed 5 minutes
+const PK_DURATIONS = [180]; // fixed 3 minutes
 
 // ---- Guest seats: viewers who join the host's video call (tiles on the right) ----
 const MAX_GUESTS = 3; // seats at the same time (tiles stack on the right side)
@@ -202,6 +202,73 @@ const MATCH_TIMEOUT_SEC = 90;
 const WELCOME_TEXT =
   "Welcome to TopKing Live, where you can interact with hosts and other viewers in real time. "
   + "Please abide by our community guidelines to help us maintain a good community environment";
+
+// ===== SMOOTH FIX: collision-free Agora UID (LiveRoom.js jaisa SHA-256) =====
+// Pehle UID = char codes ka sum % 1000000 tha -> sirf ~2000 alag values, do viewers ka UID same hone par
+// Agora ek ko channel se nikal deta tha (rejoin / freeze). Ab sha256(uid) ke 4 bytes (server /token ke saath same).
+const _uidHashCache = new Map<string, number>();
+const sha256Bytes = (str: string): number[] => {
+  const K = [
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2,
+  ];
+  const H = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+  const bytes: number[] = [];
+  const utf8 = unescape(encodeURIComponent(str));
+  for (let i = 0; i < utf8.length; i++) bytes.push(utf8.charCodeAt(i));
+  const bitLen = bytes.length * 8;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  const hi = Math.floor(bitLen / 0x100000000);
+  const lo = bitLen >>> 0;
+  bytes.push((hi >>> 24) & 255, (hi >>> 16) & 255, (hi >>> 8) & 255, hi & 255,
+             (lo >>> 24) & 255, (lo >>> 16) & 255, (lo >>> 8) & 255, lo & 255);
+  const rotr = (x: number, n: number) => (x >>> n) | (x << (32 - n));
+  const w: number[] = new Array(64);
+  for (let off = 0; off < bytes.length; off += 64) {
+    for (let t = 0; t < 16; t++) {
+      w[t] = ((bytes[off + t*4] << 24) | (bytes[off + t*4 + 1] << 16) |
+              (bytes[off + t*4 + 2] << 8) | bytes[off + t*4 + 3]) | 0;
+    }
+    for (let t = 16; t < 64; t++) {
+      const s0 = rotr(w[t-15], 7) ^ rotr(w[t-15], 18) ^ (w[t-15] >>> 3);
+      const s1 = rotr(w[t-2], 17) ^ rotr(w[t-2], 19) ^ (w[t-2] >>> 10);
+      w[t] = (w[t-16] + s0 + w[t-7] + s1) | 0;
+    }
+    let [a,b,c,d,e,f,g,h] = H;
+    for (let t = 0; t < 64; t++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + K[t] + w[t]) | 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + maj) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0;
+      d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
+    H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+  }
+  const out: number[] = [];
+  H.forEach((x) => out.push((x >>> 24) & 255, (x >>> 16) & 255, (x >>> 8) & 255, x & 255));
+  return out;
+};
+const uidToNum = (id: string): number => {
+  if (!id) return 0;
+  let v = _uidHashCache.get(id);
+  if (v === undefined) {
+    const b = sha256Bytes(String(id));
+    v = Math.max(1, ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) & 0x7fffffff);
+    _uidHashCache.set(id, v);
+  }
+  return v;
+};
 const fmtK = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(2)}K` : String(n || 0));
 
 // Filter presets. `beauty` → Agora setBeautyEffectOptions,
@@ -338,9 +405,9 @@ const getLevelTheme = (level = 1) => {
 // assets, or ignore: the frame simply won't render if the require fails.
 const getLevelFrame = (level = 1) => {
   try {
-    if (level >= 50) return require("../assets/frames/lv50.png");
-    if (level >= 40) return require("../assets/frames/lv40.png");
-    if (level >= 35) return require("../assets/frames/lv35.png");
+    if (level >= 50) return require("../assets/frames/lv50.webp");
+    if (level >= 40) return require("../assets/frames/lv40.webp");
+    if (level >= 35) return require("../assets/frames/lv35.webp");
     // Lv 35 se niche koi level frame nahi
   } catch (e) {
     return null;
@@ -425,7 +492,7 @@ const fetchAgoraToken = async (
 // Ab 1 baar chalta hai, phir 4 sec rukta hai -> duty cycle ~80% kam.
 const GiftButtonLottie = memo(() => (
   <Image
-    source={require("../assets/giftLogo.png")}
+    source={require("../assets/giftLogo.webp")}
     style={{ width: 32, height: 32 }}
     resizeMode="contain"
   />
@@ -704,6 +771,133 @@ const FloatingHeart = memo(({ id, x, emoji, color, onDone }: any) => {
     </Animated.Text>
   );
 });
+
+// SMOOTH FIX: chat ka text yahin rehta hai -> har akshar par sirf ye chhota TextInput render hota hai
+const ChatBoxInput = forwardRef(({ style, onSubmit, autoFocus }: any, ref: any) => {
+  const [text, setText] = useState("");
+  const textRef = useRef("");
+  useImperativeHandle(ref, () => ({
+    getText: () => textRef.current,
+    clear: () => { textRef.current = ""; setText(""); },
+    append: (e: string) => { const n = (textRef.current + e).slice(0, 200); textRef.current = n; setText(n); },
+  }), []);
+  return (
+    <TextInput
+      style={style}
+      placeholder="Say something..."
+      placeholderTextColor="#aaa"
+      value={text}
+      onChangeText={(t) => { textRef.current = t; setText(t); }}
+      onSubmitEditing={() => onSubmit && onSubmit()}
+      returnKeyType="send"
+      maxLength={200}
+      blurOnSubmit={false}
+      autoFocus={autoFocus}
+    />
+  );
+});
+
+// ============================================================
+// COMBO BUTTON (Tiki jaisa): gift bhejte hi sheet band + neeche peela "Combo" button.
+// 3 sec ka countdown ring chalta hai; har tap par wahi gift dobara jata hai, count x1/10 ... x10/10
+// aur countdown reset. Apna state hai -> tap par poori live screen re-render nahi hoti (smooth).
+// Ring/bounce native-driver Animated hain (JS thread free).
+// ============================================================
+const COMBO_MAX = 10;
+const COMBO_WINDOW_MS = 3000;
+const ComboButton = memo(
+  forwardRef(({ bottom, onTap }: any, ref: any) => {
+    const [count, setCount] = useState(0); // 0 = hidden
+    const cntRef = useRef(0);
+    const timerRef = useRef<any>(null);
+    const ring = useRef(new Animated.Value(0)).current;
+    const pop = useRef(new Animated.Value(1)).current;
+    const onTapRef = useRef<any>(null);
+    onTapRef.current = onTap;
+
+    const clearTimer = () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+    const hide = useCallback(() => {
+      clearTimer();
+      ring.stopAnimation();
+      cntRef.current = 0;
+      setCount(0);
+    }, [ring]);
+    const arm = useCallback(() => {
+      clearTimer();
+      ring.setValue(0);
+      Animated.timing(ring, { toValue: 1, duration: COMBO_WINDOW_MS, easing: Easing.linear, useNativeDriver: true }).start();
+      // 3s se zara pehle band: gift banner ka combo window (3s) bhi isi ke saath khatam hota hai
+      timerRef.current = setTimeout(hide, COMBO_WINDOW_MS - 50);
+    }, [ring, hide]);
+
+    useImperativeHandle(
+      ref,
+      () => ({
+        start: () => {
+          cntRef.current = 1;
+          setCount(1);
+          arm();
+        },
+        hide,
+      }),
+      [arm, hide]
+    );
+    useEffect(() => () => clearTimer(), []);
+
+    const press = () => {
+      if (cntRef.current < 1 || cntRef.current >= COMBO_MAX) return;
+      const ok = onTapRef.current ? onTapRef.current() : false;
+      if (!ok) {
+        hide(); // stars khatam / user nahi
+        return;
+      }
+      cntRef.current += 1;
+      setCount(cntRef.current);
+      pop.setValue(0.86);
+      Animated.spring(pop, { toValue: 1, friction: 4, tension: 220, useNativeDriver: true }).start();
+      if (cntRef.current >= COMBO_MAX) {
+        // 10/10 poora -> thodi der dikha ke band
+        clearTimer();
+        ring.stopAnimation();
+        timerRef.current = setTimeout(hide, 700);
+      } else {
+        arm();
+      }
+    };
+
+    if (count < 1) return null;
+    return (
+      <View pointerEvents="box-none" style={[styles.comboWrap, { bottom }]}>
+        <View style={styles.cbPill}>
+          <Text style={styles.cbPillTxt}>x{count}/{COMBO_MAX}</Text>
+        </View>
+        <View style={styles.comboBox}>
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.comboRing,
+              {
+                opacity: ring.interpolate({ inputRange: [0, 1], outputRange: [0.95, 0.15] }),
+                transform: [{ scale: ring.interpolate({ inputRange: [0, 1], outputRange: [1.4, 1] }) }],
+              },
+            ]}
+          />
+          <Animated.View style={{ transform: [{ scale: pop }] }}>
+            <TouchableOpacity activeOpacity={0.85} delayPressIn={0} onPress={press} style={styles.comboBtn}>
+              <Text style={styles.comboNum}>{count}</Text>
+              <Text style={styles.comboLbl}>Combo</Text>
+            </TouchableOpacity>
+          </Animated.View>
+        </View>
+      </View>
+    );
+  })
+);
 
 // All floating hearts live HERE (own state). Tapping the screen or receiving
 // likes only re-renders this tiny layer, never the whole live screen.
@@ -2039,7 +2233,7 @@ export default function VideoLive() {
   const [hostVerifiedColor, setHostVerifiedColor] = useState("white");
 
   const [roomStartTime, setRoomStartTime] = useState<number | null>(null);
-  const [chatMessage, setChatMessage] = useState("");
+  const chatInputRef = useRef<any>(null); // SMOOTH FIX: typed text ab ChatBoxInput ke andar (poori screen re-render nahi)
 
   const [exitModalVisible, setExitModalVisible] = useState(false);
   const [giftModalVisible, setGiftModalVisible] = useState(false);
@@ -2409,6 +2603,12 @@ export default function VideoLive() {
 
     const roomRef = doc(db, "rooms", roomId);
 
+    // SMOOTH FIX: gift aane par sirf seatStars/topGifters/liveGift badalte hain -> poori screen har baar
+    // re-render hoti thi. Ab aisi badlav 700ms me ek baar; seat/PK/guest jaisi asli badlav turant.
+    let coreSig = "";
+    let pendingRoom: any = null;
+    let throttleTimer: any = null;
+
     const unsub = onSnapshot(roomRef, (snap) => {
       if (!snap.exists()) {
         roomDataRef.current = null;
@@ -2454,7 +2654,25 @@ export default function VideoLive() {
       if (sig && sig === lastRoomSigRef.current) return;
       lastRoomSigRef.current = sig;
 
-      setRoomData(data);
+      let core = "";
+      try {
+        const { liveGift: _g1, seatStars: _g2, topGifters: _g3, ...coreRest } = restOfRoom;
+        core = JSON.stringify(coreRest);
+      } catch (_) {}
+      if (!core || core !== coreSig) {
+        coreSig = core;
+        pendingRoom = null;
+        if (throttleTimer) { clearTimeout(throttleTimer); throttleTimer = null; }
+        setRoomData(data);
+      } else {
+        pendingRoom = data;
+        if (!throttleTimer) {
+          throttleTimer = setTimeout(() => {
+            throttleTimer = null;
+            if (pendingRoom) { const d = pendingRoom; pendingRoom = null; setRoomData(d); }
+          }, 700);
+        }
+      }
 
       if (data.createdAt?.toMillis) {
         setRoomStartTime(data.createdAt.toMillis());
@@ -2472,7 +2690,7 @@ export default function VideoLive() {
       }
     });
 
-    return () => unsub();
+    return () => { unsub(); if (throttleTimer) clearTimeout(throttleTimer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
@@ -3391,7 +3609,7 @@ export default function VideoLive() {
       }
 
       const startAt = Date.now();
-      const dur = Number(inv.duration) || PK_DURATION_SEC;
+      const dur = PK_DURATION_SEC; // hamesha 3 min (purane app ka 5 min invite bhi 3 min hi chalega)
       const endAt = startAt + dur * 1000;
       const batch = writeBatch(db);
       batch.update(doc(db, "rooms", roomId), {
@@ -3498,7 +3716,8 @@ export default function VideoLive() {
           autoSubscribeVideo: true,
           publishCameraTrack: false,
           publishMicrophoneTrack: false,
-        });
+          audienceLatencyLevel: 1, // SMOOTH: low-latency buffer (ultra-low me PK video atakti hai)
+        } as any);
         joinedConn = conn;
         setPkConn(conn);
         if (soundMutedRef.current) {
@@ -3589,8 +3808,8 @@ export default function VideoLive() {
         publishMicrophoneTrack: isHost,
         autoSubscribeAudio: true,
         autoSubscribeVideo: true,
-        // SPEED: viewer ko ultra-low latency (host ki video jaldi + kam delay se dikhe)
-        ...(isHost ? {} : { audienceLatencyLevel: 2 }),
+        // SMOOTH FIX: low-latency (jitter buffer) - YouTube jaisa smooth, delay sirf 1-2 sec zyada
+        ...(isHost ? {} : { audienceLatencyLevel: 1 }), // SMOOTH: 2 (ultra-low) me buffer ~0 tha -> atakta tha. 1 = thoda buffer, video smooth
       } as any);
       if (typeof ret === "number" && ret < 0) __DEV__ && console.log("AGORA joinChannel returned", ret);
     };
@@ -3627,10 +3846,7 @@ export default function VideoLive() {
         // uid + token request start immediately and run IN PARALLEL with
         // permissions / engine init, so the join happens the moment the engine is ready
         if (auth?.currentUser) {
-          numericUid =
-            (currentUid || "guest").split("").reduce((a: number, c: string) => a + c.charCodeAt(0), 0) %
-            1000000;
-          if (!numericUid) numericUid = 1;
+          numericUid = uidToNum(currentUid || "guest") || 1;
         }
         myAgoraUidRef.current = numericUid;
         prefetchedToken = fetchAgoraToken(roomId, numericUid, isCancelled, () => setStatus("Waking up server..."));
@@ -3697,6 +3913,8 @@ export default function VideoLive() {
             if (!mounted) return;
             if (connection?.channelId && connection.channelId !== roomId) {
               // opponent host's camera (PK)
+              // SMOOTH: panel aadha hai -> opponent ki chhoti (low) stream; 2 HD decode ek saath nahi
+              try { (engine as any)?.setRemoteVideoStreamTypeEx?.(uid, 1, connection); } catch (_) {}
               setOppRemoteUid(uid);
               return;
             }
@@ -3706,7 +3924,10 @@ export default function VideoLive() {
             if (!mounted) return;
             if (connection?.channelId && connection.channelId !== roomId) {
               // 1 = starting, 2 = decoding → opponent video is really there
-              if (state === 1 || state === 2) setOppRemoteUid(uid);
+              if (state === 1 || state === 2) {
+                try { (engine as any)?.setRemoteVideoStreamTypeEx?.(uid, 1, connection); } catch (_) {}
+                setOppRemoteUid(uid);
+              }
               return;
             }
             // main channel: remember who's video is really showing (guest tiles use this)
@@ -3764,7 +3985,9 @@ export default function VideoLive() {
             if (connection?.channelId && connection.channelId !== roomId) return;
             if (remoteUid !== 0) return;
             const q = Number(isHost ? txQuality : rxQuality) || 0;
-            if (q > 0) setNetQuality(q);
+            // SMOOTH: Agora har ~2s me 1..6 bhejta hai; raw value par poori screen re-render hoti thi.
+            // Ab sirf bucket (good=1 / ok=3 / bad=4) badalne par state badalti hai.
+            if (q > 0) setNetQuality(q >= 4 ? 4 : q === 3 ? 3 : 1);
           },
         });
 
@@ -3790,8 +4013,16 @@ export default function VideoLive() {
           }
           try {
             // viewers on a weak network automatically get a small stream
-            engine.enableDualStreamMode(true);
-          } catch (_) {}
+            // SMOOTH FIX: low stream ko saaf (288x512 @15fps) rakho, default 160x120 bahut blur hoti hai
+            const e2: any = engine;
+            if (typeof e2.setDualStreamMode === "function") {
+              e2.setDualStreamMode(1, { dimensions: { width: 288, height: 512 }, kBitrate: 280, framerate: 15 });
+            } else {
+              engine.enableDualStreamMode(true);
+            }
+          } catch (_) {
+            try { engine.enableDualStreamMode(true); } catch (__) {}
+          }
 
           engine.startPreview();
           try {
@@ -3851,6 +4082,7 @@ export default function VideoLive() {
   const netQualityRef = useRef(0);
   netQualityRef.current = netQuality;
   const lowProfileRef = useRef(false);
+  const pkProfileOnRef = useRef(false);
   const lastProfileSwitchRef = useRef(0);
   useEffect(() => {
     if (!isHost || !agoraReady) return;
@@ -3859,6 +4091,7 @@ export default function VideoLive() {
       const q = netQualityRef.current;
       if (!engine || !q) return;
       if (Date.now() - lastProfileSwitchRef.current < 20000) return;
+      if (pkProfileOnRef.current) return; // PK me PK profile chal rahi hai
       try {
         if (!lowProfileRef.current && q >= 4) {
           engine.setVideoEncoderConfiguration(VIDEO_PROFILE_LOW);
@@ -3875,6 +4108,50 @@ export default function VideoLive() {
     }, 5000);
     return () => clearInterval(t);
   }, [isHost, agoraReady]);
+
+  // SMOOTH PK: PK me viewers ko aadha panel dikhta hai + host 2 video decode karta hai ->
+  // host ki encode halki (360x640 @20fps) = kam garam, kam atakna. PK khatam -> wapas normal.
+  useEffect(() => {
+    if (!isHost || !agoraReady) return;
+    const engine: any = agoraEngineRef.current;
+    if (!engine) return;
+    try {
+      if (showPk) {
+        pkProfileOnRef.current = true;
+        engine.setVideoEncoderConfiguration({
+          dimensions: { width: 360, height: 640 },
+          frameRate: 20,
+          bitrate: 700,
+          minBitrate: 250,
+          orientationMode: 2,
+          degradationPreference: 1,
+        });
+      } else if (pkProfileOnRef.current) {
+        pkProfileOnRef.current = false;
+        engine.setVideoEncoderConfiguration(lowProfileRef.current ? VIDEO_PROFILE_LOW : VIDEO_PROFILE);
+      }
+    } catch (_) {}
+  }, [isHost, agoraReady, showPk]);
+
+  // HEAT FIX: face detection har frame par chalta tha (CPU). Ab har 30s me sirf 6s ON.
+  // PK me haarne ke baad face-tracking chahiye -> tab lagatar ON.
+  useEffect(() => {
+    if (!isHost || !agoraReady) return;
+    const setFace = (on: boolean) => {
+      try { (agoraEngineRef.current as any)?.enableFaceDetection(on); } catch (_) {}
+    };
+    if (pkEnded) { setFace(true); return; }
+    let offTimer: any = null;
+    const cycle = () => {
+      if (!faceCheckOnRef.current) return;
+      setFace(true);
+      offTimer = setTimeout(() => setFace(false), 6000);
+    };
+    const iv = setInterval(cycle, 30000);
+    offTimer = setTimeout(() => setFace(false), 6000); // pehle 6s ke baad band
+    return () => { clearInterval(iv); if (offTimer) clearTimeout(offTimer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHost, agoraReady, pkEnded]);
 
   const toggleMic = () => {
     const engine = agoraEngineRef.current;
@@ -4438,6 +4715,7 @@ export default function VideoLive() {
   };
 
   const handleSendChat = async () => {
+    const chatMessage: string = chatInputRef.current?.getText?.() || "";
     if (!chatMessage.trim() || !db || !roomId) return;
     if (amMuted && !isMod) {
       Alert.alert("Muted", "The host has muted you in this live.");
@@ -4456,7 +4734,7 @@ export default function VideoLive() {
     setReplyTo(null);
     Keyboard.dismiss();
     setEmojiOpen(false);
-    setChatMessage("");
+    chatInputRef.current?.clear?.();
     try {
       // setDoc(doc(collection)) = id pehle se pata (delete / reply ke liye) + local snapshot instant
       await setDoc(doc(collection(db, "rooms", roomId, "chats")), {
@@ -5146,11 +5424,25 @@ export default function VideoLive() {
   const stableSendGift = useCallback((item: any) => handleSendGiftRef.current?.(item), []);
   const stableSelectGift = useCallback((item: any) => setGiftSelId(item.id), []);
   // Send button: selected gift ko giftQty baar bhejo (stars kam pade to wahin ruk jata hai)
+  const comboRef = useRef<any>(null);
+  const comboItemRef = useRef<any>(null);
+  // Combo button tap: wahi gift, wahi qty dobara (true = gaya, false = stars kam / user nahi)
+  const comboTap = () => {
+    const c = comboItemRef.current;
+    if (!c) return false;
+    return handleSendGiftRef.current?.(c.item, c.qty) === true;
+  };
   const sendSelectedGift = () => {
     const item = gifts.find((g: any) => String(g.id) === String(giftSelId)) || gifts[0];
     if (!item) return;
     // SMOOTH: pehle 999 baar loop chalta tha (UI hang). Ab ek hi call me poori qty.
-    handleSendGiftRef.current?.(item, giftQty);
+    const ok = handleSendGiftRef.current?.(item, giftQty);
+    if (ok) {
+      // Tiki jaisa: sheet band + Combo button (3s countdown, 10 tak tap)
+      comboItemRef.current = { item, qty: giftQty };
+      closeGiftModal();
+      comboRef.current?.start();
+    }
   };
 
   const sendGiftInBackground = async ({
@@ -5809,7 +6101,7 @@ export default function VideoLive() {
             <TouchableOpacity activeOpacity={0.85} onPress={openHostCard} style={styles.hostAvatarContainer}>
               <ExpoImage source={{ uri: hostImg }} style={styles.hostAvatarImg} cachePolicy="memory-disk" transition={0} />
               {(hostLevel >= 10 || !!hostId) && (
-                <LevelFrame level={hostLevel} uid={hostId} animated style={styles.hostLevelFrame} />
+                <LevelFrame level={hostLevel} uid={hostId} animated={false} style={styles.hostLevelFrame} />
               )}
             </TouchableOpacity>
 
@@ -5973,6 +6265,13 @@ export default function VideoLive() {
       {/* ================= FLOATING HEARTS ================= */}
       <HeartsLayer ref={heartsRef} bottom={96 + keyboardHeight} />
 
+      {/* ================= GIFT COMBO BUTTON (Tiki jaisa) ================= */}
+      <ComboButton
+        ref={comboRef}
+        bottom={(Platform.OS === "android" ? insets.bottom + 8 : insets.bottom) + 8 + keyboardHeight}
+        onTap={comboTap}
+      />
+
       {/* ================= BOTTOM BAR ================= */}
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -5989,15 +6288,10 @@ export default function VideoLive() {
           <>
             <View style={styles.inputBox}>
               <View style={{ flexDirection: "row", alignItems: "center" }}>
-                <TextInput
+                <ChatBoxInput
+                  ref={chatInputRef}
                   style={[styles.inputStyle, { flex: 1 }]}
-                  placeholder="Say something..."
-                  placeholderTextColor="#aaa"
-                  value={chatMessage}
-                  onChangeText={setChatMessage}
-                  onSubmitEditing={handleSendChat}
-                  returnKeyType="send"
-                  maxLength={200}
+                  onSubmit={handleSendChat}
                   autoFocus
                 />
                 <TouchableOpacity onPress={() => setEmojiOpen((v) => !v)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -6091,7 +6385,7 @@ export default function VideoLive() {
         style={{ position: "absolute", right: 7, bottom: (Platform.OS === "android" ? insets.bottom + 8 : insets.bottom) + 62, width: 56, alignItems: "center", zIndex: 50, elevation: 50 }}
       >
         <Image
-          source={require("../assets/images/topking-logo.png")}
+          source={require("../assets/images/topking-logo.webp")}
           style={{ width: 44, height: 44, borderRadius: 10, borderWidth: 1.5, borderColor: "#FFD700", backgroundColor: "#fff" }}
           resizeMode="cover"
         />
@@ -6126,7 +6420,7 @@ export default function VideoLive() {
           ]}
         >
           {QUICK_EMOJIS.map((e) => (
-            <TouchableOpacity key={e} onPress={() => setChatMessage((m) => (m + e).slice(0, 200))}>
+            <TouchableOpacity key={e} onPress={() => chatInputRef.current?.append?.(e)}>
               <Text style={{ fontSize: 24, marginHorizontal: 6 }}>{e}</Text>
             </TouchableOpacity>
           ))}
@@ -7664,6 +7958,20 @@ const styles = StyleSheet.create({
   },
   giftBalTxt: { color: "#fff", fontSize: 15, fontWeight: "600", marginLeft: 5 },
   giftRechargeTxt: { color: "#FFC800", fontSize: 13, fontWeight: "600", marginTop: 4 },
+  comboWrap: { position: "absolute", right: 10, alignItems: "center", zIndex: 70, elevation: 70 },
+  cbPill: {
+    backgroundColor: "rgba(0,0,0,0.6)", borderRadius: 11, paddingHorizontal: 9, paddingVertical: 2,
+    marginBottom: -6, zIndex: 2, borderWidth: 1, borderColor: "rgba(255,212,0,0.8)",
+  },
+  cbPillTxt: { color: "#FFD400", fontSize: 11, fontWeight: "800" },
+  comboBox: { width: 76, height: 76, alignItems: "center", justifyContent: "center" },
+  comboRing: { position: "absolute", width: 70, height: 70, borderRadius: 35, borderWidth: 3, borderColor: "#FFD400" },
+  comboBtn: {
+    width: 70, height: 70, borderRadius: 35, backgroundColor: "#FFD400", alignItems: "center", justifyContent: "center",
+    borderWidth: 2, borderColor: "#fff",
+  },
+  comboNum: { color: "#222", fontSize: 28, fontWeight: "900", fontStyle: "italic", lineHeight: 30 },
+  comboLbl: { color: "#222", fontSize: 12, fontWeight: "800", marginTop: -2 },
   giftQtyPill: {
     flexDirection: "row",
     alignItems: "center",

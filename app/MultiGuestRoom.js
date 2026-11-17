@@ -2040,7 +2040,7 @@ export default function MultiGuestRoom() {
               <View style={{ flex: 1 }} />
 
               <TouchableOpacity style={styles.giftCircle} onPress={() => openGiftModal()}>
-                <Image source={require('../assets/giftLogo.png')} style={{ width: 30, height: 30 }} resizeMode="contain" />
+                <Image source={require('../assets/giftLogo.webp')} style={{ width: 30, height: 30 }} resizeMode="contain" />
               </TouchableOpacity>
             </View>
           )}
@@ -2188,7 +2188,7 @@ export default function MultiGuestRoom() {
             {seatRequests.length === 0 ? (
               <Text style={styles.emptyTxt}>Abhi koi request nahi hai.</Text>
             ) : (
-              <FlatList
+              <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
                 data={seatRequests}
                 keyExtractor={(i) => i.uid}
                 renderItem={({ item }) => {
@@ -2257,7 +2257,7 @@ export default function MultiGuestRoom() {
             {audienceArray.filter((u) => u.uid !== hostId).length === 0 ? (
               <Text style={styles.emptyTxt}>No viewers yet. Share the live to get people in!</Text>
             ) : (
-              <FlatList
+              <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
                 data={[...audienceArray].filter((u) => u.uid !== hostId).sort((a, b) => Number(b.level || 1) - Number(a.level || 1))}
                 keyExtractor={(i) => i.uid}
                 renderItem={({ item }) => {
@@ -2314,7 +2314,7 @@ export default function MultiGuestRoom() {
             {rankedGifters.length === 0 ? (
               <Text style={styles.emptyTxt}>No gifts yet. Be the first to send one! 🎁</Text>
             ) : (
-              <FlatList
+              <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
                 data={rankedGifters}
                 keyExtractor={(i) => i.uid}
                 renderItem={({ item, index }) => (
@@ -2593,7 +2593,7 @@ const styles = StyleSheet.create({
   chatUser: { color: '#fff', fontWeight: 'bold', fontSize: 11 },
   bubble: { backgroundColor: 'rgba(0,0,0,0.45)', padding: 8, borderRadius: 10, alignSelf: 'flex-start', marginTop: 3 },
   chatMsg: { color: '#fff', fontSize: 12 },
-  sysRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 5, marginBottom: 4 },
+  sysRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, paddingHorizontal: 8, marginBottom: 4, backgroundColor: 'rgba(0,0,0,0.35)', borderRadius: 16, alignSelf: 'flex-start' },
   sysAva: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#2a2b38' },
   sysFrame: { position: 'absolute', width: 30, height: 30, top: -4, left: -4 },
   sysText: { color: '#e0e0e0', fontSize: 13, fontWeight: '600' },

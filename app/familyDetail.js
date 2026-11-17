@@ -333,7 +333,7 @@ export default function FamilyDetail() {
 
       {/* ===== Neeche dark sheet: Leader + Members ===== */}
       <View style={s.sheet}>
-        <FlatList
+        <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
           data={showMembers ? others : []}
           keyExtractor={(i) => i.id}
           renderItem={({ item }) => (

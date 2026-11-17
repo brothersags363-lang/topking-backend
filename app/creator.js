@@ -13,7 +13,7 @@ import {
 } from "react-native";
 import { scopedBackHandler } from "../utils/scopedBack";
 
-const GREY_V = require("../assets/images/grey-v-tick.png");
+const GREY_V = require("../assets/images/grey-v-tick.webp");
 import { MaterialIcons, Ionicons } from "@expo/vector-icons";
 import { useRouter } from "../utils/safeRouter";
 import { useSafeAreaInsets } from "react-native-safe-area-context";

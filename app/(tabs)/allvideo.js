@@ -39,6 +39,8 @@ import {
   MaterialCommunityIcons,
 } from '@expo/vector-icons';
 import { VideoView, useVideoPlayer } from 'expo-video';
+import PERF from '../../utils/devicePerf';
+import { pickVideoUri, isHlsUri } from '../../utils/videoSource';
 
 import {
   addDoc,
@@ -185,8 +187,8 @@ const formatCount = (n) => {
   if (num >= 1000) return (num / 1000).toFixed(num >= 100000 ? 0 : 1).replace(/\.0$/, '') + 'K';
   return String(num);
 };
-const STAR_LOGO = require('../../assets/star-logo.png');
-const APP_LOGO = require('../../assets/logo.png');
+const STAR_LOGO = require('../../assets/star-logo.webp');
+const APP_LOGO = require('../../assets/logo.webp');
 
 const STAR_OPTIONS = [1, 3, 10];
 
@@ -304,19 +306,14 @@ const PlayerView = React.memo(
     const [ready, setReady] = useState(false);
 
     // Same object => player dobara nahi banta
-    const source = useMemo(() => ({ uri, useCaching: true }), [uri]);
+    const source = useMemo(() => ({ uri, useCaching: !isHlsUri(uri) }), [uri]);
 
     const player = useVideoPlayer(source, (p) => {
       p.loop = true;
       p.muted = true;
 
       try {
-        p.bufferOptions = {
-          preferredForwardBufferDuration: 10,
-          maxBufferBytes: 16 * 1024 * 1024,
-          minBufferForPlayback: 0.5,
-          prioritizeTimeOverSizeThreshold: true,
-        };
+        p.bufferOptions = PERF.cfg().buffers.near;
       } catch (error) {
         __DEV__ && console.log('BUFFER OPTIONS ERROR =', error);
       }
@@ -523,7 +520,7 @@ const VideoItem = React.memo(
         onPress={() => actions.onPress(item.id)}
       >
         <VideoPlayerItem
-          uri={item.videoUrl || item.video}
+          uri={pickVideoUri(item)}
           thumbnail={item.thumbnail}
           active={isActive}
           preload={isNext}
@@ -1916,8 +1913,10 @@ export default function App() {
         viewabilityConfig={VIEWABILITY_CONFIG}
         onViewableItemsChanged={onViewRef.current}
         initialNumToRender={2}
-        maxToRenderPerBatch={3}
-        windowSize={5}
+        maxToRenderPerBatch={2}
+        // SMOOTH: har cell me ek player hai -> windowSize = kitne player/decoder ek saath.
+        // Phone ke hisaab se (weak phone par kam); pehle fixed 5 tha.
+        windowSize={PERF.cfg().listWindow}
         removeClippedSubviews={false}
         updateCellsBatchingPeriod={50}
         showsVerticalScrollIndicator={false}

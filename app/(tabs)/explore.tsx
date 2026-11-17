@@ -79,11 +79,11 @@ const getLevelTheme = (level = 1) => {
   return THEME_0;
 };
 
-const FRAME_50 = require('../../assets/frames/lv50.png');
-const FRAME_40 = require('../../assets/frames/lv40.png');
-const FRAME_30 = require('../../assets/frames/lv30.png');
-const FRAME_20 = require('../../assets/frames/lv20.png');
-const FRAME_10 = require('../../assets/frames/lv10.png');
+const FRAME_50 = require('../../assets/frames/lv50.webp');
+const FRAME_40 = require('../../assets/frames/lv40.webp');
+const FRAME_30 = require('../../assets/frames/lv30.webp');
+const FRAME_20 = require('../../assets/frames/lv20.webp');
+const FRAME_10 = require('../../assets/frames/lv10.webp');
 
 const getLevelFrame = (level = 1) => {
   if (level >= 50) return FRAME_50;
@@ -96,11 +96,11 @@ const getLevelFrame = (level = 1) => {
 
 const TRENDING_BANNERS_DATA = [
   require('../../assets/images/banner1.jpeg'),
-  require('../../assets/images/banner2.png'),
+  require('../../assets/images/banner2.webp'),
   require('../../assets/images/banner3.jpeg'),
-  require('../../assets/images/banner4.png'),
-  require('../../assets/images/banner5.png'),
-  require('../../assets/images/banner6.png'),
+  require('../../assets/images/banner4.webp'),
+  require('../../assets/images/banner5.webp'),
+  require('../../assets/images/banner6.webp'),
 ];
 
 // Order (screenshot jaisa): Family Ranking -> Meetup -> LIVE -> Creator Verification -> Agency
@@ -160,7 +160,7 @@ const QuickIcon = memo(function QuickIcon({ k }: { k: string }) {
 // constant style objects (avoid new object every render)
 const SCROLL_STYLE = { backgroundColor: '#000' };
 const SCROLL_CONTENT = { paddingBottom: 100 };
-const TOPKING_LOGO = require('../../assets/images/topking-logo.png');
+const TOPKING_LOGO = require('../../assets/images/topking-logo.webp');
 const TROPHY_PAD = 0;
 const TROPHY_GAP = 7;
 // 4 card screen me poore dikhte hain, 5th (Agency) scroll karke

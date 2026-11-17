@@ -4,7 +4,7 @@ import { scopedBackHandler } from "../utils/scopedBack";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "../utils/safeRouter";
 import { Ionicons } from "@expo/vector-icons";
-import AppLogo from "../assets/images/topking-logo.png";
+import AppLogo from "../assets/images/topking-logo.webp";
 
 const Y = "#FFE500";
 
@@ -179,7 +179,7 @@ const Rule = ({ r }) => {
           <View key={t.name} style={s.tickCard}>
             <View style={s.tickHead}>
               {t.grey ? (
-                <Image source={require("../assets/images/grey-v-tick.png")} style={{ width: 30, height: 30 }} resizeMode="contain" />
+                <Image source={require("../assets/images/grey-v-tick.webp")} style={{ width: 30, height: 30 }} resizeMode="contain" />
               ) : (
                 <Ionicons name="checkmark-circle" size={30} color={t.color} />
               )}

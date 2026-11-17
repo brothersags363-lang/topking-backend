@@ -272,23 +272,23 @@ const GuardedFrame = (props) => {
 const getLevelFrame=(level=1)=>{
 
 if(level>=50){
-return require("../assets/frames/lv50.png");
+return require("../assets/frames/lv50.webp");
 }
 
 if(level>=40){
-return require("../assets/frames/lv40.png");
+return require("../assets/frames/lv40.webp");
 }
 
 if(level>=30){
-return require("../assets/frames/lv30.png");
+return require("../assets/frames/lv30.webp");
 }
 
 if(level>=20){
-return require("../assets/frames/lv20.png");
+return require("../assets/frames/lv20.webp");
 }
 
 if(level>=10){
-return require("../assets/frames/lv10.png");
+return require("../assets/frames/lv10.webp");
 }
 
 return null;
@@ -631,7 +631,7 @@ const GiftButtonLottie = memo(function GiftButtonLottie() {
   // animation hata diya: static gift icon
   return (
     <Image
-      source={require("../assets/giftLogo.png")}
+      source={require("../assets/giftLogo.webp")}
       style={{ width: 34, height: 34 }}
       resizeMode="contain"
     />
@@ -677,7 +677,9 @@ const ComboRow = memo(({ data }) => {
           alignItems: "center",
           paddingLeft: 0,
           paddingRight: 34,
-          backgroundColor: "transparent",
+          paddingVertical: 4,
+          borderRadius: 24,
+          backgroundColor: "rgba(0,0,0,0.35)",
         }}
       >
         <View style={{ width: 32, height: 32, marginLeft: 12 }}>
@@ -770,6 +772,10 @@ const ChatItem = memo(({ chat }) => {
                 <TouchableOpacity activeOpacity={0.7} onPress={() => pressChatUser(chat)}
                     style={{
                         flexDirection: "row",
+                        backgroundColor: "rgba(0,0,0,0.35)",
+                        borderRadius: 16,
+                        alignSelf: "flex-start",
+                        marginVertical: 2,
                         alignItems: "center",
                         paddingHorizontal: 10,
                         paddingVertical: 6,
@@ -889,6 +895,10 @@ const ChatItem = memo(({ chat }) => {
                 <TouchableOpacity activeOpacity={0.7} onPress={() => pressChatUser(chat)}
                     style={{
                         flexDirection: "row",
+                        backgroundColor: "rgba(0,0,0,0.35)",
+                        borderRadius: 16,
+                        alignSelf: "flex-start",
+                        marginVertical: 2,
                         alignItems: "center",
                         flexWrap: "wrap",
                         paddingHorizontal: 10,

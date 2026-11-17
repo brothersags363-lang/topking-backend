@@ -284,7 +284,7 @@ useEffect(() => {
       </View>
 
       {/* QUALITY LIST */}
-      <FlatList
+      <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
         data={VIDEO_QUALITIES}
         keyExtractor={(item) => item.id}
         renderItem={renderQuality}

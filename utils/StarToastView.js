@@ -60,7 +60,7 @@ export default function StarToastView() {
         }}
       >
         <Image
-          source={require("../assets/star-logo.png")}
+          source={require("../assets/star-logo.webp")}
           style={{ width: 56, height: 56, resizeMode: "contain" }}
         />
         <Text

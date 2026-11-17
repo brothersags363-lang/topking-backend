@@ -144,7 +144,7 @@ export default function AdminLiveAccess() {
       {searching ? (
         <ActivityIndicator color="#FFD700" style={{ marginTop: 30 }} />
       ) : (
-        <FlatList
+        <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
           data={results}
           keyExtractor={(i) => i.id}
           keyboardShouldPersistTaps="handled"

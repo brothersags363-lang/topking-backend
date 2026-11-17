@@ -34,7 +34,7 @@ const InfoModal = memo(function InfoModal({ infoId, onClose }: Props) {
             </TouchableOpacity>
           </View>
 
-          <FlatList
+          <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
             data={content?.items || []}
             keyExtractor={keyExtractor}
             renderItem={renderItem}

@@ -9,7 +9,7 @@
 import React, { useEffect, useState } from "react";
 import { View, Image } from "react-native";
 
-export const GREY_V_TICK = require("../assets/images/grey-v-tick.png");
+export const GREY_V_TICK = require("../assets/images/grey-v-tick.webp");
 import { MaterialCommunityIcons, Ionicons } from "@expo/vector-icons";
 import { doc, getDoc } from "firebase/firestore";
 import { db } from "../app/firebaseConfig";

@@ -272,23 +272,23 @@ const GuardedFrame = (props) => {
 const getLevelFrame=(level=1)=>{
 
 if(level>=50){
-return require("../assets/frames/lv50.png");
+return require("../assets/frames/lv50.webp");
 }
 
 if(level>=40){
-return require("../assets/frames/lv40.png");
+return require("../assets/frames/lv40.webp");
 }
 
 if(level>=30){
-return require("../assets/frames/lv30.png");
+return require("../assets/frames/lv30.webp");
 }
 
 if(level>=20){
-return require("../assets/frames/lv20.png");
+return require("../assets/frames/lv20.webp");
 }
 
 if(level>=10){
-return require("../assets/frames/lv10.png");
+return require("../assets/frames/lv10.webp");
 }
 
 return null;
@@ -634,7 +634,7 @@ const GiftButtonLottie = memo(function GiftButtonLottie() {
   // animation hata diya: static gift icon
   return (
     <Image
-      source={require("../assets/giftLogo.png")}
+      source={require("../assets/giftLogo.webp")}
       style={{ width: 34, height: 34 }}
       resizeMode="contain"
     />
@@ -670,50 +670,65 @@ const LiveTimer = memo(({ startTime }) => {
 // [avatar + naam + "Sent"] [gift PNG] x3 . Full-screen animation / Lottie / WebView sab hata diya.
 // Koi Animated nahi -> app hang nahi hoti. Har naye tap par sirf count (x1, x2, x3...) badalta hai.
 // ============================================================
+// SMOOTH FIX: har tap par poori row (avatar + 54px level frame webp + naam) dobara render hoti thi.
+// Ab avatar/frame/naam alag memo (sirf tab badle jab sender badle) aur sirf "xN" count badalta hai.
+const ComboHead = memo(({ senderImg, senderId, level, senderName }) => (
+  <View
+    style={{
+      flexDirection: "row",
+      alignItems: "center",
+      paddingLeft: 0,
+      paddingRight: 34,
+      paddingVertical: 4,
+      borderRadius: 24,
+      backgroundColor: "rgba(0,0,0,0.35)",
+    }}
+  >
+    <View style={{ width: 32, height: 32, marginLeft: 12 }}>
+      <Image
+        source={{ uri: senderImg || STABLE_AVATAR }}
+        style={{ width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.9)", backgroundColor: "#2a2b38" }}
+      />
+      {(!!senderId || Number(level) >= 10) && (
+        <GuardedFrame level={level} uid={senderId} animated={false}
+          style={{ position: "absolute", width: 54, height: 54, top: -11, left: -11, zIndex: 10 }} />
+      )}
+    </View>
+    <View style={{ marginLeft: 6, flexShrink: 1 }}>
+      <Text numberOfLines={1} style={{ color: "#fff", fontWeight: "700", fontSize: 12, textShadowColor: "rgba(0,0,0,0.5)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 }}>{senderName}</Text>
+      <Text numberOfLines={1} style={{ color: "rgba(255,255,255,0.92)", fontSize: 10, marginTop: 0, textShadowColor: "rgba(0,0,0,0.5)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 }}>Sent</Text>
+    </View>
+  </View>
+), (p, n) => p.senderImg === n.senderImg && p.senderId === n.senderId && p.level === n.level && p.senderName === n.senderName);
+
+const ComboCount = memo(({ count }) => (
+  <Text
+    style={{
+      color: "#fff", fontSize: 24, fontWeight: "900", fontStyle: "italic", marginLeft: 6,
+      textShadowColor: "rgba(0,0,0,0.55)", textShadowOffset: { width: 1, height: 2 }, textShadowRadius: 3,
+    }}
+  >
+    x{count}
+  </Text>
+));
+
 const ComboRow = memo(({ data }) => {
-  const gd = gifts.find((g) => String(g.id) === String(data.giftId));
+  const gd = useMemo(() => gifts.find((g) => String(g.id) === String(data.giftId)), [data.giftId]);
   return (
     <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 4 }}>
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          paddingLeft: 0,
-          paddingRight: 34,
-          backgroundColor: "transparent",
-        }}
-      >
-        <View style={{ width: 32, height: 32, marginLeft: 12 }}>
-          <Image
-            source={{ uri: data.senderImg || STABLE_AVATAR }}
-            style={{ width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.9)", backgroundColor: "#2a2b38" }}
-          />
-          {(!!data.senderId || Number(data.level) >= 10) && (
-            <GuardedFrame level={data.level} uid={data.senderId} animated={false}
-              style={{ position: "absolute", width: 54, height: 54, top: -11, left: -11, zIndex: 10 }} />
-          )}
-        </View>
-        <View style={{ marginLeft: 6, flexShrink: 1 }}>
-          <Text numberOfLines={1} style={{ color: "#fff", fontWeight: "700", fontSize: 12, textShadowColor: "rgba(0,0,0,0.5)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 }}>{data.senderName}</Text>
-          <Text numberOfLines={1} style={{ color: "rgba(255,255,255,0.92)", fontSize: 10, marginTop: 0, textShadowColor: "rgba(0,0,0,0.5)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 }}>Sent</Text>
-        </View>
-      </View>
+      <ComboHead senderImg={data.senderImg} senderId={data.senderId} level={data.level} senderName={data.senderName} />
       {gd?.icon ? (
         <Image source={gd.icon} style={{ width: 46, height: 46, resizeMode: "contain", marginLeft: -26 }} />
       ) : (
         <View style={{ width: 20 }} />
       )}
-      <Text
-        style={{
-          color: "#fff", fontSize: 24, fontWeight: "900", fontStyle: "italic", marginLeft: 6,
-          textShadowColor: "rgba(0,0,0,0.55)", textShadowOffset: { width: 1, height: 2 }, textShadowRadius: 3,
-        }}
-      >
-        x{data.count || 1}
-      </Text>
+      <ComboCount count={data.count || 1} />
     </View>
   );
-});
+}, (p, n) =>
+  p.data.giftId === n.data.giftId && p.data.count === n.data.count && p.data.senderId === n.data.senderId &&
+  p.data.senderName === n.data.senderName && p.data.senderImg === n.data.senderImg && p.data.level === n.data.level
+);
 
 const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBottom }, ref) {
   const [combos, setCombos] = useState([]); // max 2 row, har sender ki apni row
@@ -773,6 +788,10 @@ const ChatItem = memo(({ chat }) => {
                 <TouchableOpacity activeOpacity={0.7} onPress={() => pressChatUser(chat)}
                     style={{
                         flexDirection: "row",
+                        backgroundColor: "rgba(0,0,0,0.35)",
+                        borderRadius: 16,
+                        alignSelf: "flex-start",
+                        marginVertical: 2,
                         alignItems: "center",
                         paddingHorizontal: 10,
                         paddingVertical: 6,
@@ -892,6 +911,10 @@ const ChatItem = memo(({ chat }) => {
                 <TouchableOpacity activeOpacity={0.7} onPress={() => pressChatUser(chat)}
                     style={{
                         flexDirection: "row",
+                        backgroundColor: "rgba(0,0,0,0.35)",
+                        borderRadius: 16,
+                        alignSelf: "flex-start",
+                        marginVertical: 2,
                         alignItems: "center",
                         flexWrap: "wrap",
                         paddingHorizontal: 10,
@@ -1479,7 +1502,15 @@ const flushGiftBatchRef = useRef(null);
 const pendingSpendRef = useRef(0);   // taps jo abhi write nahi hue
 const inflightSpendRef = useRef(0);  // write ho gaye, wallet snapshot abhi nahi aaya
 // pendingSpend ab sheet ke andar hai (ref.setPending) -> har gift tap pe poori room re-render nahi hoti
-const setPendingSpend = useCallback((v) => { if (giftSheetRef.current) giftSheetRef.current.setPending(v); }, []);
+// SMOOTH: har tap par sheet re-render nahi; ek frame me ek hi baar (latest value pendingSpendRef se)
+const pendingPushRef = useRef(null);
+const setPendingSpend = useCallback((v) => {
+  if (pendingPushRef.current) return;
+  pendingPushRef.current = requestAnimationFrame(() => {
+    pendingPushRef.current = null;
+    if (giftSheetRef.current) giftSheetRef.current.setPending(pendingSpendRef.current);
+  });
+}, []);
 const onSendGiftStable = useCallback((item) => {
   if (handleSendGiftRef.current) return handleSendGiftRef.current(item);
   return false;
@@ -1582,6 +1613,7 @@ const handleJoinDone = useCallback(() => setJoinBanner(null), []);
 const [selectedGiftUser, setSelectedGiftUser] = useState(null);
 
 const [stars, setStars] = useState(0);
+const starsRef = useRef(0);   // SMOOTH: balance check ke liye turant wali value (state ka wait nahi)
 const [walletInfo, setWalletInfo] = useState({ level: 1, totalSpent: 0, nextLevelSpent: null, levelStartSpent: 0 });
 
 
@@ -1652,6 +1684,10 @@ const isFocusedRef = useRef(true);
 const lastHeartbeatRef = useRef(null);     // last hostHeartbeat value we saw
 const lastHeartbeatSeenAtRef = useRef(0);  // LOCAL time we saw it change (no clock-skew issues)
 const lastRoomSigRef = useRef(null);       // room doc signature WITHOUT heartbeat
+const roomCoreSigRef = useRef(null);       // signature WITHOUT gift fields (gift-only change = throttled render)
+const roomPendingRef = useRef(null);
+const roomThrottleRef = useRef(null);
+useEffect(() => () => { if (roomThrottleRef.current) clearTimeout(roomThrottleRef.current); }, []);
 
 const releaseAgora = () => {
   const e = agoraEngineRef.current;
@@ -2311,21 +2347,36 @@ db,
 currentUid
 );
 
+// SMOOTH FIX: gift spam me wallet har flush par 2 baar badalta hai (local + server) -> poori room screen
+// 2 baar re-render hoti thi. Ab pehli baar turant, uske baad 300ms me ek hi render.
+let _wData = null;
+let _wTimer = null;
+let _wFirst = true;
+const pushWallet = () => {
+  _wTimer = null;
+  const _w = _wData;
+  if (!_w) return;
+  const v = _w.stars || 0;
+  setStars(v);
+  setMyStars(v);
+  setWalletInfo((p) => (p.level === (_w.level || 1) && p.totalSpent === (_w.totalSpent || 0) && p.nextLevelSpent === (_w.nextLevelSpent ?? null))
+    ? p
+    : { level: _w.level || 1, totalSpent: _w.totalSpent || 0, nextLevelSpent: _w.nextLevelSpent ?? null, levelStartSpent: _w.levelStartSpent || 0 });
+};
+const scheduleWalletPush = () => {
+  if (_wFirst) { _wFirst = false; pushWallet(); return; }
+  if (!_wTimer) _wTimer = setTimeout(pushWallet, 300);
+};
+
 const unsub = onSnapshot(
 walletRef,
 (snap)=>{
 
 if(snap.exists()){
 
-const v = snap.data()?.stars || 0;
-setStars(v);
-{
-  const _w = snap.data() || {};
-  setWalletInfo((p) => (p.level === (_w.level || 1) && p.totalSpent === (_w.totalSpent || 0) && p.nextLevelSpent === (_w.nextLevelSpent ?? null))
-    ? p
-    : { level: _w.level || 1, totalSpent: _w.totalSpent || 0, nextLevelSpent: _w.nextLevelSpent ?? null, levelStartSpent: _w.levelStartSpent || 0 });
-}
-setMyStars(v);
+_wData = snap.data() || {};
+starsRef.current = _wData.stars || 0;
+scheduleWalletPush();
 // wallet server/local se update ho gaya -> in-flight spend ab v me included hai
 inflightSpendRef.current = 0;
 setPendingSpend(pendingSpendRef.current);
@@ -2335,7 +2386,7 @@ setPendingSpend(pendingSpendRef.current);
 }
 );
 
-return ()=>unsub();
+return ()=>{ unsub(); if (_wTimer) clearTimeout(_wTimer); };
 
 },[currentUid]);
 
@@ -3269,7 +3320,30 @@ log("Audience Added =", audiencePayload);
         // Problem solve hone ke baad ye 3 line hata dena.
         // (HEAT FIX) SEATSTARS_DEBUG console.log hata diya - har snapshot par 2 JSON.stringify chalte the
 
-        setRoomData(data);
+        // SMOOTH FIX: gift (seatStars/topGifters/liveGift) ke badlav 400ms me ek baar render; baaki turant
+        {
+          let core = null;
+          try {
+            const { liveGift: _a, seatStars: _b, topGifters: _c, ...coreRest } = data;
+            core = JSON.stringify(coreRest);
+          } catch (_) {}
+          if (!core || core !== roomCoreSigRef.current) {
+            roomCoreSigRef.current = core;
+            roomPendingRef.current = null;
+            if (roomThrottleRef.current) { clearTimeout(roomThrottleRef.current); roomThrottleRef.current = null; }
+            setRoomData(data);
+          } else {
+            roomPendingRef.current = data;
+            if (!roomThrottleRef.current) {
+              roomThrottleRef.current = setTimeout(() => {
+                roomThrottleRef.current = null;
+                const d = roomPendingRef.current;
+                roomPendingRef.current = null;
+                if (d) setRoomData(d);
+              }, 400);
+            }
+          }
+        }
         setLoading(false);
 
 const snapshotHostId = data?.hostId || data?.seatsData?.seat_1?.userId || null;
@@ -5028,7 +5102,7 @@ const handleSendGift = (item) => {
   const price = Number(item.price || 0) * targetIds.length;
 
   // balance = wallet - (abhi tak write na hue taps) - (write ho chuke par snapshot pending)
-  const available = stars - pendingSpendRef.current - inflightSpendRef.current;
+  const available = starsRef.current - pendingSpendRef.current - inflightSpendRef.current;
   if (available < price) {
     alert("Not enough stars");
     return false;
@@ -5145,6 +5219,9 @@ const handleSendGift = (item) => {
   return true;
 };
 
+// SMOOTH: tap handler ke andar Firestore kaam nahi; agle tick me
+const deferGift = (args) => { setTimeout(() => { sendGiftInBackground(args); }, 0); };
+
 const flushGiftBatch = () => {
 
   if (giftFlushTimerRef.current) {
@@ -5164,7 +5241,7 @@ const flushGiftBatch = () => {
   const giftTimestamp = Date.now();
   lastSeenGiftKeyRef.current = `${currentUid}_${giftTimestamp}`;
 
-  sendGiftInBackground({
+  deferGift({
     item: batch.item,
     receiverId: batch.receiverId,
     receiverIds: batch.receiverIds,
@@ -5245,39 +5322,45 @@ const sendGiftInBackground = async ({
     return;
   }
 
+  // SMOOTH FIX: pehle 5-20 Firestore writes ek hi JS frame me chalte the (har write ka local snapshot
+  // bhi turant fire hota hai) -> UI hang. Ab har write thodi der baad, frame-frame me.
+  const later = (fn, ms) => new Promise((resolve, reject) => {
+    setTimeout(() => { try { Promise.resolve(fn()).then(resolve, reject); } catch (e) { reject(e); } }, ms);
+  });
+
   const jobs = [
 
-    // sender wallet (total kharcha)
-    updateDoc(doc(db, "wallets", currentUid), { stars: increment(-total), totalSpent: increment(total) }),
+    // sender wallet (total kharcha) - sabse pehle, balance sahi rahe
+    later(() => updateDoc(doc(db, "wallets", currentUid), { stars: increment(-total), totalSpent: increment(total) }), 0),
 
   ];
 
-  ids.forEach((id) => {
+  ids.forEach((id, i) => {
     jobs.push(
       // receiver wallet: earnings + receivedStars
-      setDoc(
+      later(() => setDoc(
         doc(db, "wallets", id),
         {
           earnings: increment(unit),
           receivedStars: increment(unit),
         },
         { merge: true }
-      ),
+      ), 40 + i * 50),
       // receiver's top-gifters
-      updateDoc(doc(db, "users", id), {
+      later(() => updateDoc(doc(db, "users", id), {
         [`topGifters.${currentUid}.uid`]: currentUid,
         [`topGifters.${currentUid}.username`]: currentName || "",
         [`topGifters.${currentUid}.name`]: currentRealName || currentName || "User",
         [`topGifters.${currentUid}.profileImg`]: currentAvatar || "",
         [`topGifters.${currentUid}.stars`]: increment(unit),
-      })
+      }), 65 + i * 50)
     );
   });
 
   // chat line only once per combo (avoid spam)
   if (chat) {
     jobs.push(
-      addDoc(collection(db, "rooms", roomId, "chats"), {
+      later(() => addDoc(collection(db, "rooms", roomId, "chats"), {
         senderId: currentUid,
         type: "gift",
         senderName: senderDisplay,
@@ -5291,7 +5374,7 @@ const sendGiftInBackground = async ({
         giftName: item.name,
         comboCount,
         createdAt: Date.now(),
-      })
+      }), 20)
     );
   }
 
@@ -5513,6 +5596,7 @@ return (
             <GuardedFrame
               level={roomData?.seatsData?.seat_1?.level}
               uid={roomData?.seatsData?.seat_1?.userId}
+              animated={false}
               style={FRAME_HOST38}
             />
           )}
@@ -5555,7 +5639,7 @@ return (
                 style={styles.viewerAvatar}
               />
               {(user.level >= 10 || !!user.uid) && (
-                <GuardedFrame level={user.level} uid={user.uid} animated pointerEvents="none"
+                <GuardedFrame level={user.level} uid={user.uid} animated={false} pointerEvents="none"
                   style={{ position: 'absolute', width: 42, height: 42, top: -5, left: -5 }} />
               )}
             </View>
@@ -5736,7 +5820,7 @@ return (
         style={{ position: "absolute", right: 9, bottom: bottomBarTotal + 6, width: 56, alignItems: "center", zIndex: 50, elevation: 50 }}
       >
         <Image
-          source={require("../assets/images/topking-logo.png")}
+          source={require("../assets/images/topking-logo.webp")}
           style={{ width: 44, height: 44, borderRadius: 10, borderWidth: 1.5, borderColor: "#FFD700", backgroundColor: "#fff" }}
           resizeMode="cover"
         />
@@ -6297,7 +6381,7 @@ style={styles.friendImg}
 {
 (item.level>=10 || !!item.id) && (
 
-<GuardedFrame level={item.level} uid={item.id} animated
+<GuardedFrame level={item.level} uid={item.id} animated={false}
 style={{
 position:"absolute",
 width:90,

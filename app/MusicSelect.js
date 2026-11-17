@@ -92,22 +92,20 @@ const rotateAnim = useRef(
 
 useEffect(() => {
 
-  if (selectedMusic) {
+  if (!selectedMusic) return;
 
-    Animated.loop(
+  // loop ko screen chhodne / gaana badalne par rok do (pehle hamesha chalta rehta tha)
+  rotateAnim.setValue(0);
+  const loop = Animated.loop(
+    Animated.timing(rotateAnim, {
+      toValue: 1,
+      duration: 5000,
+      useNativeDriver: true,
+    })
+  );
+  loop.start();
 
-      Animated.timing(
-        rotateAnim,
-        {
-          toValue: 1,
-          duration: 5000,
-          useNativeDriver: true,
-        }
-      )
-
-    ).start();
-
-  }
+  return () => loop.stop();
 
 }, [selectedMusic]);
 
@@ -530,7 +528,7 @@ outputRange:[
 
 
 
-      <FlatList
+      <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
   data={
     search.trim()
       ? musicList.filter((item) =>

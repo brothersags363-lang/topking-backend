@@ -183,7 +183,7 @@ const rejectAgency = async (item) => {
         Agency Join Requests
       </Text>
 
-      <FlatList
+      <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
         data={requests}
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => (

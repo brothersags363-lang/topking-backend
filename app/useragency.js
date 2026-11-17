@@ -594,7 +594,7 @@ Agency Hosts
 
 </Text>
 
-<FlatList
+<FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
 
 data={hosts}
 

@@ -162,7 +162,7 @@ export default function MeetupScreen() {
         )}
       </View>
 
-      <FlatList
+      <FlatList maxToRenderPerBatch={8}
         data={data}
         keyExtractor={keyExtractor}
         renderItem={renderItem}

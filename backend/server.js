@@ -3494,6 +3494,18 @@ app.post("/admin/add-stars", generalLimiter, verifyUser, requireAdminDoc, async 
   }
 });
 
+// Multi-quality HLS (Cloudflare Stream) — alag file: streamHls.js
+// CF_ACCOUNT_ID + CF_STREAM_TOKEN set na ho to ye chup-chap band rehta hai.
+try {
+  require("./streamHls")({ app, db, verifyUser, uploadLimiter, cron });
+} catch (e) {
+  if (e && e.code === "MODULE_NOT_FOUND" && String(e.message).includes("streamHls")) {
+    console.warn("WARNING: streamHls.js nahi mila, HLS abhi band hai");
+  } else {
+    console.error("streamHls load error:", e && e.message);
+  }
+}
+
 // Ek device = ek verified ID + verify ke baad hi agency (alag file: deviceVerifyRules.js)
 try {
   require("./deviceVerifyRules")({ app, db, verifyUser, requireAdminDoc, isValidUid });

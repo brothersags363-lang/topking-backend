@@ -87,11 +87,11 @@ const OPEN_LOCK_MS = 1500;
 
 const TRENDING_BANNERS_DATA = [
   require('../assets/images/banner1.jpeg'),
-  require('../assets/images/banner2.png'),
+  require('../assets/images/banner2.webp'),
   require('../assets/images/banner3.jpeg'),
-  require('../assets/images/banner4.png'),
-  require('../assets/images/banner5.png'),
-  require('../assets/images/banner6.png'),
+  require('../assets/images/banner4.webp'),
+  require('../assets/images/banner5.webp'),
+  require('../assets/images/banner6.webp'),
 ];
 
 // ------------------------------------

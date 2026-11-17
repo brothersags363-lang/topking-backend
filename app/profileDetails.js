@@ -74,7 +74,7 @@ export default function ProfileDetails() {
       <Text style={styles.count}>Total users: {filtered.length}</Text>
 
       {/* Niche line by line users */}
-      <FlatList
+      <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
         data={filtered}
         keyExtractor={(i) => i.id}
         ListEmptyComponent={<Text style={styles.empty}>No user found</Text>}

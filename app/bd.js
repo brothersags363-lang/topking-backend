@@ -231,7 +231,7 @@ export default function BDPage() {
         <Text style={styles.createText}>+ Create Agency</Text>
       </TouchableOpacity>
 
-      <FlatList
+      <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
         data={filtered}
         keyExtractor={(i) => i.id}
         ListEmptyComponent={<Text style={styles.empty}>Abhi koi agency nahi hai</Text>}
@@ -341,7 +341,7 @@ export default function BDPage() {
                 ) : hosts.length === 0 ? (
                   <Text style={styles.info}>Abhi koi host nahi hai</Text>
                 ) : (
-                  <FlatList
+                  <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
                     data={hosts}
                     keyExtractor={(h) => h.id}
                     renderItem={({ item }) => (

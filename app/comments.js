@@ -140,7 +140,7 @@ export default function CommentsScreen() {
       {loading ? (
         <ActivityIndicator size="large" color="#FFD700" style={{ marginTop: 50 }} />
       ) : (
-        <FlatList
+        <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
           data={comments}
           renderItem={renderComment}
           keyExtractor={keyExtractor}

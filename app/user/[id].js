@@ -140,7 +140,7 @@ export default function UserPage() {
           </TouchableOpacity>
         </View>
 
-        <FlatList
+        <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
           data={userVideos}
           keyExtractor={(item) => item.id}
           numColumns={3}

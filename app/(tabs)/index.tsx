@@ -4,6 +4,8 @@ import { checkVideoAction, getVideoLocks } from "../../utils/videoLocks";
 // IMPORTS
 // ==========================
 import { notifyNewFollower, notifyVideoLike } from "../../utils/pushNotify";
+import PERF from "../../utils/devicePerf";
+import { pickVideoUri, isHlsUri } from "../../utils/videoSource";
 import React, { memo,  useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -547,42 +549,19 @@ const rankFeed = (
 // (Har ready player ek video decoder pakadta hai -> zyada karoge to
 // kam RAM wale phone atkenge. 10 ek saath safe nahi, isliye 1 peeche + 3 aage.)
 // SPEED: 1 peeche + 2 aage ke players ready -> fast swipe par bhi video turant chalta hai.
-const PRELOAD_BEHIND = 1; // INSTA: peeche ka 1 video ready -> upar scroll karte hi turant chalta hai
 // INSTA: naye phone (iOS / Android 10+) par agle 3 videos ready -> tez swipe par bhi
 // black/loader nahi. Purane/kam RAM wale Android par 2 (decoder limit).
-const PRELOAD_AHEAD =
-  Platform.OS === 'ios' || (typeof Platform.Version === 'number' && Platform.Version >= 29) ? 3 : 2;
+// SMOOTH: kitne players / kitna buffer -> ab phone ke hisaab se utils/devicePerf.js se aata hai
+// (PERF.cfg()). Weak phone par kam, naye phone par zyada; atakne par khud kam ho jata hai.
 
 // STALL FIX: minBufferForPlayback 1 sec par network ek baar slow hote hi video
 // 1 sec chalke dobara ruk jata tha (ruk-ruk ke chalna). Active video ko 2 sec
 // ka buffer + bada forward buffer diya -> rebuffer ke baad bhi smooth chalta hai.
-const ACTIVE_BUFFER = {
-  maxBufferBytes: 30 * 1024 * 1024,
-  preferredForwardBufferDuration: 20,
-  minBufferForPlayback: 1,
-  prioritizeTimeOverSizeThreshold: true,
-  // iOS: pehle poora buffer bharne ka wait nahi -> play turant shuru
-  waitsToMinimizeStalling: false,
-};
 // Agla video (index+1): itna buffer ki scroll karte hi turant chal pade
-const NEAR_BUFFER = {
-  maxBufferBytes: 10 * 1024 * 1024,
-  preferredForwardBufferDuration: 10,
-  minBufferForPlayback: 1,
-  prioritizeTimeOverSizeThreshold: true,
-  waitsToMinimizeStalling: false,
-};
 // Door ke videos (pichla / index+2, +3): shuru ke ~3 sec,
 // taaki active video ka bandwidth na khayein
 // Sirf shuru ke ~4 sec: itna kaafi hai ki swipe par turant chal pade,
 // aur 3 videos ek saath download karke active video ka network na khayein.
-const PRELOAD_BUFFER = {
-  maxBufferBytes: 4 * 1024 * 1024,
-  preferredForwardBufferDuration: 4,
-  minBufferForPlayback: 1,
-  prioritizeTimeOverSizeThreshold: true,
-  waitsToMinimizeStalling: false,
-};
 
 // ======================================================
 // SEEK BAR (niche menu se chipka PEELA line)
@@ -774,14 +753,15 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
 
   // useCaching: video phone me cache hota hai -> loop / dubara dekhne par
   // dobara download nahi, loop point par atakna nahi.
-  const source = useMemo(() => ({ uri, useCaching: true }), [uri]);
+  // HLS (.m3u8) par disk-cache nahi lagta (sirf mp4 par); HLS khud segment cache karta hai.
+  const source = useMemo(() => ({ uri, useCaching: !isHlsUri(uri) }), [uri]);
 
   // Pichli baar jaha roka tha (seconds) -> wahi se start
   const resumeAtRef = useRef(videoPositions[videoId] || 0);
 
   const player = useVideoPlayer(source, (p) => {
     p.loop = true;
-    p.bufferOptions = PRELOAD_BUFFER;
+    p.bufferOptions = PERF.cfg().buffers.preload;
     if (resumeAtRef.current > 0.5) {
       try { p.currentTime = resumeAtRef.current; } catch (e) {}
     }
@@ -875,11 +855,8 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
 
   // Buffer settings alag effect me: sirf buffer badalna hai, play/pause/seek nahi.
   useEffect(() => {
-    player.bufferOptions = active
-      ? ACTIVE_BUFFER
-      : near
-      ? NEAR_BUFFER
-      : PRELOAD_BUFFER;
+    const B = PERF.cfg().buffers;
+    player.bufferOptions = active ? B.active : near ? B.near : B.preload;
   }, [active, near, player]);
 
   // SPEED FIX: pehle har baar (even preload hote waqt) currentTime = 0 seek
@@ -919,6 +896,11 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
   // Buffering ho rahi ho to chhota spinner dikhao (frozen frame nahi lagega)
   const { status } = useEvent(player, 'statusChange', { status: player.status });
   const isBuffering = active && ready && status === 'loading';
+
+  // Atakna ginte hain: bar-bar ho to PERF khud ek tier neeche kar deta hai (weak phone / slow net).
+  useEffect(() => {
+    if (isBuffering) PERF.reportStall();
+  }, [isBuffering]);
 
   return (
     <>
@@ -1072,7 +1054,7 @@ const TabGrid = memo(function TabGrid({ mode, data, live, loading, onOpen, onLiv
   const liveRow = useMemo(
     () =>
       live && live.length > 0 ? (
-        <FlatList
+        <FlatList maxToRenderPerBatch={8}
           data={live}
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -1510,7 +1492,7 @@ const VideoItem = memo(function VideoItem({
 
       {shouldRenderVideo ? (
         <FeedVideo
-          uri={item.videoUrl || item.video}
+          uri={pickVideoUri(item)}
           active={isVideoActive}
           near={nearVideo}
           videoId={item.id}
@@ -1565,13 +1547,13 @@ const VideoItem = memo(function VideoItem({
             }}
           >
             <Image
-              source={require("../../assets/star-logo.png")}
+              source={require("../../assets/star-logo.webp")}
               style={{ width: 150, height: 150, resizeMode: "contain" }}
             />
 
             {/* Chamak (shine): star ke upar safed flash, starRotate yahan shine value hai */}
             <Animated.Image
-              source={require("../../assets/star-logo.png")}
+              source={require("../../assets/star-logo.webp")}
               style={{
                 position: "absolute",
                 width: 150,
@@ -1702,7 +1684,7 @@ const VideoItem = memo(function VideoItem({
           onPress={() => onOpenStar(item.id)}
         >
           <Image
-            source={require('../../assets/star-logo.png')}
+            source={require('../../assets/star-logo.webp')}
             style={styles.starImage}
           />
           <Text style={styles.starUpText}>StarUp</Text>
@@ -4690,9 +4672,8 @@ const renderItem = useCallback(({ item, index }) => {
     !showGrid &&
     (index === currentIndex ||
       // agla + pichla video HAMESHA ready (mountIndex ka wait nahi) -> swipe par atakna nahi
-      index === currentIndex + 1 ||
-      index === currentIndex - 1 ||
-      (index >= mountIndex - PRELOAD_BEHIND && index <= mountIndex + PRELOAD_AHEAD));
+      (PERF.cfg().next && index === currentIndex + 1) ||
+      (index >= mountIndex && index <= mountIndex + PERF.cfg().ahead));
   const nearVideo = index === currentIndex + 1;
   const isCurrent = activeVideo === index;
 
@@ -4859,7 +4840,7 @@ disableIntervalMomentum={true}
     <View style={styles.myStarBox}>
 
       <Image
-        source={require('../../assets/star-logo.png')}
+        source={require('../../assets/star-logo.webp')}
         style={styles.myStarImage}
       />
 
@@ -4879,7 +4860,7 @@ disableIntervalMomentum={true}
         onPress={() => setSelectedStar(1)}
       >
         <Image
-          source={require('../../assets/star-logo.png')}
+          source={require('../../assets/star-logo.webp')}
           style={styles.popupStarImage}
         />
 
@@ -4896,7 +4877,7 @@ disableIntervalMomentum={true}
         onPress={() => setSelectedStar(3)}
       >
         <Image
-          source={require('../../assets/star-logo.png')}
+          source={require('../../assets/star-logo.webp')}
           style={styles.popupStarImage}
         />
 
@@ -4913,7 +4894,7 @@ disableIntervalMomentum={true}
         onPress={() => setSelectedStar(10)}
       >
         <Image
-          source={require('../../assets/star-logo.png')}
+          source={require('../../assets/star-logo.webp')}
           style={styles.popupStarImage}
         />
 

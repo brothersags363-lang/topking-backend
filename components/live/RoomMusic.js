@@ -634,7 +634,7 @@ export const MusicSheet = memo(function MusicSheet({ visible, onClose, onReopen,
               </View>
             </>
           ) : hasQueue ? (
-            <FlatList
+            <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
               data={music.queue}
               keyExtractor={(x, i) => x.id + "_" + i}
               renderItem={renderQueue}

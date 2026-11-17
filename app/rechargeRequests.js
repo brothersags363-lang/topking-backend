@@ -162,7 +162,7 @@ export default function RechargeRequests() {
         ))}
       </View>
 
-      <FlatList
+      <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
         data={shown}
         keyExtractor={(i) => i.id}
         keyboardShouldPersistTaps="handled"

@@ -162,7 +162,7 @@ export default function AdminFrames() {
       {(loading && !showingSearch) || searching ? (
         <ActivityIndicator size="large" color="#FFD700" style={{ marginTop: 30 }} />
       ) : (
-        <FlatList
+        <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
           data={data}
           keyExtractor={(i) => i.uid}
           keyboardShouldPersistTaps="handled"
@@ -194,7 +194,7 @@ export default function AdminFrames() {
         <View style={styles.modalBg}>
           <View style={styles.sheet}>
             <Text style={styles.sheetTitle}>@{picked?.username} ko frame do</Text>
-            <FlatList
+            <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
               data={ADMIN_FRAME_KEYS}
               numColumns={2}
               keyExtractor={(k) => k}

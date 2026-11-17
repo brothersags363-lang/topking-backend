@@ -39,7 +39,7 @@ import {
 } from 'react-native';
 import { scopedBackHandler } from '../../utils/scopedBack';
 import { callApi } from '../../utils/api';
-import TopKingLogo from '../../assets/images/topking-logo.png';
+import TopKingLogo from '../../assets/images/topking-logo.webp';
 import FamilyCell from '../../components/FamilyCell';
 import FastImage from '../../components/FastImage';
 import UserTick from '../../components/UserTick';

@@ -470,7 +470,7 @@ if (roomLayout === "multiguest") {
                     <Text style={styles.typeTitle}>{l.title}</Text>
                     <Text style={styles.typeDesc}>{l.desc}</Text>
                   </View>
-                  {active && <Image source={require('../assets/images/grey-v-tick.png')} style={{ width: 22, height: 22 }} resizeMode="contain" />}
+                  {active && <Image source={require('../assets/images/grey-v-tick.webp')} style={{ width: 22, height: 22 }} resizeMode="contain" />}
                 </TouchableOpacity>
               );
             })}

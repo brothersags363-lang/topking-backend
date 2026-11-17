@@ -296,7 +296,7 @@ export default function OfficialPanel() {
           {searching ? (
             <ActivityIndicator color="#FFD700" style={{ marginTop: 30 }} />
           ) : (
-            <FlatList
+            <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
               data={users}
               keyExtractor={(i) => i.uid}
               keyboardShouldPersistTaps="handled"
@@ -326,7 +326,7 @@ export default function OfficialPanel() {
       ) : bansLoading ? (
         <ActivityIndicator color="#FFD700" style={{ marginTop: 30 }} />
       ) : (
-        <FlatList
+        <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
           data={bans}
           keyExtractor={(i) => i.uid}
           ListEmptyComponent={<Text style={styles.empty}>Abhi koi live ban nahi hai</Text>}

@@ -63,7 +63,7 @@ const ViewerRow = memo(({ user, canKick, onKick, onPressUser }) => (
 
 export const ViewersSheet = ({ visible, onClose, users, isHost, onKick, onUserPress }) => (
   <Sheet visible={visible} onClose={onClose} title={`Viewers · ${users.length}`} tall>
-    <FlatList
+    <FlatList maxToRenderPerBatch={8}
       data={users}
       keyExtractor={(u) => u.uid}
       initialNumToRender={10}
@@ -89,7 +89,7 @@ export const GiftersSheet = ({ visible, onClose, gifters }) => {
   );
   return (
     <Sheet visible={visible} onClose={onClose} title="Top gifters" tall>
-      <FlatList
+      <FlatList maxToRenderPerBatch={8}
         data={list}
         keyExtractor={(g, i) => g.uid || String(i)}
         initialNumToRender={10}

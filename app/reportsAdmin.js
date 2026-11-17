@@ -121,7 +121,7 @@ export default function ReportsAdmin() {
       </View>
 
       {tab === "videos" ? (
-        <FlatList
+        <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
           data={videos}
           keyExtractor={(i) => i.id}
           ListEmptyComponent={<Text style={styles.empty}>No reported videos</Text>}
@@ -138,7 +138,7 @@ export default function ReportsAdmin() {
           )}
         />
       ) : (
-        <FlatList
+        <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
           data={users}
           keyExtractor={(i) => i.id}
           ListEmptyComponent={<Text style={styles.empty}>No reported users</Text>}

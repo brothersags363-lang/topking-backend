@@ -47,7 +47,7 @@ import {
   View,
 } from 'react-native';
 
-import TopKingLogo from '../assets/images/topking-logo.png';
+import TopKingLogo from '../assets/images/topking-logo.webp';
 import { checkDeviceBanned, registerDevice } from '../utils/api';
 import { auth, db, getFCMToken } from './firebaseConfig';
 

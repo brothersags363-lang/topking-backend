@@ -1,5 +1,5 @@
 import React, { memo, useEffect } from 'react';
-import { View, Text, Image, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Animated, {
   useSharedValue,
@@ -9,6 +9,7 @@ import Animated, {
   cancelAnimation,
   Easing,
 } from 'react-native-reanimated';
+import FastImage from '../FastImage';
 import LevelFrame from '../LevelFrame';
 import SeatEmoji from './SeatEmoji';
 import { T } from './liveTheme';
@@ -54,7 +55,7 @@ function SeatItem({ seatKey, seat, stars, isSpeaking, index, onPress }) {
           ]}
         >
           {active ? (
-            <Image source={{ uri: seat.userImg || AVATAR }} style={styles.img} />
+            <FastImage source={{ uri: seat.userImg || AVATAR }} style={styles.img} />
           ) : (
             <MaterialCommunityIcons
               name={isHost ? 'microphone' : 'sofa'}

@@ -127,7 +127,7 @@ export default function Family() {
       {loading ? (
         <ActivityIndicator color={Y} style={{ marginTop: 40 }} />
       ) : (
-        <FlatList
+        <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
           data={shown}
           keyExtractor={(i) => i.id}
           renderItem={renderItem}

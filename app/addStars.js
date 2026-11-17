@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Alert,
   Keyboard,
+  Modal,
 } from "react-native";
 import {
   collection,
@@ -93,6 +94,8 @@ export default function AddStars() {
   const [selected, setSelected] = useState(null);
   const [currentStars, setCurrentStars] = useState(null);
   const [currentLevel, setCurrentLevel] = useState(null);
+  const [wallet, setWallet] = useState(null);
+  const [showInfo, setShowInfo] = useState(false);
   const [rupees, setRupees] = useState("");
   const [stars, setStars] = useState("");
   const [levelInput, setLevelInput] = useState("");
@@ -137,13 +140,16 @@ export default function AddStars() {
     if (!selected) return;
     setCurrentStars(null);
     setCurrentLevel(null);
+    setWallet(null);
     return onSnapshot(
       doc(db, "wallets", selected.id),
       (snap) => {
+        setWallet(snap.exists() ? snap.data() : {});
         setCurrentStars(snap.exists() ? Number(snap.data().stars || 0) : 0);
         setCurrentLevel(snap.exists() ? Number(snap.data().level || 0) : 0);
       },
       () => {
+        setWallet({});
         setCurrentStars(0);
         setCurrentLevel(0);
       }
@@ -152,6 +158,7 @@ export default function AddStars() {
 
   const pick = (u) => {
     setSelected(u);
+    setShowInfo(false);
     setRupees("");
     setStars("");
     setLevelInput("");
@@ -275,6 +282,11 @@ export default function AddStars() {
             </TouchableOpacity>
           </View>
 
+          <TouchableOpacity style={styles.infoBtn} onPress={() => setShowInfo(true)}>
+            <Ionicons name="information-circle-outline" size={18} color="#FFD700" />
+            <Text style={styles.infoBtnText}>Wallet Info</Text>
+          </TouchableOpacity>
+
           <TextInput
             placeholder="Kitne rupiya mile (jaise 15)"
             placeholderTextColor="#777"
@@ -320,7 +332,7 @@ export default function AddStars() {
       {searching ? (
         <ActivityIndicator color="#FFD700" style={{ marginTop: 30 }} />
       ) : (
-        <FlatList
+        <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
           data={results}
           keyExtractor={(i) => i.id}
           keyboardShouldPersistTaps="handled"
@@ -344,6 +356,34 @@ export default function AddStars() {
           )}
         />
       )}
+      <Modal visible={showInfo} transparent animationType="fade" onRequestClose={() => setShowInfo(false)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{selected?.username || "User"}</Text>
+            {wallet === null ? (
+              <ActivityIndicator color="#FFD700" style={{ marginVertical: 20 }} />
+            ) : (
+              <>
+                <View style={styles.dRow}>
+                  <Text style={styles.dLabel}>⭐ Wallet me Stars</Text>
+                  <Text style={styles.dValue}>{Number(wallet.stars || 0).toLocaleString("en-IN")}</Text>
+                </View>
+                <View style={styles.dRow}>
+                  <Text style={styles.dLabel}>📤 Sending Total</Text>
+                  <Text style={styles.dValue}>{Number(wallet.totalSpent || 0).toLocaleString("en-IN")}</Text>
+                </View>
+                <View style={styles.dRow}>
+                  <Text style={styles.dLabel}>📥 Receiving Stars</Text>
+                  <Text style={styles.dValue}>{Number(wallet.receivedStars || 0).toLocaleString("en-IN")}</Text>
+                </View>
+              </>
+            )}
+            <TouchableOpacity style={styles.closeBtn} onPress={() => setShowInfo(false)}>
+              <Text style={styles.submitText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -398,4 +438,23 @@ const styles = StyleSheet.create({
   sub: { color: "#aaa", marginTop: 3 },
   banned: { color: "red", fontWeight: "bold", fontSize: 12 },
   empty: { color: "#888", textAlign: "center", marginTop: 40 },
+  infoBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    marginTop: 12,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#FFD700",
+  },
+  infoBtnText: { color: "#FFD700", fontWeight: "bold", marginLeft: 6 },
+  modalBg: { flex: 1, backgroundColor: "rgba(0,0,0,0.75)", justifyContent: "center", padding: 24 },
+  modalCard: { backgroundColor: "#111", borderRadius: 16, padding: 18, borderWidth: 1, borderColor: "#FFD700" },
+  modalTitle: { color: "#FFD700", fontSize: 20, fontWeight: "bold", textAlign: "center", marginBottom: 12 },
+  dRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 8 },
+  dLabel: { color: "#ccc", fontSize: 15 },
+  dValue: { color: "#fff", fontSize: 15, fontWeight: "700" },
+  closeBtn: { backgroundColor: "#FFD700", borderRadius: 12, paddingVertical: 12, alignItems: "center", marginTop: 14 },
 });

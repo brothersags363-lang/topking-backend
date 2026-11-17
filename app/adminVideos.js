@@ -87,7 +87,7 @@ export default function AdminVideos() {
 
       <Text style={styles.count}>Latest videos: {filtered.length}</Text>
 
-      <FlatList
+      <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
         data={filtered}
         keyExtractor={(v) => v.id}
         ListEmptyComponent={<Text style={styles.empty}>No videos</Text>}

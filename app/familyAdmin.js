@@ -128,7 +128,7 @@ export default function FamilyAdmin() {
         ))}
       </View>
       {loading ? <ActivityIndicator color={Y} style={{ marginTop: 40 }} /> : (
-        <FlatList data={list} keyExtractor={(i) => i.id} renderItem={renderItem} contentContainerStyle={{ padding: 12, paddingBottom: 40 + insets.bottom }}
+        <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7} data={list} keyExtractor={(i) => i.id} renderItem={renderItem} contentContainerStyle={{ padding: 12, paddingBottom: 40 + insets.bottom }}
           ListEmptyComponent={<Text style={{ color: "#777", textAlign: "center", marginTop: 50 }}>Kuch nahi hai</Text>} />
       )}
 

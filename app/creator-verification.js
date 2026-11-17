@@ -17,7 +17,7 @@ import useBackStep from "../utils/useBackStep";
 import { auth, db } from "./firebaseConfig";
 import { callApi } from "../utils/api";
 
-const GREY_V_IMG = require("../assets/images/grey-v-tick.png");
+const GREY_V_IMG = require("../assets/images/grey-v-tick.webp");
 const { width: W } = Dimensions.get("window");
 
 const YELLOW = "#FFE600";

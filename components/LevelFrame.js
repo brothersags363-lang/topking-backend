@@ -9,13 +9,13 @@ import { ADMIN_FRAMES, useFrameInfo } from './adminFrames';
 // lv10 = purana frame (same), baaki sab naye animated frames:
 //   20 Agency, 30 VIP, 35 TopKing, 40 Purple Crown, 45 Red Gold Wings, 50 VIP 1
 const STATIC = {
-  10: require('../assets/frames/lv10.png'),
-  20: require('../assets/frames/lv20.png'),
-  30: require('../assets/frames/lv30.png'),
-  35: require('../assets/frames/lv35.png'),
-  40: require('../assets/frames/lv40.png'),
-  45: require('../assets/frames/lv45.png'),
-  50: require('../assets/frames/lv50.png'),
+  10: require('../assets/frames/lv10.webp'),
+  20: require('../assets/frames/lv20.webp'),
+  30: require('../assets/frames/lv30.webp'),
+  35: require('../assets/frames/lv35.webp'),
+  40: require('../assets/frames/lv40.webp'),
+  45: require('../assets/frames/lv45.webp'),
+  50: require('../assets/frames/lv50.webp'),
 };
 const ANIM = {
   10: require('../assets/frames_animated/lv10.webp'),

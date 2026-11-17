@@ -1010,7 +1010,7 @@ export default function App() {
         {starAnimationVideoId === item.id && (
           <View style={styles.starOverlay} pointerEvents="none">
             <Animated.Image
-              source={require('../assets/star-logo.png')}
+              source={require('../assets/star-logo.webp')}
               style={{
                 width: 170,
                 height: 170,
@@ -1448,7 +1448,7 @@ export default function App() {
               <Text style={styles.likesEmpty}>Abhi tak kisi ne like nahi kiya</Text>
             </View>
           ) : (
-            <FlatList
+            <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
               data={visibleLikes}
               keyExtractor={idKeyExtractor}
               style={{ flex: 1 }}
@@ -1548,7 +1548,7 @@ export default function App() {
                   });
                 }}
               >
-                <Image source={require('../assets/logo.png')} style={styles.shareLogo} />
+                <Image source={require('../assets/logo.webp')} style={styles.shareLogo} />
               </TouchableOpacity>
             </View>
           </View>

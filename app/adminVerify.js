@@ -16,7 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { db } from "./firebaseConfig";
 import useIsAdmin from "./useIsAdmin";
 
-const GREY_V = require("../assets/images/grey-v-tick.png");
+const GREY_V = require("../assets/images/grey-v-tick.webp");
 import { callApi } from "../utils/api";
 
 const PLACEHOLDER = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
@@ -123,7 +123,7 @@ export default function AdminVerify() {
       {searching ? (
         <ActivityIndicator color="#FFD700" style={{ marginTop: 30 }} />
       ) : (
-        <FlatList
+        <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
           data={results}
           keyExtractor={(i) => i.id}
           keyboardShouldPersistTaps="handled"

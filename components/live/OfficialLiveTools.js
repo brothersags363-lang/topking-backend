@@ -432,7 +432,7 @@ export default function OfficialLiveTools({ roomId, hostId, onLiveEnded }) {
               {loading ? <ActivityIndicator size="small" color="#fb7185" /> : null}
             </View>
 
-            <FlatList
+            <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
               data={q.trim() ? users : []}
               keyExtractor={(x) => x.uid}
               keyboardShouldPersistTaps="handled"

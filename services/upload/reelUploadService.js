@@ -30,6 +30,39 @@ import { setUploadState, resetUpload, getUploadState } from "./uploadManager";
 
 const API = "https://topking-backend.onrender.com";
 
+// ---------------------------------------------------------------
+// SMOOTH PLAYBACK: upload se pehle video ko 720p + ~2 Mbps me chhota karo.
+// Gallery ki 1080p/4K high-bitrate video weak phone par atakti/garam karti thi.
+// Module install/build me na ho ya compress fail ho to original video hi upload hoti hai.
+// Install: npx expo install react-native-compressor   (phir naya build)
+// ---------------------------------------------------------------
+let VideoCompressor = null;
+try {
+  VideoCompressor = require("react-native-compressor").Video;
+} catch (e) {
+  VideoCompressor = null;
+}
+
+async function compressForFeed(uri) {
+  if (!VideoCompressor || !uri) return uri;
+  try {
+    const out = await VideoCompressor.compress(
+      String(uri),
+      {
+        compressionMethod: "manual",
+        maxSize: 1280,
+        bitrate: 2000000,
+        minimumFileSizeForCompress: 3,
+      },
+      (p) => setUploadState({ progress: Math.min(4, Math.max(1, Math.round((p || 0) * 4))) })
+    );
+    return out || uri;
+  } catch (e) {
+    console.log("compress failed, original video upload hogi:", e?.message);
+    return uri;
+  }
+}
+
 // Render ke free/cold servers kabhi-kabhi Cloudflare se transient
 // 502/503/504 "bad gateway" bhej dete hain (server so raha tha ya
 // overload tha). Aisi retryable errors par hum khud thodi der ruk kar
@@ -223,7 +256,8 @@ export async function startReelUpload(payload) {
   setUploadState({ uploading: true, progress: 0, error: null, justCompleted: false });
 
   try {
-    let finalVideo = videoUri;
+    // 720p compress (fail ho to original). Neeche ke dono raste (direct R2 aur /merge) isi ko use karte hain.
+    let finalVideo = await compressForFeed(videoUri);
     let thumbnailUrl = "";
 
     const hasMusic = typeof audioUrl === "string" && audioUrl.trim() !== "";
@@ -349,8 +383,23 @@ export async function startReelUpload(payload) {
     if (uploadedVideo) {
       const originalAudioUrl = uploadedVideo;
 
+      // MULTI-QUALITY (HLS): server se kaho Cloudflare Stream me bhi daal de.
+      // Fail / band ho to koi dikkat nahi: video R2 ke mp4 se chalti rahegi.
+      let streamUid = "";
+      try {
+        const ing = await axios.post(
+          `${API}/stream/ingest`,
+          { videoUrl: uploadedVideo },
+          { headers: { Authorization: `Bearer ${token}` }, timeout: 20 * 1000 }
+        );
+        if (ing?.data?.success && ing.data.uid) streamUid = String(ing.data.uid);
+      } catch (e) {
+        console.log("stream ingest skip:", e?.response?.status || e?.message);
+      }
+
       const videoData = {
         videoUrl: uploadedVideo,
+        ...(streamUid ? { streamUid, hlsReady: false } : {}),
         musicId: musicId || "",
         audioUrl: audioUrl || originalAudioUrl,
         musicName: musicName || `${userData?.name}'s Original Audio`,

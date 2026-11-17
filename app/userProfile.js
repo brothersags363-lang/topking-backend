@@ -56,7 +56,7 @@ import {
   documentId,
 } from "firebase/firestore";
 
-import TopKingLogo from "../assets/images/topking-logo.png";
+import TopKingLogo from "../assets/images/topking-logo.webp";
 
 import AppBottomNav from "../components/AppBottomNav";
 import FamilyCell from "../components/FamilyCell";
@@ -1269,7 +1269,7 @@ export default function UserProfile() {
                   onPress={openStarUp}
                 >
                   <Image
-                    source={require("../assets/star-logo.png")}
+                    source={require("../assets/star-logo.webp")}
                     style={styles.starPillImg}
                   />
                   <Text style={styles.starPillText}>StarUp</Text>

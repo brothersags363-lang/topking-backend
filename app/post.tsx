@@ -650,7 +650,7 @@ onPress={() => {
                   <Ionicons name="close" size={24} color="#fff" />
                 </TouchableOpacity>
               </View>
-              <FlatList
+              <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
                 data={languages}
                 keyExtractor={(item) => item}
                 renderItem={({ item }) => (

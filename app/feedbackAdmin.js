@@ -150,7 +150,7 @@ const sendReply = async (feedbackId) => {
 
       </View>
 
-      <FlatList
+      <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
 
         data={feedbacks}
 
