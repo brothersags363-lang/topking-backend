@@ -42,7 +42,7 @@ export default function BuildFamily() {
     setBusy(true);
     try {
       const u = (await getDoc(doc(db, "users", uid))).data() || {};
-      if (!canCreateFamily(u)) throw new Error("Family sirf verified creators bana sakte hain.");
+      if (!canCreateFamily(u)) throw new Error("Family sirf Grey V creators bana sakte hain. Pehle Grey V tick lo.");
       if (u.familyId) throw new Error("Aap pehle se kisi family me ho.");
 
       const mine = await getDocs(query(collection(db, "families"), where("leaderId", "==", uid)));
@@ -114,7 +114,7 @@ export default function BuildFamily() {
       <Modal visible={done} transparent animationType="fade">
         <View style={s.overlay}>
           <View style={s.modal}>
-            <Image source={require("../assets/images/grey-v-tick.webp")} style={{ width: 56, height: 56 }} resizeMode="contain" />
+            <Image source={require("../assets/images/grey-v-tick.png")} style={{ width: 56, height: 56 }} resizeMode="contain" />
             <Text style={s.mTitle}>Request Submit Ho Gayi!</Text>
             <Text style={s.mText}>Aapki family ka review {REVIEW_HOURS} ghante me hoga. Approve hote hi family ranking me dikhne lagegi aur log join kar payenge.</Text>
             <TouchableOpacity style={[s.cta, { alignSelf: "stretch" }]} onPress={() => { setDone(false); router.replace("/family"); }}>

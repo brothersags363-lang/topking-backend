@@ -40,7 +40,7 @@ import {
 } from '@expo/vector-icons';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import PERF from '../../utils/devicePerf';
-import { pickVideoUri, isHlsUri } from '../../utils/videoSource';
+import { pickVideoUri, isHlsUri, fixCdn } from '../../utils/videoSource';
 
 import {
   addDoc,
@@ -401,7 +401,7 @@ const PlayerView = React.memo(
 
         {!ready && !!thumbnail && (
           <Image
-            source={{ uri: thumbnail }}
+            source={{ uri: fixCdn(thumbnail) }}
             style={[styles.video, styles.poster]}
             resizeMode="cover"
           />
@@ -432,7 +432,7 @@ const VideoPlayerItem = React.memo(
         <View style={styles.playerWrap}>
           {!!thumbnail && (
             <Image
-              source={{ uri: thumbnail }}
+              source={{ uri: fixCdn(thumbnail) }}
               style={[styles.video, styles.poster]}
               resizeMode="cover"
             />
@@ -520,7 +520,7 @@ const VideoItem = React.memo(
         onPress={() => actions.onPress(item.id)}
       >
         <VideoPlayerItem
-          uri={pickVideoUri(item)}
+          uri={pickVideoUri(item, PERF.quality())}
           thumbnail={item.thumbnail}
           active={isActive}
           preload={isNext}
@@ -1008,7 +1008,7 @@ export default function App() {
   // Aane wale videos ke posters pehle se cache me => swipe pe poster instant.
   useEffect(() => {
     for (let i = activeVideo + 1; i <= activeVideo + PREFETCH_AHEAD; i++) {
-      const thumb = videoData[i]?.thumbnail;
+      const thumb = fixCdn(videoData[i]?.thumbnail);
       if (thumb) Image.prefetch(thumb).catch(() => {});
     }
   }, [activeVideo, videoData]);

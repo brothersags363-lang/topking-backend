@@ -4,7 +4,7 @@ import { scopedBackHandler } from "../utils/scopedBack";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "../utils/safeRouter";
 import { Ionicons } from "@expo/vector-icons";
-import AppLogo from "../assets/images/topking-logo.webp";
+import AppLogo from "../assets/images/topking-logo.png";
 
 const Y = "#FFE500";
 
@@ -19,8 +19,8 @@ const RULES = [
       "Your video must be clear and must not be misleading or fake.",
       "Copied or re-uploaded videos will be removed and action may be taken on your account.",
     ],
-    tick: "300+ views = White Tick",
-    note: "When your original video reaches 300+ views, you get the white verified tick. See the next point for the Grey V and Blue ticks. A tick stays only while your content is original and you follow the rules. Fake views are not counted.",
+    tick: "5 videos x 300+ views = White Tick",
+    note: "When 5 of your original videos each reach 300+ views, you get the white verified tick. See the next point for the Grey V and Blue ticks. A tick stays only while your content is original and you follow the rules. Fake views are not counted.",
   },
   {
     n: 2, t: "Verified Tick – White, Grey V and Blue",
@@ -30,7 +30,7 @@ const RULES = [
         color: "#FFFFFF", name: "White Tick", sub: "Original creator",
         how: [
           "Upload only your own original videos.",
-          "You get the white tick as soon as one original video reaches 300+ views.",
+          "You get the white tick when 5 original videos each have 300+ views.",
           "Copied videos and fake views are not counted.",
         ],
       },
@@ -44,7 +44,7 @@ const RULES = [
           "Get 5 videos with 3000+ views each.",
           "As soon as everything is complete, your Grey V tick is applied automatically.",
         ],
-        perks: "Benefits: become a Family Creator, priority reports within 24 hours, more visibility, higher earnings.",
+        perks: "Benefits: only Grey V creators can build a Family (White tick is not enough), priority reports within 24 hours, more visibility, higher earnings.",
       },
       {
         color: "#1E90FF", name: "Blue Tick", sub: "Premium Creator",
@@ -179,7 +179,7 @@ const Rule = ({ r }) => {
           <View key={t.name} style={s.tickCard}>
             <View style={s.tickHead}>
               {t.grey ? (
-                <Image source={require("../assets/images/grey-v-tick.webp")} style={{ width: 30, height: 30 }} resizeMode="contain" />
+                <Image source={require("../assets/images/grey-v-tick.png")} style={{ width: 30, height: 30 }} resizeMode="contain" />
               ) : (
                 <Ionicons name="checkmark-circle" size={30} color={t.color} />
               )}

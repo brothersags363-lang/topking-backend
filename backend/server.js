@@ -2031,7 +2031,33 @@ app.post("/upload-url", uploadLimiter, verifyUser, async (req, res) => {
     const fileId = crypto.randomUUID();
     const videoKey = `${fileId}.mp4`;
     const thumbKey = `${fileId}.jpg`;
+    const video480Key = `${fileId}-480.mp4`;
     const EXPIRES = 2 * 60 * 60; // 2 ghante (badi video / dheemi net)
+
+    // 480p version ke liye alag upload URL (slow net / mobile data par yahi chalegi)
+    const video480UploadUrl = await presign(
+      r2,
+      new PutObjectCommand({
+        Bucket: process.env.R2_BUCKET,
+        Key: video480Key,
+        ContentType: "video/mp4",
+        CacheControl: "public, max-age=31536000, immutable",
+      }),
+      { expiresIn: EXPIRES }
+    );
+
+    // 360p version (bahut slow net ke liye)
+    const video360Key = `${fileId}-360.mp4`;
+    const video360UploadUrl = await presign(
+      r2,
+      new PutObjectCommand({
+        Bucket: process.env.R2_BUCKET,
+        Key: video360Key,
+        ContentType: "video/mp4",
+        CacheControl: "public, max-age=31536000, immutable",
+      }),
+      { expiresIn: EXPIRES }
+    );
 
     const [videoUploadUrl, thumbnailUploadUrl] = await Promise.all([
       presign(
@@ -2058,6 +2084,10 @@ app.post("/upload-url", uploadLimiter, verifyUser, async (req, res) => {
       success: true,
       videoUploadUrl,
       videoUrl: `${base}/${videoKey}`,
+      video480UploadUrl,
+      video480Url: `${base}/${video480Key}`,
+      video360UploadUrl,
+      video360Url: `${base}/${video360Key}`,
       thumbnailUploadUrl,
       thumbnailUrl: `${base}/${thumbKey}`,
     });
@@ -3493,6 +3523,13 @@ app.post("/admin/add-stars", generalLimiter, verifyUser, requireAdminDoc, async 
     return res.status(500).json({ success: false, error: "Server error" });
   }
 });
+
+// Faststart: direct-R2 video ko turant-chalne layak banao (alag file: faststartVideo.js)
+try {
+  require("./faststartVideo")({ app, r2, ffmpegPath, verifyUser, uploadLimiter });
+} catch (e) {
+  console.error("faststartVideo load error:", e && e.message);
+}
 
 // Multi-quality HLS (Cloudflare Stream) — alag file: streamHls.js
 // CF_ACCOUNT_ID + CF_STREAM_TOKEN set na ho to ye chup-chap band rehta hai.

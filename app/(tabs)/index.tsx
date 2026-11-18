@@ -5,7 +5,8 @@ import { checkVideoAction, getVideoLocks } from "../../utils/videoLocks";
 // ==========================
 import { notifyNewFollower, notifyVideoLike } from "../../utils/pushNotify";
 import PERF from "../../utils/devicePerf";
-import { pickVideoUri, isHlsUri } from "../../utils/videoSource";
+import { pickVideoUri, isHlsUri, fixCdn } from "../../utils/videoSource";
+import warmAhead, { stopWarmAhead } from "../../utils/warmAhead";
 import React, { memo,  useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -725,6 +726,7 @@ let feedFocused = true;
 const setFeedFocused = (v: boolean) => {
   feedFocused = v;
   if (!v) silenceOthers(null); // null = koi exception nahi -> sab band
+  if (!v) stopWarmAhead(); // dusre page par ho to peeche ka prefetch bhi band
 };
 
 // INSTA: swipe par naya video React re-render ka wait kiye bina TURANT chalu
@@ -897,9 +899,13 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
   const { status } = useEvent(player, 'statusChange', { status: player.status });
   const isBuffering = active && ready && status === 'loading';
 
-  // Atakna ginte hain: bar-bar ho to PERF khud ek tier neeche kar deta hai (weak phone / slow net).
+  // Atakna ginte hain -- lekin SIRF asli atakna (1.2 sec se zyada ruka). Loop restart / seek par
+  // 'loading' status kuch ms ke liye aata hai, use atakna ginne se tier galat neeche girta tha
+  // (aur tier girne se agla video preload hona band ho jata tha -> har swipe par ruk-ruk).
   useEffect(() => {
-    if (isBuffering) PERF.reportStall();
+    if (!isBuffering) return;
+    const t = setTimeout(() => PERF.reportStall(), 1200);
+    return () => clearTimeout(t);
   }, [isBuffering]);
 
   return (
@@ -917,7 +923,7 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
         onFirstFrameRender={() => setReady(true)}
       />
       {!ready && thumbnail ? (
-        <ExpoImage source={thumbnail} style={StyleSheet.absoluteFill} contentFit="cover" cachePolicy="memory-disk" priority="high" transition={0} pointerEvents="none" />
+        <ExpoImage source={fixCdn(thumbnail)} style={StyleSheet.absoluteFill} contentFit="cover" cachePolicy="memory-disk" priority="high" transition={0} pointerEvents="none" />
       ) : null}
       {isBuffering ? (
         <View style={styles.bufferSpinner} pointerEvents="none">
@@ -981,7 +987,7 @@ const GridTile = memo(function GridTile({ item, idx, w, h, meta, onPress }) {
     >
       {item.thumbnail ? (
         <ExpoImage
-          source={item.thumbnail}
+          source={fixCdn(item.thumbnail)}
           style={StyleSheet.absoluteFill}
           contentFit="cover"
           cachePolicy="memory-disk"
@@ -1492,7 +1498,7 @@ const VideoItem = memo(function VideoItem({
 
       {shouldRenderVideo ? (
         <FeedVideo
-          uri={pickVideoUri(item)}
+          uri={pickVideoUri(item, PERF.quality())}
           active={isVideoActive}
           near={nearVideo}
           videoId={item.id}
@@ -1500,7 +1506,7 @@ const VideoItem = memo(function VideoItem({
           thumbnail={item.thumbnail}
         />
       ) : item.thumbnail ? (
-        <ExpoImage source={item.thumbnail} style={{ width, height: itemHeight, backgroundColor: "#000" }} contentFit="cover" cachePolicy="memory-disk" priority="high" transition={0} />
+        <ExpoImage source={fixCdn(item.thumbnail)} style={{ width, height: itemHeight, backgroundColor: "#000" }} contentFit="cover" cachePolicy="memory-disk" priority="high" transition={0} />
       ) : (
         <View
           style={{
@@ -4537,9 +4543,12 @@ const renderComment = useCallback(({ item: rawItem }) => {
     // 220ms: swipe settle hone ke baad hi naya player mount. (Agle 2 videos pehle se ready hain.)
     mountTimeoutRef.current = setTimeout(() => {
       setMountIndex(index);
-    }, 150);
+    }, 250);
 
     const currentItem = viewableItems[0].item;
+
+    // WARM-AHEAD: agle videos ka shuru peeche chupke se garam (player nahi banta)
+    warmAhead(videosRef.current, index);
 
     // WARM: is video ke owner ka lock cache me pehle se -> comment/share check turant (0 wait)
     try {
@@ -4600,7 +4609,7 @@ useEffect(() => {
 useEffect(() => {
   const urls = videos
     .slice(currentIndex + 1, currentIndex + 7)
-    .map((v) => v.thumbnail)
+    .map((v) => fixCdn(v.thumbnail))
     .filter((t) => typeof t === 'string' && t.length > 0);
   if (urls.length) {
     try { ExpoImage.prefetch(urls, 'memory-disk'); } catch (e) {}
@@ -4667,13 +4676,17 @@ const renderItem = useCallback(({ item, index }) => {
   const isVideoActive = isFocused && !showGrid && activeVideo === index && pausedVideoId !== item.id;
   // Pichla 1 + agle 3 videos ke player pehle se ready rakho:
   // scroll karte hi video turant chalega (na ruka, na black screen).
+  // SMOOTH: players ka window (agle videos) sirf swipe SETTLE hone ke baad badalta hai
+  // (mountIndex). Pehle agla player swipe animation ke BEECH me ban/toot-ta tha ->
+  // frame drop (lag). Ab current video hamesha mount hai, aur uska agla video
+  // pehle se mounted tha, isliye swipe par turant chalta hai.
+  const perfCfg = PERF.cfg();
+  const lead = Math.max(perfCfg.ahead, perfCfg.next ? 1 : 0);
   const shouldRenderVideo =
     isFocused &&
     !showGrid &&
     (index === currentIndex ||
-      // agla + pichla video HAMESHA ready (mountIndex ka wait nahi) -> swipe par atakna nahi
-      (PERF.cfg().next && index === currentIndex + 1) ||
-      (index >= mountIndex && index <= mountIndex + PERF.cfg().ahead));
+      (index >= mountIndex && index <= mountIndex + lead));
   const nearVideo = index === currentIndex + 1;
   const isCurrent = activeVideo === index;
 
@@ -4773,7 +4786,7 @@ disableIntervalMomentum={true}
         /* removeClippedSubviews video surface ko baar-baar detach/attach
            karta tha (black flash + atakna) -> band. */
         removeClippedSubviews={false}
-        windowSize={3} /* MEMORY FIX: pehle 5 -> ek saath 5 video player/decoder mounted the */
+        windowSize={Math.max(PERF.cfg().ahead, PERF.cfg().next ? 1 : 0) >= 2 ? 5 : 3} /* +2 ahead ke liye 5, warna 3 (decoder kam) */
         initialNumToRender={3}
         maxToRenderPerBatch={3}
         updateCellsBatchingPeriod={50}

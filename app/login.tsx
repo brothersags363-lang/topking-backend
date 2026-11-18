@@ -281,7 +281,7 @@ export default function LoginScreen() {
         );
       });
       setOtpSent(true);
-      setResendIn(30);
+      setResendIn(60); // COST: SMS OTP paisa leta hai -> resend 30s se 60s
     } catch (e: any) {
       Alert.alert('OTP Error', friendlyAuthError(e?.code, e?.message));
     } finally {

@@ -10,10 +10,9 @@ export const MAX_MEMBERS = 100;     // ek family me max members
 export const Y = "#FFE500";         // Tiki yellow
 export const DEFAULT_AVATAR = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 
-// ---- Family kaun bana sakta hai (rules screen me: "verified creators only") ----
-// Aapke app me verified = true (white/yellow tick). Blue/Grey type alag se
-// rakhna ho to yahin ek jagah badalna hai.
-export const canCreateFamily = (u) => !!(u && u.verified === true);
+// ---- Family sirf Grey V (verifiedColor "yellow" = Grey V) ya Blue V bana sakta hai ----
+// White tick wale family nahi bana sakte.
+export const canCreateFamily = (u) => !!(u && u.verified === true && (u.verifiedColor === "yellow" || u.verifiedColor === "blue"));
 
 export const toMs = (t) => (t?.toMillis ? t.toMillis() : typeof t === "number" ? t : 0);
 

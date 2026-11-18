@@ -211,9 +211,9 @@ const getTopVideoLayout = (_: any, index: number) => ({
 /*  CACHES (module level => survive leaving / re-opening the screen)   */
 /* ------------------------------------------------------------------ */
 
-const HOME_TTL = 60 * 1000; // home data fresh for 1 min
+const HOME_TTL = 5 * 60 * 1000; // COST: 1 min -> 5 min
 const SEARCH_TTL = 60 * 1000;
-const VIDEO_CACHE_TTL = 5 * 60 * 1000;
+const VIDEO_CACHE_TTL = 15 * 60 * 1000; // COST: 5 -> 15 min
 
 const homeCache = {
   ts: 0,
@@ -312,7 +312,7 @@ const getUserCached = async (id: string) => {
 };
 
 // Top wallets (receivedStars): Star Up Earning + TopKing Star dono yahi use karte hain
-const WALLET_TTL = 30 * 1000;
+const WALLET_TTL = 3 * 60 * 1000; // COST: 30s -> 3 min
 let walletTopCache: { ts: number; rows: { id: string; data: any }[] } | null = null;
 let walletTopPromise: Promise<{ id: string; data: any }[]> | null = null;
 const fetchTopWallets = (force = false) => {
@@ -588,7 +588,7 @@ const ensureVideoCache = (): Promise<void> => {
   }
   if (!videoCachePromise) {
     videoCachePromise = getDocs(
-      query(collection(db, 'all_videos'), orderBy('createdAt', 'desc'), limit(200))
+      query(collection(db, 'all_videos'), orderBy('createdAt', 'desc'), limit(100)) /* COST: 200 -> 100 */
     )
       .then((snap) => {
         const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));

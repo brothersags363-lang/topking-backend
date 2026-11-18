@@ -78,7 +78,7 @@ const EMPTY_SEAT = {
 
 const AGORA_APP_ID = 'f75d0020d44345edb12bbf6847ef3d38';
 const TOKEN_ENDPOINT = 'https://topking-backend.onrender.com/token';
-const HEARTBEAT_INTERVAL = 8000;
+const HEARTBEAT_INTERVAL = 60000; // COST: 8s -> 60s
 const SEAT_JOIN_GRACE_MS = 25000; // host: seat par baitha banda channel me nahi aaya to seat khali
 const WEEKLY_TARGET_MIN = 30;
 const JOIN_ANIM_VARIANT = 'auto';

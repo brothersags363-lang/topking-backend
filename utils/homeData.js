@@ -5,12 +5,13 @@
 // - prefetchHome(): For You khulne ke kuch der baad chupchap data + pehle thumbnails
 //   load kar deta hai -> Follow/Discover pehli baar bhi spinner ke bina khulte hain.
 import { collection, query, orderBy, where, limit, getDocs } from 'firebase/firestore';
+import { getRecentRooms } from './recentRooms';
 import { Image as ExpoImage } from 'expo-image';
 import { auth, db } from '../app/firebaseConfig';
 import { tsMs, AVATAR_FALLBACK } from '../components/GridParts';
 
-export const DISCOVER_TTL = 90 * 1000;
-export const FOLLOW_TTL = 45 * 1000;
+export const DISCOVER_TTL = 5 * 60 * 1000; // COST: 90s -> 5 min
+export const FOLLOW_TTL = 3 * 60 * 1000; // COST: 45s -> 3 min
 
 export const discoverCache = { at: 0, videos: [] };
 export const followCache = { at: 0, uid: null, videos: [], lives: [] };
@@ -77,7 +78,7 @@ async function fetchFollow(uid) {
         getDocs(query(collection(db, 'all_videos'), where('userId', 'in', c), limit(20))).catch(() => null)
       )
     ),
-    getDocs(query(collection(db, 'rooms'), limit(150))).catch(() => null),
+    getRecentRooms(db), // COST: pehle har baar 150 rooms padhta tha; ab sirf pichhle 24h ke
   ]);
 
   const videos = [];

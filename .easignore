@@ -1,0 +1,16 @@
+node_modules/
+backend/
+functions/
+credentials/
+credentials.json
+google-services.json
+.expo/
+.env
+.env.*
+*.log
+node_modules_old/
+android/
+ios/
+dist/
+web-build/
+*.jks

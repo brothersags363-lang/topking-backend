@@ -2935,7 +2935,7 @@ useEffect(() => {
   const roomRef = doc(db, "rooms", roomId);
   const beat = () => { updateDoc(roomRef, { hostHeartbeat: serverTimestamp() }).catch(() => {}); };
   beat();
-  const timer = setInterval(beat, 20000);
+  const timer = setInterval(beat, 90000); // COST: 20s -> 90s (har beat sabke liye 1 read)
   const sub = AppState.addEventListener("change", (st) => { if (st === "active") beat(); });
   return () => { clearInterval(timer); sub.remove(); };
 }, [roomId, currentUserRole]);
@@ -3669,7 +3669,8 @@ useEffect(() => {
 
   const audienceQuery = query(
     collection(db, 'rooms', roomId, 'audience'),
-    orderBy('joinedAt', 'desc')
+    orderBy('joinedAt', 'desc'),
+    limit(100) // COST: bade room me bhi max 100 reads/snapshot
   );
 
   // PERF: when many people join/leave at once this fires in bursts and each
@@ -3695,7 +3696,7 @@ useEffect(() => {
       sig += d.id + ':' + (isVerified(dd.verified) ? 1 : 0) + ':' + (dd.verifiedColor === 'yellow' ? 'y' : 'w') + ':' + (dd.hearts || 0) + ':' + (dd.level || 0) + ':' + (dd.img || '') + ':' + (dd.name || '') + ':' + (dd.username || '') + '|';
       // heartbeat (lastSeen) sirf nayi app versions likhte hain; purane users ko kabhi stale nahi maante
       if (dd.lastSeen != null) {
-        if (!seen[d.id] || seen[d.id].v !== dd.lastSeen) seen[d.id] = { v: dd.lastSeen, at: nowLocal };
+        if (!seen[d.id] || (seen[d.id].src === 'aud' && seen[d.id].v !== dd.lastSeen)) seen[d.id] = { v: dd.lastSeen, at: nowLocal, src: 'aud' };
       } else if (seen[d.id]) {
         delete seen[d.id];
       }
@@ -3871,6 +3872,7 @@ if (currentUserRole === "host" || (closeForEveryone && isAdmin)) {
   await deleteDoc(roomRef);
   clearRoomSubcollection('chats');
   clearRoomSubcollection('audience');
+  clearRoomSubcollection('presence');
 
 } else {
 
@@ -4061,6 +4063,7 @@ useEffect(() => () => {
       deleteDoc(doc(db, 'rooms', roomId)).catch(() => {});
       clearRoomSubcollection('chats');
       clearRoomSubcollection('audience');
+      clearRoomSubcollection('presence');
     }
     return;
   }
@@ -4076,30 +4079,56 @@ useEffect(() => () => {
 }, []);
 
 // ---- VIEWER HEARTBEAT (app kill hone par ghost user na bache) ----
-// Har 90s me meri audience doc par chhota lastSeen write (merge => hearts/chat par asar nahi).
-// Doc host ne galti se hata di ho (jaise app background tha) to ye use wapas bana deta hai.
+// COST FIX: pehle har viewer apni *audience* doc par har 90s write karta tha aur room ke
+// SAAARE viewers poori audience collection sunte the -> N viewers = N x N reads.
+// Ab heartbeat alag `presence` doc me jata hai jise sirf HOST sunta hai (N viewers = N reads).
+// Audience doc wapas banana (host ne galti se hata di) sirf tab jab app background se wapas aaye.
 useEffect(() => {
   if (!db || !roomId || !currentUid) return;
-  const beat = () => {
+  const beat = (full) => {
     if (exitingRef.current || roomEndedRef.current || !audiencePayloadRef.current) return;
     if (roomDataRef.current?.kicked?.[currentUid]) return;
     if (roomDataRef.current?.hostId === currentUid) return;
-    setDoc(
-      doc(db, 'rooms', roomId, 'audience', currentUid),
-      { ...audiencePayloadRef.current, lastSeen: Date.now() },
-      { merge: true }
-    ).catch(() => {});
+    const now = Date.now();
+    setDoc(doc(db, 'rooms', roomId, 'presence', currentUid), { lastSeen: now }, { merge: true }).catch(() => {
+      // presence rule na ho to safe fallback: purani jagah (audience doc) par heartbeat
+      setDoc(doc(db, 'rooms', roomId, 'audience', currentUid), { ...audiencePayloadRef.current, lastSeen: now }, { merge: true }).catch(() => {});
+    });
+    if (full) {
+      setDoc(
+        doc(db, 'rooms', roomId, 'audience', currentUid),
+        { ...audiencePayloadRef.current, lastSeen: now },
+        { merge: true }
+      ).catch(() => {});
+    }
   };
-  const timer = setInterval(beat, 90000);
-  const sub = AppState.addEventListener('change', (st) => { if (st === 'active') beat(); });
-  return () => { clearInterval(timer); sub.remove(); };
+  const timer = setInterval(() => beat(false), 120000);
+  const sub = AppState.addEventListener('change', (st) => { if (st === 'active') beat(true); });
+  return () => {
+    clearInterval(timer); sub.remove();
+    deleteDoc(doc(db, 'rooms', roomId, 'presence', currentUid)).catch(() => {});
+  };
 }, [roomId, currentUid]);
+
+// ---- HOST: viewers ka presence sunta hai (sirf host, 1 listener) ----
+useEffect(() => {
+  if (!db || !roomId || currentUserRole !== 'host') return;
+  const unsub = onSnapshot(collection(db, 'rooms', roomId, 'presence'), (snap) => {
+    const n = Date.now();
+    snap.docChanges().forEach((ch) => {
+      if (ch.type === 'removed') return;
+      const v = ch.doc.data()?.lastSeen;
+      if (v != null) audSeenRef.current[ch.doc.id] = { v, at: n, src: 'pres' };
+    });
+  }, () => {});
+  return () => unsub();
+}, [roomId, currentUserRole]);
 
 // ---- HOST SWEEP: 5 min tak heartbeat na aaye to user + uski seat hata do ----
 // Time host ke LOCAL clock se naapa jata hai (phones ki clock alag ho to bhi galat nahi hoga).
 useEffect(() => {
   if (!db || !roomId || currentUserRole !== 'host') return;
-  const STALE_MS = 5 * 60 * 1000;
+  const STALE_MS = 8 * 60 * 1000;
   const sweep = async () => {
     const now = Date.now();
     const seen = audSeenRef.current;
@@ -4117,6 +4146,7 @@ useEffect(() => {
     });
     try {
       const jobs = stale.map((uid) => deleteDoc(doc(db, 'rooms', roomId, 'audience', uid)));
+      stale.forEach((uid) => deleteDoc(doc(db, 'rooms', roomId, 'presence', uid)).catch(() => {}));
       const reqs = roomDataRef.current?.speakerRequests || {};
       stale.forEach((uid) => {
         if (reqs[uid]) seatUpdates['speakerRequests.' + uid] = deleteField();

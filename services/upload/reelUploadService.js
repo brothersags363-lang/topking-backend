@@ -37,29 +37,125 @@ const API = "https://topking-backend.onrender.com";
 // Install: npx expo install react-native-compressor   (phir naya build)
 // ---------------------------------------------------------------
 let VideoCompressor = null;
+let RNCompressor = null;
 try {
-  VideoCompressor = require("react-native-compressor").Video;
+  RNCompressor = require("react-native-compressor");
+  VideoCompressor = RNCompressor.Video;
 } catch (e) {
   VideoCompressor = null;
+  RNCompressor = null;
 }
 
-async function compressForFeed(uri) {
-  if (!VideoCompressor || !uri) return uri;
+// ---------------------------------------------------------------
+// SIZE CAP: har quality ka FILE SIZE chhota rakho (bitrate video ki LAMBAI ke hisaab se).
+// Pehle bitrate fix tha (720p = 2 Mbps) -> 60 sec ki video ~15 MB banti thi aur feed me der se
+// load hoti thi. Ab: target MB se bitrate nikalta hai, [minBps, maxBps] ke beech rakhta hai.
+//   720p: ~3.5 MB (chhoti video me max 1.5 Mbps)   480p: ~1.8 MB   360p: ~1 MB
+// Compress ke baad bhi size target se 40% se zyada nikle to ek baar aur kam bitrate se.
+// Numbers badalne ho to sirf neeche ki TARGETS table badlo.
+// ---------------------------------------------------------------
+const TARGETS = {
+  p720: { maxSize: 1280, targetMB: 3.5, maxBps: 1500000, minBps: 650000 },
+  p480: { maxSize: 854, targetMB: 1.8, maxBps: 700000, minBps: 300000 },
+  p360: { maxSize: 640, targetMB: 1.0, maxBps: 400000, minBps: 200000 },
+};
+const AUDIO_BPS = 96000;
+
+function pickBitrate(durationSec, t) {
+  const total = (t.targetMB * 1024 * 1024 * 8) / Math.max(1, durationSec);
+  return Math.round(Math.min(t.maxBps, Math.max(t.minBps, total - AUDIO_BPS)));
+}
+
+async function getDurationSec(uri, fallback) {
   try {
+    if (RNCompressor && typeof RNCompressor.getVideoMetaData === "function") {
+      const m = await RNCompressor.getVideoMetaData(String(uri));
+      let d = Number(m && m.duration);
+      if (d > 1000) d = d / 1000; // kuch versions ms deti hain
+      if (d > 0) return d;
+    }
+  } catch (e) {}
+  const f = Number(fallback);
+  return f > 0 ? f : 30;
+}
+
+async function fileMB(uri) {
+  try {
+    let u = String(uri);
+    if (u.startsWith("/")) u = "file://" + u;
+    const info = await FileSystem.getInfoAsync(u);
+    return info && info.exists && info.size ? info.size / (1024 * 1024) : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+async function compressTier(uri, t, durationSec, onProgress, minFileMB = 0) {
+  let bps = pickBitrate(durationSec, t);
+  let best = null;
+  for (let pass = 0; pass < 2; pass++) {
     const out = await VideoCompressor.compress(
       String(uri),
       {
         compressionMethod: "manual",
-        maxSize: 1280,
-        bitrate: 2000000,
-        minimumFileSizeForCompress: 3,
+        maxSize: t.maxSize,
+        bitrate: bps,
+        minimumFileSizeForCompress: minFileMB,
       },
-      (p) => setUploadState({ progress: Math.min(4, Math.max(1, Math.round((p || 0) * 4))) })
+      pass === 0 ? onProgress : undefined
     );
-    return out || uri;
+    if (!out) break;
+    best = out;
+    const mb = await fileMB(out);
+    if (!mb || mb <= t.targetMB * 1.4) break;
+    // encoder ne bitrate se zyada size banaya -> kam bitrate se dobara (original se)
+    bps = Math.max(Math.round(t.minBps * 0.8), Math.round(bps * (t.targetMB / mb) * 0.9));
+  }
+  return best;
+}
+
+async function compressForFeed(uri, durationSec) {
+  if (!VideoCompressor || !uri) return uri;
+  try {
+    const out = await compressTier(
+      uri,
+      TARGETS.p720,
+      durationSec,
+      (p) => setUploadState({ progress: Math.min(4, Math.max(1, Math.round((p || 0) * 4))) }),
+      3
+    );
+    if (!out) return uri;
+    // compress ke baad bhi bada nikla (original se) to original hi rakho
+    const [a, b] = await Promise.all([fileMB(out), fileMB(uri)]);
+    if (a && b && a >= b) return uri;
+    return out;
   } catch (e) {
     console.log("compress failed, original video upload hogi:", e?.message);
     return uri;
+  }
+}
+
+// 480p version (slow net / mobile data ke liye). Fail ho to null -> sirf 720p rahegi.
+async function compress480(uri, durationSec) {
+  if (!VideoCompressor || !uri) return null;
+  try {
+    const out = await compressTier(uri, TARGETS.p480, durationSec);
+    return out || null;
+  } catch (e) {
+    console.log("480p compress skip:", e?.message);
+    return null;
+  }
+}
+
+// 360p version (bahut slow net ke liye). 480p wali file se banti hai -> jaldi.
+async function compress360(uri, durationSec) {
+  if (!VideoCompressor || !uri) return null;
+  try {
+    const out = await compressTier(uri, TARGETS.p360, durationSec);
+    return out || null;
+  } catch (e) {
+    console.log("360p compress skip:", e?.message);
+    return null;
   }
 }
 
@@ -172,7 +268,7 @@ async function makeThumbnail(fileUri) {
   }
 }
 
-async function uploadDirectToR2(videoUri, token) {
+async function uploadDirectToR2(videoUri, token, durationSec) {
   // Upload-url, file-ready aur thumbnail teeno ek saath (pehle ek-ek karke hote the)
   const [urlRes, fileUri] = await Promise.all([
     postWithRetry(
@@ -207,12 +303,44 @@ async function uploadDirectToR2(videoUri, token) {
     }
   })();
 
+  // 480p + 360p: phone ka CPU compress me, net 720p upload me -> sab saath chalte hain
+  const smallTask = (async () => {
+    const out = { u480: "", u360: "" };
+    try {
+      const f480 = await compress480(fileUri, durationSec);
+      if (f480 && urls.video480UploadUrl && urls.video480Url) {
+        const p480 = await ensureFileUri(f480);
+        try {
+          await putFileWithRetry(urls.video480UploadUrl, p480, "video/mp4", null, 3);
+          out.u480 = urls.video480Url;
+        } catch (e) {
+          console.log("480p upload skip:", e?.message);
+        }
+        if (urls.video360UploadUrl && urls.video360Url) {
+          const f360 = await compress360(p480, durationSec);
+          if (f360) {
+            try {
+              await putFileWithRetry(urls.video360UploadUrl, await ensureFileUri(f360), "video/mp4", null, 3);
+              out.u360 = urls.video360Url;
+            } catch (e) {
+              console.log("360p upload skip:", e?.message);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.log("small versions skip:", e?.message);
+    }
+    return out;
+  })();
+
   await putFileWithRetry(urls.videoUploadUrl, fileUri, "video/mp4", (frac) => {
     setUploadState({ progress: Math.min(97, Math.max(1, Math.round(frac * 97))) });
   });
 
   const thumbnailUrl = await thumbTask;
-  return { videoUrl: urls.videoUrl, thumbnailUrl };
+  const small = await smallTask;
+  return { videoUrl: urls.videoUrl, videoUrl480: small.u480, videoUrl360: small.u360, thumbnailUrl };
 }
 
 /**
@@ -257,7 +385,8 @@ export async function startReelUpload(payload) {
 
   try {
     // 720p compress (fail ho to original). Neeche ke dono raste (direct R2 aur /merge) isi ko use karte hain.
-    let finalVideo = await compressForFeed(videoUri);
+    const durationSec = await getDurationSec(videoUri, videoDuration);
+    let finalVideo = await compressForFeed(videoUri, durationSec);
     let thumbnailUrl = "";
 
     const hasMusic = typeof audioUrl === "string" && audioUrl.trim() !== "";
@@ -272,8 +401,10 @@ export async function startReelUpload(payload) {
 
       const processForm = new FormData();
 
+      // FIX: pehle yahan ORIGINAL gallery video (videoUri) jati thi -> server ise as-is copy karta tha
+      // aur music/subtitle/effect wali reels 20-75 MB ki ban jati thin. Ab compress ki hui 720p file.
       processForm.append("video", {
-        uri: Platform.OS === "android" ? videoUri : String(videoUri).replace("file://", ""),
+        uri: Platform.OS === "android" ? finalVideo : String(finalVideo).replace("file://", ""),
         type: "video/mp4",
         name: "video.mp4",
       });
@@ -329,19 +460,23 @@ export async function startReelUpload(payload) {
     }
 
     let uploadedVideo = finalVideo;
+    let uploadedVideo480 = "";
+    let uploadedVideo360 = "";
 
     if (!needsProcessing) {
       // 1) Pehle seedha R2 par (tez + toot-ta nahi). 2) Agar server me
       // /upload-url nahi hai ya fail ho jaye to purana /upload-video.
       let direct = null;
       try {
-        direct = await uploadDirectToR2(finalVideo, token);
+        direct = await uploadDirectToR2(finalVideo, token, durationSec);
       } catch (e) {
         console.log("Direct upload failed, purane route par fallback:", e?.message);
       }
 
       if (direct) {
         uploadedVideo = direct.videoUrl;
+        uploadedVideo480 = direct.videoUrl480 || "";
+        uploadedVideo360 = direct.videoUrl360 || "";
         thumbnailUrl = direct.thumbnailUrl || "";
       } else {
       const formData = new FormData();
@@ -383,6 +518,23 @@ export async function startReelUpload(payload) {
     if (uploadedVideo) {
       const originalAudioUrl = uploadedVideo;
 
+      // FASTSTART: direct-R2 video ka metadata shuru me laao (re-encode nahi, halka).
+      // Fail / der ho to ignore: video waise hi chalti rahegi.
+      if (!needsProcessing) {
+        try {
+          for (const u of [uploadedVideo, uploadedVideo480, uploadedVideo360]) {
+            if (!u) continue;
+            await axios.post(
+              `${API}/video/faststart`,
+              { videoUrl: u },
+              { headers: { Authorization: `Bearer ${token}` }, timeout: 20 * 1000 }
+            );
+          }
+        } catch (e) {
+          console.log("faststart skip:", e?.response?.status || e?.message);
+        }
+      }
+
       // MULTI-QUALITY (HLS): server se kaho Cloudflare Stream me bhi daal de.
       // Fail / band ho to koi dikkat nahi: video R2 ke mp4 se chalti rahegi.
       let streamUid = "";
@@ -399,6 +551,8 @@ export async function startReelUpload(payload) {
 
       const videoData = {
         videoUrl: uploadedVideo,
+        ...(uploadedVideo480 ? { videoUrl480: uploadedVideo480 } : {}),
+        ...(uploadedVideo360 ? { videoUrl360: uploadedVideo360 } : {}),
         ...(streamUid ? { streamUid, hlsReady: false } : {}),
         musicId: musicId || "",
         audioUrl: audioUrl || originalAudioUrl,

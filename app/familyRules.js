@@ -27,7 +27,7 @@ export default function FamilyRules() {
     setBusy(true);
     try {
       const u = (await getDoc(doc(db, "users", uid))).data() || {};
-      if (!canCreateFamily(u)) return Alert.alert("Eligible nahi", "Family sirf verified creators bana sakte hain.");
+      if (!canCreateFamily(u)) return Alert.alert("Eligible nahi", "Family sirf Grey V creators bana sakte hain. Pehle Grey V tick lo.");
       if (u.familyId) return Alert.alert("Pehle se family me ho", "Nayi family banane ke liye pehle apni family chhodo.");
       // ye check fail ho (jaise rules na ho) to bhi form khulne do; submit par dobara check hota hai
       let pending = false;
@@ -53,7 +53,7 @@ export default function FamilyRules() {
       </View>
       <ScrollView contentContainerStyle={{ padding: 18, paddingBottom: 120 + insets.bottom }}>
         <Section title="Family Guild Leader kyun banein?" lines={["Exclusive privileges", "Zyada rewards", "Apni khud ki team banao"]} />
-        <Section title="Kaun ban sakta hai?" lines={["Sirf verified creators (guild leader eligibility)"]} />
+        <Section title="Kaun ban sakta hai?" lines={["Sirf Grey V creators (5 videos x 3000+ views ke baad Grey V milta hai)"]} />
         <Section title="Family banane ka process" lines={[
           "Family ka logo, naam, slogan aur contact (WhatsApp/email) bharo",
           `Request admin ke paas jayegi — review me ${REVIEW_HOURS} ghante lag sakte hain`,

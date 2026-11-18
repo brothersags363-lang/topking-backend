@@ -313,29 +313,13 @@ const noTerminate = () => false;
 // re-render hota hai, poora card nahi. Screen blur hone par listener band.
 
 const VideoViewerPill = memo(function VideoViewerPill({ roomId, hostId, fallback }) {
-  const focused = useContext(FocusContext);
-  const [count, setCount] = useState(null);
-
-  useEffect(() => {
-    if (!db || !focused) return;
-    const unsub = onSnapshot(
-      collection(db, 'rooms', roomId, 'audience'),
-      (snap) => {
-        let n = 0;
-        snap.forEach((d) => {
-          if (d.id !== hostId) n++;
-        });
-        setCount(n);
-      },
-      () => {}
-    );
-    return () => unsub();
-  }, [focused, roomId, hostId]);
-
+  // COST FIX: pehle har video-live card apni poori `audience` collection sun-ta tha
+  // (10 cards x har viewer ka join/leave/heartbeat = hazaron reads). Ab host ka likha hua
+  // `viewerCount` (rooms doc me pehle se aa raha hai) dikhate hain -> 0 extra reads.
   return (
     <View style={styles.viewerPill}>
       <Ionicons name="people" size={12} color="#fff" />
-      <Text style={styles.viewerText}>{fmtCount(count === null ? fallback : count)}</Text>
+      <Text style={styles.viewerText}>{fmtCount(fallback)}</Text>
     </View>
   );
 });

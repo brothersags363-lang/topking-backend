@@ -135,7 +135,7 @@ const cleanVerified = (o: any) => {
 const JOIN_ANIM_VARIANT = "auto";
 
 // Same 30s window all-live.js uses to decide a room is still "live".
-const HEARTBEAT_INTERVAL = 8000;
+const HEARTBEAT_INTERVAL = 45000; // COST: 8s -> 45s (har beat = har online user ko 1 read)
 
 // PK settings
 const PK_DURATION_SEC = 180; // 3 minutes
@@ -2865,7 +2865,8 @@ export default function VideoLive() {
 
     const audienceQuery = query(
       collection(db, "rooms", roomId, "audience"),
-      orderBy("joinedAt", "desc")
+      orderBy("joinedAt", "desc"),
+      limit(100) // COST cap
     );
 
     // First load is instant, then updates are coalesced (max 1 render / 600ms).
@@ -3371,7 +3372,7 @@ export default function VideoLive() {
       if (!x?.hostId || x.hostId === currentUid) return;
       if (blockedRef.current.has(x.hostId)) return; // BLOCK: PK list me blocked host nahi
       const hb = x.lastHeartbeat?.toMillis?.() || 0;
-      if (!hb || now - hb > 45000) return; // not really live anymore
+      if (!hb || now - hb > 120000) return; // not really live anymore
       // voice rooms can't PK / already in a PK or has a pending invite
       const busy = x.seatsData ? "Voice room" : x.pk || x.pkInvite ? "In PK" : "";
       if (busy && !includeBusy) return;
