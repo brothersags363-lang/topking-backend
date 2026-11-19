@@ -41,8 +41,8 @@ const ViewerRow = memo(({ user, canKick, onKick, onPressUser }) => (
   <TouchableOpacity style={s.row} activeOpacity={0.7} onPress={() => onPressUser && onPressUser(user)}>
     <View style={s.avaWrap}>
       <Image source={{ uri: user.img || user.userImg || AVATAR }} style={s.ava} />
-      {((user.level || 0) >= 10 || !!(user.uid || user.userId)) && (
-        <LevelFrame level={user.level} uid={user.uid || user.userId} animated={false}
+      {((user.level || 0) >= 30 || !!(user.uid || user.userId)) && (
+        <LevelFrame level={user.level} uid={user.uid || user.userId} lookup={false} animated={false}
           style={{ position: 'absolute', width: 52, height: 52, top: -6, left: -6 }} />
       )}
     </View>

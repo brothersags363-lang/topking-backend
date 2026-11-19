@@ -1,3 +1,4 @@
+import LevelBadge from '../components/LevelBadge';
 import { reportVoiceAbuse } from "../utils/voiceReport";
 import OfficialLiveTools from "../components/live/OfficialLiveTools";
 import { blockIfProfane } from "../utils/guardText";
@@ -86,12 +87,11 @@ import GiftSheet from "../components/live/GiftSheet";
 import { isGifReaction, gifSource } from '../assets/emojiGifs';
 import { Image as ExpoImage } from 'expo-image';
 import FastImage from '../components/FastImage';
-import LevelFrame, { getSpecialKey } from '../components/LevelFrame';
-import { useAdminFrame } from '../components/adminFrames';
+import LevelFrame from '../components/LevelFrame';
+import { getAdminFrameKey } from '../components/adminFrames';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { LinearGradient } from 'expo-linear-gradient';
-import SeatItem from '../components/live/SeatItem';
-import JoinEntry, { PlainJoinPill } from '../components/live/JoinEntry';
+import JoinEntry, { JoinSlot } from '../components/live/JoinEntry';
 import { useJoinDelay } from '../components/live/useJoinDelay';
 import FloatingHearts from '../components/live/FloatingHearts';
 import { ViewersSheet, GiftersSheet, RoomMenuSheet, EmojiStrip } from '../components/live/RoomSheets';
@@ -259,44 +259,12 @@ const getLevelTheme = (level = 1) => {
 
 
 
-// FRAME FIX: frame SIRF unhe dikhe jinke paas sach me frame hai (admin/special frame ya level >= 10).
-// Pehle `level>=10 || !!uid` ki wajah se bina level wale users ko bhi frame dikhta tha.
-// Ab har jagah (seat, chat, list, gift chip, header, popup) ye ek hi check chalta hai.
-const GuardedFrame = (props) => {
-  const adminKey = useAdminFrame(props.uid);
-  const lv = Number(props.level) || 1;
-  if (!adminKey && !props.special && lv < 10) return null;
-  return <LevelFrame {...props} />;
-};
-
-const getLevelFrame=(level=1)=>{
-
-if(level>=50){
-return require("../assets/frames/lv50.webp");
-}
-
-if(level>=40){
-return require("../assets/frames/lv40.webp");
-}
-
-if(level>=30){
-return require("../assets/frames/lv30.webp");
-}
-
-if(level>=20){
-return require("../assets/frames/lv20.webp");
-}
-
-if(level>=10){
-return require("../assets/frames/lv10.webp");
-}
-
-return null;
-
-};
-
-
-
+// LIVE ROOM FRAME: sirf level se (LevelFrame.js ka rule): 30-39 -> lv30, 40-49 -> lv40, 50+ -> lv50.
+// Admin ka diya frame uid se aata hai (map se, koi Firestore read nahi) aur level frame ko override karta hai.
+// lookup={false} => koi Firestore read nahi (fast).
+const GuardedFrame = memo((props) => (
+  <LevelFrame level={props.level} uid={props.uid} special={props.special} animated={props.animated} style={props.style} lookup={false} />
+));
 
 // ============================================================
 // PERF: small memoized components that live OUTSIDE LiveRoom so a
@@ -374,7 +342,6 @@ const frameBox = (photoSize, container = photoSize) => {
 const FRAME_CHAT22 = frameBox(22);
 const FRAME_CHAT36 = frameBox(36, 42);
 const FRAME_LIST40 = frameBox(40);
-const FRAME_GIFT44 = frameBox(44);
 const FRAME_HOST38 = frameBox(38);
 
 // ===== NAVIGATION BAR GAP: har bottom popup is gap se upar rahega =====
@@ -527,9 +494,8 @@ const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress, cellW
   // MUTE FIX: mute user par kabhi glow nahi
   const glowOn = !!isSpeaking && !seat.isMuted;
   const occupied = !!seat.userId;
-  // Host ka frame laga hai ya nahi (admin/special frame ya level>=10). Frame ho tabhi "Host" label dikhega
-  const hostAdminKey = useAdminFrame(isHostSeat && occupied ? seat.userId : undefined);
-  const hostHasFrame = isHostSeat && occupied && !!(hostAdminKey || seat.special || seat.level >= 10);
+  // Host ka frame laga hai ya nahi (level>=30). Frame ho tabhi "Host" label dikhega
+  const hostHasFrame = isHostSeat && occupied && (seat.level >= 30 || !!getAdminFrameKey(seat.userId));
   const emoji = typeof seat.reaction === 'string' ? seat.reaction : seat.reaction?.e;
   return (
     <TouchableOpacity
@@ -542,10 +508,9 @@ const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress, cellW
           <>
             <FastImage uri={seat.userImg} fallback={STABLE_AVATAR} style={styles.seatAvatarImg} contentFit="cover" transition={0} />
             {glowOn ? <SpeakGlow /> : null}
-            {SHOW_SEAT_FRAME && (seat.level >= 10 || !!seat.userId) && (
+            {SHOW_SEAT_FRAME && (seat.level >= 30 || !!seat.userId) && (
               <GuardedFrame
                 level={seat.level}
-                special={seat.special}
                 uid={seat.userId}
                 animated={frameAnimOk && (SEAT_FRAME_ANIM_MODE === 'all' || (SEAT_FRAME_ANIM_MODE === 'host' && isHostSeat))}
                 pointerEvents="none"
@@ -687,7 +652,7 @@ const ComboRow = memo(({ data }) => {
             source={{ uri: data.senderImg || STABLE_AVATAR }}
             style={{ width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.9)", backgroundColor: "#2a2b38" }}
           />
-          {(!!data.senderId || Number(data.level) >= 10) && (
+          {(Number(data.level) >= 30 || !!data.senderId) && (
             <GuardedFrame level={data.level} uid={data.senderId} animated={false}
               style={{ position: "absolute", width: 54, height: 54, top: -11, left: -11, zIndex: 10 }} />
           )}
@@ -797,7 +762,7 @@ const ChatItem = memo(({ chat }) => {
                         />
 
                         {
-                            (chat.level>=10 || !!chat.senderId) && (
+                            (chat.level >= 30 || !!chat.senderId) && (
 
                                 <GuardedFrame level={chat.level} uid={chat.senderId} animated={CHAT_FRAME_ANIM}
                                     style={FRAME_CHAT22}
@@ -828,49 +793,7 @@ const ChatItem = memo(({ chat }) => {
 
                         <UserTick uid={chat.senderId || chat.uid} verified={!!(isVerified(chat.verified))} verifiedColor={chat?.verifiedColor} size={17} />
 
-                        <View
-                            style={[
-                                styles.levelBadge,
-                                {
-                                    marginLeft: 5,
-                                    backgroundColor:
-                                        getLevelTheme(
-                                            chat.level || 1
-                                        ).bg,
-
-                                    borderColor:
-                                        getLevelTheme(
-                                            chat.level || 1
-                                        ).border,
-                                },
-                            ]}
-                        >
-
-                            <MaterialCommunityIcons
-                                name="diamond-stone"
-                                size={8}
-                                color={
-                                    getLevelTheme(
-                                        chat.level || 1
-                                    ).icon
-                                }
-                            />
-
-                            <Text
-                                style={{
-                                    color:
-                                        getLevelTheme(
-                                            chat.level || 1
-                                        ).text,
-                                    fontSize: 8,
-                                    fontWeight: "bold",
-                                    marginLeft: 2,
-                                }}
-                            >
-                                LV {chat.level || 1}
-                            </Text>
-
-                        </View>
+                        <LevelBadge level={chat.level || 1} size={8} style={{ marginLeft: 5 }} />
 
                         <Text
                             style={{
@@ -910,7 +833,7 @@ const ChatItem = memo(({ chat }) => {
                             source={{ uri: chat.userImg || STABLE_AVATAR }}
                             style={{ width:22, height:22, borderRadius:11, backgroundColor:'#2a2b38' }}
                         />
-                        {(chat.level >= 10 || !!chat.senderId) && (
+                        {(chat.level >= 30 || !!chat.senderId) && (
                             <GuardedFrame level={chat.level} uid={chat.senderId} animated={CHAT_FRAME_ANIM}
                                 style={FRAME_CHAT22} />
                         )}
@@ -966,7 +889,7 @@ const ChatItem = memo(({ chat }) => {
                     />
 
                     {
-                        (chat.level>=10 || !!chat.senderId) && (
+                        (chat.level >= 30 || !!chat.senderId) && (
 
                             <GuardedFrame level={chat.level} uid={chat.senderId} animated={CHAT_FRAME_ANIM}
                                 style={FRAME_CHAT36}
@@ -993,49 +916,7 @@ const ChatItem = memo(({ chat }) => {
 
                         <UserTick uid={chat.senderId || chat.uid} verified={!!(isVerified(chat.verified))} verifiedColor={chat?.verifiedColor} size={15} />
 
-                        <View
-                            style={[
-                                styles.levelBadge,
-                                {
-                                    marginLeft: 6,
-                                    backgroundColor:
-                                        getLevelTheme(
-                                            chat.level || 1
-                                        ).bg,
-
-                                    borderColor:
-                                        getLevelTheme(
-                                            chat.level || 1
-                                        ).border,
-                                },
-                            ]}
-                        >
-
-                            <MaterialCommunityIcons
-                                name="diamond-stone"
-                                size={9}
-                                color={
-                                    getLevelTheme(
-                                        chat.level || 1
-                                    ).icon
-                                }
-                            />
-
-                            <Text
-                                style={{
-                                    color:
-                                        getLevelTheme(
-                                            chat.level || 1
-                                        ).text,
-                                    fontSize: 8,
-                                    fontWeight: "bold",
-                                    marginLeft: 2,
-                                }}
-                            >
-                                LV {chat.level || 1}
-                            </Text>
-
-                        </View>
+                        <LevelBadge level={chat.level || 1} size={9} style={{ marginLeft: 6 }} />
 
                     </View>
 
@@ -1137,7 +1018,7 @@ const HostRow = memo(({ user, invited, onInvite, onKick, onUserPress }) => (
         source={{ uri: user.img || STABLE_AVATAR }}
         style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#2a2b38' }}
       />
-      {(user.level >= 10 || !!user.uid) && (
+      {(user.level >= 30 || !!user.uid) && (
         <GuardedFrame level={user.level} uid={user.uid} pointerEvents="none"
           style={FRAME_LIST40} />
       )}
@@ -1281,46 +1162,9 @@ const HostPanelSheet = memo(
   }
 );
 
-const AvatarWithFrame = ({ uri, level, size = 70 }) => {
-  return (
-    <View
-      style={{
-        width: size + 20,
-        height: size + 20,
-        justifyContent: "center",
-        alignItems: "center",
-      }}
-    >
-      <ExpoImage cachePolicy="memory-disk" transition={0}
-        source={{ uri: uri || STABLE_AVATAR }}
-        style={{
-          width: size,
-          height: size,
-          borderRadius: size / 2,
-          zIndex: 1,
-        }}
-      />
-
-      {level >= 10 && (
-        <GuardedFrame level={level}
-          style={{
-            position: "absolute",
-            width: size + 20,
-            height: size + 20,
-            resizeMode: "contain",
-            zIndex: 10,
-          }}
-        />
-      )}
-    </View>
-  );
-};
-
-
-
 // ============================================================
 // ProfileFrame: animated level frame for profile popups.
-//  - level >= 10 : uses the existing <GuardedFrame> (lv10/20/30/40/50 art)
+//  - level >= 30 : <GuardedFrame> (lv30 / lv40 / lv50 art)
 //  - level 1..9  : smooth pulsing + glowing ring, a different colour per
 //                  level, so EVERY user has a frame in their profile.
 // All animation runs on the native driver, so it stays smooth even in a
@@ -1339,7 +1183,6 @@ const LOW_LEVEL_RING_COLORS = [
 ];
 
 const ProfileFrame = memo(({ level = 1, avatarSize = 100, frameSize, uid, containerSize, animated = true }) => {
-  const adminKey = useAdminFrame(uid);
   const lv = Math.max(1, Math.floor(Number(level) || 1));
   const outer = frameSize || Math.round(avatarSize * FRAME_SCALE);
   const offset = ((containerSize || avatarSize) - outer) / 2;
@@ -1355,13 +1198,13 @@ const ProfileFrame = memo(({ level = 1, avatarSize = 100, frameSize, uid, contai
     zIndex: 10,
   };
 
-  if (adminKey || lv >= 10) {
+  if (lv >= 30 || uid) {
     return (
       <View pointerEvents="none" style={wrapStyle}>
         <GuardedFrame
-          key={`lf-${lv}-${adminKey || ''}`}
+          key={`lf-${lv}`}
           level={lv}
-          special={adminKey}
+          uid={uid}
           animated={animated}
           style={{ width: outer, height: outer, resizeMode: "contain" }}
         />
@@ -1369,7 +1212,7 @@ const ProfileFrame = memo(({ level = 1, avatarSize = 100, frameSize, uid, contai
     );
   }
 
-  // FIX: frame sirf unhi ko dikhe jinhe mila hai (admin frame ya level >= 10).
+  // FIX: frame sirf unhi ko dikhe jinhe mila hai (level >= 30).
   // Pehle low-level (1-9) sab users ko pulsing ring dikhta tha -> ab kuch nahi dikhega.
   return null;
 });
@@ -1793,7 +1636,7 @@ useEffect(() => {
 // tha (raise-hand request me level nahi jata tha) -> listener me frame dikhta tha,
 // seat par nahi. Ab seat ka level = max(seat level, audience(wallet) level, mera level).
 // ===== SEAT EMOJI REACTION (3 sec, seat par dikhta hai) =====
-// uid -> { e: '😂', k: uniqueKey }.  Seat par `seat.reaction` ke naam se SeatItem ko jata hai.
+// uid -> { e: '😂', k: uniqueKey }.  Seat par `seat.reaction` ke naam se seat ko jata hai.
 const [seatReactions, setSeatReactions] = useState({});
 const seatEmojiTimersRef = useRef({});
 const seatEmojiSeenRef = useRef({});        // uid -> last handled reaction stamp
@@ -1851,7 +1694,6 @@ const resolvedSeats = useMemo(() => {
       out[k] = (lvl !== st.level || reaction)
         ? { ...st, level: lvl, ...(reaction ? { reaction } : null) }
         : st;
-      if (!out[k].special && aud?.special) out[k] = { ...out[k], special: aud.special };
       // LIVE PROFILE: seat par naam/photo hamesha audience doc ki taza value se
       if (aud && ((aud.img && aud.img !== out[k].userImg) || (aud.username && aud.username !== out[k].userName) || (aud.name && aud.name !== out[k].realName))) {
         out[k] = {
@@ -2935,7 +2777,7 @@ useEffect(() => {
   const roomRef = doc(db, "rooms", roomId);
   const beat = () => { updateDoc(roomRef, { hostHeartbeat: serverTimestamp() }).catch(() => {}); };
   beat();
-  const timer = setInterval(beat, 90000); // COST: 20s -> 90s (har beat sabke liye 1 read)
+  const timer = setInterval(beat, 20000);
   const sub = AppState.addEventListener("change", (st) => { if (st === "active") beat(); });
   return () => { clearInterval(timer); sub.remove(); };
 }, [roomId, currentUserRole]);
@@ -3194,7 +3036,6 @@ const audiencePayload = {
   username: currentName,      // Username
   img: currentAvatar || STABLE_AVATAR,
   level: currentLevel,
-  special: getSpecialKey(userData),
   verified: isVerified(userData.verified),
   verifiedColor:
     normTickColor(userData.verifiedColor),
@@ -3214,7 +3055,6 @@ if (data?.hostId === currentUid) {
  realName: currentRealName,
  userImg: currentAvatar || STABLE_AVATAR,
 level: hostLevel,
-special: getSpecialKey(userData),
 
 verified: isVerified(userData.verified),
 
@@ -3669,8 +3509,7 @@ useEffect(() => {
 
   const audienceQuery = query(
     collection(db, 'rooms', roomId, 'audience'),
-    orderBy('joinedAt', 'desc'),
-    limit(100) // COST: bade room me bhi max 100 reads/snapshot
+    orderBy('joinedAt', 'desc')
   );
 
   // PERF: when many people join/leave at once this fires in bursts and each
@@ -3696,7 +3535,7 @@ useEffect(() => {
       sig += d.id + ':' + (isVerified(dd.verified) ? 1 : 0) + ':' + (dd.verifiedColor === 'yellow' ? 'y' : 'w') + ':' + (dd.hearts || 0) + ':' + (dd.level || 0) + ':' + (dd.img || '') + ':' + (dd.name || '') + ':' + (dd.username || '') + '|';
       // heartbeat (lastSeen) sirf nayi app versions likhte hain; purane users ko kabhi stale nahi maante
       if (dd.lastSeen != null) {
-        if (!seen[d.id] || (seen[d.id].src === 'aud' && seen[d.id].v !== dd.lastSeen)) seen[d.id] = { v: dd.lastSeen, at: nowLocal, src: 'aud' };
+        if (!seen[d.id] || seen[d.id].v !== dd.lastSeen) seen[d.id] = { v: dd.lastSeen, at: nowLocal };
       } else if (seen[d.id]) {
         delete seen[d.id];
       }
@@ -3872,7 +3711,6 @@ if (currentUserRole === "host" || (closeForEveryone && isAdmin)) {
   await deleteDoc(roomRef);
   clearRoomSubcollection('chats');
   clearRoomSubcollection('audience');
-  clearRoomSubcollection('presence');
 
 } else {
 
@@ -4063,7 +3901,6 @@ useEffect(() => () => {
       deleteDoc(doc(db, 'rooms', roomId)).catch(() => {});
       clearRoomSubcollection('chats');
       clearRoomSubcollection('audience');
-      clearRoomSubcollection('presence');
     }
     return;
   }
@@ -4079,56 +3916,30 @@ useEffect(() => () => {
 }, []);
 
 // ---- VIEWER HEARTBEAT (app kill hone par ghost user na bache) ----
-// COST FIX: pehle har viewer apni *audience* doc par har 90s write karta tha aur room ke
-// SAAARE viewers poori audience collection sunte the -> N viewers = N x N reads.
-// Ab heartbeat alag `presence` doc me jata hai jise sirf HOST sunta hai (N viewers = N reads).
-// Audience doc wapas banana (host ne galti se hata di) sirf tab jab app background se wapas aaye.
+// Har 90s me meri audience doc par chhota lastSeen write (merge => hearts/chat par asar nahi).
+// Doc host ne galti se hata di ho (jaise app background tha) to ye use wapas bana deta hai.
 useEffect(() => {
   if (!db || !roomId || !currentUid) return;
-  const beat = (full) => {
+  const beat = () => {
     if (exitingRef.current || roomEndedRef.current || !audiencePayloadRef.current) return;
     if (roomDataRef.current?.kicked?.[currentUid]) return;
     if (roomDataRef.current?.hostId === currentUid) return;
-    const now = Date.now();
-    setDoc(doc(db, 'rooms', roomId, 'presence', currentUid), { lastSeen: now }, { merge: true }).catch(() => {
-      // presence rule na ho to safe fallback: purani jagah (audience doc) par heartbeat
-      setDoc(doc(db, 'rooms', roomId, 'audience', currentUid), { ...audiencePayloadRef.current, lastSeen: now }, { merge: true }).catch(() => {});
-    });
-    if (full) {
-      setDoc(
-        doc(db, 'rooms', roomId, 'audience', currentUid),
-        { ...audiencePayloadRef.current, lastSeen: now },
-        { merge: true }
-      ).catch(() => {});
-    }
+    setDoc(
+      doc(db, 'rooms', roomId, 'audience', currentUid),
+      { ...audiencePayloadRef.current, lastSeen: Date.now() },
+      { merge: true }
+    ).catch(() => {});
   };
-  const timer = setInterval(() => beat(false), 120000);
-  const sub = AppState.addEventListener('change', (st) => { if (st === 'active') beat(true); });
-  return () => {
-    clearInterval(timer); sub.remove();
-    deleteDoc(doc(db, 'rooms', roomId, 'presence', currentUid)).catch(() => {});
-  };
+  const timer = setInterval(beat, 90000);
+  const sub = AppState.addEventListener('change', (st) => { if (st === 'active') beat(); });
+  return () => { clearInterval(timer); sub.remove(); };
 }, [roomId, currentUid]);
-
-// ---- HOST: viewers ka presence sunta hai (sirf host, 1 listener) ----
-useEffect(() => {
-  if (!db || !roomId || currentUserRole !== 'host') return;
-  const unsub = onSnapshot(collection(db, 'rooms', roomId, 'presence'), (snap) => {
-    const n = Date.now();
-    snap.docChanges().forEach((ch) => {
-      if (ch.type === 'removed') return;
-      const v = ch.doc.data()?.lastSeen;
-      if (v != null) audSeenRef.current[ch.doc.id] = { v, at: n, src: 'pres' };
-    });
-  }, () => {});
-  return () => unsub();
-}, [roomId, currentUserRole]);
 
 // ---- HOST SWEEP: 5 min tak heartbeat na aaye to user + uski seat hata do ----
 // Time host ke LOCAL clock se naapa jata hai (phones ki clock alag ho to bhi galat nahi hoga).
 useEffect(() => {
   if (!db || !roomId || currentUserRole !== 'host') return;
-  const STALE_MS = 8 * 60 * 1000;
+  const STALE_MS = 5 * 60 * 1000;
   const sweep = async () => {
     const now = Date.now();
     const seen = audSeenRef.current;
@@ -4146,7 +3957,6 @@ useEffect(() => {
     });
     try {
       const jobs = stale.map((uid) => deleteDoc(doc(db, 'rooms', roomId, 'audience', uid)));
-      stale.forEach((uid) => deleteDoc(doc(db, 'rooms', roomId, 'presence', uid)).catch(() => {}));
       const reqs = roomDataRef.current?.speakerRequests || {};
       stale.forEach((uid) => {
         if (reqs[uid]) seatUpdates['speakerRequests.' + uid] = deleteField();
@@ -5622,7 +5432,7 @@ return (
             source={{ uri: roomData?.seatsData?.seat_1?.userImg || STABLE_AVATAR }}
             style={styles.topHostImg}
           />
-          {(roomData?.seatsData?.seat_1?.level >= 10 || !!roomData?.seatsData?.seat_1?.userId) && (
+          {(roomData?.seatsData?.seat_1?.level >= 30 || !!roomData?.seatsData?.seat_1?.userId) && (
             <GuardedFrame
               level={roomData?.seatsData?.seat_1?.level}
               uid={roomData?.seatsData?.seat_1?.userId}
@@ -5667,7 +5477,7 @@ return (
                 source={{ uri: user.img || STABLE_AVATAR }}
                 style={styles.viewerAvatar}
               />
-              {(user.level >= 10 || !!user.uid) && (
+              {(user.level >= 30 || !!user.uid) && (
                 <GuardedFrame level={user.level} uid={user.uid} animated pointerEvents="none"
                   style={{ position: 'absolute', width: 40, height: 40, top: -5, left: -5 }} />
               )}
@@ -5728,10 +5538,10 @@ return (
       </View>
 
       {/* JOIN PILL (Lv<35): seats ke theek niche, jahan pehle pinned welcome tha. Height 0 => chat hilti nahi */}
-      {joinBanner && (Number(joinBanner.level) || 1) < 35 && (
+      {joinBanner && (
         <View pointerEvents="none" style={{ height: 0, zIndex: 50, elevation: 50 }}>
           <View style={{ position: 'absolute', top: 4, left: 0, right: 0 }}>
-            <PlainJoinPill key={joinBanner._k} data={{ ...joinBanner, level: Number(joinBanner.level) || 1 }} onDone={handleJoinDone} />
+            <JoinSlot key={joinBanner._k} data={{ ...joinBanner, level: Number(joinBanner.level) || 1 }} onDone={handleJoinDone} />
           </View>
         </View>
       )}
@@ -6100,9 +5910,8 @@ user?.seatKey
   hostId={roomData?.hostId}
   fallbackAvatar={STABLE_AVATAR}
   onRecharge={goRecharge}
-  level={walletInfo.nextLevelSpent != null ? walletInfo.level : undefined}
-  levelProgress={walletInfo.nextLevelSpent != null ? Math.max(0, Math.min(1, (walletInfo.totalSpent - walletInfo.levelStartSpent) / Math.max(1, walletInfo.nextLevelSpent - walletInfo.levelStartSpent))) : 0}
-  starsToUpgrade={walletInfo.nextLevelSpent != null ? Math.max(0, walletInfo.nextLevelSpent - walletInfo.totalSpent) : 0}
+  totalSpent={walletInfo.totalSpent}
+  walletLevel={walletInfo.level > 1 ? walletInfo.level : undefined}
 />
 
 
@@ -6384,7 +6193,7 @@ style={styles.friendImg}
 />
 
 {
-(item.level>=10 || !!item.id) && (
+(item.level >= 30 || !!item.id) && (
 
 <GuardedFrame level={item.level} uid={item.id} animated
 style={{
@@ -6419,34 +6228,7 @@ left:-17
     <UserTick uid={item.uid || item.userId || item.senderId || item.id} verified={!!(isVerified(item.verified))} verifiedColor={item.verifiedColor} size={17} />
 
     {/* Level Badge */}
-    <View
-      style={[
-        styles.levelBadge,
-        {
-          marginLeft: 8,
-          backgroundColor: getLevelTheme(item.level || 1).bg,
-          borderColor: getLevelTheme(item.level || 1).border,
-        },
-      ]}
-    >
-      <MaterialCommunityIcons
-        name="diamond-stone"
-        size={10}
-        color={getLevelTheme(item.level || 1).icon}
-      />
-
-      <Text
-        style={{
-          color: getLevelTheme(item.level || 1).text,
-          fontSize: 9,
-          fontWeight: "bold",
-          marginLeft: 2,
-        }}
-      >
-        LV {item.level || 1}
-      </Text>
-
-    </View>
+    <LevelBadge level={item.level || 1} size={10} style={{ marginLeft: 8 }} />
 
   </View>
 
@@ -7235,28 +7017,8 @@ justifyContent:"center",
 alignItems:"center"
 },
 
-hostLevelFrame:{
-position:"absolute",
-width:70,
-height:70,
-resizeMode:"contain"
-},
 
-seatFrame:{
-position:"absolute",
-width:85,
-height:85,
-top:-8,
-left:-8,
-resizeMode:"contain"
-},
 
-chatFrame:{
-position:"absolute",
-width:55,
-height:55,
-resizeMode:"contain"
-},
 
 
 });         

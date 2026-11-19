@@ -10,7 +10,7 @@ import {
   StyleSheet,
 } from "react-native";
 import { useRouter } from "../utils/safeRouter";
-import { collection, onSnapshot } from "firebase/firestore";
+import { collection, getDocs } from "firebase/firestore";
 import { Ionicons } from "@expo/vector-icons";
 import { db } from "./firebaseConfig";
 import useIsAdmin from "./useIsAdmin";
@@ -26,9 +26,12 @@ export default function ProfileDetails() {
 
   useEffect(() => {
     // Saare users (app ke andar jitne bhi hain)
-    return onSnapshot(collection(db, "users"), (snap) =>
-      setUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
-    );
+    // Realtime listener hataya: har user badalne par poora users collection dobara padhta tha (mehnga). Ab ek baar.
+    let alive = true;
+    getDocs(collection(db, "users"))
+      .then((snap) => alive && setUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() }))))
+      .catch(() => {});
+    return () => { alive = false; };
   }, []);
 
   const filtered = useMemo(() => {

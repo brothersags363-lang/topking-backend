@@ -11,6 +11,8 @@ initializeApp();
 
 // PUSH NOTIFICATIONS (live start, share, like, comment, reply, follow) - notifications.js ke sab triggers yahan se deploy hote hain
 Object.assign(exports, require('./notifications'));
+// AUTO TICK: 5 videos x 300 views -> white, 5 videos x 3000 views -> Grey V
+exports.autoCreatorTick = require('./creatorTicks').autoCreatorTick;
 
 const db = getFirestore();
 const REGION = 'us-central1'; // user India me hai -> 'asia-south1' (Mumbai) se kam latency milegi; client me bhi same region set karna

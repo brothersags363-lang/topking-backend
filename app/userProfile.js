@@ -1,3 +1,4 @@
+import LevelBadge from '../components/LevelBadge';
 import { notifyNewFollower } from "../utils/pushNotify";
 import React, {
   useEffect,
@@ -1386,26 +1387,7 @@ export default function UserProfile() {
             <UserTick verified={isVerified} verifiedColor={verifiedColor} faceVerified={faceVerified} size={18} style={{ marginLeft: 0 }} />
           </View>
 
-          <View
-            style={[
-              styles.levelPill,
-              {
-                backgroundColor: topLevelTheme.bg,
-                borderColor: topLevelTheme.border,
-                marginLeft: 6,
-                flexShrink: 0,
-              },
-            ]}
-          >
-            <MaterialCommunityIcons
-              name="diamond-stone"
-              size={10}
-              color={topLevelTheme.icon}
-            />
-            <Text style={[styles.levelPillText, { color: topLevelTheme.text }]}>
-              LV {userLevel || 1}
-            </Text>
-          </View>
+          <LevelBadge level={userLevel || 1} size={10} style={{ marginLeft: 6 }} />
         </View>
 
         {/* 3-line menu icon (share icon ki jagah) */}

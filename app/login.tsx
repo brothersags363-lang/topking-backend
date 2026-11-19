@@ -1,10 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-  getAuth as getNativeAuth,
-  verifyPhoneNumber,
-} from '@react-native-firebase/auth';
-import {
   GoogleSignin,
   statusCodes,
 } from '@react-native-google-signin/google-signin';
@@ -12,7 +8,6 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from '../utils/safeRouter';
 import {
   GoogleAuthProvider,
-  PhoneAuthProvider,
   createUserWithEmailAndPassword,
   onAuthStateChanged,
   sendPasswordResetEmail,
@@ -127,15 +122,7 @@ export default function LoginScreen() {
   const router = useRouter();
   const busy = useRef(false); // sign-in chal raha ho to auto-redirect mat karo
 
-  const [mode, setMode] = useState<'phone' | 'email'>('phone');
   const [loading, setLoading] = useState(false);
-
-  // phone
-  const [phone, setPhone] = useState('');
-  const [otp, setOtp] = useState('');
-  const [otpSent, setOtpSent] = useState(false);
-  const [resendIn, setResendIn] = useState(0);
-  const verificationIdRef = useRef<string | null>(null);
 
   // email
   const [emailSignup, setEmailSignup] = useState(false);
@@ -143,19 +130,7 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
 
-  // Mobile back: pehle login ke andar ek step peeche (OTP -> phone, email -> phone), phir screen se peeche
-  useBackStep('/', () => {
-    if (otpSent) {
-      setOtpSent(false);
-      setOtp('');
-      return true;
-    }
-    if (mode === 'email') {
-      setMode('phone');
-      return true;
-    }
-    return false;
-  });
+  useBackStep('/', () => false);
 
   useEffect(() => {
     GoogleSignin.configure({
@@ -174,13 +149,6 @@ export default function LoginScreen() {
     });
     return unsubscribe;
   }, []);
-
-  // OTP resend timer
-  useEffect(() => {
-    if (resendIn <= 0) return;
-    const t = setTimeout(() => setResendIn((s) => s - 1), 1000);
-    return () => clearTimeout(t);
-  }, [resendIn]);
 
   // ---------------------------------------------------------------
   // Har login ke baad common kaam
@@ -238,77 +206,6 @@ export default function LoginScreen() {
       return true;
     }
     return false;
-  };
-
-  // ---------------------------------------------------------------
-  // PHONE
-  // ---------------------------------------------------------------
-  const sendOtp = async () => {
-    if (loading) return;
-    if (phone.length !== 10) {
-      return Alert.alert('Phone Number', 'Sahi 10 digit ka number daalo.');
-    }
-    setLoading(true);
-    busy.current = true;
-    try {
-      if (await guardBanned()) return;
-      verificationIdRef.current = null;
-      setOtp('');
-      // verifyPhoneNumber: native side khud login nahi karta, isliye OTP "use" nahi hota
-      // aur neeche JS auth se verify karna safe rehta hai.
-      await new Promise<void>((resolve, reject) => {
-        let settled = false;
-        const done = (fn: () => void) => {
-          if (settled) return;
-          settled = true;
-          fn();
-        };
-        const listener: any = verifyPhoneNumber(getNativeAuth(), `+91${phone}`, 60, true);
-        listener.on(
-          'state_changed',
-          (snap: any) => {
-            if (snap?.verificationId) verificationIdRef.current = snap.verificationId;
-            if (snap?.state === 'sent') {
-              done(resolve);
-            } else if (snap?.state === 'verified') {
-              if (snap?.code) setOtp(String(snap.code)); // SMS auto-read hua to box me bhar do
-              done(resolve);
-            } else if (snap?.state === 'error') {
-              done(() => reject(snap?.error || new Error('OTP send failed')));
-            }
-          },
-          (err: any) => done(() => reject(err))
-        );
-      });
-      setOtpSent(true);
-      setResendIn(60); // COST: SMS OTP paisa leta hai -> resend 30s se 60s
-    } catch (e: any) {
-      Alert.alert('OTP Error', friendlyAuthError(e?.code, e?.message));
-    } finally {
-      setLoading(false);
-      busy.current = false;
-    }
-  };
-
-  const verifyOtp = async () => {
-    if (loading) return;
-    if (otp.length !== 6 || !verificationIdRef.current) {
-      return Alert.alert('OTP', '6 digit ka OTP daalo.');
-    }
-    setLoading(true);
-    busy.current = true;
-    try {
-      // native se bheja OTP, app ke JS auth me login (poori app JS auth use karti hai)
-      const cred = PhoneAuthProvider.credential(verificationIdRef.current, otp);
-      const result = await signInWithCredential(auth, cred);
-      await finishLogin(result.user, `user${phone.slice(-4)}`);
-    } catch (e: any) {
-      console.log('VERIFY ERR', e?.code, e?.message);
-      Alert.alert('Login Error', `${friendlyAuthError(e?.code, e?.message)}\n\n[${e?.code || 'no-code'}]`);
-    } finally {
-      setLoading(false);
-      busy.current = false;
-    }
   };
 
   // ---------------------------------------------------------------
@@ -386,104 +283,11 @@ export default function LoginScreen() {
     }
   };
 
-  const facebookSignIn = () => {
-    Alert.alert('Facebook', 'Facebook login jald aayega.');
-  };
-
   // ---------------------------------------------------------------
   // UI
   // ---------------------------------------------------------------
-  const renderPhone = () => (
-    <>
-      <Text style={styles.heading}>Log In to Enter Your Profile</Text>
-
-      {!otpSent ? (
-        <>
-          <View style={styles.inputRow}>
-            <Text style={styles.code}>+91</Text>
-            <TextInput
-              style={styles.input}
-              value={phone}
-              onChangeText={(t) => setPhone(t.replace(/[^0-9]/g, '').slice(0, 10))}
-              keyboardType="number-pad"
-              maxLength={10}
-              placeholder="1234567890"
-              placeholderTextColor="#777"
-            />
-            {phone.length > 0 && (
-              <TouchableOpacity onPress={() => setPhone('')} hitSlop={10}>
-                <Ionicons name="close-circle" size={20} color="#888" />
-              </TouchableOpacity>
-            )}
-          </View>
-
-          <TouchableOpacity
-            style={styles.mainBtn}
-            activeOpacity={0.85}
-            onPress={sendOtp}
-            disabled={loading}
-          >
-            {loading ? (
-              <ActivityIndicator color="#000" />
-            ) : (
-              <Text style={styles.mainBtnText}>sign Up/Log in with phone</Text>
-            )}
-          </TouchableOpacity>
-        </>
-      ) : (
-        <>
-          <Text style={styles.sub}>OTP bheja gaya: +91 {phone}</Text>
-          <View style={styles.inputRow}>
-            <TextInput
-              style={[styles.input, { textAlign: 'center', letterSpacing: 8, fontSize: 22 }]}
-              value={otp}
-              onChangeText={(t) => setOtp(t.replace(/[^0-9]/g, '').slice(0, 6))}
-              keyboardType="number-pad"
-              maxLength={6}
-              placeholder="------"
-              placeholderTextColor="#555"
-              autoFocus
-            />
-          </View>
-
-          <TouchableOpacity
-            style={styles.mainBtn}
-            activeOpacity={0.85}
-            onPress={verifyOtp}
-            disabled={loading}
-          >
-            {loading ? <ActivityIndicator color="#000" /> : <Text style={styles.mainBtnText}>Verify & Continue</Text>}
-          </TouchableOpacity>
-
-          <View style={styles.linkRow}>
-            <TouchableOpacity
-              onPress={() => {
-                setOtpSent(false);
-                setOtp('');
-              }}
-            >
-              <Text style={styles.link}>Number badlo</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={sendOtp} disabled={resendIn > 0 || loading}>
-              <Text style={[styles.link, resendIn > 0 && { opacity: 0.4 }]}>
-                {resendIn > 0 ? `Resend OTP (${resendIn}s)` : 'Resend OTP'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </>
-      )}
-
-      <TouchableOpacity style={styles.switchBtn} onPress={() => setMode('email')}>
-        <Ionicons name="mail-outline" size={18} color={YELLOW} />
-        <Text style={styles.switchText}>Email se login karo</Text>
-      </TouchableOpacity>
-    </>
-  );
-
   const renderEmail = () => (
     <>
-      <Text style={styles.heading}>{emailSignup ? 'Create Your Account' : 'Log In with Email'}</Text>
-
       <View style={styles.inputRow}>
         <Ionicons name="mail-outline" size={20} color="#888" style={{ marginRight: 10 }} />
         <TextInput
@@ -539,10 +343,6 @@ export default function LoginScreen() {
         )}
       </View>
 
-      <TouchableOpacity style={styles.switchBtn} onPress={() => setMode('phone')}>
-        <Ionicons name="call-outline" size={18} color={YELLOW} />
-        <Text style={styles.switchText}>Phone se login karo</Text>
-      </TouchableOpacity>
     </>
   );
 
@@ -562,17 +362,27 @@ export default function LoginScreen() {
             <Image source={TopKingLogo} style={styles.logo} resizeMode="contain" />
           </View>
 
-          <View style={styles.form}>{mode === 'phone' ? renderPhone() : renderEmail()}</View>
+          <View style={styles.form}>
+            <TouchableOpacity
+              style={styles.googleBtn}
+              activeOpacity={0.85}
+              onPress={googleSignIn}
+              disabled={loading}
+            >
+              <Ionicons name="logo-google" size={24} color="#DB4437" />
+              <Text style={styles.googleBtnText}>Continue with Google</Text>
+            </TouchableOpacity>
+
+            <View style={styles.orRow}>
+              <View style={styles.orLine} />
+              <Text style={styles.orText}>ya email se</Text>
+              <View style={styles.orLine} />
+            </View>
+
+            {renderEmail()}
+          </View>
 
           <View style={styles.bottom}>
-            <View style={styles.socialRow}>
-              <TouchableOpacity style={styles.googleCircle} activeOpacity={0.8} onPress={googleSignIn}>
-                <Ionicons name="logo-google" size={24} color="#DB4437" />
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.fbCircle} activeOpacity={0.8} onPress={facebookSignIn}>
-                <Ionicons name="logo-facebook" size={30} color="#fff" />
-              </TouchableOpacity>
-            </View>
 
             <Text style={styles.terms}>
               By using this app, you agree to <Text style={styles.termsBold}>Terms of Use</Text> and{' '}
@@ -642,6 +452,19 @@ const styles = StyleSheet.create({
   },
   switchText: { color: YELLOW, fontSize: 15, fontWeight: '700' },
   bottom: { flex: 1, justifyContent: 'flex-end', alignItems: 'center', width: '100%', paddingTop: 40 },
+  googleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    height: 60,
+  },
+  googleBtnText: { color: '#111', fontSize: 18, fontWeight: '800' },
+  orRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: 20 },
+  orLine: { flex: 1, height: 1, backgroundColor: '#444' },
+  orText: { color: '#aaa', fontSize: 13 },
   socialRow: { flexDirection: 'row', gap: 36, marginBottom: 22 },
   googleCircle: {
     width: 52,

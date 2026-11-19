@@ -1,3 +1,4 @@
+import LevelBadge from '../../components/LevelBadge';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { memo } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
@@ -40,10 +41,7 @@ const FriendRow = memo(function FriendRow({ item, onOpen }: Props) {
             faceVerified={item.faceVerified}
             size={15}
           />
-          <View style={[s.levelBadge, { backgroundColor: theme.bg, borderColor: theme.border }]}>
-            <MaterialCommunityIcons name="diamond-stone" size={10} color={theme.icon} />
-            <Text style={[s.levelText, { color: theme.text }]}>LV {item.level || 1}</Text>
-          </View>
+          <LevelBadge level={item.level || 1} size={10} style={{ marginLeft: 6 }} />
         </View>
 
         <View style={rs.subLine}>

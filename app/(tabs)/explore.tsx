@@ -1,3 +1,4 @@
+import SharedLevelBadge from '../../components/LevelBadge';
 import React, {
   memo,
   useCallback,
@@ -34,7 +35,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // FIREBASE IMPORT
 import { db, auth } from '../firebaseConfig';
-import LevelFrame from '../../components/LevelFrame';
 import { useBlockedIds } from '../../utils/useBlockedIds';
 
 import {
@@ -77,21 +77,6 @@ const getLevelTheme = (level = 1) => {
   if (level >= 20) return THEME_20;
   if (level >= 10) return THEME_10;
   return THEME_0;
-};
-
-const FRAME_50 = require('../../assets/frames/lv50.webp');
-const FRAME_40 = require('../../assets/frames/lv40.webp');
-const FRAME_30 = require('../../assets/frames/lv30.webp');
-const FRAME_20 = require('../../assets/frames/lv20.webp');
-const FRAME_10 = require('../../assets/frames/lv10.webp');
-
-const getLevelFrame = (level = 1) => {
-  if (level >= 50) return FRAME_50;
-  if (level >= 40) return FRAME_40;
-  if (level >= 30) return FRAME_30;
-  if (level >= 20) return FRAME_20;
-  if (level >= 10) return FRAME_10;
-  return null;
 };
 
 const TRENDING_BANNERS_DATA = [
@@ -719,24 +704,7 @@ const LevelBadge = memo(function LevelBadge({
 }) {
   const theme = getLevelTheme(level);
   return (
-    <View
-      style={[
-        styles.levelBadge,
-        { backgroundColor: theme.bg, borderColor: theme.border },
-      ]}
-    >
-      <MaterialCommunityIcons name="diamond-stone" size={iconSize} color={theme.icon} />
-      <Text
-        style={{
-          color: theme.text,
-          fontSize,
-          fontWeight: 'bold',
-          marginLeft: 3,
-        }}
-      >
-        LV {level || 1}
-      </Text>
-    </View>
+    <SharedLevelBadge level={level || 1} size={iconSize} style={{ marginLeft: 3 }} />
   );
 });
 

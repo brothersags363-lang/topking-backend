@@ -2,10 +2,13 @@ import { useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../app/firebaseConfig';
+import { callApi } from '../utils/api';
 
-// Admin ke diye hue special frames (level frames se alag).
+// ---- ADMIN FRAMES (admin ke diye special frames) ----
 // Admin Panel > "Special Frames" se kisi bhi user ko diye ja sakte hain.
 // users/{uid}.adminFrame = key  (server /admin/set-user-frame se set hota hai)
+// Ye frame level frame ko override karta hai aur HAR JAGAH dikhta hai
+// (feed, comments, chat, profile, live room seat/chat/popup).
 // Nayi frame jodni ho: webp assets/admin_frames/ me daalo, yahan ek line add karo,
 // aur backend server.js me ADMIN_FRAME_KEYS me key add karo.
 export const ADMIN_FRAMES = {
@@ -15,13 +18,96 @@ export const ADMIN_FRAMES = {
   agency_wings: { label: 'Official Agency Wings', img: require('../assets/admin_frames/agency_wings.webp') },
   tk_team:      { label: 'TK Team',               img: require('../assets/admin_frames/tk_team.webp') },
 };
-
 export const ADMIN_FRAME_KEYS = Object.keys(ADMIN_FRAMES);
 
+// ---- ADMIN FRAME MAP: { uid: frameKey } ----
+// Sirf unhi users ki list jinko admin ne frame diya hai (chhoti list).
+// Server se EK hi call me aati hai (/frames/admin-map) -> har user ke liye alag Firestore read NAHI.
+// Phone me save rehti hai (AsyncStorage), isliye app khulte hi frame turant dikhta hai.
+// Live room / chat / list me bas uid do, frame apne aap lag jata hai.
+const MAP_KEY = 'adminFrameMap:v1';
+const MAP_TTL_MS = 10 * 60 * 1000;
+let adminMap = {};
+let mapLoaded = false;      // true => map ko sach maano (disk ya server se aa chuki)
+let mapFetchedAt = 0;
+let mapFetching = null;
+let mapDiskPromise = null;
+const mapListeners = new Set();
+
+function notifyMap() { mapListeners.forEach((fn) => { try { fn(); } catch (_) {} }); }
+
+function loadMapDisk() {
+  if (mapDiskPromise) return mapDiskPromise;
+  mapDiskPromise = AsyncStorage.getItem(MAP_KEY)
+    .then((raw) => {
+      if (!raw || mapFetchedAt) return;      // server ka taaza jawab pehle aa gaya to disk ignore
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj === 'object') {
+        adminMap = obj;
+        mapLoaded = true;
+        notifyMap();
+      }
+    })
+    .catch(() => {});
+  return mapDiskPromise;
+}
+
+// Server se taaza map lao. force=true => TTL ka wait nahi (admin ne abhi frame badla ho to)
+export function refreshAdminFrameMap(force = false) {
+  if (mapFetching) return mapFetching;
+  if (!force && mapFetchedAt && Date.now() - mapFetchedAt < MAP_TTL_MS) return Promise.resolve();
+  mapFetching = callApi('/frames/admin-map', {})
+    .then((res) => {
+      const m = res && res.map && typeof res.map === 'object' ? res.map : {};
+      const clean = {};
+      Object.keys(m).forEach((uid) => { if (ADMIN_FRAMES[m[uid]]) clean[uid] = m[uid]; });
+      adminMap = clean;
+      mapLoaded = true;
+      mapFetchedAt = Date.now();
+      notifyMap();
+      AsyncStorage.setItem(MAP_KEY, JSON.stringify(clean)).catch(() => {});
+    })
+    .catch(() => { /* net/login nahi -> purani saved map chalti rahegi */ })
+    .finally(() => { mapFetching = null; });
+  return mapFetching;
+}
+
+// Admin ne abhi kisi ko frame diya/hataya -> apne phone ki map turant badlo (server ke jawab ke baad call karo)
+export function setAdminFrameLocal(uid, key) {
+  if (!uid) return;
+  const next = { ...adminMap };
+  if (key && ADMIN_FRAMES[key]) next[uid] = key; else delete next[uid];
+  adminMap = next;
+  mapLoaded = true;
+  notifyMap();
+  AsyncStorage.setItem(MAP_KEY, JSON.stringify(next)).catch(() => {});
+}
+
+// uid -> admin frame key (ya null). fallbackKey: chat/seat data me aaya hua 'special' (map aane se pehle kaam aata hai)
+export function getAdminFrameKey(uid, fallbackKey) {
+  if (uid && typeof uid === 'string') {
+    const k = adminMap[uid];
+    if (k && ADMIN_FRAMES[k]) return k;
+    if (mapLoaded) return null;              // map load ho chuki aur uid usme nahi => frame nahi
+  }
+  return fallbackKey && ADMIN_FRAMES[fallbackKey] ? fallbackKey : null;
+}
+
+// Hook: admin frame key. Re-render tab hota hai jab map load/badle.
+export function useAdminFrame(uid, fallbackKey) {
+  const [, force] = useState(0);
+  useEffect(() => {
+    const fn = () => force((n) => n + 1);
+    mapListeners.add(fn);
+    loadMapDisk().then(() => refreshAdminFrameMap(false));
+    return () => { mapListeners.delete(fn); };
+  }, []);
+  return getAdminFrameKey(uid, fallbackKey);
+}
+
 // ---- uid -> frame info lookup (memory cache, har user ka 1 hi read) ----
-// Ek hi read me user ka sab kuch aa jata hai: adminFrame, level, special/BD/agency,
-// aur user ki apni pasand (frameOff / frameChoice / entryOff / entryChoice).
-// Isse index, messages, profile, userProfile, live - sab jagah frame apne aap sahi lagta hai.
+// Ek hi read me user ka level aur entry ki pasand (entryOff / entryChoice) aa jati hai.
+// Frame ab sirf level se lagta hai (LevelFrame.js): 30-39 -> lv30, 40-49 -> lv40, 50+ -> lv50.
 const TTL_MS = 5 * 60 * 1000;
 const cache = new Map();      // uid -> { info, t }
 const inflight = new Map();   // uid -> Promise
@@ -29,13 +115,7 @@ const listeners = new Map();  // uid -> Set<fn>
 
 const EMPTY_INFO = Object.freeze({
   loaded: false,   // true tab hota hai jab user doc padh liya gaya
-  adminFrame: null,
   level: null,
-  special: null,
-  isBD: false,
-  agencyId: null,
-  frameOff: false,
-  frameChoice: null,
   entryOff: false,
   entryChoice: null,
 });
@@ -44,16 +124,9 @@ const LOADED_EMPTY = Object.freeze({ ...EMPTY_INFO, loaded: true });
 
 function toInfo(data) {
   if (!data) return LOADED_EMPTY;
-  const f = data.adminFrame;
   return {
     loaded: true,
-    adminFrame: f && ADMIN_FRAMES[f] ? f : null,
     level: Number(data.level) || null,
-    special: data.special || null,
-    isBD: data.isBD === true,
-    agencyId: data.agencyId || null,
-    frameOff: data.frameOff === true,
-    frameChoice: data.frameChoice || null,
     entryOff: data.entryOff === true,
     entryChoice: data.entryChoice || null,
   };
@@ -72,7 +145,7 @@ function notify(uid, info) {
 // (4) fail hone par purani saved info dikhti rehti hai, khali nahi hoti.
 const MAX_RETRY = 6;
 const MAX_PARALLEL = 4;
-const STORE_KEY = 'frameInfoCache:v1';
+const STORE_KEY = 'frameInfoCache:v2';
 const STORE_MAX = 300;
 
 const queue = [];
@@ -159,8 +232,8 @@ function fetchInfo(uid, attempt = 0) {
   return p;
 }
 
-// Admin panel / settings se frame badalne par turant cache saaf karne ke liye
-export function clearAdminFrameCache(uid) {
+// Cache turant saaf karne ke liye
+export function clearFrameInfoCache(uid) {
   if (uid) cache.delete(uid); else cache.clear();
 }
 
@@ -211,9 +284,4 @@ export function useFrameInfo(uid) {
   }, [uid]);
 
   return info;
-}
-
-// Purana naam (compat): sirf admin frame key chahiye ho to
-export function useAdminFrame(uid) {
-  return useFrameInfo(uid).adminFrame;
 }

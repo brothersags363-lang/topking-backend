@@ -17,7 +17,7 @@ import { Image as ExpoImage } from "expo-image";
 import { useRouter } from "../utils/safeRouter";
 import { callApi } from "../utils/api";
 import useIsAdmin from "./useIsAdmin";
-import { ADMIN_FRAMES, ADMIN_FRAME_KEYS } from "../components/adminFrames";
+import { ADMIN_FRAMES, ADMIN_FRAME_KEYS, setAdminFrameLocal, refreshAdminFrameMap } from "../components/adminFrames";
 
 const PLACEHOLDER = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 
@@ -116,6 +116,9 @@ export default function AdminFrames() {
     setBusy(true);
     try {
       await callApi("/admin/set-user-frame", { uid: user.uid, frame });
+      // frame turant sab jagah dikhe: apne phone ki map badlo + server se taaza map lao
+      setAdminFrameLocal(user.uid, frame);
+      refreshAdminFrameMap(true);
       const patch = (u) => (u.uid === user.uid ? { ...u, adminFrame: frame } : u);
       setResults((r) => r.map(patch));
       setPicked(null);

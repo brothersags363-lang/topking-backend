@@ -1,3 +1,4 @@
+import LevelBadge from '../components/LevelBadge';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { memo } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
@@ -62,10 +63,7 @@ const FollowRow = memo(function FollowRow({ item, onOpenProfile, onMessage, onTo
               size={15}
             />
 
-            <View style={[styles.levelBadge, { backgroundColor: theme.bg, borderColor: theme.border }]}>
-              <MaterialCommunityIcons name="diamond-stone" size={9} color={theme.icon} />
-              <Text style={[styles.levelBadgeText, { color: theme.text }]}>LV {item.level || 1}</Text>
-            </View>
+            <LevelBadge level={item.level || 1} size={9} style={{ marginLeft: 4 }} />
           </View>
 
           {!!item.name && <Text style={styles.followRealName} numberOfLines={1}>{item.name}</Text>}

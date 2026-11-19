@@ -94,7 +94,7 @@ export default function Creator() {
 
   const [screen, setScreen] = useState("home"); // home | quiz | result | face
   const [data, setData] = useState(null);
-  const [stats, setStats] = useState({ videosWith3000: 0 });
+  const [stats, setStats] = useState({ videosWith300: 0, videosWith3000: 0 });
   const [checkingDevice, setCheckingDevice] = useState(false);
 
   // Ek mobile = ek verified ID: "Step 1: Verify your face" dabate hi check
@@ -131,11 +131,14 @@ export default function Creator() {
     const unsub = onSnapshot(
       query(collection(db, "all_videos"), where("userId", "==", uid)),
       (snap) => {
+        let ok300 = 0; // White Tick: har video par 300+ views
         let ok3000 = 0; // Grey V: har video par 3000+ views
         snap.docs.forEach((d) => {
-          if (Number(d.data().views || 0) >= 3000) ok3000 += 1;
+          const v = Number(d.data().views || 0);
+          if (v >= 300) ok300 += 1;
+          if (v >= 3000) ok3000 += 1;
         });
-        setStats({ videosWith3000: ok3000 });
+        setStats({ videosWith300: ok300, videosWith3000: ok3000 });
       },
       () => {}
     );
@@ -162,6 +165,7 @@ export default function Creator() {
 
   const faceDone = data.faceStatus === "submitted" || data.faceStatus === "approved";
   const quizDone = !!data.quizPassed;
+  const videosWith300 = stats.videosWith300;
   const videosWith3000 = stats.videosWith3000;
   // real photo + bio profile me lagayi hai? (default icon nahi hona chahiye)
   const profileDone =
@@ -180,6 +184,8 @@ export default function Creator() {
     : data.verifiedColor === "yellow"
     ? "yellow"
     : "white";
+  // White Tick mil chuka hai? (pehle face verify -> phir White Tick -> uske baad Grey V)
+  const whiteReached = tick !== "none";
 
   if (screen === "face")
     return <FaceScreen uid={uid} onBack={() => setScreen("home")} />;
@@ -280,32 +286,58 @@ export default function Creator() {
           onPress={faceDone && !profileDone ? goEditProfile : undefined}
         />
         <Step n="3" title="Quiz (score 60+)" done={quizDone} lock={!faceDone} />
-        <Step
-          n="4"
-          title={`5 videos with 3000+ views  (${Math.min(videosWith3000, 5)}/5)`}
-          done={videosWith3000 >= 5}
-          lock={locked}
-          onPress={faceDone ? () => router.push("/camera") : undefined}
-        />
+        {!whiteReached ? (
+          <Step
+            n="4"
+            title={`5 videos with 300+ views  (${Math.min(videosWith300, 5)}/5)`}
+            done={false}
+            lock={locked}
+            onPress={faceDone ? () => router.push("/camera") : undefined}
+          />
+        ) : (
+          <Step
+            n="4"
+            title={`5 videos with 3000+ views  (${Math.min(videosWith3000, 5)}/5)`}
+            done={videosWith3000 >= 5}
+            lock={locked}
+            onPress={() => router.push("/camera")}
+          />
+        )}
 
         {/* Privileges timeline */}
         <Text style={s.section}>Privileges</Text>
 
-        <Level
-          icon={<Ionicons name="person-circle" size={30} color="#bbb" />}
-          label="Verified User"
-          title="Unlock more video views"
-          unlocked={faceDone && quizDone}
-          lock={locked}
-        />
+        {/* Jo tick/level mil gaya wo list se hat jata hai, sirf aage wale dikhte hain */}
+        {!(faceDone && quizDone) && (
+          <Level
+            icon={<Ionicons name="person-circle" size={30} color="#bbb" />}
+            label="Verified User"
+            title="Unlock more video views"
+            unlocked={false}
+            lock={locked}
+          />
+        )}
 
-        <Level
-          icon={<Image source={GREY_V} style={{ width: 30, height: 30 }} resizeMode="contain" />}
-          label="Grey V Tick"
-          title="5 videos × 3000+ views • Family Creator, priority reports (24h), more visibility, higher earning"
-          unlocked={tick === "yellow" || tick === "blue"}
-          lock={locked}
-        />
+        {!whiteReached && (
+          <Level
+            icon={<MaterialIcons name="verified" size={30} color="#fff" />}
+            label="White Tick"
+            title="Face verified + 5 videos × 300+ views • Verified badge, more traffic"
+            unlocked={false}
+            lock={locked}
+          />
+        )}
+
+        {/* White Tick ke neeche Grey V dikhta hai; White Tick milne tak locked, Grey V milne par hat jata hai */}
+        {tick !== "yellow" && tick !== "blue" && (
+          <Level
+            icon={<Image source={GREY_V} style={{ width: 30, height: 30 }} resizeMode="contain" />}
+            label="Grey V Tick"
+            title="5 videos × 3000+ views • Family Creator, priority reports (24h), more visibility, higher earning"
+            unlocked={false}
+            lock={locked || !whiteReached}
+          />
+        )}
 
         <Level
           icon={<MaterialIcons name="verified" size={30} color="#1E90FF" />}
@@ -735,7 +767,7 @@ function FaceScreen({ uid, onBack }) {
       </Text>
 
       <View style={s.pill}>
-        <Image source={GREY_V} style={{ width: 22, height: 22 }} resizeMode="contain" />
+        <MaterialIcons name="verified" size={22} color="#fff" />
         <Text style={s.pillText}>Exclusive badge</Text>
       </View>
       <View style={s.pill}>

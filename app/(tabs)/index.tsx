@@ -84,6 +84,7 @@ import { getRecentRooms } from '../../utils/recentRooms';
 // ==========================
 import { db } from '../firebaseConfig';
 import { useLiveHost } from '../../components/liveHosts';
+import LevelBar from '../../components/live/LevelBar';
 import { callApi } from '../../utils/api';
 import { loadDiscover, loadFollow } from '../../utils/homeData';
 import { videoLink } from '../../utils/shareLinks';
@@ -899,13 +900,9 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
   const { status } = useEvent(player, 'statusChange', { status: player.status });
   const isBuffering = active && ready && status === 'loading';
 
-  // Atakna ginte hain -- lekin SIRF asli atakna (1.2 sec se zyada ruka). Loop restart / seek par
-  // 'loading' status kuch ms ke liye aata hai, use atakna ginne se tier galat neeche girta tha
-  // (aur tier girne se agla video preload hona band ho jata tha -> har swipe par ruk-ruk).
+  // Atakna ginte hain: bar-bar ho to PERF khud ek tier neeche kar deta hai (weak phone / slow net).
   useEffect(() => {
-    if (!isBuffering) return;
-    const t = setTimeout(() => PERF.reportStall(), 1200);
-    return () => clearTimeout(t);
+    if (isBuffering) PERF.reportStall();
   }, [isBuffering]);
 
   return (
@@ -2374,6 +2371,8 @@ const [showStarPopup, setShowStarPopup] = useState(false);
 const [selectedStar, setSelectedStar] = useState(null);
 
 const [myStars, setMyStars] = useState(0);
+const [myTotalSpent, setMyTotalSpent] = useState(0);   // StarUp popup level bar
+const [myWalletLevel, setMyWalletLevel] = useState(0);
 const starSending = useRef(false);
 
 const [starAnimationVideoId, setStarAnimationVideoId] = useState(null);
@@ -3069,6 +3068,8 @@ useEffect(() => {
   const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
     if (!user) {
       setMyStars(0);
+      setMyTotalSpent(0);
+      setMyWalletLevel(0);
       if (unsubscribeWallet) {
         unsubscribeWallet();
         unsubscribeWallet = null;
@@ -3082,6 +3083,8 @@ useEffect(() => {
       .then((snap) => {
         if (snap.exists()) {
           setMyStars(snap.data().stars || 0);
+          setMyTotalSpent(snap.data().totalSpent || 0);
+          setMyWalletLevel(snap.data().level || 0);
         } else {
           setMyStars(0);
         }
@@ -3099,6 +3102,8 @@ useEffect(() => {
       (snap) => {
         if (snap.exists()) {
           setMyStars(snap.data().stars || 0);
+          setMyTotalSpent(snap.data().totalSpent || 0);
+          setMyWalletLevel(snap.data().level || 0);
         } else {
           setMyStars(0);
         }
@@ -4850,6 +4855,12 @@ disableIntervalMomentum={true}
 
   <View style={styles.starPopup}>
 
+    <LevelBar
+      totalSpent={myTotalSpent}
+      walletLevel={myWalletLevel}
+      onUpgrade={() => { setShowStarPopup(false); try { router.push('/wallet'); } catch (e) {} }}
+    />
+
     <View style={styles.myStarBox}>
 
       <Image
@@ -5558,7 +5569,7 @@ starPopupContainer: {
 
 starPopup: {
   width: '100%',
-  height: 290,
+  height: 340,
 
   backgroundColor: '#111',
 

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -20,19 +20,19 @@ import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "./firebaseConfig";
 import { callApi } from "../utils/api";
 import {
-  ADMIN_FRAMES,
   useFrameInfo,
   patchFrameInfo,
   refreshFrameInfo,
+  useAdminFrame,
+  refreshAdminFrameMap,
+  ADMIN_FRAMES,
 } from "../components/adminFrames";
 import {
   FRAME_TIERS,
   FRAME_TIER_LABEL,
   FRAME_IMAGES,
-  getMaxTier,
-  computeFrame,
+  getTier,
 } from "../components/LevelFrame";
-import { ENTRY_CATALOG } from "../components/live/entryCatalog";
 
 const PLACEHOLDER = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 const GOLD = "#FFD700";
@@ -101,6 +101,8 @@ export default function FramesEntries() {
   const router = useRouter();
   const uid = auth.currentUser ? auth.currentUser.uid : null;
   const info = useFrameInfo(uid);
+  // admin ne frame diya ho to wahi sabse upar dikhta hai (har jagah)
+  const adminKey = useAdminFrame(uid);
 
   const [profileImg, setProfileImg] = useState("");
   const [booting, setBooting] = useState(true);
@@ -126,6 +128,7 @@ export default function FramesEntries() {
         const [snap] = await Promise.all([
           getDoc(doc(db, "users", uid)),
           refreshFrameInfo(uid),
+          refreshAdminFrameMap(true),
         ]);
         if (alive && snap.exists()) setProfileImg(snap.data().profileImg || "");
       } catch (e) {}
@@ -136,17 +139,14 @@ export default function FramesEntries() {
     };
   }, [uid]);
 
-  const maxTier = useMemo(() => getMaxTier(info), [info]);
   const myLevel = Number(info.level) || 1;
-  const current = computeFrame(info, info.level);
+  // frame sirf level se: 30-39 -> lv30, 40-49 -> lv40, 50+ -> lv50
+  const myTier = getTier(myLevel);
+  const currentFrameSource = adminKey
+    ? ADMIN_FRAMES[adminKey].img
+    : myTier ? FRAME_IMAGES.ANIM[myTier] : null;
 
-  const currentFrameSource = !current
-    ? null
-    : current.kind === "admin"
-    ? ADMIN_FRAMES[current.key].img
-    : FRAME_IMAGES.ANIM[current.tier];
-
-  // server ko bhejo; jawab aate hi poore app me turant badal do
+  // server ko bhejo (sirf entry on/off); jawab aate hi poore app me turant badal do
   const save = useCallback(
     async (body) => {
       if (busy || !uid) return;
@@ -165,20 +165,6 @@ export default function FramesEntries() {
 
   const lockedAlert = (what, need) =>
     Alert.alert("Abhi locked hai", `${what} Level ${need} par milta hai. Aapka level abhi ${myLevel} hai.`);
-
-  // choice 'lv30' / 'adm:key' / null(auto)
-  const pickFrame = (choice) => save({ frameChoice: choice });
-  const pickEntry = (key) => save({ entryChoice: key });
-
-  const frameChoice = info.frameChoice;
-  // choice tabhi "active" maani jaye jab wo sach me lag rahi ho; warna Auto
-  const choiceValid = !!(
-    frameChoice &&
-    current &&
-    frameChoice === (current.kind === "admin" ? "adm:" + current.key : "lv" + current.tier)
-  );
-  const frameAuto = !choiceValid;
-  const entryChoice = info.entryChoice;
 
   if (!uid) {
     return (
@@ -205,19 +191,9 @@ export default function FramesEntries() {
         <ScrollView contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
           {/* PREVIEW */}
           <View style={st.previewBox}>
-            <AvatarPreview
-              uri={profileImg}
-              frameSource={info.frameOff ? null : currentFrameSource}
-              size={120}
-            />
+            <AvatarPreview uri={profileImg} frameSource={currentFrameSource} size={120} />
             <Text style={st.previewText}>
-              {info.frameOff
-                ? "Frame band hai"
-                : current
-                ? current.kind === "admin"
-                  ? ADMIN_FRAMES[current.key].label
-                  : FRAME_TIER_LABEL[current.tier]
-                : "Abhi koi frame nahi mila"}
+              {adminKey ? ADMIN_FRAMES[adminKey].label : myTier ? FRAME_TIER_LABEL[myTier] : "Abhi koi frame nahi mila"}
             </Text>
             <Text style={st.previewSub}>Level {myLevel}</Text>
           </View>
@@ -225,57 +201,22 @@ export default function FramesEntries() {
           {/* ================= FRAMES ================= */}
           <View style={st.sectionHead}>
             <Text style={st.sectionTitle}>MERE FRAMES</Text>
-            <View style={st.switchRow}>
-              <Text style={st.switchLabel}>{info.frameOff ? "Band" : "Chalu"}</Text>
-              <Switch
-                value={!info.frameOff}
-                disabled={busy}
-                onValueChange={(on) => save({ frameOff: !on })}
-                trackColor={{ false: "#333", true: "#a68b00" }}
-                thumbColor={!info.frameOff ? GOLD : "#999"}
-              />
-            </View>
           </View>
           <Text style={st.hint}>
-            Jo frame aapko mila hai usse chuno. Band karne par aapka frame kisi bhi screen me nahi dikhega.
+            Frame level se apne aap lagta hai: Level 30-39 me Gold Dragon, 40-49 me Purple Crown, 50+ me SVIP. Admin ne special frame diya ho to wo sabse upar dikhta hai.
           </Text>
 
-          <View style={[st.grid, info.frameOff && { opacity: 0.4 }]} pointerEvents={info.frameOff ? "none" : "auto"}>
-            {/* AUTO */}
-            <PickCard
-              label="Auto"
-              sub="Sabse bada"
-              active={frameAuto && !info.frameOff}
-              onPress={() => pickFrame(null)}
-            >
-              <View style={st.autoIcon}>
-                <Ionicons name="sparkles" size={34} color={GOLD} />
-              </View>
-            </PickCard>
-
-            {/* ADMIN DIYA HUA FRAME */}
-            {info.adminFrame && ADMIN_FRAMES[info.adminFrame] ? (
-              <PickCard
-                label={ADMIN_FRAMES[info.adminFrame].label}
-                sub="Special"
-                active={frameChoice === "adm:" + info.adminFrame}
-                onPress={() => pickFrame("adm:" + info.adminFrame)}
-              >
-                <AvatarPreview uri={profileImg} frameSource={ADMIN_FRAMES[info.adminFrame].img} size={84} />
-              </PickCard>
-            ) : null}
-
-            {/* LEVEL FRAMES */}
-            {FRAME_TIERS.filter((t) => t >= 35).map((t) => {
-              const owned = t <= maxTier;
+          <View style={st.grid}>
+            {FRAME_TIERS.map((t) => {
+              const owned = t <= myTier;
               return (
                 <PickCard
                   key={t}
                   label={FRAME_TIER_LABEL[t]}
                   sub={owned ? `Lv ${t}` : `Lv ${t} par milega`}
-                  active={owned && frameChoice === "lv" + t}
+                  active={owned && t === myTier}
                   locked={!owned}
-                  onPress={() => (owned ? pickFrame("lv" + t) : lockedAlert(FRAME_TIER_LABEL[t] + " frame", t))}
+                  onPress={() => !owned && lockedAlert(FRAME_TIER_LABEL[t] + " frame", t)}
                 >
                   <AvatarPreview uri={profileImg} frameSource={FRAME_IMAGES.STATIC[t]} size={84} />
                 </PickCard>
@@ -283,7 +224,7 @@ export default function FramesEntries() {
             })}
           </View>
 
-          {/* ================= ENTRIES ================= */}
+          {/* ================= ENTRY ================= */}
           <View style={[st.sectionHead, { marginTop: 26 }]}>
             <Text style={st.sectionTitle}>MERI ENTRY</Text>
             <View style={st.switchRow}>
@@ -298,43 +239,8 @@ export default function FramesEntries() {
             </View>
           </View>
           <Text style={st.hint}>
-            Live room me aate waqt jo entry dikhti hai. Band karne par aap bina entry ke chupchap aoge.
+            Level 30 se entry banner dikhta hai (30-39 gold, 40-49 purple, 50+ orange). Band karne par aap bina entry ke chupchap aoge.
           </Text>
-
-          <View style={[st.grid, info.entryOff && { opacity: 0.4 }]} pointerEvents={info.entryOff ? "none" : "auto"}>
-            <PickCard
-              label="Auto"
-              sub="Level ke hisaab se"
-              active={!entryChoice && !info.entryOff}
-              onPress={() => pickEntry(null)}
-            >
-              <View style={st.autoIcon}>
-                <Ionicons name="sparkles" size={34} color={GOLD} />
-              </View>
-            </PickCard>
-
-            {ENTRY_CATALOG.map((e) => {
-              const owned = myLevel >= e.min;
-              return (
-                <PickCard
-                  key={e.key}
-                  label={e.label}
-                  sub={owned ? (e.min ? `Lv ${e.min}` : "Sabke liye") : `Lv ${e.min} par milega`}
-                  active={owned && entryChoice === e.key}
-                  locked={!owned}
-                  onPress={() => (owned ? pickEntry(e.key) : lockedAlert(e.label + " entry", e.min))}
-                >
-                  {e.img ? (
-                    <ExpoImage source={e.img} contentFit="contain" style={st.entryImg} />
-                  ) : (
-                    <View style={st.autoIcon}>
-                      <Ionicons name="arrow-back-circle" size={38} color="#bbb" />
-                    </View>
-                  )}
-                </PickCard>
-              );
-            })}
-          </View>
 
           {busy ? <ActivityIndicator color={GOLD} style={{ marginTop: 20 }} /> : null}
         </ScrollView>
@@ -414,6 +320,4 @@ const st = StyleSheet.create({
     borderRadius: 10,
     padding: 3,
   },
-  autoIcon: { width: 84, height: 84, justifyContent: "center", alignItems: "center" },
-  entryImg: { width: "100%", height: 64 },
 });

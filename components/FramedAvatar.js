@@ -9,8 +9,8 @@ import LevelFrame from './LevelFrame';
 // Kahin bhi avatar dikhana ho to bas ye lagao:
 //   <FramedAvatar uid={user.uid} uri={user.profileImg} size={48} />
 //
-// - uid se user ka frame (admin frame / level / agency / BD) aur
-//   user ki Settings wali choice (frame hatana / doosra frame chunna) apne aap aa jati hai.
+// - Admin ne frame diya ho to wo sabse upar (har jagah). Warna frame level se lagta hai: 30-39 -> lv30, 40-49 -> lv40, 50+ -> lv50, 30 se kam -> koi nahi.
+//   level na do to uid se user ka level (cached) apne aap aa jata hai.
 // - Frame avatar ke BAHAR ki taraf failta hai, isliye layout nahi badalta.
 // - Lists me animated=false rakho (smooth scroll), profile/popup me animated.
 // ============================================================
@@ -20,7 +20,7 @@ const FRAME_RATIO = 1.35; // frame ka size = avatar size * FRAME_RATIO
 // Sirf frame overlay chahiye (avatar pehle se bana hai) to ye use karo.
 // Parent View avatar ke size ka ho (position: 'relative' by default).
 export const AvatarFrame = memo(({ uid, level, special, size = 48, animated = false, ratio = FRAME_RATIO }) => {
-  if (!uid && !(Number(level) >= 10) && !special) return null;
+  if (!uid && !special && !(Number(level) >= 30)) return null;
   const outer = Math.round(size * ratio);
   const off = -(outer - size) / 2;
   return (

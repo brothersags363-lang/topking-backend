@@ -74,6 +74,7 @@ import { AvatarFrame } from '../../components/FramedAvatar';
 
 import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useRouter } from '../../utils/safeRouter';
+import LevelBar from '../../components/live/LevelBar';
 
 // ---------- VIEWS: ek hi user ek hi video ko har 5 minute baad dobara dekhe to view +1 ----------
 const VIEW_GAP_MS = 5 * 60 * 1000;
@@ -783,6 +784,8 @@ export default function App() {
   const [showStarPopup, setShowStarPopup] = useState(false);
   const [selectedStar, setSelectedStar] = useState(null);
   const [myStars, setMyStars] = useState(0);
+  const [myTotalSpent, setMyTotalSpent] = useState(0);   // StarUp popup level bar
+  const [myWalletLevel, setMyWalletLevel] = useState(0);
   const [starAnimationVideoId, setStarAnimationVideoId] = useState(null);
   const [starAnimationCount, setStarAnimationCount] = useState(0);
 
@@ -1018,7 +1021,11 @@ export default function App() {
     if (!uid) return;
 
     const unsubscribe = onSnapshot(doc(db, 'wallets', uid), (snap) => {
-      if (snap.exists()) setMyStars(snap.data().stars || 0);
+      if (snap.exists()) {
+        setMyStars(snap.data().stars || 0);
+        setMyTotalSpent(snap.data().totalSpent || 0);
+        setMyWalletLevel(snap.data().level || 0);
+      }
     });
 
     return () => unsubscribe();
@@ -2123,6 +2130,13 @@ export default function App() {
       {showStarPopup && (
         <View style={styles.starPopupContainer}>
           <View style={styles.starPopup}>
+            {/* LEVEL BAR */}
+            <LevelBar
+              totalSpent={myTotalSpent}
+              walletLevel={myWalletLevel}
+              onUpgrade={() => { setShowStarPopup(false); try { router.push('/wallet'); } catch (e) {} }}
+            />
+
             {/* MY STARS */}
             <View style={styles.myStarBox}>
               <Image source={STAR_LOGO} style={styles.myStarImage} />
@@ -2419,7 +2433,7 @@ const styles = StyleSheet.create({
 
   starPopup: {
     width: '100%',
-    height: 290,
+    height: 340,
     backgroundColor: '#111',
     borderTopLeftRadius: 25,
     borderTopRightRadius: 25,

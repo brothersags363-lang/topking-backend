@@ -1,3 +1,4 @@
+import LevelBadge from '../components/LevelBadge';
 import { reportVoiceAbuse } from "../utils/voiceReport";
 import OfficialLiveTools from "../components/live/OfficialLiveTools";
 import { blockIfProfane } from "../utils/guardText";
@@ -69,8 +70,9 @@ import { callApi } from "../utils/api";
 import { useLiveBanGuard } from "../utils/liveBan";
 import { checkUsername } from "../utils/usernameGate";
 import { useBlockedIds } from '../utils/useBlockedIds';
-import LevelFrame, { getSpecialKey } from "../components/LevelFrame";
+import LevelFrame from "../components/LevelFrame";
 import JoinEntry from "../components/live/JoinEntry";
+import LevelBar from "../components/live/LevelBar";
 import { useJoinDelay, markJoinPending } from "../components/live/useJoinDelay";
 import { useRoomMusic, MusicSheet } from "../components/live/RoomMusic";
 
@@ -101,6 +103,7 @@ import {
   RtcSurfaceView,
 } from "react-native-agora";
 import UserTick from '../components/UserTick';
+import useLiveSwipe from "../utils/useLiveSwipe";
 import { LinearGradient } from "expo-linear-gradient";
 import { Image as ExpoImage } from 'expo-image';
 
@@ -135,7 +138,7 @@ const cleanVerified = (o: any) => {
 const JOIN_ANIM_VARIANT = "auto";
 
 // Same 30s window all-live.js uses to decide a room is still "live".
-const HEARTBEAT_INTERVAL = 45000; // COST: 8s -> 45s (har beat = har online user ko 1 read)
+const HEARTBEAT_INTERVAL = 8000;
 
 // PK settings
 const PK_DURATION_SEC = 180; // 3 minutes
@@ -331,7 +334,7 @@ liveFilters().forEach((lf: any) => {
 });
 
 // Where the "Recharge / Buy stars" button sends the user. Change to your real route.
-const RECHARGE_ROUTE = "/recharge";
+const RECHARGE_ROUTE = "/wallet";
 
 // HEAT FIX (LiveRoom jaisa): gift WebView (canvas) me pixel ratio 1.5 par cap.
 const GIFT_WEB_PRE_JS = "try{var __r=window.devicePixelRatio||1;Object.defineProperty(window,'devicePixelRatio',{get:function(){return Math.min(__r,1.5)}})}catch(e){}true;";
@@ -399,20 +402,6 @@ const getLevelTheme = (level = 1) => {
   if (level >= 20) return { bg: "#FFC107", border: "#FFE082", text: "#000", icon: "#fff" };
   if (level >= 10) return { bg: "#BDBDBD", border: "#fff", text: "#fff", icon: "#fff" };
   return { bg: "#222", border: "#555", text: "#FFD700", icon: "#00E5FF" };
-};
-
-// Same idea as LiveRoom.js's getLevelFrame — swap for your real frame
-// assets, or ignore: the frame simply won't render if the require fails.
-const getLevelFrame = (level = 1) => {
-  try {
-    if (level >= 50) return require("../assets/frames/lv50.webp");
-    if (level >= 40) return require("../assets/frames/lv40.webp");
-    if (level >= 35) return require("../assets/frames/lv35.webp");
-    // Lv 35 se niche koi level frame nahi
-  } catch (e) {
-    return null;
-  }
-  return null;
 };
 
 const fmtClock = (sec: number) => {
@@ -645,7 +634,7 @@ const ComboRow = memo(({ data, leaving }: any) => {
             style={{ width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.9)", backgroundColor: "#2a2b38" }}
           />
           {(!!data.senderId || Number(data.level) >= 10) && (
-            <LevelFrame level={Number(data.level) || 1} uid={data.senderId} animated={false}
+            <LevelFrame level={Number(data.level) || 1} uid={data.senderId} lookup={false} animated={false}
               style={{ position: "absolute", width: 54, height: 54, top: -11, left: -11, zIndex: 10 }} />
           )}
         </View>
@@ -1011,15 +1000,7 @@ const ChatItem = memo(({ chat, onUser, onMenu }: any) => {
             )}
             <Text style={styles.tkName}>{chat.senderName}</Text>
             <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={14} />
-            <View
-              style={[
-                styles.levelBadge,
-                { marginLeft: 6, marginRight: 0, paddingHorizontal: 6, paddingVertical: 1, backgroundColor: theme.bg, borderColor: theme.border },
-              ]}
-            >
-              <MaterialCommunityIcons name="diamond-stone" size={8} color={theme.icon} />
-              <Text style={[styles.levelText, { color: theme.text, fontSize: 8 }]}>LV {chat.level || 1}</Text>
-            </View>
+            <LevelBadge level={chat.level || 1} size={8} style={{ marginLeft: 6 }} />
           </TouchableOpacity>
           {/* reply quote (Tiki jaisa) */}
           {!!chat.replyTo && (
@@ -2246,9 +2227,10 @@ export default function VideoLive() {
   const [myLevel, setMyLevel] = useState(1);
   const [myVerified, setMyVerified] = useState(false);
   const [myVerifiedColor, setMyVerifiedColor] = useState("white");
-  const [mySpecial, setMySpecial] = useState<any>(null);
   const [profileReady, setProfileReady] = useState(false);
   const [stars, setStars] = useState(0);
+  const [myTotalSpent, setMyTotalSpent] = useState(0);   // gift popup level bar
+  const [myWalletLevel, setMyWalletLevel] = useState(0);
 
   // ---------- chat + audience (subcollections, like LiveRoom.js) ----------
   const { blocked: blockedIds, ref: blockedRef } = useBlockedIds();
@@ -2549,6 +2531,8 @@ export default function VideoLive() {
     const unsub = onSnapshot(doc(db, "wallets", currentUid), (snap) => {
       if (snap.exists()) {
         setStars(snap.data()?.stars || 0);
+        setMyTotalSpent(snap.data()?.totalSpent || 0);
+        setMyWalletLevel(snap.data()?.level || 0);
         // wallet update ho gaya -> in-flight spend ab stars me included hai
         inflightSpendRef.current = 0;
         giftPendingStore.set(pendingSpendRef.current);
@@ -2580,7 +2564,6 @@ export default function VideoLive() {
           );
           setMyVerified(isVerified(data.verified));
           setMyVerifiedColor(normTickColor(data.verifiedColor));
-          setMySpecial(getSpecialKey(data));
         } else {
           setCurrentName(auth?.currentUser?.displayName || "User");
           setCurrentRealName(auth?.currentUser?.displayName || "User");
@@ -2865,8 +2848,7 @@ export default function VideoLive() {
 
     const audienceQuery = query(
       collection(db, "rooms", roomId, "audience"),
-      orderBy("joinedAt", "desc"),
-      limit(100) // COST cap
+      orderBy("joinedAt", "desc")
     );
 
     // First load is instant, then updates are coalesced (max 1 render / 600ms).
@@ -2945,7 +2927,6 @@ export default function VideoLive() {
             username: currentName,
             img: currentAvatar || STABLE_AVATAR,
             level: myLevel,
-            special: mySpecial,
             verified: myVerified,
             verifiedColor: normTickColor(myVerifiedColor),
             joinedAt: Date.now(),
@@ -2961,7 +2942,6 @@ export default function VideoLive() {
               senderName: currentRealName,
               username: currentName,
               userImg: currentAvatar || STABLE_AVATAR,
-              special: mySpecial,
               verified: myVerified,
               verifiedColor: normTickColor(myVerifiedColor),
               level: myLevel,
@@ -3372,7 +3352,7 @@ export default function VideoLive() {
       if (!x?.hostId || x.hostId === currentUid) return;
       if (blockedRef.current.has(x.hostId)) return; // BLOCK: PK list me blocked host nahi
       const hb = x.lastHeartbeat?.toMillis?.() || 0;
-      if (!hb || now - hb > 120000) return; // not really live anymore
+      if (!hb || now - hb > 45000) return; // not really live anymore
       // voice rooms can't PK / already in a PK or has a pending invite
       const busy = x.seatsData ? "Voice room" : x.pk || x.pkInvite ? "In PK" : "";
       if (busy && !includeBusy) return;
@@ -4748,7 +4728,6 @@ export default function VideoLive() {
           : null),
         role: isHost ? "host" : mods[currentUid as string] ? "mod" : "user",
         userImg: currentAvatar || STABLE_AVATAR,
-        special: mySpecial,
         verified: myVerified,
         verifiedColor: normTickColor(myVerifiedColor),
         level: myLevel,
@@ -4946,6 +4925,15 @@ export default function VideoLive() {
       goingOppRef.current = false;
     }
   };
+
+  // ↕ Swipe up/down = dusre live me jao (sirf normal viewer)
+  const liveSwipe = useLiveSwipe({
+    db, roomId, router, blockedRef,
+    enabled: !isHost && !amGuest,
+    onBeforeSwitch: () => {
+      try { flushGiftBatchRef.current?.(); } catch (_) {}
+    },
+  });
 
   const onScreenTap = (e?: any) => {
     Keyboard.dismiss();
@@ -5555,7 +5543,6 @@ export default function VideoLive() {
           username: currentName,
           userImg: currentAvatar || STABLE_AVATAR,
           level: myLevel,
-          special: mySpecial,
           verified: myVerified,
           verifiedColor: normTickColor(myVerifiedColor),
           receiverName,
@@ -5593,7 +5580,6 @@ export default function VideoLive() {
   // ============================================================
 
   const levelTheme = getLevelTheme(hostLevel);
-  const levelFrame = getLevelFrame(hostLevel);
 
   const showLocalVideo = isHost && localReady;
   const showRemoteVideo = !isHost && hostRemoteUid != null;
@@ -5951,9 +5937,11 @@ export default function VideoLive() {
       )}
 
       {/* tap anywhere on the video = send a heart */}
-      <TouchableWithoutFeedback onPress={onScreenTap}>
-        <View style={StyleSheet.absoluteFill} />
-      </TouchableWithoutFeedback>
+      <View style={StyleSheet.absoluteFill} {...liveSwipe.panHandlers}>
+        <TouchableWithoutFeedback onPress={onScreenTap}>
+          <View style={StyleSheet.absoluteFill} />
+        </TouchableWithoutFeedback>
+      </View>
 
       {/* PK ke baad 5 sec: yellow "Start PK" (Tiki) -> tap overlay ke UPAR */}
       {isHost && pkEnded && showStartPk && (
@@ -6102,7 +6090,7 @@ export default function VideoLive() {
             <TouchableOpacity activeOpacity={0.85} onPress={openHostCard} style={styles.hostAvatarContainer}>
               <ExpoImage source={{ uri: hostImg }} style={styles.hostAvatarImg} cachePolicy="memory-disk" transition={0} />
               {(hostLevel >= 10 || !!hostId) && (
-                <LevelFrame level={hostLevel} uid={hostId} animated={false} style={styles.hostLevelFrame} />
+                <LevelFrame level={hostLevel} uid={hostId} lookup={false} animated={false} style={styles.hostLevelFrame} />
               )}
             </TouchableOpacity>
 
@@ -6508,6 +6496,15 @@ export default function VideoLive() {
               },
             ]}
           >
+            {/* level bar: kitna star bheju to agla level mile */}
+            <LevelBar
+              style={{ marginHorizontal: 14 }}
+              totalSpent={myTotalSpent}
+              walletLevel={myWalletLevel}
+              pendingStore={giftPendingStore}
+              onUpgrade={goRecharge}
+            />
+
             {/* gift pages: 4 columns x 2 rows, snap paging */}
             <FlatList
               data={GIFT_PAGES}
@@ -6664,10 +6661,7 @@ export default function VideoLive() {
                             {item.name || item.username || "User"}
                           </Text>
                           <UserTick uid={item.uid || item.userId || item.senderId || item.id} verified={!!(!!item.verified)} verifiedColor={item.verifiedColor} size={14} />
-                          <View style={[styles.levelBadge, { backgroundColor: th.bg, borderColor: th.border }]}>
-                            <MaterialCommunityIcons name="diamond-stone" size={9} color={th.icon} />
-                            <Text style={[styles.levelText, { color: th.text, fontSize: 8 }]}>LV {item.level || 1}</Text>
-                          </View>
+                          <LevelBadge level={item.level || 1} size={9} style={{ marginLeft: 6 }} />
                         </View>
                         {(mods[item.uid] || mutedUsers[item.uid]) && (
                           <Text style={styles.pkRowSub}>
@@ -6763,7 +6757,7 @@ export default function VideoLive() {
               <TouchableOpacity activeOpacity={0.85} style={styles.pcAvaWrap} onPress={() => goUserProfile(profileCard)}>
                 <ExpoImage source={{ uri: profileCard.img || STABLE_AVATAR }} style={styles.pcAva} cachePolicy="memory-disk" transition={0} />
                 {(Number(profileCard.level) >= 10 || !!profileCard.uid) && (
-                  <LevelFrame level={Number(profileCard.level)} uid={profileCard.uid} animated style={{ position: "absolute", width: 110, height: 110 }} />
+                  <LevelFrame level={Number(profileCard.level)} uid={profileCard.uid} lookup={false} animated style={{ position: "absolute", width: 110, height: 110 }} />
                 )}
               </TouchableOpacity>
 
@@ -7571,7 +7565,6 @@ const styles = StyleSheet.create({
   },
   chatRow: { flexDirection: "row", marginBottom: 10, alignItems: "flex-start" },
   chatAva: { width: 30, height: 30, borderRadius: 15, backgroundColor: "#2a2b38" },
-  chatFrame: { position: "absolute", width: 42, height: 42, resizeMode: "contain" },
   chatContent: { flex: 1, marginLeft: 8 },
   chatUser: { color: "#fff", fontWeight: "bold", fontSize: 11 },
   bubble: {

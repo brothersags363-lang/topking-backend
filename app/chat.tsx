@@ -1,3 +1,4 @@
+import LevelBadge from '../components/LevelBadge';
 import useBackStep from "../utils/useBackStep";
 import { blockIfProfane } from "../utils/guardText";
 // ============================================================================
@@ -2328,31 +2329,7 @@ export default function ChatScreen() {
 
                 <UserTick verified={verified} verifiedColor={verifiedColor} faceVerified={faceVerified} size={18} />
 
-                <View
-                  style={[
-                    styles.levelBadge,
-                    {
-                      backgroundColor: getLevelTheme(userLevel).bg,
-                      borderColor: getLevelTheme(userLevel).border,
-                    },
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name="diamond-stone"
-                    size={12}
-                    color={getLevelTheme(userLevel).icon}
-                  />
-                  <Text
-                    style={{
-                      color: getLevelTheme(userLevel).text,
-                      marginLeft: 3,
-                      fontSize: 11,
-                      fontWeight: "bold",
-                    }}
-                  >
-                    LV {userLevel}
-                  </Text>
-                </View>
+                <LevelBadge level={userLevel} size={12} style={{ marginLeft: 3 }} />
               </View>
 
               {!!statusLine && (

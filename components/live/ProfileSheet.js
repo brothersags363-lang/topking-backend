@@ -104,8 +104,8 @@ export default function ProfileSheet({
               {avatar || (
                 <>
                   <Image source={{ uri: user.img || AVATAR }} style={s.ava} />
-                  {(lv >= 10 || !!uid) && (
-                    <LevelFrame level={lv} uid={uid} animated style={{ position: "absolute", width: 110, height: 110 }} />
+                  {(lv >= 30 || !!uid) && (
+                    <LevelFrame level={lv} uid={uid} lookup={false} animated style={{ position: "absolute", width: 110, height: 110 }} />
                   )}
                 </>
               )}

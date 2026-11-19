@@ -1,3 +1,4 @@
+import LevelBadge from '../components/LevelBadge';
 import { reportVoiceAbuse } from "../utils/voiceReport";
 import OfficialLiveTools from "../components/live/OfficialLiveTools";
 import { blockIfProfane } from "../utils/guardText";
@@ -42,10 +43,11 @@ import { useLiveBanGuard } from '../utils/liveBan';
 import { useBlockedIds } from '../utils/useBlockedIds';
 import { gifts } from '../assets/giftsData';
 import GiftSheet from '../components/live/GiftSheet';
-import LevelFrame, { getSpecialKey } from '../components/LevelFrame';
+import LevelFrame from '../components/LevelFrame';
 import JoinEntry from '../components/live/JoinEntry';
 import { useJoinDelay } from '../components/live/useJoinDelay';
 import UserTick from '../components/UserTick';
+import useLiveSwipe from '../utils/useLiveSwipe';
 import ProfileSheet, { SheetChip } from '../components/live/ProfileSheet';
 import { Image as ExpoImage } from 'expo-image';
 
@@ -78,11 +80,11 @@ const EMPTY_SEAT = {
 
 const AGORA_APP_ID = 'f75d0020d44345edb12bbf6847ef3d38';
 const TOKEN_ENDPOINT = 'https://topking-backend.onrender.com/token';
-const HEARTBEAT_INTERVAL = 60000; // COST: 8s -> 60s
+const HEARTBEAT_INTERVAL = 8000;
 const SEAT_JOIN_GRACE_MS = 25000; // host: seat par baitha banda channel me nahi aaya to seat khali
 const WEEKLY_TARGET_MIN = 30;
 const JOIN_ANIM_VARIANT = 'auto';
-const RECHARGE_ROUTE = '/recharge';
+const RECHARGE_ROUTE = '/wallet';
 const GIFT_QTY = [1, 10, 66, 99];
 const QUICK_EMOJIS = ['😂', '😍', '🔥', '👏', '🥰', '😮', '🎉', '💯'];
 const BAD_WORDS = ['fuck', 'bitch', 'sex', 'porn', 'madarchod', 'bhosdi', 'chutiya', 'randi', 'gaand', 'lund'];
@@ -561,17 +563,14 @@ const ChatItem = memo(({ chat, onUser }) => {
       <View style={styles.sysRow}>
         <TouchableOpacity activeOpacity={0.8} onPress={openUser}>
           <ExpoImage source={{ uri: chat.userImg || DEFAULT_AVATAR }} style={styles.sysAva} cachePolicy="memory-disk" transition={0} />
-          {(chat.level >= 10 || chat.special || !!chat.senderId) && (
-            <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated={CHAT_FRAME_ANIM} style={styles.sysFrame} />
+          {(chat.level >= 30 || !!chat.senderId) && (
+            <LevelFrame level={chat.level} uid={chat.senderId} lookup={false} animated={CHAT_FRAME_ANIM} style={styles.sysFrame} />
           )}
         </TouchableOpacity>
         <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginLeft: 6 }}>
           <Text style={styles.sysText}>{chat.senderName}</Text>
           {tick(15)}
-          <View style={[styles.levelBadge, { marginLeft: 5, backgroundColor: theme.bg, borderColor: theme.border }]}>
-            <MaterialCommunityIcons name="diamond-stone" size={8} color={theme.icon} />
-            <Text style={[styles.levelText, { color: theme.text }]}>LV {chat.level || 1}</Text>
-          </View>
+          <LevelBadge level={chat.level || 1} size={8} style={{ marginLeft: 5 }} />
           <Text style={[styles.sysText, { marginLeft: 5 }]}>joined</Text>
         </View>
       </View>
@@ -604,17 +603,15 @@ const ChatItem = memo(({ chat, onUser }) => {
     <View style={styles.chatRow}>
       <TouchableOpacity activeOpacity={0.8} onPress={openUser} style={{ width: 38, height: 38, justifyContent: 'center', alignItems: 'center' }}>
         <ExpoImage source={{ uri: chat.userImg || DEFAULT_AVATAR }} style={styles.chatAva} cachePolicy="memory-disk" transition={0} />
-        {(chat.level >= 10 || chat.special || !!chat.senderId) && (
-          <LevelFrame level={chat.level} special={chat.special} uid={chat.senderId} animated={CHAT_FRAME_ANIM} style={styles.chatFrame} />
+        {(chat.level >= 30 || !!chat.senderId) && (
+          <LevelFrame level={chat.level} uid={chat.senderId} lookup={false} animated={CHAT_FRAME_ANIM} style={styles.chatFrame} />
         )}
       </TouchableOpacity>
       <View style={styles.chatContent}>
         <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
           <Text style={styles.chatUser}>{chat.senderName}</Text>
           {tick(14)}
-          <View style={[styles.levelBadge, { backgroundColor: theme.bg, borderColor: theme.border }]}>
-            <MaterialCommunityIcons name="diamond-stone" size={9} color={theme.icon} />
-            <Text style={[styles.levelText, { color: theme.text }]}>LV {chat.level || 1}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}><LevelBadge level={chat.level || 1} size={9} />
             {chat.role === 'host' && <View style={[styles.roleTag, { backgroundColor: '#F71084' }]}><Text style={styles.roleTagTxt}>HOST</Text></View>}
             {chat.role === 'mod' && <View style={[styles.roleTag, { backgroundColor: '#2D9CFF' }]}><Text style={styles.roleTagTxt}>MOD</Text></View>}
           </View>
@@ -739,9 +736,10 @@ export default function MultiGuestRoom() {
   const [myLevel, setMyLevel] = useState(1);
   const [myVerified, setMyVerified] = useState(false);
   const [myVerifiedColor, setMyVerifiedColor] = useState('white');
-  const [mySpecial, setMySpecial] = useState(null);
   const [profileReady, setProfileReady] = useState(false);
   const [stars, setStars] = useState(0);
+  const [myTotalSpent, setMyTotalSpent] = useState(0);   // level bar ke liye
+  const [myWalletLevel, setMyWalletLevel] = useState(0);
 
   // ---------- chat / audience ----------
   const { blocked: blockedIds, ref: blockedRef } = useBlockedIds();
@@ -851,6 +849,12 @@ export default function MultiGuestRoom() {
   const myMicOn = !!mySeat && !mySeat.isMuted && !mySeat.hostMuted;
   const myCamOn = !!mySeat && !mySeat.isCamOff;
 
+  // ↕ Swipe up/down = dusre live me jao (sirf bina seat wala viewer)
+  const liveSwipe = useLiveSwipe({
+    db, roomId, router, blockedRef,
+    enabled: !isHost && !mySeatKey,
+  });
+
   const rankedGifters = Object.values(room?.roomGifters || {})
     .filter((g) => g && g.uid && Number(g.stars) > 0)
     .sort((a, b) => Number(b.stars) - Number(a.stars));
@@ -896,7 +900,12 @@ export default function MultiGuestRoom() {
   useEffect(() => {
     if (!db || !myUid) return undefined;
     const unsub = onSnapshot(doc(db, 'wallets', myUid), (snap) => {
-      if (snap.exists()) setStars(snap.data()?.stars || 0);
+      if (snap.exists()) {
+        const w = snap.data() || {};
+        setStars(w.stars || 0);
+        setMyTotalSpent(w.totalSpent || 0);
+        setMyWalletLevel(w.level || 0);
+      }
     });
     return () => unsub();
   }, [myUid]);
@@ -916,7 +925,6 @@ export default function MultiGuestRoom() {
           setCurrentAvatar(d.profileImg || d.photoURL || me?.photoURL || DEFAULT_AVATAR);
           setMyVerified(isVerified(d.verified));
           setMyVerifiedColor(normTickColor(d.verifiedColor));
-          setMySpecial(getSpecialKey(d));
         }
         if (walletSnap.exists()) setMyLevel(walletSnap.data()?.level || 1);
       } catch (e) { __DEV__ && console.log('MY PROFILE LOAD ERROR:', e); }
@@ -1026,13 +1034,13 @@ export default function MultiGuestRoom() {
         const first = !existing.exists();
         const jobs = [setDoc(audRef, {
           uid: myUid, userId: myUid, name: currentRealName, username: currentName,
-          img: currentAvatar || DEFAULT_AVATAR, level: myLevel, special: mySpecial,
+          img: currentAvatar || DEFAULT_AVATAR, level: myLevel,
           verified: myVerified, verifiedColor: normTickColor(myVerifiedColor), joinedAt: Date.now(), online: true,
         })];
         if (first) {
           jobs.push(addDoc(collection(db, 'rooms', roomId, 'chats'), {
             type: 'join', senderId: myUid, senderName: currentRealName, username: currentName,
-            userImg: currentAvatar || DEFAULT_AVATAR, special: mySpecial, verified: myVerified,
+            userImg: currentAvatar || DEFAULT_AVATAR, verified: myVerified,
             verifiedColor: normTickColor(myVerifiedColor), level: myLevel, createdAt: Date.now(),
           }));
         }
@@ -1448,7 +1456,7 @@ export default function MultiGuestRoom() {
       await addDoc(collection(db, 'rooms', roomId, 'chats'), {
         senderName: currentRealName, username: currentName, message: messageText, senderId: myUid,
         role: isHost ? 'host' : mods[myUid] ? 'mod' : 'user', userImg: currentAvatar || DEFAULT_AVATAR,
-        special: mySpecial, verified: myVerified, verifiedColor: normTickColor(myVerifiedColor),
+        verified: myVerified, verifiedColor: normTickColor(myVerifiedColor),
         level: myLevel, createdAt: Date.now(),
       });
     } catch (e) {}
@@ -1749,7 +1757,7 @@ export default function MultiGuestRoom() {
     if (comboCount <= qty) {
       jobs.push(addDoc(collection(db, 'rooms', roomId, 'chats'), {
         type: 'gift', senderId: myUid, qty, senderName: senderDisplay, username: currentName,
-        userImg: currentAvatar || DEFAULT_AVATAR, level: myLevel, special: mySpecial, verified: myVerified,
+        userImg: currentAvatar || DEFAULT_AVATAR, level: myLevel, verified: myVerified,
         verifiedColor: normTickColor(myVerifiedColor), receiverName, giftId: item.id, giftName: item.name, createdAt: Date.now(),
       }));
     }
@@ -1926,7 +1934,7 @@ export default function MultiGuestRoom() {
           )}
 
           {/* ===== 3x3 video grid ===== */}
-          <View style={styles.grid}>
+          <View style={styles.grid} {...liveSwipe.panHandlers}>
             {SEAT_KEYS.map((k, i) => {
               const s = seats[k] || {};
               const mine = !!s.userId && s.userId === myUid;
@@ -2199,10 +2207,7 @@ export default function MultiGuestRoom() {
                       <View style={{ flex: 1, marginLeft: 12 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                           <Text style={styles.pkRowName} numberOfLines={1}>{item.name || item.username || 'User'}</Text>
-                          <View style={[styles.levelBadge, { backgroundColor: th.bg, borderColor: th.border }]}>
-                            <MaterialCommunityIcons name="diamond-stone" size={9} color={th.icon} />
-                            <Text style={[styles.levelText, { color: th.text }]}>LV {item.level || 1}</Text>
-                          </View>
+                          <LevelBadge level={item.level || 1} size={9} style={{ marginLeft: 6 }} />
                         </View>
                       </View>
                       <TouchableOpacity style={[styles.kickBtn, { backgroundColor: '#374151', marginRight: 8 }]} onPress={() => rejectRequest(item)}>
@@ -2234,6 +2239,8 @@ export default function MultiGuestRoom() {
         hostId={hostId}
         fallbackAvatar={DEFAULT_AVATAR}
         onRecharge={goRecharge}
+        totalSpent={myTotalSpent}
+        walletLevel={myWalletLevel}
       />
 
       {/* ===== viewers ===== */}
@@ -2278,10 +2285,7 @@ export default function MultiGuestRoom() {
                         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                           <Text style={styles.pkRowName} numberOfLines={1}>{item.name || item.username || 'User'}</Text>
                           <UserTick uid={item.uid || item.userId || item.senderId || item.id} verified={!!(!!item.verified)} verifiedColor={item.verifiedColor} size={14} />
-                          <View style={[styles.levelBadge, { backgroundColor: th.bg, borderColor: th.border }]}>
-                            <MaterialCommunityIcons name="diamond-stone" size={9} color={th.icon} />
-                            <Text style={[styles.levelText, { color: th.text }]}>LV {item.level || 1}</Text>
-                          </View>
+                          <LevelBadge level={item.level || 1} size={9} style={{ marginLeft: 6 }} />
                         </View>
                         {(mods[item.uid] || mutedUsers[item.uid]) && (
                           <Text style={styles.pkRowSub}>

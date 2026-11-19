@@ -5,7 +5,9 @@
 // Props (purane GiftSheet jaise hi + kuch optional):
 //   stars, giftUsers, selectedGiftUser, onSelectUser, onSendGift   -> same as before
 //   hostId            : jis uid ko "Host" dikhana hai (optional)
-//   level, levelProgress (0..1), starsToUpgrade, onUpgrade          -> top level bar (level na do to row hide)
+//   totalSpent, walletLevel, onUpgrade   -> top level bar (wallets/{uid}.totalSpent + .level).
+//                                           Level/progress/"+N stars to upgrade" khud calculate hota hai.
+//                                           onUpgrade na do to "Upgrade >" onRecharge par jata hai.
 //   onRecharge        : Recharge > dabane par
 //   sendWithQty       : true = onSendGift(item, qty) ek hi baar (MultiGuestRoom); false = qty baar loop
 //   closeOnSend       : Send ke baad sheet band
@@ -25,6 +27,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Image as ExpoImage } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { gifts } from '../../assets/giftsData';
+import LevelBar from './LevelBar';
 
 const { width } = Dimensions.get('window');
 
@@ -122,7 +125,7 @@ const GiftSheet = memo(
   forwardRef(function GiftSheet(
     {
       stars = 0, giftUsers = [], selectedGiftUser, onSelectUser, onSendGift,
-      hostId, level, levelProgress = 0, starsToUpgrade = 0, onUpgrade,
+      hostId, totalSpent = 0, walletLevel, onUpgrade,
       onRecharge, showAll = true, fallbackAvatar, sendWithQty = false, closeOnSend = false,
     },
     ref
@@ -206,7 +209,6 @@ const GiftSheet = memo(
       return [...host, ...rest];
     }, [giftUsers, hostId]);
 
-    const pct = Math.max(0, Math.min(1, levelProgress)) * 100;
     let n = 0;
 
     return (
@@ -221,22 +223,13 @@ const GiftSheet = memo(
             renderToHardwareTextureAndroid
             style={[s.sheet, { paddingBottom: Math.max(insets.bottom, 8) + 2, transform: [{ translateY: anim }] }]}
           >
-            {/* ===== level bar ===== */}
-            {level != null && (
-              <View style={s.levelRow}>
-                <View style={s.levelPill}>
-                  <Ionicons name="triangle" size={11} color="#4DA6FF" />
-                  <Text style={s.levelNum}>{level}</Text>
-                </View>
-                <View style={{ flex: 1, marginHorizontal: 12 }}>
-                  <View style={s.track}><View style={[s.fill, { width: pct + '%' }]} /></View>
-                  <Text style={s.upgradeSub}>+{starsToUpgrade} stars to upgrade Lv.{Number(level) + 1}</Text>
-                </View>
-                <TouchableOpacity onPress={onUpgrade} activeOpacity={0.7} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                  <Text style={s.upgradeBtn}>Upgrade {'>'}</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+            {/* ===== level bar (smooth animated, gift spam par turant badhta hai) ===== */}
+            <LevelBar
+              totalSpent={totalSpent}
+              walletLevel={walletLevel}
+              pendingStore={pendingStore}
+              onUpgrade={onUpgrade || onRecharge}
+            />
 
             {/* ===== users ===== */}
             <View style={s.usersRow}>
@@ -330,9 +323,9 @@ const GiftSheet = memo(
     a.onSelectUser === b.onSelectUser &&
     a.onSendGift === b.onSendGift &&
     a.hostId === b.hostId &&
-    a.level === b.level &&
-    a.levelProgress === b.levelProgress &&
-    a.starsToUpgrade === b.starsToUpgrade &&
+    a.totalSpent === b.totalSpent &&
+    a.walletLevel === b.walletLevel &&
+    a.onUpgrade === b.onUpgrade &&
     a.onRecharge === b.onRecharge &&
     (a.giftUsers === b.giftUsers ||
       a.giftUsers.map((u) => u.uid + '|' + u.img + '|' + u.name).join(',') ===
@@ -351,17 +344,6 @@ const s = StyleSheet.create({
     overflow: 'hidden',
   },
 
-  // level
-  levelRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
-  levelPill: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#12303f',
-    paddingHorizontal: 8, height: 22, borderRadius: 11,
-  },
-  levelNum: { color: '#fff', fontSize: 11, fontWeight: '600', marginLeft: 6 },
-  track: { height: 4, borderRadius: 2, backgroundColor: '#3a3a3e', overflow: 'hidden' },
-  fill: { height: 4, borderRadius: 2, backgroundColor: YELLOW },
-  upgradeSub: { color: GREY, fontSize: 9, marginTop: 3 },
-  upgradeBtn: { color: '#fff', fontSize: 12, fontWeight: '700' },
 
   // users
   usersRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },

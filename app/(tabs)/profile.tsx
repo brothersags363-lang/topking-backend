@@ -1,3 +1,4 @@
+import LevelBadge from '../../components/LevelBadge';
 import AppBottomNav from '../../components/AppBottomNav';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Image as ExpoImage } from 'expo-image';
@@ -657,10 +658,7 @@ export default function ProfileScreen() {
                 size={16}
                 style={{ marginLeft: 5 }}
               />
-              <View style={[styles.levelBadge, { backgroundColor: levelTheme.bg, borderColor: levelTheme.border }]}>
-                <MaterialCommunityIcons name="diamond-stone" size={10} color={levelTheme.icon} />
-                <Text style={[styles.levelBadgeText, { color: levelTheme.text }]}>LV {profileData.level || 1}</Text>
-              </View>
+              <LevelBadge level={profileData.level || 1} size={10} style={{ marginLeft: 4 }} tappable />
             </View>
 
             <View style={styles.statsRow}>

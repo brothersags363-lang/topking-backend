@@ -64,3 +64,13 @@ manifest-final.txt
 .env
 android/app/build/
 android/build/
+
+credentials.json
+credentials/
+*.keystore
+*.jks
+android/app/build/
+android/build/
+android/.gradle/
+metro-log.txt
+android/build-log.txt
