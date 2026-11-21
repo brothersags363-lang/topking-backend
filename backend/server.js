@@ -6232,6 +6232,11 @@ app.use((req, res) => {
 // SERVER
 // =====================================================
 
+// Live list: server ek baar rooms sunta hai, phones ko cache se list milti hai (Firestore reads bachte hain)
+require("./liveList")(app, { admin, db });
+// Live gift: stars ka hisaab server transaction me (phone seedha wallet nahi kaat-ta)
+require("./liveGift")(app, { admin, db, verifyUser });
+
 const PORT =
   Number(
     process.env.PORT || 3000

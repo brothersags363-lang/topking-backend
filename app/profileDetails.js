@@ -1,5 +1,5 @@
 import useBackStep from '../utils/useBackStep';
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -8,41 +8,122 @@ import {
   TouchableOpacity,
   Image,
   StyleSheet,
+  ActivityIndicator,
 } from "react-native";
 import { useRouter } from "../utils/safeRouter";
-import { collection, getDocs } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, query, limit, orderBy, startAt, endAt } from "firebase/firestore";
 import { Ionicons } from "@expo/vector-icons";
 import { db } from "./firebaseConfig";
 import useIsAdmin from "./useIsAdmin";
 
 const PLACEHOLDER = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
+const PER_QUERY_LIMIT = 20; // har query se max itne user
+const MAX_RESULTS = 40; // screen par max itne
+const DEBOUNCE_MS = 400;
+
+const cap = (t) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
+
+// SERVER-SIDE search: screen khulte hi koi user load nahi hota. Jab admin type kare tab
+// sirf match hone wale users aate hain (kitne bhi users ho - 10 crore bhi - search chalega).
+// 1) exact ID (Firestore uid)  2) username prefix  3) name prefix  (lower / Capital / jaisa type kiya)
+async function searchUsers(text) {
+  const raw = text.trim();
+  if (!raw) return [];
+  const out = new Map();
+
+  const jobs = [];
+
+  // exact ID (uid) - sabse pehle, ek hi doc read
+  if (!raw.includes("/") && raw.length >= 3) {
+    jobs.push(
+      getDoc(doc(db, "users", raw))
+        .then((d) => {
+          if (d.exists()) out.set(d.id, { id: d.id, ...d.data(), _exact: true });
+        })
+        .catch(() => {})
+    );
+  }
+
+  // prefix search: dusre case me bhi mile (username "Rahul" ho aur admin "rahul" type kare)
+  const variants = Array.from(new Set([raw, raw.toLowerCase(), cap(raw.toLowerCase())]));
+  const prefixQuery = (field, v) =>
+    getDocs(query(collection(db, "users"), orderBy(field), startAt(v), endAt(v + "\uf8ff"), limit(PER_QUERY_LIMIT)))
+      .then((snap) => snap.docs.forEach((d) => { if (!out.has(d.id)) out.set(d.id, { id: d.id, ...d.data() }); }))
+      .catch(() => {});
+
+  variants.forEach((v) => {
+    jobs.push(prefixQuery("username", v));
+    jobs.push(prefixQuery("name", v));
+  });
+
+  await Promise.all(jobs);
+
+  const list = Array.from(out.values());
+  list.sort((a, b) => {
+    if (a._exact && !b._exact) return -1;
+    if (b._exact && !a._exact) return 1;
+    return (a.username || "").localeCompare(b.username || "");
+  });
+  return list.slice(0, MAX_RESULTS);
+}
 
 export default function ProfileDetails() {
   const router = useRouter();
   useBackStep('/profile');
   const isAdmin = useIsAdmin();
-  const [users, setUsers] = useState([]);
+  const [results, setResults] = useState([]);
   const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [searched, setSearched] = useState(false);
+  const reqRef = useRef(0);
 
   useEffect(() => {
-    // Saare users (app ke andar jitne bhi hain)
-    // Realtime listener hataya: har user badalne par poora users collection dobara padhta tha (mehnga). Ab ek baar.
-    let alive = true;
-    getDocs(collection(db, "users"))
-      .then((snap) => alive && setUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() }))))
-      .catch(() => {});
-    return () => { alive = false; };
-  }, []);
+    if (isAdmin !== true) return undefined; // COST: non-admin search nahi kar sakta
+    const text = search.trim();
+    if (!text) {
+      reqRef.current += 1;
+      setResults([]);
+      setSearched(false);
+      setLoading(false);
+      return undefined;
+    }
+    setLoading(true);
+    const my = ++reqRef.current;
+    const t = setTimeout(async () => {
+      try {
+        const list = await searchUsers(text);
+        if (reqRef.current !== my) return; // naya type ho gaya -> purana result ignore
+        setResults(list);
+      } catch (_) {
+        if (reqRef.current === my) setResults([]);
+      }
+      if (reqRef.current === my) {
+        setSearched(true);
+        setLoading(false);
+      }
+    }, DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [search, isAdmin]);
 
-  const filtered = useMemo(() => {
-    const s = search.trim().toLowerCase();
-    const list = s
-      ? users.filter((u) => (u.username || "").toLowerCase().includes(s))
-      : users;
-    return [...list].sort((a, b) =>
-      (a.username || "").localeCompare(b.username || "")
-    );
-  }, [users, search]);
+  const renderItem = useCallback(
+    ({ item }) => (
+      <TouchableOpacity
+        style={styles.row}
+        onPress={() => router.push({ pathname: "/adminUserProfile", params: { userId: item.id } })}
+      >
+        <Image source={{ uri: item.profileImg || PLACEHOLDER }} style={styles.avatar} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.name} numberOfLines={1}>
+            {item.username || item.name || "No name"}
+          </Text>
+          <Text style={styles.uid} numberOfLines={1}>{item.id}</Text>
+        </View>
+        {item.banned && <Text style={styles.banned}>BANNED</Text>}
+        <Ionicons name="chevron-forward" size={20} color="#777" />
+      </TouchableOpacity>
+    ),
+    [router]
+  );
 
   if (!isAdmin) {
     return (
@@ -61,7 +142,7 @@ export default function ProfileDetails() {
         <Ionicons name="search" size={20} color="#aaa" />
         <TextInput
           style={styles.searchInput}
-          placeholder="Search user name..."
+          placeholder="Search username ya user ID..."
           placeholderTextColor="#777"
           value={search}
           onChangeText={setSearch}
@@ -74,28 +155,27 @@ export default function ProfileDetails() {
         )}
       </View>
 
-      <Text style={styles.count}>Total users: {filtered.length}</Text>
+      {loading ? (
+        <ActivityIndicator color="#aaa" style={{ marginVertical: 12 }} />
+      ) : searched ? (
+        <Text style={styles.count}>Found: {results.length}</Text>
+      ) : null}
 
-      {/* Niche line by line users */}
-      <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
-        data={filtered}
+      <FlatList
+        initialNumToRender={10}
+        maxToRenderPerBatch={10}
+        windowSize={7}
+        keyboardShouldPersistTaps="handled"
+        data={results}
         keyExtractor={(i) => i.id}
-        ListEmptyComponent={<Text style={styles.empty}>No user found</Text>}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.row}
-            onPress={() =>
-              router.push({ pathname: "/adminUserProfile", params: { userId: item.id } })
-            }
-          >
-            <Image source={{ uri: item.profileImg || PLACEHOLDER }} style={styles.avatar} />
-            <Text style={styles.name} numberOfLines={1}>
-              {item.username || "No name"}
+        ListEmptyComponent={
+          loading ? null : (
+            <Text style={styles.empty}>
+              {searched ? "No user found" : "Username ya user ID type karke search karo"}
             </Text>
-            {item.banned && <Text style={styles.banned}>BANNED</Text>}
-            <Ionicons name="chevron-forward" size={20} color="#777" />
-          </TouchableOpacity>
-        )}
+          )
+        }
+        renderItem={renderItem}
       />
     </View>
   );
@@ -122,7 +202,8 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   avatar: { width: 44, height: 44, borderRadius: 22, marginRight: 12, backgroundColor: "#333" },
-  name: { flex: 1, color: "#fff", fontSize: 16, fontWeight: "600" },
+  name: { color: "#fff", fontSize: 16, fontWeight: "600" },
+  uid: { color: "#777", fontSize: 11, marginTop: 2 },
   banned: { color: "red", fontWeight: "bold", marginRight: 8, fontSize: 12 },
   empty: { color: "#888", textAlign: "center", marginTop: 40 },
 });

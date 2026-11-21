@@ -1,4 +1,5 @@
 import LevelBadge from '../components/LevelBadge';
+import { warmBackend } from "../utils/warmBackend";
 import { reportVoiceAbuse } from "../utils/voiceReport";
 import OfficialLiveTools from "../components/live/OfficialLiveTools";
 import { blockIfProfane } from "../utils/guardText";
@@ -67,6 +68,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { gifts } from "../assets/giftsData";
 import { callApi } from "../utils/api";
+import { chargeLiveGift } from "../utils/liveGiftApi";
 import { useLiveBanGuard } from "../utils/liveBan";
 import { checkUsername } from "../utils/usernameGate";
 import { useBlockedIds } from '../utils/useBlockedIds';
@@ -138,7 +140,7 @@ const cleanVerified = (o: any) => {
 const JOIN_ANIM_VARIANT = "auto";
 
 // Same 30s window all-live.js uses to decide a room is still "live".
-const HEARTBEAT_INTERVAL = 8000;
+const HEARTBEAT_INTERVAL = 60000; // COST FIX: pehle 8s
 
 // PK settings
 const PK_DURATION_SEC = 180; // 3 minutes
@@ -420,8 +422,8 @@ const TOKEN_TIMEOUT_MS = 25000;
 const TOKEN_RETRIES = 3;
 
 const warmUpBackend = () => {
-  // any request wakes the server; result is ignored
-  fetch(TOKEN_ENDPOINT.replace(/\/token$/, "/"), { method: "GET" }).catch(() => {});
+  // shared helper: server jaga hua ho to dobara ping nahi, soya ho to jagata hai
+  warmBackend(false);
 };
 
 const fetchAgoraTokenOnce = async (channel: string, uid: number) => {
@@ -2848,7 +2850,8 @@ export default function VideoLive() {
 
     const audienceQuery = query(
       collection(db, "rooms", roomId, "audience"),
-      orderBy("joinedAt", "desc")
+      orderBy("joinedAt", "desc"),
+      limit(200)
     );
 
     // First load is instant, then updates are coalesced (max 1 render / 600ms).
@@ -3134,13 +3137,14 @@ export default function VideoLive() {
         // A snapshot served from the local cache can be OLD (opponent room
         // without the new pk yet). Using it made the PK end instantly.
         if (s.metadata.fromCache) return;
-        const od: any = s.exists() ? s.data() : null;
+        const full: any = s.exists() ? s.data() : null;
+        // SMOOTH FIX: opponent room me likes / viewerCount / seatStars / roomGifters / liveGift / chat
+        // fields bahut baar badalte hain, par PK screen ko sirf status + pk (score, pkId, face, gifters)
+        // chahiye. Pehle har badlav par poori screen re-render hoti thi -> PK me lag. Ab sirf kaam ke fields.
+        const od: any = full ? { status: full.status, pk: full.pk || null } : null;
         let osig = "null";
         try {
-          if (od) {
-            const { lastHeartbeat: _h, ...orest } = od;
-            osig = JSON.stringify(orest);
-          }
+          if (od) osig = JSON.stringify(od);
         } catch (_) {}
         if (osig !== lastOppSigRef.current) {
           lastOppSigRef.current = osig;
@@ -3527,7 +3531,9 @@ export default function VideoLive() {
     setPkBusy(true);
     const pkId = `${Date.now()}`;
     try {
-      await updateDoc(doc(db, "rooms", roomId), {
+      // SPEED: dono rooms ek hi batch me (pehle 2 alag awaits -> invite der se pahunchta tha)
+      const inviteBatch = writeBatch(db);
+      inviteBatch.update(doc(db, "rooms", roomId), {
         pk: {
           pkId,
           status: "invited",
@@ -3539,7 +3545,7 @@ export default function VideoLive() {
           score: 0,
         },
       });
-      await updateDoc(doc(db, "rooms", target.id), {
+      inviteBatch.update(doc(db, "rooms", target.id), {
         pkInvite: {
           pkId,
           fromRoomId: roomId,
@@ -3550,6 +3556,7 @@ export default function VideoLive() {
           at: Date.now(),
         },
       });
+      await inviteBatch.commit();
       setPkListVisible(false);
     } catch (e) {
       __DEV__ && console.log("PK INVITE ERROR:", e);
@@ -5497,6 +5504,16 @@ export default function VideoLive() {
       }
     }
 
+    // PAISA SERVER PAR: stars server transaction me kat-te hain (phone wallet nahi chhoota).
+    try {
+      await chargeLiveGift({ roomId, giftId: item.id, taps, receiverIds: [receiverId] });
+    } catch (e: any) {
+      inflightSpendRef.current = Math.max(0, inflightSpendRef.current - price);
+      giftPendingStore.set(pendingSpendRef.current);
+      showToast(e?.code === "NO_STARS" ? "Not enough stars" : "⚠️ Gift nahi gaya, dobara try karo");
+      return;
+    }
+
     // PEHLE room write (liveGift + seatStars). Fail ho to na stars kategi, na doosron ko kuch dikhega
     // -> user ko batao aur wallet se paisa mat kaato (LiveRoom jaisa).
     try {
@@ -5510,25 +5527,7 @@ export default function VideoLive() {
     }
 
     const jobs: Promise<any>[] = [
-      // sender wallet
-      updateDoc(doc(db, "wallets", currentUid), { stars: increment(-price), totalSpent: increment(price) }),
-
-      // receiver wallet: earnings + receivedStars
-      setDoc(
-        receiverWalletRef,
-        { earnings: increment(price), receivedStars: increment(price) },
-        { merge: true }
-      ),
-
-      // receiver's top-gifters
-      updateDoc(receiverUserRef, {
-        [`topGifters.${currentUid}.uid`]: currentUid,
-        [`topGifters.${currentUid}.username`]: currentName || "",
-        [`topGifters.${currentUid}.name`]: currentRealName || currentName || "User",
-        [`topGifters.${currentUid}.profileImg`]: currentAvatar || "",
-        [`topGifters.${currentUid}.stars`]: increment(price),
-      }),
-
+      // wallet / receiver / topGifters ab server /live/gift me ho chuke
       ...pkJobs,
     ];
 

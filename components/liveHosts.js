@@ -11,6 +11,7 @@
 // ------------------------------------------------------------------
 import { useCallback, useSyncExternalStore } from 'react';
 import { collection, onSnapshot, query, where, Timestamp } from 'firebase/firestore';
+import { listenRecentRooms } from '../utils/recentRooms';
 import { db } from '../app/firebaseConfig';
 import { useBlockedIds } from '../utils/useBlockedIds';
 
@@ -56,6 +57,7 @@ let liveByHost = {};        // hostId -> stable entry object
 const listeners = new Set();
 let unsubscribeFs = null;   // ab functions ki list (do listener)
 let recheckTimer = null;
+let mergeTimer = null;
 let rawNum = {};            // createdAt number wale rooms (LiveStart)
 let rawTs = {};             // createdAt Timestamp wale rooms (livevideostart)
 
@@ -120,19 +122,37 @@ const start = () => {
       });
       return m;
     };
-    const merge = () => { rawRooms = { ...rawTs, ...rawNum }; recompute(); };
+    // SMOOTH: har room ke like/gift/heartbeat par poori recompute chalti thi -> feed/profile jhatke.
+    // Pehla data turant, uske baad changes 600ms me ek baar.
+    let firstMerge = true;
+    const merge = () => {
+      if (firstMerge) {
+        firstMerge = false;
+        rawRooms = { ...rawTs, ...rawNum };
+        recompute();
+        return;
+      }
+      if (mergeTimer) return;
+      mergeTimer = setTimeout(() => {
+        mergeTimer = null;
+        rawRooms = { ...rawTs, ...rawNum };
+        recompute();
+      }, 600);
+    };
 
-    const u1 = onSnapshot(
-      query(collection(db, 'rooms'), where('createdAt', '>', since)),
-      (snap) => { rawNum = read(snap); merge(); },
-      () => { rawNum = {}; merge(); }
+    // COST FIX: app-wide shared listener (utils/recentRooms.js)
+    const unsubShared = listenRecentRooms(
+      db,
+      (snap, key) => {
+        if (key === 'num') rawNum = read(snap); else rawTs = read(snap);
+        merge();
+      },
+      (e, key) => {
+        if (key === 'num') rawNum = {}; else rawTs = {};
+        merge();
+      }
     );
-    const u2 = onSnapshot(
-      query(collection(db, 'rooms'), where('createdAt', '>', Timestamp.fromMillis(since))),
-      (snap) => { rawTs = read(snap); merge(); },
-      () => { rawTs = {}; merge(); }
-    );
-    unsubscribeFs = () => { u1(); u2(); };
+    unsubscribeFs = () => { unsubShared(); };
   } catch (e) {
     unsubscribeFs = null;
   }
@@ -143,6 +163,7 @@ const start = () => {
 const stop = () => {
   if (unsubscribeFs) { unsubscribeFs(); unsubscribeFs = null; }
   if (recheckTimer) { clearInterval(recheckTimer); recheckTimer = null; }
+  if (mergeTimer) { clearTimeout(mergeTimer); mergeTimer = null; }
   rawRooms = {};
   rawNum = {};
   rawTs = {};

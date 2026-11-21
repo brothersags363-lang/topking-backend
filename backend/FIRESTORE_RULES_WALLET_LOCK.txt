@@ -1,0 +1,19 @@
+FIRESTORE RULES - wallet lock (SIRF tab lagao jab nayi app sab users ke paas aa jaye)
+=====================================================================================
+Gift ka paisa ab server (/live/gift) kaatta hai. Jab tak purani app wale users hain, rules band karoge
+to unke gift toot jayenge. Isliye pehle app update release karo, kuch din ruko, phir ye lagao.
+
+Aapke firestore.rules me `wallets` ka match dhundo aur client write band karo:
+
+  match /wallets/{uid} {
+    allow read: if request.auth != null && request.auth.uid == uid;
+    allow write: if false;          // sirf server (admin SDK) likhega
+  }
+
+Dhyan: addStars.js (admin screen) abhi client se wallets/{uid}/purchaseHistory likhta hai, aur
+MultiGuestRoom / LivePrivate / videolive me game / PK stars bhi wallets padh-likh sakte hain.
+Rules lagane se pehle in sab jagah client write dhundo:
+   grep -rn "\"wallets\"\|'wallets'" app components utils
+aur jo bache unhe bhi server route se karwao. Test ke liye Firebase Rules Playground use karo.
+
+giftRequests collection: sirf server likhta hai, client ko allow mat karo (default deny rakho).

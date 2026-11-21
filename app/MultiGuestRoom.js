@@ -39,6 +39,7 @@ import {
 
 import { notifyNewFollower } from '../utils/pushNotify';
 import { callApi } from '../utils/api';
+import { chargeLiveGift } from '../utils/liveGiftApi';
 import { useLiveBanGuard } from '../utils/liveBan';
 import { useBlockedIds } from '../utils/useBlockedIds';
 import { gifts } from '../assets/giftsData';
@@ -80,7 +81,7 @@ const EMPTY_SEAT = {
 
 const AGORA_APP_ID = 'f75d0020d44345edb12bbf6847ef3d38';
 const TOKEN_ENDPOINT = 'https://topking-backend.onrender.com/token';
-const HEARTBEAT_INTERVAL = 8000;
+const HEARTBEAT_INTERVAL = 60000; // COST FIX: pehle 8s (har viewer/home user ko read banta tha)
 const SEAT_JOIN_GRACE_MS = 25000; // host: seat par baitha banda channel me nahi aaya to seat khali
 const WEEKLY_TARGET_MIN = 30;
 const JOIN_ANIM_VARIANT = 'auto';
@@ -1057,7 +1058,7 @@ export default function MultiGuestRoom() {
     let first = true;
     let latest = [];
     let timer = null;
-    const unsub = onSnapshot(collection(db, 'rooms', roomId, 'audience'), (snap) => {
+    const unsub = onSnapshot(query(collection(db, 'rooms', roomId, 'audience'), orderBy('joinedAt', 'desc'), limit(200)), (snap) => {
       const list = [];
       snap.forEach((d) => list.push({ uid: d.id, ...d.data() }));
       latest = list;
@@ -1084,8 +1085,32 @@ export default function MultiGuestRoom() {
     if (!db || !roomId) return undefined;
     const q = query(collection(db, 'rooms', roomId, 'chats'), orderBy('createdAt', 'desc'), limit(50));
     chatsReadyRef.current = false;
+    // SMOOTH: sirf naye/badle messages ke naye objects (baaki reuse) + 120ms me ek render
+    let chatCache = new Map();
+    let chatPending = null;
+    let chatTimer = null;
+    let chatLastFlush = 0;
+    const flushChats = () => {
+      if (chatTimer) clearTimeout(chatTimer);
+      chatTimer = null;
+      chatLastFlush = Date.now();
+      if (chatPending) setRawChats(chatPending);
+    };
     const unsub = onSnapshot(q, (snap) => {
-      setRawChats(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      const changed = new Set();
+      snap.docChanges().forEach((ch) => { if (ch.type !== 'removed') changed.add(ch.doc.id); });
+      const nextCache = new Map();
+      chatPending = snap.docs.map((d) => {
+        const prev = chatCache.get(d.id);
+        const obj = prev && !changed.has(d.id) ? prev : { id: d.id, ...d.data() };
+        nextCache.set(d.id, obj);
+        return obj;
+      });
+      chatCache = nextCache;
+      const since = Date.now() - chatLastFlush;
+      const instant = snap.docChanges().some((ch) => ch.type === 'removed' || ch.doc.metadata.hasPendingWrites);
+      if (chatLastFlush === 0 || since >= 120 || instant) flushChats();
+      else if (!chatTimer) chatTimer = setTimeout(flushChats, 120 - since);
       if (chatsReadyRef.current) {
         snap.docChanges().forEach((ch) => {
           if (ch.type !== 'added') return;
@@ -1095,7 +1120,7 @@ export default function MultiGuestRoom() {
       }
       chatsReadyRef.current = true;
     }, (e) => __DEV__ && console.log('Chat listener error:', e));
-    return () => unsub();
+    return () => { unsub(); if (chatTimer) clearTimeout(chatTimer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
@@ -1742,17 +1767,16 @@ export default function MultiGuestRoom() {
       roomUpdate[`seatsData.${rKey}.gifters.${myUid}.stars`] = increment(price);
     }
 
+    // PAISA SERVER PAR: stars server transaction me kat-te hain (phone wallet nahi chhoota).
+    try {
+      await chargeLiveGift({ roomId, giftId: item.id, taps: qty, receiverIds: [receiverId] });
+    } catch (e) {
+      showToast(e?.code === 'NO_STARS' ? 'Not enough stars' : '⚠️ Gift nahi gaya, dobara try karo');
+      return;
+    }
+
     const jobs = [
-      updateDoc(doc(db, 'wallets', myUid), { stars: increment(-price), totalSpent: increment(price) }),
       updateDoc(doc(db, 'rooms', roomId), roomUpdate),
-      setDoc(doc(db, 'wallets', receiverId), { earnings: increment(price), receivedStars: increment(price) }, { merge: true }),
-      updateDoc(doc(db, 'users', receiverId), {
-        [`topGifters.${myUid}.uid`]: myUid,
-        [`topGifters.${myUid}.username`]: currentName || '',
-        [`topGifters.${myUid}.name`]: currentRealName || currentName || 'User',
-        [`topGifters.${myUid}.profileImg`]: currentAvatar || '',
-        [`topGifters.${myUid}.stars`]: increment(price),
-      }),
     ];
     if (comboCount <= qty) {
       jobs.push(addDoc(collection(db, 'rooms', roomId, 'chats'), {

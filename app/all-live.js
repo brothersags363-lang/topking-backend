@@ -44,7 +44,7 @@ try {
   }
 }
 
-import { collection, doc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 
 const { width } = Dimensions.get('window');
 
@@ -155,39 +155,37 @@ const realDp = (v) => {
 // ------------------------------------
 // LIVE USER PROFILE (users/{uid}) - dp / naam badalte hi card turant badle
 // ------------------------------------
-// Ek uid ka ek hi listener (kai card/seat share karte hain). Koi sun-ne wala na bache to listener band.
-const profileStore = new Map(); // uid -> { data, subs:Set, unsub }
+// COST FIX: pehle har card/seat ke liye users/{uid} par LIVE listener tha (list me ~100 uid x
+// har star/level/lastSeen write = hazaron reads). Ab ek uid ka ek hi baar getDoc, 10 min cache.
+// DP/naam list ke data (hostImg/userImg) se pehle hi aa jata hai; ye sirf taaza DP/naam ke liye hai.
+const PROFILE_TTL = 10 * 60 * 1000;
+const profileStore = new Map(); // uid -> { data, at, subs:Set, loading }
 
 const subscribeProfile = (uid, cb) => {
   let entry = profileStore.get(uid);
   if (!entry) {
-    entry = { data: null, subs: new Set(), unsub: null };
+    entry = { data: null, at: 0, subs: new Set(), loading: false };
     profileStore.set(uid, entry);
-    const e = entry;
-    try {
-      e.unsub = onSnapshot(
-        doc(db, 'users', uid),
-        (snap) => {
-          const d = snap.exists() ? snap.data() : {};
-          e.data = {
-            img: realDp(d.profileImg) || realDp(d.photoURL),
-            name: d.username || d.name || null,
-          };
-          e.subs.forEach((fn) => fn(e.data));
-        },
-        () => {}
-      );
-    } catch (err) {}
   }
   entry.subs.add(cb);
   if (entry.data) cb(entry.data);
-  return () => {
-    entry.subs.delete(cb);
-    if (entry.subs.size === 0) {
-      try { entry.unsub && entry.unsub(); } catch (err) {}
-      if (profileStore.get(uid) === entry) profileStore.delete(uid);
-    }
-  };
+  if (!entry.loading && Date.now() - entry.at > PROFILE_TTL) {
+    entry.loading = true;
+    const e = entry;
+    getDoc(doc(db, 'users', uid))
+      .then((snap) => {
+        const d = snap.exists() ? snap.data() : {};
+        e.data = {
+          img: realDp(d.profileImg) || realDp(d.photoURL),
+          name: d.username || d.name || null,
+        };
+        e.at = Date.now();
+        e.subs.forEach((fn) => fn(e.data));
+      })
+      .catch(() => { e.at = Date.now() - PROFILE_TTL + 30000; }) // fail => 30 sec baad dobara
+      .finally(() => { e.loading = false; });
+  }
+  return () => { entry.subs.delete(cb); };
 };
 
 const useUserProfile = (uid, enabled = true) => {

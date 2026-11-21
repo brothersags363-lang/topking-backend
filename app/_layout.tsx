@@ -21,6 +21,7 @@ import ScreenDepthGate from '../components/ScreenDepthGate';
 import { LiveProvider } from '../context/LiveContext';
 import { API_BASE, registerDevice } from '../utils/api';
 import { onDeviceBanned } from '../utils/deviceId';
+import { startKeepWarm } from '../utils/warmBackend';
 import { setCurrentPath } from '../utils/scopedBack';
 import { auth, db, getFCMToken } from './firebaseConfig';
 
@@ -107,6 +108,9 @@ export default function RootLayout() {
   // SPEED: usePathname/useGlobalSearchParams yaha NAHI hain (har navigation par poora
   // root + LiveProvider re-render hota tha). Unhe chhota RouteTracker component sambhalta hai.
   const currentRef = useRef({ pathname: '', userId: '', id: '' });
+
+  // Render server ko app khulte hi jagao + khula rahe to jagaye rakho ("Waking up server" 30-40 sec wali deri)
+  useEffect(() => startKeepWarm(), []);
 
 
   useEffect(() => {

@@ -10,7 +10,7 @@ import {
   Alert,
   Image,
 } from "react-native";
-import { collection, query, orderBy, onSnapshot } from "firebase/firestore";
+import { collection, query, orderBy, onSnapshot, limit } from "firebase/firestore";
 
 import { auth, db } from "./firebaseConfig";
 
@@ -57,7 +57,7 @@ export default function RechargeRequests() {
   useEffect(() => {
     const q = query(
       collection(db, "rechargeRequests"),
-      orderBy("createdAt", "desc")
+      orderBy("createdAt", "desc"), limit(300)
     );
 
     const unsub = onSnapshot(

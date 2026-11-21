@@ -9,7 +9,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { useRouter } from "../utils/safeRouter";
-import { collection, query, orderBy, onSnapshot } from "firebase/firestore";
+import { collection, query, orderBy, onSnapshot, limit } from "firebase/firestore";
 import { Ionicons } from "@expo/vector-icons";
 
 import { db } from "./firebaseConfig";
@@ -29,7 +29,7 @@ export default function Withdrawals() {
   const [withdrawals, setWithdrawals] = useState<any[]>([]);
 
   useEffect(() => {
-    const q = query(collection(db, "withdrawals"), orderBy("createdAt", "desc"));
+    const q = query(collection(db, "withdrawals"), orderBy("createdAt", "desc"), limit(300));
 
     const unsubscribe = onSnapshot(
       q,

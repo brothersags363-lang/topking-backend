@@ -33,6 +33,7 @@ import {
   getDocs,
   query,
   orderBy,
+  limit,
 } from "firebase/firestore";
 
 const { width } = Dimensions.get("window");
@@ -149,7 +150,7 @@ const loadSongs = async () => {
 
     const q = query(
       collection(db, "songs"),
-      orderBy("createdAt", "desc")
+      orderBy("createdAt", "desc"), limit(300)
     );
 
     const snapshot = await getDocs(q);

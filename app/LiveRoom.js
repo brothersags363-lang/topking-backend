@@ -104,6 +104,7 @@ import GreedyGame from '../components/live/GreedyGame';
 
 import { useSafeAreaInsets, SafeAreaProvider } from 'react-native-safe-area-context';
 import { callApi } from '../utils/api';
+import { chargeLiveGift } from '../utils/liveGiftApi';
 import { useLiveBanGuard } from '../utils/liveBan';
 import { userHasUsername } from '../utils/usernameGate';
 import { useBlockedIds } from '../utils/useBlockedIds';
@@ -2824,7 +2825,7 @@ useEffect(() => {
   const roomRef = doc(db, "rooms", roomId);
   const beat = () => { updateDoc(roomRef, { hostHeartbeat: serverTimestamp() }).catch(() => {}); };
   beat();
-  const timer = setInterval(beat, 20000);
+  const timer = setInterval(beat, 60000);
   const sub = AppState.addEventListener("change", (st) => { if (st === "active") beat(); });
   return () => { clearInterval(timer); sub.remove(); };
 }, [roomId, currentUserRole]);
@@ -3518,7 +3519,8 @@ useEffect(() => {
 
   const audienceQuery = query(
     collection(db, 'rooms', roomId, 'audience'),
-    orderBy('joinedAt', 'desc')
+    orderBy('joinedAt', 'desc'),
+    limit(200)
   );
 
   // PERF: when many people join/leave at once this fires in bursts and each
@@ -3921,7 +3923,7 @@ useEffect(() => () => {
 }, []);
 
 // ---- VIEWER HEARTBEAT (app kill hone par ghost user na bache) ----
-// Har 90s me meri audience doc par chhota lastSeen write (merge => hearts/chat par asar nahi).
+// Har 5 min me meri audience doc par chhota lastSeen write (merge => hearts/chat par asar nahi).
 // Doc host ne galti se hata di ho (jaise app background tha) to ye use wapas bana deta hai.
 useEffect(() => {
   if (!db || !roomId || !currentUid) return;
@@ -3935,7 +3937,7 @@ useEffect(() => {
       { merge: true }
     ).catch(() => {});
   };
-  const timer = setInterval(beat, 90000);
+  const timer = setInterval(beat, 300000);
   const sub = AppState.addEventListener('change', (st) => { if (st === 'active') beat(); });
   return () => { clearInterval(timer); sub.remove(); };
 }, [roomId, currentUid]);
@@ -3944,7 +3946,7 @@ useEffect(() => {
 // Time host ke LOCAL clock se naapa jata hai (phones ki clock alag ho to bhi galat nahi hoga).
 useEffect(() => {
   if (!db || !roomId || currentUserRole !== 'host') return;
-  const STALE_MS = 5 * 60 * 1000;
+  const STALE_MS = 12 * 60 * 1000;
   const sweep = async () => {
     const now = Date.now();
     const seen = audSeenRef.current;
@@ -5169,6 +5171,16 @@ const sendGiftInBackground = async ({
   // Pehle ye fail hota tha to chup-chap sender ke stars kat jate the aur receiver ko kuch nahi dikhta tha.
   // seatStars + liveGift in ONE write -> every viewer gets ONE snapshot
   // ALL me bhi ek hi liveGift => animation/banner sab ko SIRF EK baar
+  // PAISA SERVER PAR: stars server transaction me kat-te hain (phone wallet nahi chhoota).
+  // Fail ho to na animation dusron ko jayega, na stars katenge.
+  try {
+    await chargeLiveGift({ roomId, giftId: item.id, taps, receiverIds: ids });
+  } catch (e) {
+    inflightSpendRef.current = Math.max(0, inflightSpendRef.current - total);
+    showToast(e?.code === "NO_STARS" ? "Not enough stars" : "⚠️ Gift nahi gaya, dobara try karo");
+    return;
+  }
+
   try {
     await updateDoc(roomRef, roomUpdate);
   } catch (e) {
@@ -5184,34 +5196,7 @@ const sendGiftInBackground = async ({
     setTimeout(() => { try { Promise.resolve(fn()).then(resolve, reject); } catch (e) { reject(e); } }, ms);
   });
 
-  const jobs = [
-
-    // sender wallet (total kharcha) - sabse pehle, balance sahi rahe
-    later(() => updateDoc(doc(db, "wallets", currentUid), { stars: increment(-total), totalSpent: increment(total) }), 0),
-
-  ];
-
-  ids.forEach((id, i) => {
-    jobs.push(
-      // receiver wallet: earnings + receivedStars
-      later(() => setDoc(
-        doc(db, "wallets", id),
-        {
-          earnings: increment(unit),
-          receivedStars: increment(unit),
-        },
-        { merge: true }
-      ), 40 + i * 50),
-      // receiver's top-gifters
-      later(() => updateDoc(doc(db, "users", id), {
-        [`topGifters.${currentUid}.uid`]: currentUid,
-        [`topGifters.${currentUid}.username`]: currentName || "",
-        [`topGifters.${currentUid}.name`]: currentRealName || currentName || "User",
-        [`topGifters.${currentUid}.profileImg`]: currentAvatar || "",
-        [`topGifters.${currentUid}.stars`]: increment(unit),
-      }), 65 + i * 50)
-    );
-  });
+  const jobs = []; // wallet / receiver / topGifters ab server /live/gift me ho chuke
 
   // chat line only once per combo (avoid spam)
   if (chat) {

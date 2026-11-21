@@ -13,7 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { db, auth } from './firebaseConfig'; 
 import { 
   collection, addDoc, query, orderBy, 
-  onSnapshot, serverTimestamp, doc, updateDoc, increment, getDoc 
+  onSnapshot, serverTimestamp, doc, updateDoc, increment, getDoc, limit 
 } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 import UserTick from '../components/UserTick';
@@ -79,7 +79,7 @@ export default function CommentsScreen() {
   // 2. Comments Load
   useEffect(() => {
     if (!videoId) return;
-    const q = query(collection(db, 'all_videos', videoId, 'comments'), orderBy('createdAt', 'desc'));
+    const q = query(collection(db, 'all_videos', videoId, 'comments'), orderBy('createdAt', 'desc'), limit(100));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setComments(docs);

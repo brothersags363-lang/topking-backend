@@ -1,39 +1,225 @@
 // utils/recentRooms.js
-// SPEED: `rooms` collection me ended rooms hamesha rehte hain (videolive sirf status:"ended" likhta hai).
-// Pehle har screen poori collection padhti thi -> JS thread par bhaari decode, app jam.
-// Ab sirf pichhle 24 ghante ke rooms (teeno screens pehle se 1 din se purane room ko band maanti thin).
-// createdAt kahin number (LiveStart: Date.now) aur kahin Timestamp (livevideostart: serverTimestamp)
-// hai, aur Firestore inequality same type par hi chalti hai -> isliye dono type ki alag query.
-import { collection, getDocs, onSnapshot, query, where, Timestamp } from 'firebase/firestore';
+// =====================================================================
+// LIVE ROOMS LIST - ab Firestore listener nahi, BACKEND CACHE se.
+//
+// PEHLE: har phone `rooms` collection ko onSnapshot se sunta tha => har room-write
+//        (heartbeat, viewerCount, gift star) har phone ke liye 1 read. Isi se din ke
+//        karodon reads ho rahe the.
+// AB:    GET /live/list (backend/liveList.js) server ke memory-cache se aati hai.
+//        Phone har POLL_MS me ek hi list leta hai. Firestore reads = 0 (phone se).
+//
+// Public API pehle jaisa hi hai (listenRecentRooms / getRecentRooms), isliye
+// all-live.js, liveHosts.js, useLiveSwipe.js, useRooms.ts, index.tsx, homeData.js
+// me koi badlav nahi chahiye. Snapshot ka shape Firestore jaisa hi hai:
+//   snap.docs / snap.forEach / snap.docChanges() ; doc.id / doc.data() / doc.exists()
+// =====================================================================
+import { AppState } from 'react-native';
+import { collection, getDocs, query, where, Timestamp } from 'firebase/firestore';
+import { API_BASE } from './api';
 
+const POLL_MS = 15000;          // live list har 15 sec
+const FAIL_RETRY_MS = 5000;     // fail hone par jaldi dobara
+const FETCH_TIMEOUT_MS = 12000; // Render cold start ke liye thoda lamba
 const ONE_DAY = 24 * 60 * 60 * 1000;
 
-function queries(db) {
+let shared = null; // { subs:Set, rooms:Map(id -> {sig,data}), loaded, timer, fails, inFlight, appSub }
+
+const makeDoc = (id, data) => ({ id, data: () => data, exists: () => true });
+
+const makeSnap = (list, changes) => ({
+  docs: list,
+  size: list.length,
+  empty: list.length === 0,
+  forEach: (fn) => list.forEach(fn),
+  docChanges: () => changes,
+});
+
+const addedChanges = (list) =>
+  list.map((d, i) => ({ type: 'added', doc: d, oldIndex: -1, newIndex: i }));
+
+const currentDocs = (s) => {
+  const arr = [];
+  s.rooms.forEach((v, id) => arr.push(makeDoc(id, v.data)));
+  return arr;
+};
+
+async function fetchList() {
+  const { auth } = require('../app/firebaseConfig');
+  const user = auth && auth.currentUser;
+  if (!user) throw new Error('not-logged-in');
+  const token = await user.getIdToken();
+
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const to = ctrl ? setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS) : null;
+  try {
+    const res = await fetch(API_BASE + '/live/list', {
+      headers: { Authorization: 'Bearer ' + token },
+      signal: ctrl ? ctrl.signal : undefined,
+    });
+    if (!res.ok) throw new Error('http-' + res.status);
+    const json = await res.json();
+    if (!json || json.success === false || !Array.isArray(json.rooms)) throw new Error('bad-response');
+    return json.rooms;
+  } finally {
+    if (to) clearTimeout(to);
+  }
+}
+
+// Naya data -> purane se compare -> subscribers ko diff bhejo
+function applyRooms(s, rooms) {
+  const next = new Map();
+  const changes = [];
+  const seenIds = new Set();
+
+  rooms.forEach((r) => {
+    if (!r || !r.id) return;
+    seenIds.add(r.id);
+    const sig = JSON.stringify(r);
+    const prev = s.rooms.get(r.id);
+    if (prev && prev.sig === sig) {
+      next.set(r.id, prev);
+      return;
+    }
+    const entry = { sig, data: r };
+    next.set(r.id, entry);
+    changes.push({
+      type: prev ? 'modified' : 'added',
+      doc: makeDoc(r.id, r),
+      oldIndex: -1,
+      newIndex: -1,
+    });
+  });
+  s.rooms.forEach((prev, id) => {
+    if (!seenIds.has(id)) {
+      changes.push({ type: 'removed', doc: makeDoc(id, prev.data), oldIndex: -1, newIndex: -1 });
+    }
+  });
+  s.rooms = next;
+
+  if (!s.loaded) {
+    // Pehli baar: sabko poori list (num me sab, ts khali) - purane do-query jaisa
+    s.loaded = true;
+    const list = currentDocs(s);
+    s.subs.forEach((x) => {
+      try { x.onSnap(makeSnap(list, addedChanges(list)), 'num'); } catch (_) {}
+      try { x.onSnap(makeSnap([], []), 'ts'); } catch (_) {}
+    });
+    return;
+  }
+  if (!changes.length) return; // kuch nahi badla => kisi ko khabar nahi => re-render nahi
+  const list = currentDocs(s);
+  s.subs.forEach((x) => {
+    try { x.onSnap(makeSnap(list, changes), 'num'); } catch (_) {}
+  });
+}
+
+// Backend na chale to ek-baar ka Firestore read (listener nahi) - sirf bhagwan bharose ka rasta
+async function firestoreFallback(db) {
   const since = Date.now() - ONE_DAY;
-  return {
-    num: query(collection(db, 'rooms'), where('createdAt', '>', since)),
-    ts: query(collection(db, 'rooms'), where('createdAt', '>', Timestamp.fromMillis(since))),
-  };
+  const [a, b] = await Promise.all([
+    getDocs(query(collection(db, 'rooms'), where('createdAt', '>', since))).catch(() => null),
+    getDocs(query(collection(db, 'rooms'), where('createdAt', '>', Timestamp.fromMillis(since)))).catch(() => null),
+  ]);
+  if (!a && !b) return null;
+  const out = [];
+  [a, b].forEach((sn) => sn && sn.forEach((d) => out.push({ id: d.id, ...d.data() })));
+  return out;
+}
+
+async function poll(s, db) {
+  if (s.inFlight || !shared || shared !== s) return;
+  s.inFlight = true;
+  let ok = false;
+  try {
+    let rooms;
+    try {
+      rooms = await fetchList();
+      s.fails = 0;
+    } catch (e) {
+      s.fails += 1;
+      // 3 baar lagatar fail => ek baar Firestore se le lo, taaki list khali na rahe
+      if (s.fails >= 3 && db) rooms = await firestoreFallback(db);
+      if (!rooms) throw e;
+    }
+    ok = true;
+    if (shared === s) applyRooms(s, rooms);
+  } catch (e) {
+    if (!s.loaded) {
+      s.subs.forEach((x) => { try { x.onErr && x.onErr(e, 'num'); } catch (_) {} });
+      s.subs.forEach((x) => { try { x.onErr && x.onErr(e, 'ts'); } catch (_) {} });
+    }
+  } finally {
+    s.inFlight = false;
+    if (shared === s) schedule(s, db, ok ? POLL_MS : FAIL_RETRY_MS);
+  }
+}
+
+function schedule(s, db, delay) {
+  if (s.timer) clearTimeout(s.timer);
+  s.timer = setTimeout(() => {
+    s.timer = null;
+    // app background me ho to poll mat karo (battery + data bachao)
+    if (AppState.currentState !== 'active') { schedule(s, db, POLL_MS); return; }
+    poll(s, db);
+  }, delay);
 }
 
 // onSnap(snapshot, 'num' | 'ts'); onErr(error, key). Return: unsubscribe function.
 export function listenRecentRooms(db, onSnap, onErr) {
-  const q = queries(db);
-  const u1 = onSnapshot(q.num, (s) => onSnap(s, 'num'), (e) => onErr && onErr(e, 'num'));
-  const u2 = onSnapshot(q.ts, (s) => onSnap(s, 'ts'), (e) => onErr && onErr(e, 'ts'));
-  return () => { u1(); u2(); };
+  const sub = { onSnap, onErr };
+  if (!shared) {
+    const s = { subs: new Set(), rooms: new Map(), loaded: false, timer: null, fails: 0, inFlight: false, appSub: null };
+    shared = s;
+    s.appSub = AppState.addEventListener('change', (st) => {
+      if (st === 'active' && shared === s && !s.inFlight) schedule(s, db, 0); // wapas aate hi taaza list
+    });
+    poll(s, db);
+  }
+  const s = shared;
+  s.subs.add(sub);
+  // pehle se loaded data naye subscriber ko turant (async: caller ka unsub variable set ho chuka ho)
+  if (s.loaded) {
+    setTimeout(() => {
+      if (!s.subs.has(sub)) return;
+      const list = currentDocs(s);
+      try { onSnap(makeSnap(list, addedChanges(list)), 'num'); } catch (_) {}
+      try { onSnap(makeSnap([], []), 'ts'); } catch (_) {}
+    }, 0);
+  }
+  return () => {
+    s.subs.delete(sub);
+    if (s.subs.size === 0) {
+      if (s.timer) clearTimeout(s.timer);
+      try { s.appSub && s.appSub.remove(); } catch (_) {}
+      if (shared === s) shared = null;
+    }
+  };
 }
 
-// One-shot: purane getDocs(collection(db,'rooms')) jaisa, bas `.forEach(doc => ...)` deta hai.
-// Dono query fail ho to null (purane .catch(() => null) jaisa).
+// One-shot: `.forEach(doc => ...)` deta hai. Backend se; fail ho to null.
+let oneShot = { at: 0, docs: null };
 export async function getRecentRooms(db) {
-  const q = queries(db);
-  const [a, b] = await Promise.all([
-    getDocs(q.num).catch(() => null),
-    getDocs(q.ts).catch(() => null),
-  ]);
-  if (!a && !b) return null;
-  const docs = new Map();
-  [a, b].forEach((s) => s && s.forEach((d) => docs.set(d.id, d)));
-  return { forEach: (fn) => docs.forEach((d) => fn(d)) };
+  if (shared && shared.loaded) {
+    const docs = currentDocs(shared);
+    return { forEach: (fn) => docs.forEach(fn) };
+  }
+  if (oneShot.docs && Date.now() - oneShot.at < 10000) {
+    const docs = oneShot.docs;
+    return { forEach: (fn) => docs.forEach(fn) };
+  }
+  try {
+    const rooms = await fetchList();
+    const docs = rooms.map((r) => makeDoc(r.id, r));
+    oneShot = { at: Date.now(), docs };
+    return { forEach: (fn) => docs.forEach(fn) };
+  } catch (_) {
+    try {
+      const rooms = await firestoreFallback(db);
+      if (!rooms) return null;
+      const docs = rooms.map((r) => makeDoc(r.id, r));
+      return { forEach: (fn) => docs.forEach(fn) };
+    } catch (e) {
+      return null;
+    }
+  }
 }
