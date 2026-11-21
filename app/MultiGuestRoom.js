@@ -39,6 +39,8 @@ import {
 
 import { notifyNewFollower } from '../utils/pushNotify';
 import { callApi } from '../utils/api';
+import { getAgoraToken } from '../utils/agoraToken';
+import { warmBackend } from '../utils/warmBackend';
 import { chargeLiveGift } from '../utils/liveGiftApi';
 import { useLiveBanGuard } from '../utils/liveBan';
 import { useBlockedIds } from '../utils/useBlockedIds';
@@ -163,47 +165,11 @@ const uidToAgora = (uid) => {
   return (h % 900000000) + 1000;
 };
 
-// ---------- Agora token (VideoLive jaisa: retry + warm up) ----------
-const TOKEN_TIMEOUT_MS = 25000;
-const TOKEN_RETRIES = 3;
-const warmUpBackend = () => {
-  fetch(TOKEN_ENDPOINT.replace(/\/token$/, '/'), { method: 'GET' }).catch(() => {});
-};
-const fetchAgoraTokenOnce = async (channel, uid) => {
-  const firebaseUser = auth?.currentUser;
-  if (!firebaseUser) return { token: null, uid };
-  const idToken = await firebaseUser.getIdToken();
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TOKEN_TIMEOUT_MS);
-  try {
-    const response = await fetch(
-      `${TOKEN_ENDPOINT}?channel=${encodeURIComponent(channel)}&uid=${uid}`,
-      { headers: { Authorization: `Bearer ${idToken}`, Accept: 'application/json' }, signal: controller.signal }
-    );
-    const tokenData = await response.json();
-    if (response.ok && tokenData?.success && tokenData?.token) {
-      return { token: tokenData.token, uid: Number(tokenData.uid) || uid };
-    }
-    throw new Error('token response not ok');
-  } finally {
-    clearTimeout(timeoutId);
-  }
-};
-const fetchAgoraToken = async (channel, uid, isCancelled = () => false, onRetry) => {
-  for (let attempt = 1; attempt <= TOKEN_RETRIES; attempt++) {
-    if (isCancelled()) break;
-    try {
-      return await fetchAgoraTokenOnce(channel, uid);
-    } catch (e) {
-      __DEV__ && console.log(`AGORA TOKEN FETCH FAILED (try ${attempt}/${TOKEN_RETRIES}):`, e);
-      if (attempt < TOKEN_RETRIES) {
-        onRetry && onRetry(attempt);
-        await new Promise((r) => setTimeout(r, 1200 * attempt));
-      }
-    }
-  }
-  return { token: null, uid };
-};
+// ---------- Agora token: shared helper (utils/agoraToken.js) ----------
+// cache + prefetch + parallel (hedged) retry + 60s budget. Kabhi throw nahi karta.
+const warmUpBackend = () => { warmBackend(false); };
+const fetchAgoraToken = (channel, uid, isCancelled = () => false, onSlow, force = false) =>
+  getAgoraToken(channel, uid, { isCancelled, onSlow, force });
 
 // ------------------------------------------------------------------
 // AGORA ENGINE HOOK
@@ -233,6 +199,7 @@ const useAgoraRoom = ({ roomId, myUid, publishing, micOn, camOn, soundMuted, onP
     let engine = null;
     let mainLive = false;
     let rejoinCount = 0;
+    let forceFresh = false; // token reject => cache wala dobara mat lo
     let joinTimer = null;
     let numericUid = baseUid;
 
@@ -243,8 +210,15 @@ const useAgoraRoom = ({ roomId, myUid, publishing, micOn, camOn, soundMuted, onP
     const getTokenAndJoin = async () => {
       if (!mounted || !engine) return;
       setSt('Connecting...');
-      const res = await fetchAgoraToken(roomId, numericUid, isCancelled, () => setSt('Waking up server...'));
+      const res = await fetchAgoraToken(roomId, numericUid, isCancelled, () => setSt('Waking up server...'), forceFresh);
+      forceFresh = false;
       if (!mounted || !engine) return;
+      // Ban / login problem: khali token se join karke 110 error mat lo, wajah dikhao
+      if (!res.token && res.error && (res.error.status === 403 || res.error.status === 401)) {
+        clearJoinTimer();
+        setSt('Failed: ' + (res.error.message || 'Live access denied'));
+        return;
+      }
       numericUid = res.uid || numericUid;
       if (mounted) setActiveUid(numericUid);
       clearJoinTimer();
@@ -264,7 +238,7 @@ const useAgoraRoom = ({ roomId, myUid, publishing, micOn, camOn, soundMuted, onP
     };
 
     const renewToken = async () => {
-      const res = await fetchAgoraToken(roomId, numericUid, isCancelled);
+      const res = await fetchAgoraToken(roomId, numericUid, isCancelled, undefined, true); // renew => taaza token
       if (res.token && mounted && engine) {
         try { engine.renewToken(res.token); } catch (e) { __DEV__ && console.log('RENEW TOKEN ERROR:', e); }
       }
@@ -273,6 +247,7 @@ const useAgoraRoom = ({ roomId, myUid, publishing, micOn, camOn, soundMuted, onP
     const rejoin = () => {
       if (!mounted || !engine || rejoinCount >= 2) return false;
       rejoinCount++;
+      forceFresh = true;
       setSt('Reconnecting...');
       try { engine.leaveChannel(); } catch (_) {}
       getTokenAndJoin();
@@ -1771,7 +1746,8 @@ export default function MultiGuestRoom() {
     try {
       await chargeLiveGift({ roomId, giftId: item.id, taps: qty, receiverIds: [receiverId] });
     } catch (e) {
-      showToast(e?.code === 'NO_STARS' ? 'Not enough stars' : '⚠️ Gift nahi gaya, dobara try karo');
+      console.warn("GIFT CHARGE FAILED:", e?.code, e?.status, e?.message);
+      showToast(e?.code === 'NO_STARS' ? 'Not enough stars' : '⚠️ Gift nahi gaya (server), dobara try karo');
       return;
     }
 
@@ -1788,11 +1764,6 @@ export default function MultiGuestRoom() {
     const results = await Promise.allSettled(jobs);
     results.forEach((r, idx) => { if (r.status === 'rejected' && __DEV__) console.log('GIFT WRITE FAILED #' + idx, r.reason); });
 
-    fetch('https://topking-backend.onrender.com/update-agency-stars', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ receiverUid: receiverId, stars: price }),
-    }).catch(() => {});
   };
 
   // ============================================================

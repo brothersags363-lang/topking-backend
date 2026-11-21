@@ -74,3 +74,6 @@ android/build/
 android/.gradle/
 metro-log.txt
 android/build-log.txt
+
+.metro-cache/
+backend/serviceAccountKey.json

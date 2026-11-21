@@ -230,11 +230,14 @@ app.use((req, res, next) => {
 // RATE LIMITERS
 // =====================================================
 
+// NOTE: limit IP ke hisaab se hai. Mobile network (CGNAT) par kai sau users ek hi IP share karte hain,
+// isliye 120/min par sabko 429 milta tha (=> token fail => "Waking up server"). Ab 1200/min per IP;
+// asli per-user rok /token me (neeche) aur /live/list, /live/gift ke apne counters me hai.
 const generalLimiter = rateLimit({
 
   windowMs: 60 * 1000,
 
-  max: 120,
+  max: 1200,
 
   standardHeaders: true,
 
@@ -270,7 +273,7 @@ const tokenLimiter = rateLimit({
 
   windowMs: 60 * 1000,
 
-  max: 120,
+  max: 1200,
 
   standardHeaders: true,
 
@@ -874,6 +877,13 @@ async function sendPushNotification(
 // moderation.js yahan baad me set hota hai (neeche /official/list-live-bans ke baad)
 let moderation = null;
 
+// /token: per-USER rok (IP ki jagah). Prefetch + retry ke liye 40/min bahut hai.
+const TOKEN_PER_USER_PER_MIN = 40;
+const tokenHits = new Map();
+setInterval(() => tokenHits.clear(), 60 * 1000).unref();
+// agoraUidMap me har token par write nahi: ek uid ke liye ghante me ek baar kaafi hai
+const agoraMapWritten = new Map();
+
 app.get(
 
   "/token",
@@ -884,7 +894,18 @@ app.get(
 
   async (req, res) => {
 
+    const tokenStartedAt = Date.now();
+
     try {
+
+      const hitsNow = (tokenHits.get(req.user.uid) || 0) + 1;
+      tokenHits.set(req.user.uid, hitsNow);
+      if (hitsNow > TOKEN_PER_USER_PER_MIN) {
+        return res.status(429).json({
+          success: false,
+          error: "Too many token requests",
+        });
+      }
 
       const channelName =
         req.query.channel;
@@ -971,10 +992,15 @@ app.get(
       }
 
       // STT/voice-moderation webhook ko agoraUid se Firebase uid dhundhne ke liye
-      db.collection("agoraUidMap")
-        .doc(String(agoraUid))
-        .set({ uid: req.user.uid, at: Date.now() }, { merge: true })
-        .catch(() => {});
+      const lastMapWrite = agoraMapWritten.get(agoraUid) || 0;
+      if (Date.now() - lastMapWrite > 60 * 60 * 1000) {
+        if (agoraMapWritten.size > 20000) agoraMapWritten.clear();
+        agoraMapWritten.set(agoraUid, Date.now());
+        db.collection("agoraUidMap")
+          .doc(String(agoraUid))
+          .set({ uid: req.user.uid, at: Date.now() }, { merge: true })
+          .catch(() => {});
+      }
 
 
       const role =
@@ -1014,6 +1040,9 @@ app.get(
 
         );
 
+
+      // Dheemi /token pakadne ke liye (Render logs me "TOKEN ok ... ms" dekho)
+      console.log(`TOKEN ok ${Date.now() - tokenStartedAt}ms`);
 
       return res.json({
 
@@ -3055,6 +3084,13 @@ async function resetAgencyMonthlyStars() {
 }
 
 
+// Agency stars har mahine 0 (agencyMonthly.js). Render so jaye to bhi chhutta nahi:
+// cron + server start + har ghante check, mahina Firestore me likha rehta hai.
+const { ensureMonthlyReset } = require("./agencyMonthly");
+const ensureAgencyMonth = () => ensureMonthlyReset({ admin, db });
+setTimeout(ensureAgencyMonth, 20 * 1000).unref();
+setInterval(ensureAgencyMonth, 60 * 60 * 1000).unref();
+
 // =====================================================
 // CRON
 // =====================================================
@@ -3065,7 +3101,7 @@ cron.schedule(
 
   async () => {
 
-    await resetAgencyMonthlyStars();
+    await ensureAgencyMonth();
 
   },
 
@@ -6222,20 +6258,22 @@ app.post("/admin/withdrawal-status", generalLimiter, verifyUser, requireAdminDoc
   }
 });
 
-// Unknown route -> JSON 404 (log ke saath)
-app.use((req, res) => {
-  console.warn(`404 NOT FOUND: ${req.method} ${req.path}`);
-  res.status(404).json({ success: false, error: "Route not found: " + req.path });
-});
 
 // =====================================================
 // SERVER
 // =====================================================
 
+// NOTE: ye routes 404 handler se PEHLE register hone chahiye (warna /live/list aur /live/gift 404 dete the)
 // Live list: server ek baar rooms sunta hai, phones ko cache se list milti hai (Firestore reads bachte hain)
 require("./liveList")(app, { admin, db });
 // Live gift: stars ka hisaab server transaction me (phone seedha wallet nahi kaat-ta)
 require("./liveGift")(app, { admin, db, verifyUser });
+
+// Unknown route -> JSON 404 (log ke saath)
+app.use((req, res) => {
+  console.warn(`404 NOT FOUND: ${req.method} ${req.path}`);
+  res.status(404).json({ success: false, error: "Route not found: " + req.path });
+});
 
 const PORT =
   Number(
@@ -6269,6 +6307,17 @@ const server =
     }
 
   );
+
+
+// =====================================================
+// LIVE REALTIME: likes + viewer count socket se (Firestore reads bachte hain)
+// socket.io install na ho to ye chupchap band rehta hai, baaki server normal chalta hai.
+// =====================================================
+try {
+  require("./liveSocket")({ server, admin, db });
+} catch (e) {
+  console.error("liveSocket load error:", e && e.message);
+}
 
 
 // =====================================================

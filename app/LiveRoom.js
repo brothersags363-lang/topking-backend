@@ -105,6 +105,7 @@ import GreedyGame from '../components/live/GreedyGame';
 import { useSafeAreaInsets, SafeAreaProvider } from 'react-native-safe-area-context';
 import { callApi } from '../utils/api';
 import { chargeLiveGift } from '../utils/liveGiftApi';
+import { getAgoraToken } from '../utils/agoraToken';
 import { useLiveBanGuard } from '../utils/liveBan';
 import { userHasUsername } from '../utils/usernameGate';
 import { useBlockedIds } from '../utils/useBlockedIds';
@@ -3752,7 +3753,7 @@ if (currentUserRole === "host" || (closeForEveryone && isAdmin)) {
   }
 
   if (Object.keys(seatUpdates).length > 0) {
-    jobs.push(updateDoc(roomRef, seatUpdates));
+    jobs.push(updateDoc(roomRef, seatUpdates).catch((e) => { log("Seat cleanup skipped:", e && e.code); }));
   }
 
   await Promise.all(jobs);
@@ -4156,35 +4157,11 @@ const initAgora = async (userRole) => {
       // pehli request fail/slow ho sakti hai -> join atak jata tha).
       // Same helper token renew ke liye bhi use hota hai (1 ghante baad audio
       // na kate).
-      const fetchAgoraToken = async (uidForToken, firstIdToken) => {
-        let lastError = null;
-        for (let attempt = 0; attempt < 4; attempt++) {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 15000);
-          let retryable = true;
-          try {
-            const idToken = firstIdToken && attempt === 0
-              ? firstIdToken
-              : await auth.currentUser.getIdToken();
-            const res = await fetch(
-              `https://topking-backend.onrender.com/token?channel=${encodeURIComponent(roomId)}&uid=${uidForToken}`,
-              { headers: { Authorization: `Bearer ${idToken}`, Accept: "application/json" }, signal: controller.signal }
-            );
-            const data = await res.json();
-            log("TOKEN HTTP STATUS =", res.status);
-            if (res.ok && data?.success && data?.token) return data;
-            lastError = new Error(data?.error || `Token request failed (${res.status})`);
-            // 4xx (429 ko chhodkar) retry se theek nahi hoga
-            if (res.status >= 400 && res.status < 500 && res.status !== 429) retryable = false;
-          } catch (e) {
-            lastError = e;
-          } finally {
-            clearTimeout(timeoutId);
-          }
-          if (!retryable) break;
-          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
-        }
-        throw lastError || new Error("Token request failed");
+      const fetchAgoraToken = async (uidForToken, _firstIdToken, force = false) => {
+        // shared helper (utils/agoraToken.js): cache + prefetch + parallel retry + 60s budget
+        const r = await getAgoraToken(roomId, uidForToken, { force });
+        if (r.token) return { success: true, token: r.token, uid: r.uid };
+        throw new Error((r.error && r.error.message) || "Token request failed");
       };
 
       const numericUid = uidToNum(currentUid);
@@ -4310,13 +4287,13 @@ const initAgora = async (userRole) => {
                 // Token 1 ghante me expire hota hai -> expire se pehle chupchap renew.
         onTokenPrivilegeWillExpire: async () => {
           try {
-            const fresh = await fetchAgoraToken(numericUid);
+            const fresh = await fetchAgoraToken(numericUid, null, true); // renew => taaza token
             if (engine && fresh?.token) engine.renewToken(fresh.token);
           } catch (e) { log("Token renew failed:", e?.message || e); }
         },
         onRequestToken: async () => {
           try {
-            const fresh = await fetchAgoraToken(numericUid);
+            const fresh = await fetchAgoraToken(numericUid, null, true); // renew => taaza token
             if (engine && fresh?.token) engine.renewToken(fresh.token);
           } catch (e) { log("Token re-request failed:", e?.message || e); }
         },
@@ -5176,8 +5153,9 @@ const sendGiftInBackground = async ({
   try {
     await chargeLiveGift({ roomId, giftId: item.id, taps, receiverIds: ids });
   } catch (e) {
+    console.warn("GIFT CHARGE FAILED:", e?.code, e?.status, e?.message);
     inflightSpendRef.current = Math.max(0, inflightSpendRef.current - total);
-    showToast(e?.code === "NO_STARS" ? "Not enough stars" : "⚠️ Gift nahi gaya, dobara try karo");
+    showToast(e?.code === "NO_STARS" ? "Not enough stars" : "⚠️ Gift nahi gaya (server), dobara try karo");
     return;
   }
 
@@ -5185,8 +5163,9 @@ const sendGiftInBackground = async ({
     await updateDoc(roomRef, roomUpdate);
   } catch (e) {
     __DEV__ && console.log("GIFT ROOM WRITE FAILED:", e?.code, e?.message);
+    console.warn("GIFT ROOM WRITE FAILED:", e?.code, e?.message);
     inflightSpendRef.current = Math.max(0, inflightSpendRef.current - total);
-    showToast("⚠️ Gift nahi gaya, dobara try karo");
+    showToast("⚠️ Gift nahi gaya (room), dobara try karo");
     return;
   }
 
@@ -5227,19 +5206,6 @@ const sendGiftInBackground = async ({
     if (r.status === "rejected") {
       __DEV__ && console.log("GIFT WRITE FAILED #" + idx, r.reason?.code, r.reason?.message);
     }
-  });
-
-  // agency stars: fire-and-forget. The Render backend can take 30s+ on a
-  // cold start, so this must never sit in the UI path.
-  ids.forEach((id) => {
-    fetch("https://topking-backend.onrender.com/update-agency-stars", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ receiverUid: id, stars: unit }),
-    })
-      .then(r => r.json())
-      .then(res => { if (__DEV__) log("AGENCY UPDATE RESPONSE =", res); })
-      .catch(e => { if (__DEV__) log("Agency Update Error =", e); });
   });
 
 };

@@ -18,7 +18,7 @@ const ONE_DAY = 24 * 60 * 60 * 1000;
 const HB_TIMEOUT = 10 * 60 * 1000;      // host heartbeat 10 min se purana => live khatam
 const REBUILD_MS = 3000;                 // payload max 3 sec purana
 const RESUBSCRIBE_MS = 60 * 60 * 1000;   // `since` cutoff ko taaza rakhne ke liye har ghante
-const PER_USER_PER_MIN = 30;             // ek user ek minute me max 30 baar
+const PER_USER_PER_MIN = 60;             // ek user ek minute me max 30 baar
 
 const ms = (v) => {
   if (!v) return 0;

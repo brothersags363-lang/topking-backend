@@ -1,5 +1,7 @@
 import LevelBadge from '../components/LevelBadge';
 import { warmBackend } from "../utils/warmBackend";
+import { getAgoraToken } from "../utils/agoraToken";
+import { createLiveSocket } from "../utils/liveSocket";
 import { reportVoiceAbuse } from "../utils/voiceReport";
 import OfficialLiveTools from "../components/live/OfficialLiveTools";
 import { blockIfProfane } from "../utils/guardText";
@@ -412,67 +414,25 @@ const fmtClock = (sec: number) => {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 };
 
-// ---------- Agora token (same endpoint LiveRoom.js uses) ----------
-// Why error 110 happened: Render's free tier sleeps. The first request after
-// a sleep can take 20-50s, the old 8s timeout aborted it, we joined with an
-// EMPTY token and Agora answered "110 = invalid token".
-// Fix: warm the server up early, use a long timeout, retry a few times, and
-// only join without a token as a last resort.
-const TOKEN_TIMEOUT_MS = 25000;
-const TOKEN_RETRIES = 3;
-
+// ---------- Agora token: shared helper (utils/agoraToken.js) ----------
+// Pehle yahan ek request + 25s timeout + 3 koshish thi => Render so raha ho to 30-40s "Waking up server".
+// Ab: cache (1 ghanta), live-list se prefetch, 3.5s me na aaye to parallel doosri request,
+// 60s ka retry budget, aur ban (403) par saaf error. Kabhi throw nahi karta.
 const warmUpBackend = () => {
   // shared helper: server jaga hua ho to dobara ping nahi, soya ho to jagata hai
   warmBackend(false);
 };
 
-const fetchAgoraTokenOnce = async (channel: string, uid: number) => {
-  const firebaseUser = auth?.currentUser;
-  if (!firebaseUser) return { token: null as string | null, uid };
-  // cached ID token (no forced refresh = no extra round trip)
-  const idToken = await firebaseUser.getIdToken();
+type TokenResult = { token: string | null; uid: number; error?: { status?: number; code?: string; message?: string; until?: number }; cancelled?: boolean };
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TOKEN_TIMEOUT_MS);
-  try {
-    const response = await fetch(
-      `${TOKEN_ENDPOINT}?channel=${encodeURIComponent(channel)}&uid=${uid}`,
-      {
-        headers: { Authorization: `Bearer ${idToken}`, Accept: "application/json" },
-        signal: controller.signal,
-      }
-    );
-    const tokenData = await response.json();
-    if (response.ok && tokenData?.success && tokenData?.token) {
-      return { token: tokenData.token as string, uid: Number(tokenData.uid) || uid };
-    }
-    throw new Error("token response not ok");
-  } finally {
-    clearTimeout(timeoutId);
-  }
-};
-
-// Never throws. `isCancelled` stops the retry loop when the screen closes.
-const fetchAgoraToken = async (
+// onSlow: request 3.5s se zyada le rahi hai (server jag raha hai). force: cache chhodo (token reject / renew).
+const fetchAgoraToken = (
   channel: string,
   uid: number,
   isCancelled: () => boolean = () => false,
-  onRetry?: (attempt: number) => void
-) => {
-  for (let attempt = 1; attempt <= TOKEN_RETRIES; attempt++) {
-    if (isCancelled()) break;
-    try {
-      return await fetchAgoraTokenOnce(channel, uid);
-    } catch (e) {
-      __DEV__ && console.log(`AGORA TOKEN FETCH FAILED (try ${attempt}/${TOKEN_RETRIES}):`, e);
-      if (attempt < TOKEN_RETRIES) {
-        onRetry && onRetry(attempt);
-        await new Promise((r) => setTimeout(r, 1200 * attempt));
-      }
-    }
-  }
-  return { token: null as string | null, uid };
-};
+  onSlow?: () => void,
+  force: boolean = false
+): Promise<TokenResult> => getAgoraToken(channel, uid, { isCancelled, onSlow, force }) as Promise<TokenResult>;
 
 // ============================================================
 // Small memoized components that live OUTSIDE VideoLive so a
@@ -2364,6 +2324,14 @@ export default function VideoLive() {
   const heartsRef = useRef<any>(null);
   const pendingLikesRef = useRef(0);
   const likeTimerRef = useRef<any>(null);
+  // REALTIME (socket): likes + viewer count Firestore room doc se nahi, socket se jate hain (utils/liveSocket.js).
+  // Socket na lage to neeche sab purane Firestore raste par chalta rehta hai.
+  const liveSocketRef = useRef<any>(null);
+  const socketUpRef = useRef(false);
+  const sockLikeTimerRef = useRef<any>(null);
+  const pendingSockLikesRef = useRef(0);
+  const [socketUp, setSocketUp] = useState(false);
+  const [socketViewers, setSocketViewers] = useState<number | null>(null);
   const lastLikesSeenRef = useRef<number | null>(null);
   const [viewerListVisible, setViewerListVisible] = useState(false);
   const [rankVisible, setRankVisible] = useState(false);
@@ -2481,7 +2449,8 @@ export default function VideoLive() {
     [audienceArray]
   );
   const topViewers = React.useMemo(() => audienceSorted.slice(0, 3), [audienceSorted]);
-  const viewerCount = audienceArray.length;
+  // socket chal raha ho to server ki sahi ginti (200 ki limit nahi, purane presence docs nahi); warna audience list
+  const viewerCount = socketUp && socketViewers !== null ? socketViewers : audienceArray.length;
   if (viewerCount > peakViewersRef.current) peakViewersRef.current = viewerCount;
 
   // ---------- premium derived values ----------
@@ -2627,7 +2596,8 @@ export default function VideoLive() {
       } else {
         const likeDelta = likesNow - lastLikesSeenRef.current;
         lastLikesSeenRef.current = likesNow;
-        if (likeDelta > 0) heartsRef.current?.spawn(Math.min(likeDelta, 4));
+        // socket chal raha ho to hearts socket se aate hain (server ka 15s-batch delta dobara na dikhao)
+        if (likeDelta > 0 && !socketUpRef.current) heartsRef.current?.spawn(Math.min(likeDelta, 4));
       }
 
       // lastHeartbeat / likes / viewerCount change all the time but nothing on screen shows them
@@ -2899,6 +2869,8 @@ export default function VideoLive() {
   useEffect(() => {
     if (!db || !roomId || !isHost) return;
     const t = setTimeout(() => {
+      // socket chal raha ho to server 15s me ek baar likhta hai (har badlav par nahi => reads bachte hain)
+      if (liveSocketRef.current?.isConnected?.()) return;
       updateDoc(doc(db, "rooms", roomId), { viewerCount }).catch(() => {});
     }, 4000);
     return () => clearTimeout(t);
@@ -3345,8 +3317,14 @@ export default function VideoLive() {
   }, [isHost, pkInvite?.pkId]);
 
   // active hosts I could battle (used by the PK sheet and Random Match)
-  const fetchPkCandidates = async (includeBusy = false) => {
+  // SPEED/READS: ye saare active rooms padhta hai. 4 sec ke andar dobara bulaya to wahi list (force=true par taaza).
+  const pkCandCacheRef = useRef<{ at: number; list: any[] } | null>(null);
+  const fetchPkCandidates = async (includeBusy = false, force = false) => {
     if (!db) return [];
+    const cached = pkCandCacheRef.current;
+    if (!force && cached && Date.now() - cached.at < 4000) {
+      return includeBusy ? cached.list : cached.list.filter((c: any) => !c.busy);
+    }
     const snap = await getDocs(query(collection(db, "rooms"), where("status", "==", "active")));
     const now = Date.now();
     const list: any[] = [];
@@ -3359,7 +3337,6 @@ export default function VideoLive() {
       if (!hb || now - hb > 45000) return; // not really live anymore
       // voice rooms can't PK / already in a PK or has a pending invite
       const busy = x.seatsData ? "Voice room" : x.pk || x.pkInvite ? "In PK" : "";
-      if (busy && !includeBusy) return;
       list.push({
         busy,
         id: d.id,
@@ -3371,7 +3348,8 @@ export default function VideoLive() {
         stars: Number(x.seatStars?.[x.hostId] || 0),
       });
     });
-    return list;
+    pkCandCacheRef.current = { at: Date.now(), list };
+    return includeBusy ? list : list.filter((c: any) => !c.busy);
   };
 
   const loadFollowing = async () => {
@@ -3439,7 +3417,7 @@ export default function VideoLive() {
     setPkLoading(true);
     loadFriends();
     try {
-      setPkCandidates(await fetchPkCandidates(true));
+      setPkCandidates(await fetchPkCandidates(true, true));
     } catch (e) {
       __DEV__ && console.log("PK LIST ERROR:", e);
     }
@@ -3447,15 +3425,17 @@ export default function VideoLive() {
   };
 
   // PK sheet open → refresh live list every 8s so a friend who just went live shows up
+  // (app background me ho to poll nahi - bekaar reads)
   useEffect(() => {
     if (!pkListVisible || !isHost) return;
     let stop = false;
     const i = setInterval(async () => {
+      if (AppState.currentState !== "active") return;
       try {
-        const l = await fetchPkCandidates(true);
+        const l = await fetchPkCandidates(true, true);
         if (!stop) setPkCandidates(l);
       } catch (e) {}
-    }, 5000);
+    }, 8000);
     return () => {
       stop = true;
       clearInterval(i);
@@ -3531,6 +3511,20 @@ export default function VideoLive() {
     setPkBusy(true);
     const pkId = `${Date.now()}`;
     try {
+      // Invite se pehle dekho ki wo host abhi free hai (kisi PK me ya taaza invite pending to nahi).
+      // Pehle seedha likh dete the = chalte PK / dusre ka invite overwrite ho sakta tha.
+      // Check fail ho (network) to purane tareeke se aage badho.
+      try {
+        const ts = await getDoc(doc(db, "rooms", target.id));
+        const tdata: any = ts.exists() ? ts.data() : null;
+        const inviteLive = !!tdata?.pkInvite && Date.now() - (tdata.pkInvite.at || 0) < PK_INVITE_TTL;
+        if (!tdata || tdata.status !== "active" || tdata.pk || inviteLive) {
+          pkCandCacheRef.current = null; // list purani ho gayi
+          showToast("That host is busy right now.");
+          setPkBusy(false);
+          return;
+        }
+      } catch (_) {}
       // SPEED: dono rooms ek hi batch me (pehle 2 alag awaits -> invite der se pahunchta tha)
       const inviteBatch = writeBatch(db);
       inviteBatch.update(doc(db, "rooms", roomId), {
@@ -3743,6 +3737,7 @@ export default function VideoLive() {
     let joinTimeoutId: any = null;
     let mainLive = false;
     let rejoinCount = 0;
+    let forceFresh = false; // token reject hua => cache wala token dobara mat use karo
     let prefetchedToken: Promise<any> | null = null;
     let numericUid = Math.floor(Math.random() * 999999) + 1;
 
@@ -3763,13 +3758,22 @@ export default function VideoLive() {
       setStatus(isHost ? "Connecting..." : "Connecting to live...");
 
       let res: any;
-      if (prefetchedToken) {
+      if (prefetchedToken && !forceFresh) {
         res = await prefetchedToken; // usually already finished while the engine started
         prefetchedToken = null;
       } else {
-        res = await fetchAgoraToken(roomId, numericUid, isCancelled, () => setStatus("Waking up server..."));
+        prefetchedToken = null;
+        res = await fetchAgoraToken(roomId, numericUid, isCancelled, () => setStatus("Waking up server..."), forceFresh);
+        forceFresh = false;
       }
       if (!mounted || !engine) return;
+
+      // Ban / login problem: khali token se join karke 110 error mat lo, wajah dikhao
+      if (!res.token && res.error && (res.error.status === 403 || res.error.status === 401)) {
+        clearJoinTimer();
+        setStatus(`Failed: ${res.error.message || "Live access denied"}`);
+        return;
+      }
 
       numericUid = res.uid || numericUid;
       myAgoraUidRef.current = numericUid;
@@ -3804,7 +3808,7 @@ export default function VideoLive() {
 
     // token close to expiry / expired while live → get a fresh one and renew
     const renewMainToken = async () => {
-      const res = await fetchAgoraToken(roomId, numericUid, isCancelled);
+      const res = await fetchAgoraToken(roomId, numericUid, isCancelled, undefined, true); // renew => hamesha taaza token
       if (res.token && mounted && engine) {
         try {
           engine.renewToken(res.token);
@@ -3818,6 +3822,7 @@ export default function VideoLive() {
     const rejoin = () => {
       if (!mounted || !engine || rejoinCount >= 2) return false;
       rejoinCount++;
+      forceFresh = true;
       setStatus("Reconnecting...");
       try {
         engine.leaveChannel();
@@ -4914,6 +4919,23 @@ export default function VideoLive() {
 
   const sendLike = () => {
     spawnHearts(1);
+    // SOCKET: 300ms ka batch seedha doosre phones tak; Firestore likhna nahi
+    if (liveSocketRef.current?.isConnected?.()) {
+      pendingSockLikesRef.current += 1;
+      if (!sockLikeTimerRef.current) {
+        sockLikeTimerRef.current = setTimeout(() => {
+          sockLikeTimerRef.current = null;
+          const n = pendingSockLikesRef.current;
+          pendingSockLikesRef.current = 0;
+          if (n > 0 && !liveSocketRef.current?.sendLike?.(n)) {
+            // socket beech me gira => purane Firestore raste se bhejo
+            pendingLikesRef.current += n;
+            if (!likeTimerRef.current) likeTimerRef.current = setTimeout(flushLikes, 2500);
+          }
+        }, 300);
+      }
+      return;
+    }
     pendingLikesRef.current += 1;
     if (!likeTimerRef.current) likeTimerRef.current = setTimeout(flushLikes, 2500);
   };
@@ -4968,6 +4990,34 @@ export default function VideoLive() {
       }
     };
   }, []);
+
+  // ----- REALTIME socket: likes (hearts) + viewer count -----
+  useEffect(() => {
+    if (!roomId) return;
+    const rt = createLiveSocket({
+      roomId,
+      isHost,
+      onLike: (n: number) => heartsRef.current?.spawn(Math.min(n, 4)),
+      onViewers: (n: number) => setSocketViewers((p) => (p === n ? p : n)),
+      onStatus: (up: boolean) => {
+        socketUpRef.current = up;
+        setSocketUp(up);
+      },
+    });
+    liveSocketRef.current = rt;
+    return () => {
+      if (sockLikeTimerRef.current) {
+        clearTimeout(sockLikeTimerRef.current);
+        sockLikeTimerRef.current = null;
+      }
+      const n = pendingSockLikesRef.current;
+      pendingSockLikesRef.current = 0;
+      if (n > 0) rt.sendLike(n); // bache hue likes na khoyen
+      rt.close();
+      if (liveSocketRef.current === rt) liveSocketRef.current = null;
+      socketUpRef.current = false;
+    };
+  }, [roomId, isHost]);
 
   // ----- kicked by host / moderator -----
   // Pehle se purani (block nahi) kick entry ho to dobara aane par rok nahi; nayi kick ya blocked = bahar.
@@ -5508,9 +5558,10 @@ export default function VideoLive() {
     try {
       await chargeLiveGift({ roomId, giftId: item.id, taps, receiverIds: [receiverId] });
     } catch (e: any) {
+      console.warn("GIFT CHARGE FAILED:", e?.code, e?.status, e?.message);
       inflightSpendRef.current = Math.max(0, inflightSpendRef.current - price);
       giftPendingStore.set(pendingSpendRef.current);
-      showToast(e?.code === "NO_STARS" ? "Not enough stars" : "⚠️ Gift nahi gaya, dobara try karo");
+      showToast(e?.code === "NO_STARS" ? "Not enough stars" : "⚠️ Gift nahi gaya (server), dobara try karo");
       return;
     }
 
@@ -5520,9 +5571,10 @@ export default function VideoLive() {
       await updateDoc(roomRef, roomUpdate);
     } catch (e: any) {
       __DEV__ && console.log("GIFT ROOM WRITE FAILED:", e?.code, e?.message);
+    console.warn("GIFT ROOM WRITE FAILED:", e?.code, e?.message);
       inflightSpendRef.current = Math.max(0, inflightSpendRef.current - price);
       giftPendingStore.set(pendingSpendRef.current);
-      showToast("⚠️ Gift nahi gaya, dobara try karo");
+      showToast("⚠️ Gift nahi gaya (room), dobara try karo");
       return;
     }
 
@@ -5558,20 +5610,6 @@ export default function VideoLive() {
     results.forEach((r, idx) => {
       if (r.status === "rejected") __DEV__ && console.log("GIFT WRITE FAILED #" + idx, (r as any).reason?.code, (r as any).reason?.message);
     });
-
-    // agency stars: fire-and-forget (Render cold start can take 30s+)
-    fetch("https://topking-backend.onrender.com/update-agency-stars", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ receiverUid: receiverId, stars: price }),
-    })
-      .then((r) => r.json())
-      .then((res) => {
-        if (__DEV__) console.log("AGENCY UPDATE RESPONSE =", res);
-      })
-      .catch((e) => {
-        if (__DEV__) console.log("Agency Update Error =", e);
-      });
   };
 
   // ============================================================

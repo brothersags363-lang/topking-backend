@@ -16,6 +16,7 @@
 import { AppState } from 'react-native';
 import { collection, getDocs, query, where, Timestamp } from 'firebase/firestore';
 import { API_BASE } from './api';
+import { prefetchAgoraToken } from './agoraToken';
 
 const POLL_MS = 15000;          // live list har 15 sec
 const FAIL_RETRY_MS = 5000;     // fail hone par jaldi dobara
@@ -56,13 +57,29 @@ async function fetchList() {
       headers: { Authorization: 'Bearer ' + token },
       signal: ctrl ? ctrl.signal : undefined,
     });
-    if (!res.ok) throw new Error('http-' + res.status);
+    if (!res.ok) { const er = new Error('http-' + res.status); er.status = res.status; throw er; }
     const json = await res.json();
     if (!json || json.success === false || !Array.isArray(json.rooms)) throw new Error('bad-response');
     return json.rooms;
   } finally {
     if (to) clearTimeout(to);
   }
+}
+
+
+// JOIN SPEED: top rooms ka Agora token pehle se le lo (cache me rehta hai ~40 min).
+// User card dabata hai to token tayyar milta hai => join me server ka wait nahi (cold start bhi nahi dikhta).
+// Sirf 4 sabse zyada viewers wale rooms, 400ms ke gap par, apne room ko chhodkar.
+function prefetchTopTokens(rooms) {
+  try {
+    const { auth } = require('../app/firebaseConfig');
+    const me = auth && auth.currentUser && auth.currentUser.uid;
+    rooms
+      .filter((r) => r && r.id && r.hostId !== me)
+      .sort((a, b) => (Number(b.viewerCount) || 0) - (Number(a.viewerCount) || 0))
+      .slice(0, 4)
+      .forEach((r, i) => setTimeout(() => prefetchAgoraToken(r.id), i * 400));
+  } catch (_) {}
 }
 
 // Naya data -> purane se compare -> subscribers ko diff bhejo
@@ -130,6 +147,7 @@ async function poll(s, db) {
   if (s.inFlight || !shared || shared !== s) return;
   s.inFlight = true;
   let ok = false;
+  let lastStatus = 0;
   try {
     let rooms;
     try {
@@ -137,12 +155,16 @@ async function poll(s, db) {
       s.fails = 0;
     } catch (e) {
       s.fails += 1;
+      lastStatus = (e && e.status) || 0;
       // 3 baar lagatar fail => ek baar Firestore se le lo, taaki list khali na rahe
       if (s.fails >= 3 && db) rooms = await firestoreFallback(db);
       if (!rooms) throw e;
     }
     ok = true;
-    if (shared === s) applyRooms(s, rooms);
+    if (shared === s) {
+      applyRooms(s, rooms);
+      prefetchTopTokens(rooms);
+    }
   } catch (e) {
     if (!s.loaded) {
       s.subs.forEach((x) => { try { x.onErr && x.onErr(e, 'num'); } catch (_) {} });
@@ -150,7 +172,7 @@ async function poll(s, db) {
     }
   } finally {
     s.inFlight = false;
-    if (shared === s) schedule(s, db, ok ? POLL_MS : FAIL_RETRY_MS);
+    if (shared === s) schedule(s, db, ok ? POLL_MS : (lastStatus === 429 ? 30000 : FAIL_RETRY_MS)); // 429 par 30 sec ruko
   }
 }
 
@@ -197,7 +219,7 @@ export function listenRecentRooms(db, onSnap, onErr) {
 }
 
 // One-shot: `.forEach(doc => ...)` deta hai. Backend se; fail ho to null.
-let oneShot = { at: 0, docs: null };
+let oneShot = { at: 0, docs: null, failAt: 0 };
 export async function getRecentRooms(db) {
   if (shared && shared.loaded) {
     const docs = currentDocs(shared);
@@ -207,12 +229,15 @@ export async function getRecentRooms(db) {
     const docs = oneShot.docs;
     return { forEach: (fn) => docs.forEach(fn) };
   }
+  // fail hone par 10 sec tak dobara backend ko mat maaro (429 storm se bachao)
+  if (Date.now() - oneShot.failAt < 10000) return null;
   try {
     const rooms = await fetchList();
     const docs = rooms.map((r) => makeDoc(r.id, r));
-    oneShot = { at: Date.now(), docs };
+    oneShot = { at: Date.now(), docs, failAt: 0 };
     return { forEach: (fn) => docs.forEach(fn) };
   } catch (_) {
+    oneShot.failAt = Date.now();
     try {
       const rooms = await firestoreFallback(db);
       if (!rooms) return null;
