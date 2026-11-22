@@ -30,7 +30,7 @@ const GIFT_PRICES = {
 };
 
 const MAX_TAPS = 999;
-const MAX_RECEIVERS = 9;
+const MAX_RECEIVERS = 12; // room me max 12 seat (khud ko chhod kar 11 receivers) - "All" gift ke liye
 const MAX_TOTAL = 2000000;
 const PER_USER_PER_MIN = 90;
 
