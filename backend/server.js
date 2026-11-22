@@ -4387,28 +4387,38 @@ const ADMIN_FRAME_KEYS = ["gold_heart", "bd_helmet", "agency_ref", "agency_wings
 const frameSpecCache = { raw: new Map(), at: 0, loading: null };
 const FRAME_SPEC_TTL_MS = 30 * 60 * 1000;
 
+// User ko admin se mile saare frames (adminFrames list + purana adminFrame). Sirf valid keys.
+function adminListOf(a, l) {
+  const set = new Set();
+  (Array.isArray(l) ? l : []).forEach((k) => { if (ADMIN_FRAME_KEYS.includes(k)) set.add(k); });
+  if (a && ADMIN_FRAME_KEYS.includes(a)) set.add(a);
+  return Array.from(set);
+}
+
 function frameSpecOf(r) {
   if (!r) return null;
   if (r.o) return "off";
   const c = r.c;
+  const owned = adminListOf(r.a, r.l);
   if (c) {
     if (c.indexOf("adm:") === 0) {
       const k = c.slice(4);
-      if (r.a === k && ADMIN_FRAME_KEYS.includes(k)) return k;
+      if (owned.includes(k)) return k;
     } else if (/^lv(30|40|50)$/.test(c)) {
       return c;
     }
   }
-  return r.a && ADMIN_FRAME_KEYS.includes(r.a) ? r.a : null;
+  return r.a && ADMIN_FRAME_KEYS.includes(r.a) ? r.a : owned.length ? owned[owned.length - 1] : null;
 }
 
 function frameSpecPut(uid, d) {
   const r = {
     a: d && d.adminFrame && ADMIN_FRAME_KEYS.includes(d.adminFrame) ? d.adminFrame : null,
+    l: adminListOf(d && d.adminFrame, d && d.adminFrames),
     c: (d && d.frameChoice) || null,
     o: !!(d && d.frameOff === true),
   };
-  if (!r.a && !r.c && !r.o) frameSpecCache.raw.delete(uid);
+  if (!r.a && !r.l.length && !r.c && !r.o) frameSpecCache.raw.delete(uid);
   else frameSpecCache.raw.set(uid, r);
 }
 
@@ -4420,7 +4430,7 @@ async function loadFrameSpecs(force) {
     const add = (snap) =>
       snap.docs.forEach((d) => {
         const x = d.data() || {};
-        m.set(d.id, { a: x.adminFrame || null, c: x.frameChoice || null, o: x.frameOff === true });
+        m.set(d.id, { a: x.adminFrame || null, l: adminListOf(x.adminFrame, x.adminFrames), c: x.frameChoice || null, o: x.frameOff === true });
       });
     const [s1, s2, s3] = await Promise.all([
       db.collection("users").where("adminFrame", "in", ADMIN_FRAME_KEYS).limit(1000).get(),
@@ -4449,6 +4459,7 @@ app.post("/frames/admin-map", generalLimiter, verifyUser, async (req, res) => {
       map,
       mine: {
         adminFrame: m.a && ADMIN_FRAME_KEYS.includes(m.a) ? m.a : null,
+        adminFrames: adminListOf(m.a, m.l),
         frameChoice: m.c || null,
         frameOff: m.o === true,
       },
@@ -4467,6 +4478,7 @@ function userBrief(id, d) {
     profileImg: d.profileImg || "",
     level: d.level || 1,
     adminFrame: d.adminFrame || null,
+    adminFrames: adminListOf(d.adminFrame, d.adminFrames),
   };
 }
 
@@ -4489,15 +4501,19 @@ app.post("/admin/search-users", generalLimiter, verifyUser, requireAdminDoc, asy
   }
 });
 
-// body: { uid, frame }  frame = key ya null/"" (hatane ke liye)
+// body: { uid, frame?, remove? }
+//   frame = key        -> ye frame user ke frames me JOD do (purane frames bane rahenge) aur turant laga do
+//   remove = key       -> sirf wahi ek frame hatao
+//   frame = null/""    -> user ke saare admin frames hatao
 app.post("/admin/set-user-frame", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
   try {
     const uid = String((req.body && req.body.uid) || "");
     const frame = req.body && req.body.frame ? String(req.body.frame) : null;
+    const remove = req.body && req.body.remove ? String(req.body.remove) : null;
     if (!isValidUid(uid)) {
       return res.status(400).json({ success: false, error: "Invalid user" });
     }
-    if (frame !== null && !ADMIN_FRAME_KEYS.includes(frame)) {
+    if ((frame !== null && !ADMIN_FRAME_KEYS.includes(frame)) || (remove !== null && !ADMIN_FRAME_KEYS.includes(remove))) {
       return res.status(400).json({ success: false, error: "Invalid frame" });
     }
     const ref = db.collection("users").doc(uid);
@@ -4505,14 +4521,48 @@ app.post("/admin/set-user-frame", generalLimiter, verifyUser, requireAdminDoc, a
     if (!snap.exists) {
       return res.status(404).json({ success: false, error: "User not found" });
     }
+    const d = snap.data() || {};
     const delF = admin.firestore.FieldValue.delete();
-    // admin ne frame diya/hataya -> user ki purani chuni hui choice saaf, taaki naya frame turant dikhe
-    await ref.set(
-      { adminFrame: frame === null ? delF : frame, frameChoice: delF, frameOff: delF },
-      { merge: true }
-    );
-    frameSpecPut(uid, { adminFrame: frame });
-    return res.json({ success: true, uid, frame });
+
+    let list = adminListOf(d.adminFrame, d.adminFrames);
+    let primary;
+    if (remove) {
+      list = list.filter((k) => k !== remove);
+      primary = list.length ? list[list.length - 1] : null;
+    } else if (frame) {
+      if (!list.includes(frame)) list.push(frame);
+      primary = frame;
+    } else {
+      list = [];
+      primary = null;
+    }
+
+    const upd = {
+      adminFrames: list.length ? list : delF,
+      adminFrame: primary || delF,
+    };
+    if (frame && !remove) {
+      // naya frame diya -> user ke paas turant laga hua dikhe (wo baad me badal sakta hai)
+      upd.frameChoice = "adm:" + frame;
+      upd.frameOff = delF;
+    } else if (d.frameChoice && String(d.frameChoice).indexOf("adm:") === 0 && !list.includes(String(d.frameChoice).slice(4))) {
+      upd.frameChoice = delF; // jo frame user ne chuna tha wo hat gaya
+    }
+    await ref.set(upd, { merge: true });
+
+    const merged = { ...d, adminFrame: primary || undefined, adminFrames: list };
+    if (upd.frameChoice === delF) delete merged.frameChoice;
+    else if (upd.frameChoice) merged.frameChoice = upd.frameChoice;
+    if (upd.frameOff === delF) delete merged.frameOff;
+    frameSpecPut(uid, merged);
+
+    return res.json({
+      success: true,
+      uid,
+      frame: primary || null,
+      adminFrames: list,
+      spec: frameSpecOf({ a: primary || null, l: list, c: merged.frameChoice || null, o: merged.frameOff === true }),
+    });
   } catch (e) {
     console.error("ADMIN SET FRAME ERROR:", e);
     return res.status(500).json({ success: false, error: "Server error" });
@@ -4813,7 +4863,12 @@ function ownedFrameInfo(d) {
   let special = null;
   if (d.special && SPECIAL_FRAME_TIER[d.special]) special = d.special;
   const maxTier = Math.max(levelTierOf(d.level), special ? SPECIAL_FRAME_TIER[special] : 0);
-  return { maxTier, adminFrame: d.adminFrame && ADMIN_FRAME_KEYS.includes(d.adminFrame) ? d.adminFrame : null };
+  const adminFrames = adminListOf(d.adminFrame, d.adminFrames);
+  return {
+    maxTier,
+    adminFrames,
+    adminFrame: d.adminFrame && ADMIN_FRAME_KEYS.includes(d.adminFrame) ? d.adminFrame : adminFrames.length ? adminFrames[adminFrames.length - 1] : null,
+  };
 }
 
 // body: { frameOff?, frameChoice?, entryOff?, entryChoice? }  (jo bheje wahi badlega)
@@ -4851,7 +4906,7 @@ app.post("/user/set-frame-prefs", generalLimiter, verifyUser, async (req, res) =
         update.frameOff = del; // frame chuna = frame ON
       } else if (c.indexOf("adm:") === 0) {
         const k = c.slice(4);
-        if (!owned.adminFrame || owned.adminFrame !== k) {
+        if (!owned.adminFrames.includes(k)) {
           return res.status(403).json({ success: false, error: "Ye frame aapko admin se nahi mila" });
         }
         update.frameChoice = c;
@@ -4888,6 +4943,7 @@ app.post("/user/set-frame-prefs", generalLimiter, verifyUser, async (req, res) =
       success: true,
       prefs: {
         adminFrame: owned.adminFrame,
+        adminFrames: owned.adminFrames,
         frameOff: o.frameOff === true,
         frameChoice: o.frameChoice || null,
         entryOff: o.entryOff === true,

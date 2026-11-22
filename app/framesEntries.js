@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -29,6 +29,7 @@ import {
   setMyFramePrefsLocal,
   setAdminFrameLocal,
   specFromPrefs,
+  ownedAdminFrames,
   ADMIN_FRAMES,
 } from "../components/adminFrames";
 import {
@@ -148,7 +149,9 @@ export default function FramesEntries() {
   const myLevel = Number(info.level) || 1;
   // level se milne wala frame (30-39 -> lv30, 40-49 -> lv40, 50+ -> lv50)
   const myTier = getTier(myLevel);
-  const adminOwned = mine.adminFrame && ADMIN_FRAMES[mine.adminFrame] ? mine.adminFrame : null;
+  // admin ne jitne frames diye wo sab (naya sabse pehle)
+  const adminList = ownedAdminFrames(mine).slice().reverse();
+  const adminOwned = mine.adminFrame && ADMIN_FRAMES[mine.adminFrame] ? mine.adminFrame : adminList[0] || null;
 
   // abhi jo frame dikh raha hai (AUTO me: admin ka frame, warna level wala)
   const current = spec === "off" ? "off"
@@ -189,11 +192,42 @@ export default function FramesEntries() {
     [busy, uid]
   );
 
+  // Frame chunna: PEHLE turant poore app me badal do (smooth), server ko background me bhejo.
+  // Server fail ho to purana frame wapas. Tez tez tap karo to sirf aakhri tap maana jayega.
+  const reqRef = useRef(0);
   const pickFrame = (id) => {
-    if (id === current) return;
-    if (id === "off") return save({ frameOff: true });
-    if (ADMIN_FRAMES[id]) return save({ frameChoice: "adm:" + id });
-    return save({ frameChoice: id });
+    if (!uid || id === current) return;
+    const body = id === "off" ? { frameOff: true }
+      : ADMIN_FRAMES[id] ? { frameChoice: "adm:" + id }
+      : { frameChoice: id };
+    const prevPrefs = getMyFramePrefs();
+    const prevSpec = spec;
+    const nextPrefs = {
+      ...prevPrefs,
+      frameOff: id === "off",
+      frameChoice: id === "off" ? prevPrefs.frameChoice : ADMIN_FRAMES[id] ? "adm:" + id : id,
+    };
+    setMyFramePrefsLocal(nextPrefs);
+    setMine(getMyFramePrefs());
+    setAdminFrameLocal(uid, id);
+
+    const my = ++reqRef.current;
+    callApi("/user/set-frame-prefs", body)
+      .then((res) => {
+        if (my !== reqRef.current) return;
+        const prefs = (res && res.prefs) || {};
+        patchFrameInfo(uid, prefs);
+        setMyFramePrefsLocal(prefs);
+        setMine(getMyFramePrefs());
+        setAdminFrameLocal(uid, specFromPrefs(prefs));
+      })
+      .catch((e) => {
+        if (my !== reqRef.current) return;
+        setMyFramePrefsLocal(prevPrefs);
+        setMine(getMyFramePrefs());
+        setAdminFrameLocal(uid, prevSpec);
+        Alert.alert("Error", (e && e.message) || "Frame save nahi hua, dobara try karo");
+      });
   };
 
   const lockedAlert = (what, need) =>
@@ -247,17 +281,17 @@ export default function FramesEntries() {
               <AvatarPreview uri={profileImg} frameSource={null} size={84} />
             </PickCard>
 
-            {adminOwned ? (
+            {adminList.map((k) => (
               <PickCard
-                key={adminOwned}
-                label={ADMIN_FRAMES[adminOwned].label}
-                sub="Admin ne diya"
-                active={current === adminOwned}
-                onPress={() => pickFrame(adminOwned)}
+                key={k}
+                label={ADMIN_FRAMES[k].label}
+                sub={current === k ? "Laga hua" : "Admin ne diya"}
+                active={current === k}
+                onPress={() => pickFrame(k)}
               >
-                <AvatarPreview uri={profileImg} frameSource={ADMIN_FRAMES[adminOwned].still} size={84} />
+                <AvatarPreview uri={profileImg} frameSource={ADMIN_FRAMES[k].still} size={84} />
               </PickCard>
-            ) : null}
+            ))}
 
             {FRAME_TIERS.map((t) => {
               const owned = t <= myTier;
@@ -265,7 +299,7 @@ export default function FramesEntries() {
                 <PickCard
                   key={t}
                   label={FRAME_TIER_LABEL[t]}
-                  sub={owned ? `Lv ${t}` : `Lv ${t} par milega`}
+                  sub={owned ? (current === "lv" + t ? "Laga hua" : `Lv ${t}`) : `Lv ${t} par milega`}
                   active={current === "lv" + t}
                   locked={!owned}
                   onPress={() => (owned ? pickFrame("lv" + t) : lockedAlert(FRAME_TIER_LABEL[t] + " frame", t))}

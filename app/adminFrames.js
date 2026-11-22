@@ -111,18 +111,20 @@ export default function AdminFrames() {
     return () => clearTimeout(t);
   }, [query]);
 
-  const applyFrame = async (user, frame) => {
+  // body: { frame: key } = frame jodo (purane bane rahenge) | { remove: key } = ek frame hatao | { frame: null } = sab hatao
+  const applyFrame = async (user, body) => {
     if (busy) return;
     setBusy(true);
     try {
-      await callApi("/admin/set-user-frame", { uid: user.uid, frame });
+      const res = await callApi("/admin/set-user-frame", { uid: user.uid, ...body });
+      const list = Array.isArray(res.adminFrames) ? res.adminFrames : [];
       // frame turant sab jagah dikhe: apne phone ki map badlo + server se taaza map lao
-      setAdminFrameLocal(user.uid, frame);
+      setAdminFrameLocal(user.uid, res.spec || null);
       refreshAdminFrameMap(true);
-      const patch = (u) => (u.uid === user.uid ? { ...u, adminFrame: frame } : u);
+      const updated = { ...user, adminFrame: res.frame || null, adminFrames: list };
+      const patch = (u) => (u.uid === user.uid ? updated : u);
       setResults((r) => r.map(patch));
-      setPicked(null);
-      Alert.alert("Done", frame ? "Frame de diya gaya." : "Frame hata diya gaya.");
+      setPicked(list.length ? updated : null);   // popup khula rahe taaki aur frame bhi de sako
       loadFramed();
     } catch (e) {
       Alert.alert("Error", e.message || "Frame set nahi hua");
@@ -181,8 +183,8 @@ export default function AdminFrames() {
                 <Text style={styles.name}>@{item.username}</Text>
                 <Text style={styles.info}>
                   Lv {item.level} •{" "}
-                  {item.adminFrame && ADMIN_FRAMES[item.adminFrame]
-                    ? ADMIN_FRAMES[item.adminFrame].label
+                  {(item.adminFrames || []).filter((k) => ADMIN_FRAMES[k]).length
+                    ? (item.adminFrames || []).filter((k) => ADMIN_FRAMES[k]).map((k) => ADMIN_FRAMES[k].label).join(", ")
                     : "No special frame"}
                 </Text>
               </View>
@@ -197,39 +199,40 @@ export default function AdminFrames() {
         <View style={styles.modalBg}>
           <View style={styles.sheet}>
             <Text style={styles.sheetTitle}>@{picked?.username} ko frame do</Text>
+            <Text style={styles.sheetHint}>Tap = frame de do (user ke paas jud jayega). Jo frame mil chuka hai us par tap = hatao.</Text>
             <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
               data={ADMIN_FRAME_KEYS}
               numColumns={2}
               keyExtractor={(k) => k}
               columnWrapperStyle={{ justifyContent: "space-between" }}
               renderItem={({ item: k }) => {
-                const active = picked?.adminFrame === k;
+                const active = (picked?.adminFrames || []).includes(k);
                 return (
                   <TouchableOpacity
                     disabled={busy}
                     style={[styles.frameCard, active && styles.frameActive]}
-                    onPress={() => applyFrame(picked, k)}
+                    onPress={() => applyFrame(picked, active ? { remove: k } : { frame: k })}
                   >
                     <AvatarWithFrame uri={picked?.profileImg} frame={k} size={96} />
                     <Text style={styles.frameLabel} numberOfLines={2}>
                       {ADMIN_FRAMES[k].label}
                     </Text>
-                    {active && <Text style={styles.current}>Current</Text>}
+                    <Text style={active ? styles.current : styles.give}>{active ? "Mil chuka - hatane ke liye tap" : "Dene ke liye tap"}</Text>
                   </TouchableOpacity>
                 );
               }}
             />
-            {picked?.adminFrame ? (
+            {(picked?.adminFrames || []).length ? (
               <TouchableOpacity
                 disabled={busy}
                 style={styles.removeBtn}
-                onPress={() => applyFrame(picked, null)}
+                onPress={() => applyFrame(picked, { frame: null })}
               >
-                <Text style={styles.removeText}>Frame hatao</Text>
+                <Text style={styles.removeText}>Saare frames hatao</Text>
               </TouchableOpacity>
             ) : null}
             <TouchableOpacity style={styles.cancelBtn} onPress={() => setPicked(null)}>
-              <Text style={styles.cancelText}>Cancel</Text>
+              <Text style={styles.cancelText}>Done</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -278,6 +281,8 @@ const styles = StyleSheet.create({
   frameActive: { borderColor: "#FFD700" },
   frameLabel: { color: "#fff", fontSize: 13, fontWeight: "600", textAlign: "center", marginTop: 6 },
   current: { color: "#FFD700", fontSize: 11, marginTop: 2 },
+  give: { color: "#777", fontSize: 11, marginTop: 2 },
+  sheetHint: { color: "#888", fontSize: 12, textAlign: "center", marginBottom: 10 },
   removeBtn: { backgroundColor: "#e74c3c", padding: 13, borderRadius: 10, alignItems: "center", marginBottom: 8 },
   removeText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
   cancelBtn: { padding: 12, alignItems: "center" },

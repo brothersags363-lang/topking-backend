@@ -30,7 +30,7 @@ const MAP_KEY = 'adminFrameMap:v2';
 const MAP_TTL_MS = 10 * 60 * 1000;
 const LEVEL_SPEC_RE = /^lv(30|40|50)$/;
 let adminMap = {};
-let myPrefs = { adminFrame: null, frameChoice: null, frameOff: false };
+let myPrefs = { adminFrame: null, adminFrames: [], frameChoice: null, frameOff: false };
 let mapLoaded = false;      // true => map ko sach maano (disk ya server se aa chuki)
 let mapFetchedAt = 0;
 let mapFetching = null;
@@ -40,6 +40,25 @@ const mapListeners = new Set();
 function notifyMap() { mapListeners.forEach((fn) => { try { fn(); } catch (_) {} }); }
 
 const isValidSpec = (v) => typeof v === 'string' && (!!ADMIN_FRAMES[v] || v === 'off' || LEVEL_SPEC_RE.test(v));
+
+// Admin ne user ko jitne frames diye (list + purana single adminFrame), sirf jo app me maujood hain
+export function ownedAdminFrames(p) {
+  const out = [];
+  const add = (k) => { if (k && ADMIN_FRAMES[k] && out.indexOf(k) === -1) out.push(k); };
+  if (p && Array.isArray(p.adminFrames)) p.adminFrames.forEach(add);
+  if (p) add(p.adminFrame);
+  return out;
+}
+
+function cleanPrefs(p) {
+  const owned = ownedAdminFrames(p);
+  return {
+    adminFrame: p && p.adminFrame && ADMIN_FRAMES[p.adminFrame] ? p.adminFrame : owned.length ? owned[owned.length - 1] : null,
+    adminFrames: owned,
+    frameChoice: (p && p.frameChoice) || null,
+    frameOff: !!(p && p.frameOff === true),
+  };
+}
 
 function persistMap() {
   AsyncStorage.setItem(MAP_KEY, JSON.stringify({ map: adminMap, mine: myPrefs })).catch(() => {});
@@ -53,7 +72,7 @@ function loadMapDisk() {
       const obj = JSON.parse(raw);
       if (obj && obj.map && typeof obj.map === 'object') {
         adminMap = obj.map;
-        if (obj.mine) myPrefs = { ...myPrefs, ...obj.mine };
+        if (obj.mine) myPrefs = cleanPrefs({ ...myPrefs, ...obj.mine });
         mapLoaded = true;
         notifyMap();
       }
@@ -73,11 +92,7 @@ export function refreshAdminFrameMap(force = false) {
       Object.keys(m).forEach((uid) => { if (isValidSpec(m[uid])) clean[uid] = m[uid]; });
       adminMap = clean;
       if (res && res.mine) {
-        myPrefs = {
-          adminFrame: res.mine.adminFrame && ADMIN_FRAMES[res.mine.adminFrame] ? res.mine.adminFrame : null,
-          frameChoice: res.mine.frameChoice || null,
-          frameOff: res.mine.frameOff === true,
-        };
+        myPrefs = cleanPrefs(res.mine);
       }
       mapLoaded = true;
       mapFetchedAt = Date.now();
@@ -109,22 +124,19 @@ export function specFromPrefs(p) {
   if (c) {
     if (String(c).indexOf('adm:') === 0) {
       const k = String(c).slice(4);
-      if (p.adminFrame === k && ADMIN_FRAMES[k]) return k;
+      if (ownedAdminFrames(p).indexOf(k) !== -1) return k;
     } else if (LEVEL_SPEC_RE.test(c)) {
       return c;
     }
   }
-  return p.adminFrame && ADMIN_FRAMES[p.adminFrame] ? p.adminFrame : null;
+  const owned = ownedAdminFrames(p);
+  return p.adminFrame && ADMIN_FRAMES[p.adminFrame] ? p.adminFrame : owned.length ? owned[owned.length - 1] : null;
 }
 
 // Apni frame prefs (Frames & Entries screen ke liye): { adminFrame, frameChoice, frameOff }
 export function getMyFramePrefs() { return myPrefs; }
 export function setMyFramePrefsLocal(p) {
-  myPrefs = {
-    adminFrame: p && p.adminFrame && ADMIN_FRAMES[p.adminFrame] ? p.adminFrame : null,
-    frameChoice: (p && p.frameChoice) || null,
-    frameOff: !!(p && p.frameOff),
-  };
+  myPrefs = cleanPrefs(p);
   persistMap();
 }
 
