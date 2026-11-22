@@ -27,58 +27,17 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { auth, db } from "./firebaseConfig";
 import useIsAdmin from "./useIsAdmin";
+import { callApi } from "../utils/api";
 
-// Seedha Firestore se Stars add (admin ko rules me permission hai).
-// Server / Render par depend nahi, isliye turant ho jata hai.
-// level: admin ne manual level likha ho to wahi lagega, warna stars se auto.
+// Stars server se add hote hain (/admin/add-stars) taaki wallet.levelStars bhi sahi update ho.
+// Admin ke diye stars "level wale" hain: user jaise jaise unhe kharch (send) karega level badhega.
+// level: admin ne manual level likha ho to wahi lagega.
 async function grantStars({ uid, username, stars, amount, level: manualLevel }) {
-  const adminId = auth.currentUser?.uid;
-  if (!adminId) throw new Error("Login nahi hai, dobara login karo");
-
-  const walletRef = doc(db, "wallets", uid);
-
-  return runTransaction(db, async (tx) => {
-    const wSnap = await tx.get(walletRef);
-    const oldStars = wSnap.exists() ? Number(wSnap.data().stars || 0) : 0;
-    const total = oldStars + stars;
-    // Level ab stars add karne se NAHI badhta (level = kharche se). Manual level diya ho tabhi badlega.
-    const hasManual = !(manualLevel === null || manualLevel === undefined);
-    const level = hasManual
-      ? manualLevel
-      : Number(wSnap.exists() ? (wSnap.data().level || 0) : 0);
-
-    if (wSnap.exists()) {
-      tx.update(walletRef, hasManual ? { stars: total, level, manualLevel } : { stars: total });
-    } else {
-      tx.set(walletRef, {
-        stars: total, level, earnings: 0, receivedStars: 0, totalSpent: 0,
-        ...(hasManual ? { manualLevel } : {}),
-      });
-    }
-
-    // user ki wallet History me dikhega
-    tx.set(doc(collection(db, "wallets", uid, "purchaseHistory")), {
-      stars,
-      amount,
-      paymentId: "ADMIN",
-      status: "Completed",
-      createdAt: serverTimestamp(),
-    });
-
-    // admin ka record (kisne, kisko, kitna diya)
-    tx.set(doc(collection(db, "starGrants")), {
-      userId: uid,
-      username: username || "",
-      stars,
-      amount,
-      level,
-      note: "",
-      adminId,
-      createdAt: serverTimestamp(),
-    });
-
-    return { oldStars, total, level, oldLevel: wSnap.exists() ? Number(wSnap.data().level || 0) : 0 };
-  });
+  const body = { uid, stars, amount };
+  if (!(manualLevel === null || manualLevel === undefined)) body.level = manualLevel;
+  const res = await callApi("/admin/add-stars", body);
+  if (res && res.success === false) throw new Error(res.error || "Stars add nahi hue");
+  return res;
 }
 
 const PLACEHOLDER = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";

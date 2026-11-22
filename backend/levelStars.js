@@ -11,7 +11,8 @@
 async function readLevelStars(tx, walletRef, wData) {
   const d = wData || {};
   if (d.levelStars !== undefined && d.levelStars !== null) {
-    return Math.max(0, Number(d.levelStars) || 0);
+    // balance se zyada nahi (game me haare / nikale gaye stars level wale nahi rehte)
+    return Math.max(0, Math.min(Number(d.levelStars) || 0, Number(d.stars) || 0));
   }
   const hs = await tx.get(walletRef.collection("purchaseHistory"));
   let total = 0;
