@@ -3,6 +3,7 @@
 //  POST /recharge-request         (user)  PhonePe payment ke baad UTR bhejna
 //  POST /admin/approve-recharge   (admin) stars daal ke approve
 //  POST /admin/reject-recharge    (admin) reject
+const { readLevelStars, spendFields } = require("./levelStars");
 module.exports = function mountPayments({ app, db, admin, verifyUser, rateLimit }) {
   const FieldValue = admin.firestore.FieldValue;
 
@@ -62,8 +63,9 @@ module.exports = function mountPayments({ app, db, admin, verifyUser, rateLimit 
 
         const balance = sSnap.exists ? Number(sSnap.data().stars || 0) : 0;
         if (balance < amount) throw new Error("NO_STARS");
+        const lvlStars = await readLevelStars(tx, senderWalletRef, sSnap.data());
 
-        tx.update(senderWalletRef, { stars: FieldValue.increment(-amount), totalSpent: FieldValue.increment(amount) });
+        tx.update(senderWalletRef, spendFields(FieldValue, lvlStars, amount));
 
         tx.set(
           ownerWalletRef,
@@ -188,8 +190,10 @@ module.exports = function mountPayments({ app, db, admin, verifyUser, rateLimit 
         // (functions/index.js -> syncWalletLevel). Isliye yahan level jyon ka tyon rehta hai.
         const level = wSnap.exists ? Number(wSnap.data().level || 0) : 0;
 
-        if (wSnap.exists) tx.update(walletRef, { stars: total });
-        else tx.set(walletRef, { stars: total, level, earnings: 0, receivedStars: 0, totalSpent: 0 });
+        // Recharge ke stars "level wale" hain: kharch karne par level badhega
+        const lvlBase = wSnap.exists ? await readLevelStars(tx, walletRef, wSnap.data()) : 0;
+        if (wSnap.exists) tx.update(walletRef, { stars: total, levelStars: lvlBase + stars });
+        else tx.set(walletRef, { stars: total, level, earnings: 0, receivedStars: 0, totalSpent: 0, levelStars: stars });
 
         tx.update(reqRef, {
           status: "Approved",

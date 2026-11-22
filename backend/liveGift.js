@@ -15,6 +15,8 @@
 // DHYAN: GIFT_PRICES ko assets/giftsData.js ke saath same rakhna. Naya gift add karo to yahan bhi daalo.
 // =====================================================================
 
+const { readLevelStars, spendFields } = require("./levelStars");
+
 const GIFT_PRICES = {
   star: 3,
   Rose: 10,
@@ -110,12 +112,11 @@ module.exports = function registerLiveGift(app, { admin, db, verifyUser }) {
 
         const balance = sSnap.exists ? Number(sSnap.data().stars || 0) : 0;
         if (balance < total) throw new Error("NO_STARS");
+        const lvlStars = await readLevelStars(tx, senderWalletRef, sSnap.data());
 
         // ---- phir writes ----
-        tx.update(senderWalletRef, {
-          stars: FieldValue.increment(-total),
-          totalSpent: FieldValue.increment(total),
-        });
+        // sirf recharge/admin wale stars kharch hone par totalSpent (level) badhta hai
+        tx.update(senderWalletRef, spendFields(FieldValue, lvlStars, total));
 
         ids.forEach((id, i) => {
           tx.set(

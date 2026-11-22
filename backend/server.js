@@ -65,6 +65,7 @@ admin.initializeApp({
 });
 
 const db = admin.firestore();
+const { readLevelStars, spendFields } = require("./levelStars");
 
 
 // =====================================================
@@ -3520,11 +3521,15 @@ app.post("/admin/add-stars", generalLimiter, verifyUser, requireAdminDoc, async 
         ? Number(wSnap.exists ? (wSnap.data().level || 0) : 0)
         : manualLevel;
 
+      // Admin ke diye stars "level wale" hain: kharch karne par level badhega
+      const lvlBase = wSnap.exists ? await readLevelStars(tx, walletRef, wSnap.data()) : 0;
       if (wSnap.exists) {
-        tx.update(walletRef, manualLevel === null ? { stars: total } : { stars: total, level, manualLevel });
+        tx.update(walletRef, manualLevel === null
+          ? { stars: total, levelStars: lvlBase + stars }
+          : { stars: total, level, manualLevel, levelStars: lvlBase + stars });
       } else {
         tx.set(walletRef, {
-          stars: total, level, earnings: 0, receivedStars: 0, totalSpent: 0,
+          stars: total, level, earnings: 0, receivedStars: 0, totalSpent: 0, levelStars: stars,
           ...(manualLevel === null ? {} : { manualLevel }),
         });
       }
@@ -4548,6 +4553,115 @@ app.post("/admin/recalc-levels", generalLimiter, verifyUser, requireAdminDoc, as
     return res.json({ success: true, apply, scanned, changed });
   } catch (e) {
     console.error("RECALC LEVELS ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// =====================================================
+// WALLET: username se Stars gift (SERVER par - phone seedha totalSpent nahi likhta)
+// body: { username, stars }
+// Level sirf recharge/admin wale stars kharch hone par badhta hai (levelStars.js)
+// =====================================================
+app.post("/wallet/gift", generalLimiter, verifyUser, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const uname = String((req.body && req.body.username) || "").trim().replace(/^@/, "").slice(0, 60);
+    const amount = Math.floor(Number(req.body && req.body.stars));
+    if (!uname) return res.status(400).json({ success: false, error: "User ka username daalo" });
+    if (!Number.isFinite(amount) || amount < 1 || amount > 10000000) {
+      return res.status(400).json({ success: false, error: "Sahi Stars amount daalo" });
+    }
+    const us = await db.collection("users").where("username", "==", uname).limit(1).get();
+    if (us.empty) return res.status(404).json({ success: false, error: "User nahi mila" });
+    const receiverUid = us.docs[0].id;
+    const receiverData = us.docs[0].data() || {};
+    if (receiverUid === uid) return res.status(400).json({ success: false, error: "Khud ko gift nahi bhej sakte" });
+
+    const senderRef = db.collection("wallets").doc(uid);
+    const receiverRef = db.collection("wallets").doc(receiverUid);
+    const FV = admin.firestore.FieldValue;
+
+    const out = await db.runTransaction(async (tx) => {
+      const sSnap = await tx.get(senderRef);
+      const balance = sSnap.exists ? Number(sSnap.data().stars || 0) : 0;
+      if (balance < amount) throw new Error("NO_STARS");
+      const lvlStars = await readLevelStars(tx, senderRef, sSnap.data());
+
+      tx.update(senderRef, spendFields(FV, lvlStars, amount));
+      tx.set(receiverRef, { earnings: FV.increment(amount), receivedStars: FV.increment(amount) }, { merge: true });
+      tx.set(senderRef.collection("giftHistory").doc(), {
+        type: "sent", toUserId: receiverUid, toUsername: receiverData.username || uname,
+        stars: amount, createdAt: FV.serverTimestamp(),
+      });
+      tx.set(receiverRef.collection("giftHistory").doc(), {
+        type: "received", fromUserId: uid, stars: amount, createdAt: FV.serverTimestamp(),
+      });
+      return { stars: balance - amount };
+    });
+    return res.json({ success: true, ...out });
+  } catch (e) {
+    if (e && e.message === "NO_STARS") return res.status(400).json({ success: false, error: "Stars kam hai", code: "NO_STARS" });
+    console.error("WALLET GIFT ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
+// =====================================================
+// ADMIN: SIRF CONVERT SE BANE LEVEL HATAO (ek baar chalao)
+// - Jisne recharge ya admin se stars liye: level + totalSpent jaisa hai waisa (kuch nahi badalta)
+// - Jisne na recharge, na admin se stars liye: totalSpent = 0, level = 0 (admin ka manualLevel rahega)
+// - Sabki levelStars set hoti hai (recharge+admin total - totalSpent, bache stars se zyada nahi)
+// body: { apply?: true }  apply na ho to sirf DRY-RUN (count + 25 sample)
+// =====================================================
+app.post("/admin/reset-nonrecharge-levels", generalLimiter, verifyUser, requireAdminDoc, async (req, res) => {
+  try {
+    const apply = !!(req.body && req.body.apply === true);
+    let scanned = 0, reset = 0, kept = 0, last = null;
+    const sample = [];
+    let batch = db.batch(), inBatch = 0;
+    for (;;) {
+      let q = db.collection("wallets").orderBy(admin.firestore.FieldPath.documentId()).limit(300);
+      if (last) q = q.startAfter(last);
+      const snap = await q.get();
+      if (snap.empty) break;
+      const hist = await Promise.all(snap.docs.map((w) => w.ref.collection("purchaseHistory").get()));
+      snap.docs.forEach((docSnap, i) => {
+        scanned++;
+        const d = docSnap.data() || {};
+        let paid = 0;
+        hist[i].forEach((h) => {
+          const x = h.data() || {};
+          if (x.status !== "Completed" && x.status !== "Approved") return;
+          if (String(x.paymentId || "").startsWith("REWARD_")) return;
+          paid += Number(x.stars) || 0;
+        });
+        const spent = Number(d.totalSpent) || 0;
+        const manual = Math.min(50, Math.max(0, Math.floor(Number(d.manualLevel) || 0)));
+        let patch;
+        if (paid <= 0) {
+          if (spent === 0 && (Number(d.level) || 0) === manual && Number(d.levelStars || 0) === 0 && d.levelStars !== undefined) { kept++; return; }
+          reset++;
+          patch = { totalSpent: 0, level: manual, levelStars: 0 };
+          if (sample.length < 25) sample.push({ uid: docSnap.id, totalSpent: spent, level: Number(d.level) || 0 });
+        } else {
+          const ls = Math.max(0, Math.min(paid - spent, Number(d.stars) || 0));
+          if (d.levelStars !== undefined && Number(d.levelStars) === ls) { kept++; return; }
+          kept++;
+          patch = { levelStars: ls };
+        }
+        if (apply) {
+          batch.update(docSnap.ref, patch);
+          inBatch++;
+          if (inBatch >= 400) { /* commit below */ }
+        }
+      });
+      if (apply && inBatch > 0) { await batch.commit(); batch = db.batch(); inBatch = 0; }
+      last = snap.docs[snap.docs.length - 1];
+    }
+    console.log(`RESET NONRECHARGE LEVELS by ${req.user.uid} apply=${apply} scanned=${scanned} reset=${reset}`);
+    return res.json({ success: true, apply, scanned, reset, kept, sample });
+  } catch (e) {
+    console.error("RESET NONRECHARGE LEVELS ERROR:", e);
     return res.status(500).json({ success: false, error: "Server error" });
   }
 });

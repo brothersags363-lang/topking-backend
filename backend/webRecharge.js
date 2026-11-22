@@ -18,6 +18,7 @@
 
 const express = require("express");
 const cors = require("cors");
+const { readLevelStars } = require("./levelStars");
 
 module.exports = function mountWebRecharge({
   app,
@@ -132,13 +133,14 @@ module.exports = function mountWebRecharge({
       const wSnap = await tx.get(walletRef);
       const old = wSnap.exists ? Number(wSnap.data().stars) || 0 : 0;
       const total = old + o.stars;
-      const level = getLevel(total);
+      // Recharge se level seedha NAHI badhta; ye stars "level wale" ban ke kharch par level badhate hain
+      const lvlBase = wSnap.exists ? await readLevelStars(tx, walletRef, wSnap.data()) : 0;
       const now = admin.firestore.FieldValue.serverTimestamp();
 
       if (wSnap.exists) {
-        tx.update(walletRef, { stars: total, level });
+        tx.update(walletRef, { stars: total, levelStars: lvlBase + o.stars });
       } else {
-        tx.set(walletRef, { stars: total, level, earnings: 0, receivedStars: 0 });
+        tx.set(walletRef, { stars: total, level: 0, earnings: 0, receivedStars: 0, totalSpent: 0, levelStars: o.stars });
       }
 
       tx.set(walletRef.collection("purchaseHistory").doc(orderId), {
