@@ -19,6 +19,7 @@ import { useLocalSearchParams } from "expo-router";
 import { useRouter } from "../utils/safeRouter";
 import { collection, getDocs, documentId, query, where } from "firebase/firestore";
 import { db } from "./firebaseConfig";
+import { setVideoListCache } from "../utils/videoListCache";
 
 const { width } = Dimensions.get("window");
 const ITEM_WIDTH = width / 3 - 2;
@@ -133,9 +134,12 @@ export default function LikesScreen() {
       const full = listRef.current;
       const idx = full.findIndex((v) => v.id === item.id);
       const start = Math.max(0, idx - 10);
+      setVideoListCache(`likes:${userId}`, full);
       router.push({
         pathname: "/allvideo",
         params: {
+          listKey: `likes:${userId}`,
+          videoId: item.id,
           videos: JSON.stringify(full.slice(start, start + 40)),
           index: idx - start,
           userId,

@@ -389,7 +389,10 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
       // EK DEVICE = EK ID: share star sirf us ID ko jo us din is phone par pehle star kamayegi.
       // Dusri ID isi phone par kitna bhi share kare, star nahi. Phone ka total bhi din me 3 share (15 stars).
       const dh = req.deviceHash || "";
-      if (!dh) {
+      // Sirf pakki device ID (Android ID / iOS vendor ID, "d_" se shuru) par reward. Random "f_" ID reinstall /
+      // clear data par badal jati hai -> ek phone par kai ID se 15-15 star loot ho sakta tha (face reward me bhi yehi rule hai).
+      const rawDeviceId = String(req.headers["x-device-id"] || "");
+      if (!dh || !rawDeviceId.startsWith("d_")) {
         return res.json({ success: true, awarded: false, stars: 0, todayCount: 0, dailyMax: REWARD.SHARE_DAILY_MAX, reason: "NO_DEVICE" });
       }
       const dRef = db.collection("shareRewardsDevice").doc(`${dh}_${today}`);

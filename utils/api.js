@@ -6,6 +6,25 @@ import { getDeviceId, getDeviceIdKind, emitDeviceBanned } from "./deviceId";
 
 export const API_BASE = "https://topking-backend.onrender.com";
 
+// TIMEOUT: Render server so raha ho ya net kamzor ho to fetch hamesha ke liye latak jata tha
+// (login / gift / wallet ka spinner ghoomta rehta tha). Ab ek had ke baad error milta hai.
+export function fetchT(url, options = {}, ms = 25000) {
+  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), ms) : null;
+  return fetch(url, { ...options, signal: ctrl ? ctrl.signal : options.signal })
+    .catch((e) => {
+      if (e && e.name === "AbortError") {
+        const err = new Error("Server jawab nahi de raha. Thodi der baad dobara try karo.");
+        err.code = "TIMEOUT";
+        throw err;
+      }
+      throw e;
+    })
+    .finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+}
+
 export async function callApi(path, body = {}) {
   const { auth } = require("../app/firebaseConfig");
   const user = auth.currentUser;
@@ -14,7 +33,7 @@ export async function callApi(path, body = {}) {
   const token = await user.getIdToken();
   const deviceId = await getDeviceId();
 
-  const res = await fetch(API_BASE + path, {
+  const res = await fetchT(API_BASE + path, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -22,7 +41,7 @@ export async function callApi(path, body = {}) {
       ...(deviceId ? { "x-device-id": deviceId } : {}),
     },
     body: JSON.stringify(body),
-  });
+  }, path.indexOf("/face/") === 0 ? 60000 : 30000);
 
   let data = null;
   try {
@@ -45,11 +64,12 @@ export async function checkDeviceBanned() {
   try {
     const deviceId = await getDeviceId();
     if (!deviceId) return false;
-    const res = await fetch(API_BASE + "/device/check", {
+    // 7 sec me jawab na aaye to login mat roko (fail-open); server wapas ban-check baad me bhi karta hai
+    const res = await fetchT(API_BASE + "/device/check", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ deviceId }),
-    });
+    }, 7000);
     const data = await res.json();
     return !!(data && data.banned === true);
   } catch (e) {

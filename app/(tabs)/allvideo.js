@@ -31,6 +31,8 @@ import {
   View,
 } from 'react-native';
 import { scopedBackHandler } from '../../utils/scopedBack';
+import { takeVideoListCache } from '../../utils/videoListCache';
+import { CommentLike } from '../../components/home/CommentLike';
 import Image from '../../components/FastImage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -640,6 +642,7 @@ const CommentItem = React.memo(
     expanded,
     isOwner,
     myUid,
+    videoId,
     onProfile,
     onToggleReplies,
     onDeleteComment,
@@ -713,6 +716,8 @@ const CommentItem = React.memo(
           ))}
       </View>
 
+      <CommentLike videoId={videoId} commentId={item.id} count={item.likesCount} />
+
       {isOwner && (
         <TouchableOpacity
           onPress={() => onDeleteComment(item.id)}
@@ -741,12 +746,18 @@ export default function App() {
     from,
     username: chatUsername,
     profileImg: chatProfileImg,
+    listKey,
+    videoId: openVideoId,
   } = useLocalSearchParams();
 
   const profileUserId = userId;
 
   // ---------------- STATE ----------------
+  // Poori list memory cache se (route params me sirf 40 ka window tha => 40+ scroll nahi hota tha)
+  const cachedList = useRef(listKey ? takeVideoListCache(String(listKey)) : null).current;
+
   const [allVideos, setAllVideos] = useState(() => {
+    if (cachedList && cachedList.length) return cachedList;
     try {
       return videos ? JSON.parse(videos) : [];
     } catch (e) {
@@ -755,7 +766,9 @@ export default function App() {
   });
 
   const startIndex = useRef(
-    Math.max(Number(index) || 0, 0)
+    cachedList && cachedList.length && openVideoId
+      ? Math.max(cachedList.findIndex((v) => v.id === String(openVideoId)), 0)
+      : Math.max(Number(index) || 0, 0)
   ).current;
 
   const [uid, setUid] = useState(auth.currentUser?.uid ?? null);
@@ -1872,13 +1885,14 @@ export default function App() {
         expanded={!!showReplies[item.id]}
         isOwner={uid === item.userId}
         myUid={uid}
+        videoId={selectedVideoId}
         onProfile={openCommentProfile}
         onToggleReplies={toggleReplies}
         onDeleteComment={deleteComment}
         onDeleteReply={deleteReply}
       />
     ),
-    [liveReplies, showReplies, uid, openCommentProfile, toggleReplies, deleteComment, deleteReply]
+    [liveReplies, showReplies, uid, selectedVideoId, openCommentProfile, toggleReplies, deleteComment, deleteReply]
   );
 
   const inputValue = replyCommentId ? replyText : commentText;

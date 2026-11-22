@@ -2503,6 +2503,7 @@ const renderComment = useCallback(({ item: rawItem }) => {
     replyList={replyList}
     expanded={!!expandedReplies[item.id]}
     currentUid={currentUid}
+    videoId={selectedVideoId}
     onProfile={onCommentProfile}
     onReply={onCommentReply}
     onToggleReplies={onToggleReplies}
@@ -2510,7 +2511,7 @@ const renderComment = useCallback(({ item: rawItem }) => {
     onDeleteReply={onDeleteReply}
   />
   );
-}, [replies, expandedReplies, currentUid, myName, myPhoto, onCommentProfile, onCommentReply,
+}, [replies, expandedReplies, currentUid, selectedVideoId, myName, myPhoto, onCommentProfile, onCommentReply,
     onToggleReplies, onDeleteComment, onDeleteReply]);
 
 

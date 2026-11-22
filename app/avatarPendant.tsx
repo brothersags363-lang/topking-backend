@@ -15,9 +15,17 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { PENDANTS, getPendant, isUserVerified } from '../components/pendants';
+import { PENDANTS, getPendant, isUserVerified, isWhiteTick } from '../components/pendants';
 import { useRouter } from '../utils/safeRouter';
 import { auth, db } from './firebaseConfig';
+import { callApi } from '../utils/api';
+import {
+  getMyFramePrefs,
+  refreshAdminFrameMap,
+  setAdminFrameLocal,
+  setMyFramePrefsLocal,
+  specFromPrefs,
+} from '../components/adminFrames';
 
 const AV = 96; // preview avatar size
 const YELLOW = '#FFE11A';
@@ -60,12 +68,14 @@ export default function AvatarPendantScreen() {
       router.back();
       return;
     }
-    getDoc(doc(db, 'users', u.uid))
-      .then((snap) => {
+    Promise.all([getDoc(doc(db, 'users', u.uid)), refreshAdminFrameMap(true)])
+      .then(([snap]) => {
         const d: any = snap.exists() ? snap.data() : {};
         setUser(d);
         setPhoto(d.profileImg || '');
-        const p = getPendant(d.pendantChoice);
+        // ab pendant bhi frame system se chalta hai: frameChoice = "ang:<key>"
+        const fc: string = (getMyFramePrefs() as any).frameChoice || '';
+        const p = getPendant(fc.indexOf('ang:') === 0 ? fc.slice(4) : null);
         const ok = p && p.unlocked(d) ? p.key : null;
         setSaved(ok);
         setSelected(ok || PENDANTS[0].key);
@@ -77,13 +87,18 @@ export default function AvatarPendantScreen() {
   const current = getPendant(selected);
   const open = !!current && current.unlocked(user);
   const verified = isUserVerified(user);
+  const whiteTick = isWhiteTick(user);
 
   const apply = async (key: string | null) => {
     const u = auth.currentUser;
     if (!u || saving) return;
     setSaving(true);
     try {
-      await setDoc(doc(db, 'users', u.uid), { pendantChoice: key }, { merge: true });
+      // Server eligibility check karta hai; jawab ke baad poore app me turant badal do
+      const res: any = await callApi('/user/set-frame-prefs', { frameChoice: key ? 'ang:' + key : null });
+      const prefs = (res && res.prefs) || {};
+      setMyFramePrefsLocal(prefs);
+      setAdminFrameLocal(u.uid, specFromPrefs(prefs));
       setSaved(key);
     } catch {
       Alert.alert('Error', 'Save nahi ho paya, dobara try karo.');
@@ -92,7 +107,7 @@ export default function AvatarPendantScreen() {
     }
   };
 
-  let btnText = 'Verify to Unlock';
+  let btnText = (current as any)?.lockText || 'Locked';
   let btnDisabled = true;
   let onBtn: () => void = () => {};
   if (open) {
@@ -191,8 +206,10 @@ export default function AvatarPendantScreen() {
                 {saving ? <ActivityIndicator color="#000" /> : <Text style={s.btnText}>{btnText}</Text>}
               </TouchableOpacity>
               <Text style={s.note}>
-                {verified
-                  ? 'Fresh Angel unlocked - baaki pendants jaldi aayenge'
+                {whiteTick
+                  ? 'Fresh Angel aur Senior Angel unlocked - baaki pendants jaldi aayenge'
+                  : verified
+                  ? 'Fresh Angel unlocked - Senior Angel white tick milne par khulega'
                   : 'Account verify karo, Fresh Angel pendant khul jayega'}
               </Text>
             </View>

@@ -20,6 +20,7 @@ const ITEMS = [
   { label: "Official", icon: "shield-checkmark", route: "/officialAdmin", bg: "#6c5ce7", fg: "#fff" },
   { label: "Agency Rewards", icon: "trophy", route: "/agencyRewards", bg: "#FFD700", fg: "#000" },
   { label: "Add Stars", icon: "star", route: "/addStars", bg: "#FFD700", fg: "#000" },
+  { label: "Star History", icon: "time", route: "/starGrants", bg: "#27ae60", fg: "#fff" },
   { label: "Verified Tick", icon: "checkmark-circle", route: "/adminVerify", bg: "#2980b9", fg: "#fff" },
   { label: "Live Access", icon: "radio", route: "/adminLiveAccess", bg: "#e84393", fg: "#fff" },
   { label: "Special Frames", icon: "color-palette", route: "/adminFrames", bg: "#c0392b", fg: "#fff" },

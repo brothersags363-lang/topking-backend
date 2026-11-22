@@ -3,6 +3,8 @@
 // AUTO TICK (server par, koi claim / button nahi):
 //   5 videos, har ek par 300+  views  -> White tick   (verifiedColor: "white")
 //   5 videos, har ek par 3000+ views  -> Grey V tick  (verifiedColor: "yellow")
+//        + face verify done + asli photo aur bio + quiz pass  (backend/creatorTicks.js jaisa HI rule)
+//        Ye shart poori na ho to 5x300 views par White tick milta hai.
 //
 // Chalta tab hi hai jab kisi video ke views 300 ya 3000 cross karte hain
 // (baaki sab update par turant return -> sasta). Us waqt owner ke videos
@@ -19,6 +21,11 @@ const REGION = 'us-central1';
 const WHITE_VIEWS = 300;
 const GREY_VIEWS = 3000;
 const NEEDED = 5;
+const DEFAULT_AVATAR_MARK = '3135715'; // default profile icon (backend/creatorTicks.js jaisa hi)
+
+const faceDone = (d) => !!d && (d.faceVerified === true || d.faceStatus === 'submitted' || d.faceStatus === 'approved');
+const profileDone = (d) =>
+  !!d && !!d.profileImg && !String(d.profileImg).includes(DEFAULT_AVATAR_MARK) && !!String(d.bioText || '').trim();
 
 const db = getFirestore();
 
@@ -33,14 +40,20 @@ async function grantFor(uid) {
     if (v >= WHITE_VIEWS) white += 1;
     if (v >= GREY_VIEWS) grey += 1;
   });
-  const wantColor = grey >= NEEDED ? 'yellow' : white >= NEEDED ? 'white' : null;
-  if (!wantColor) return;
+  const greyViews = grey >= NEEDED;
+  const whiteViews = white >= NEEDED;
+  if (!greyViews && !whiteViews) return;
 
   await db.runTransaction(async (tx) => {
     const us = await tx.get(userRef);
     if (!us.exists) return;
     const u = us.data() || {};
     if (u.banned === true) return;
+
+    // Grey V sirf tab jab views + face + photo/bio + quiz sab pure hon; warna views kaafi ho to White
+    const greyOk = greyViews && faceDone(u) && profileDone(u) && u.quizPassed === true;
+    const wantColor = greyOk ? 'yellow' : whiteViews ? 'white' : null;
+    if (!wantColor) return;
 
     const cur = u.verified === true ? (u.verifiedColor === 'yellow' ? 'yellow' : 'white') : null;
 
@@ -68,7 +81,7 @@ async function grantFor(uid) {
       color: wantColor,
       adminId: 'auto',
       auto: true,
-      reason: wantColor === 'yellow' ? `${NEEDED} videos x ${GREY_VIEWS}+ views` : `${NEEDED} videos x ${WHITE_VIEWS}+ views`,
+      reason: wantColor === 'yellow' ? `${NEEDED} videos x ${GREY_VIEWS}+ views + face/profile/quiz` : `${NEEDED} videos x ${WHITE_VIEWS}+ views`,
       createdAt: FieldValue.serverTimestamp(),
     });
   });

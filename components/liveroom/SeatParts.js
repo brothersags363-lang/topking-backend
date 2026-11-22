@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { gifSource, isGifReaction } from '../../assets/emojiGifs';
 import { Image as ExpoImage } from 'expo-image';
 import FastImage from '../FastImage';
-import { hasVisibleFrame } from '../adminFrames';
+import { getAdminFrameKey } from '../adminFrames';
 import { GuardedFrame } from './SharedUI';
 import { SEAT_CELL_W, SEAT_FRAME_ANIM_MODE, SEAT_FRAME_OFFSET, SEAT_FRAME_SIZE, SEAT_FRAME_STYLE, SHOW_SEAT_FRAME, SPEAK_HOLD_MS, STABLE_AVATAR } from './constants';
 import { fmtCount, seatEqual, uidToNum, useSettled } from './helpers';
@@ -101,7 +101,7 @@ export const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress
   const glowOn = !!isSpeaking && !seat.isMuted;
   const occupied = !!seat.userId;
   // Host ka frame laga hai ya nahi (level>=30). Frame ho tabhi "Host" label dikhega
-  const hostHasFrame = isHostSeat && occupied && hasVisibleFrame(seat.userId, seat.level);
+  const hostHasFrame = isHostSeat && occupied && (seat.level >= 30 || !!getAdminFrameKey(seat.userId));
   const emoji = typeof seat.reaction === 'string' ? seat.reaction : seat.reaction?.e;
   return (
     <TouchableOpacity

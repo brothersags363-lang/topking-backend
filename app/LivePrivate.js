@@ -1352,7 +1352,7 @@ const onSendGiftStable = useCallback((item) => {
 }, []);
 const goRecharge = useCallback(() => {
   if (giftSheetRef.current) giftSheetRef.current.close();
-  setTimeout(() => { try { router.push('/recharge'); } catch (e) {} }, 180);
+  setTimeout(() => { try { router.push('/wallet'); } catch (e) {} }, 180);
 }, [router]);
 
 

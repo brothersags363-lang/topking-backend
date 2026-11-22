@@ -15,6 +15,8 @@ import {
   FlatList,
   Image,
   Keyboard,
+  Modal,
+  Pressable,
   Platform,
   Share,
   StatusBar,
@@ -47,6 +49,9 @@ import {
 } from 'firebase/firestore';
 
 import { db } from './firebaseConfig';
+import { takeVideoListCache } from '../utils/videoListCache';
+import { MAX_PINNED, setVideoPinned } from '../utils/pinnedVideos';
+import { CommentLike } from '../components/home/CommentLike';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useRouter } from '../utils/safeRouter';
@@ -224,7 +229,7 @@ const VideoPlayerItem = React.memo(
 export default function App() {
   const router = useRouter();
 
-  const { videos, index, userId } = useLocalSearchParams();
+  const { videos, index, userId, videoId: openVideoId } = useLocalSearchParams();
   const profileUserId = userId ? String(userId) : undefined;
 
   /* animated values */
@@ -239,7 +244,16 @@ export default function App() {
   const starTilt = useRef(new Animated.Value(0)).current;
 
   /* state */
+  // Poori list memory cache se (40+ video bhi scroll honge)
+  const cachedList = useRef(userId ? takeVideoListCache(`own:${String(userId)}`) : null).current;
+  const initialIndex = useRef(
+    cachedList && cachedList.length && openVideoId
+      ? Math.max(cachedList.findIndex((v) => v.id === String(openVideoId)), 0)
+      : Number(index) || 0
+  ).current;
+
   const [allVideos, setAllVideos] = useState(() => {
+    if (cachedList && cachedList.length) return cachedList;
     try {
       return videos ? JSON.parse(String(videos)) : [];
     } catch (e) {
@@ -248,7 +262,7 @@ export default function App() {
     }
   });
 
-  const [activeVideo, setActiveVideo] = useState(Number(index) || 0);
+  const [activeVideo, setActiveVideo] = useState(initialIndex);
   const [screenFocused, setScreenFocused] = useState(true);
 
   const [localLikes, setLocalLikes] = useState({});
@@ -256,6 +270,7 @@ export default function App() {
   const [myStars, setMyStars] = useState(0);
   const [starAnimationVideoId, setStarAnimationVideoId] = useState(null);
 
+  const [menuVideo, setMenuVideo] = useState(null); // 3-dot menu (Pin / Delete)
   const [showComments, setShowComments] = useState(false);
   const [selectedVideoId, setSelectedVideoId] = useState(null);
   const [selectedVideoData, setSelectedVideoData] = useState(null);
@@ -789,6 +804,24 @@ export default function App() {
     }
   };
 
+  const togglePin = async (item) => {
+    const user = auth.currentUser;
+    if (!user || item.userId !== user.uid) return;
+    const pin = !item.pinned;
+    try {
+      const r = await setVideoPinned(item.id, user.uid, pin);
+      if (!r.ok) {
+        Alert.alert('Pin limit', `Aap maximum ${MAX_PINNED} videos pin kar sakte ho. Pehle kisi ek video ko unpin karo.`);
+        return;
+      }
+      setAllVideos((prev) =>
+        prev.map((v) => (v.id === item.id ? { ...v, pinned: r.pinned, pinnedAt: r.pinnedAt } : v))
+      );
+    } catch (e) {
+      Alert.alert('Error', 'Pin nahi ho paya, dobara try karo.');
+    }
+  };
+
   const deleteVideo = (videoId, ownerId) => {
     const user = auth.currentUser;
 
@@ -1112,14 +1145,19 @@ export default function App() {
             <Text style={styles.iconText}>{formatCount(item.shares)}</Text>
           </TouchableOpacity>
 
-          {/* Delete button: pehle jaisa, sabse niche */}
+          {/* 3-dot menu: Pin/Unpin + Delete (sirf apni video) */}
           {auth.currentUser?.uid === item.userId && (
             <TouchableOpacity
               style={styles.iconBox}
-              onPress={() => deleteVideo(item.id, item.userId)}
+              onPress={() => setMenuVideo(item)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <Ionicons name="trash-outline" size={35} color="#FF4D4D" />
-              <Text style={styles.iconText}>Delete</Text>
+              <Ionicons
+                name="ellipsis-vertical"
+                size={34}
+                color="#ffffff"
+                style={styles.iconShadow}
+              />
             </TouchableOpacity>
           )}
         </View>
@@ -1195,6 +1233,52 @@ export default function App() {
       <StatusBar barStyle="light-content" />
       <StarToastView />
 
+      {/* Video menu: Pin/Unpin + Delete */}
+      <Modal
+        visible={!!menuVideo}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuVideo(null)}
+      >
+        <Pressable style={styles.menuBackdrop} onPress={() => setMenuVideo(null)}>
+          <Pressable style={styles.menuSheet} onPress={() => {}}>
+            <TouchableOpacity
+              style={styles.menuRow}
+              onPress={() => {
+                const v = menuVideo;
+                setMenuVideo(null);
+                if (v) togglePin(v);
+              }}
+            >
+              <Ionicons
+                name={menuVideo?.pinned ? 'pin' : 'pin-outline'}
+                size={24}
+                color="#FFD700"
+              />
+              <Text style={styles.menuText}>
+                {menuVideo?.pinned ? 'Unpin video' : 'Pin video'}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.menuRow}
+              onPress={() => {
+                const v = menuVideo;
+                setMenuVideo(null);
+                if (v) deleteVideo(v.id, v.userId);
+              }}
+            >
+              <Ionicons name="trash-outline" size={24} color="#FF4D4D" />
+              <Text style={[styles.menuText, { color: '#FF4D4D' }]}>Delete video</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.menuCancel} onPress={() => setMenuVideo(null)}>
+              <Text style={styles.menuCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       {/* Top black header */}
       <View style={styles.header} />
 
@@ -1208,8 +1292,8 @@ export default function App() {
         pagingEnabled
         getItemLayout={videoGetItemLayout}
         initialScrollIndex={
-          Number(index) > 0 && Number(index) < (videoData?.length || 0)
-            ? Number(index)
+          initialIndex > 0 && initialIndex < (videoData?.length || 0)
+            ? initialIndex
             : 0
         }
         onScrollToIndexFailed={(info) => {
@@ -1380,6 +1464,8 @@ export default function App() {
                         </View>
                       ))}
                   </View>
+
+                  <CommentLike videoId={selectedVideoId} commentId={item.id} count={item.likesCount} />
 
                   {auth.currentUser?.uid === item.userId && (
                     <TouchableOpacity
@@ -1689,6 +1775,20 @@ const styles = StyleSheet.create({
     top: 15,
     left: 20,
   },
+
+  /* video 3-dot menu */
+  menuBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  menuSheet: {
+    backgroundColor: '#1c1c1e',
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    paddingTop: 8,
+    paddingBottom: 24,
+  },
+  menuRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 22 },
+  menuText: { color: '#fff', fontSize: 16, fontWeight: '600', marginLeft: 16 },
+  menuCancel: { alignItems: 'center', paddingVertical: 14, marginTop: 4 },
+  menuCancelText: { color: '#aaa', fontSize: 15 },
 
   /* comments */
 

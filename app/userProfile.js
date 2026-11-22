@@ -1,3 +1,4 @@
+import { setVideoListCache } from "../utils/videoListCache";
 import LevelBadge from '../components/LevelBadge';
 import { notifyNewFollower } from "../utils/pushNotify";
 import React, {
@@ -170,7 +171,7 @@ const getLevelTheme = (level) => {
 
 const tickColor = (color) => (color === "yellow" ? "#FFD700" : "#f9fdff");
 
-const isPinnedVideo = (v) => !!(v.pinned || v.isPinned);
+const isPinnedVideo = (v) => !!v.pinned;
 
 // Pinned sabse pehle, baaki newest first
 const sortNewest = (arr) =>
@@ -178,6 +179,7 @@ const sortNewest = (arr) =>
     const pa = isPinnedVideo(a) ? 1 : 0;
     const pb = isPinnedVideo(b) ? 1 : 0;
     if (pa !== pb) return pb - pa;
+    if (pa && pb) return (Number(b.pinnedAt) || 0) - (Number(a.pinnedAt) || 0);
     return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
   });
 
@@ -1008,7 +1010,9 @@ export default function UserProfile() {
 
       const fullList = v;
       const fullIndex = fullList.findIndex((x) => x.id === item.id);
-      // Send a window around the tapped video, not the entire list
+      // Poori list memory cache se jaati hai (40+ video bhi scroll honge);
+      // params me sirf chhota window (fallback)
+      setVideoListCache(`profile:${userId}`, fullList);
       const winStart = Math.max(0, fullIndex - 10);
       const currentList = fullList.slice(winStart, winStart + 40);
       const localIndex = fullIndex - winStart;
@@ -1019,6 +1023,7 @@ export default function UserProfile() {
           videoId: item.id,
           userId,
           from: "userProfile",
+          listKey: `profile:${userId}`,
           videos: JSON.stringify(currentList),
           index: localIndex,
           videoUrl: item.videoUrl || item.video,

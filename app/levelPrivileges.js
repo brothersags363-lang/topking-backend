@@ -126,7 +126,7 @@ export default function LevelPrivileges() {
   const tiers = unfold ? PRIVILEGE_TIERS : PRIVILEGE_TIERS.slice(0, COLLAPSED_TIERS);
 
   const goBack = () => { try { router.canGoBack() ? router.back() : router.replace('/(tabs)/profile'); } catch (e) {} };
-  const goUpgrade = () => { try { router.push('/recharge'); } catch (e) {} };
+  const goUpgrade = () => { try { router.push('/wallet'); } catch (e) {} };
   const showHelp = () =>
     Alert.alert('Level kaise badhta hai?', 'Gifts / stars kharch karne par aapka level badhta hai. Level badhne par naye privileges unlock hote hain.');
 

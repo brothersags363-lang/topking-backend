@@ -31,7 +31,10 @@ import {
   specFromPrefs,
   ownedAdminFrames,
   ADMIN_FRAMES,
+  ANGEL_FRAMES,
+  ANGEL_FRAME_KEYS,
 } from "../components/adminFrames";
+import { isUserVerified, isWhiteTick } from "../components/pendants";
 import {
   FRAME_TIERS,
   FRAME_TIER_LABEL,
@@ -111,6 +114,7 @@ export default function FramesEntries() {
   const [mine, setMine] = useState(getMyFramePrefs());
 
   const [profileImg, setProfileImg] = useState("");
+  const [userDoc, setUserDoc] = useState({}); // verified / white tick dekhne ke liye (angel frames)
   const [booting, setBooting] = useState(true);
   const [busy, setBusy] = useState(false);
 
@@ -137,7 +141,10 @@ export default function FramesEntries() {
           refreshAdminFrameMap(true),
         ]);
         if (alive) setMine(getMyFramePrefs());
-        if (alive && snap.exists()) setProfileImg(snap.data().profileImg || "");
+        if (alive && snap.exists()) {
+          setProfileImg(snap.data().profileImg || "");
+          setUserDoc(snap.data());
+        }
       } catch (e) {}
       if (alive) setBooting(false);
     })();
@@ -145,6 +152,11 @@ export default function FramesEntries() {
       alive = false;
     };
   }, [uid]);
+
+  // Angel frames: Fresh = ID verified, Senior = white tick. Baaki lock.
+  const angelOwned = (k) => (k === "fresh_angel" ? isUserVerified(userDoc) : k === "senior_angel" ? isWhiteTick(userDoc) : false);
+  const angelNeed = { fresh_angel: "Account verify (ID verified) hone par milta hai.", senior_angel: "White tick milne par milta hai." };
+  const choiceOf = (id) => (ANGEL_FRAMES[id] ? "ang:" + id : ADMIN_FRAMES[id] ? "adm:" + id : id);
 
   const myLevel = Number(info.level) || 1;
   // level se milne wala frame (30-39 -> lv30, 40-49 -> lv40, 50+ -> lv50)
@@ -197,15 +209,13 @@ export default function FramesEntries() {
   const reqRef = useRef(0);
   const pickFrame = (id) => {
     if (!uid || id === current) return;
-    const body = id === "off" ? { frameOff: true }
-      : ADMIN_FRAMES[id] ? { frameChoice: "adm:" + id }
-      : { frameChoice: id };
+    const body = id === "off" ? { frameOff: true } : { frameChoice: choiceOf(id) };
     const prevPrefs = getMyFramePrefs();
     const prevSpec = spec;
     const nextPrefs = {
       ...prevPrefs,
       frameOff: id === "off",
-      frameChoice: id === "off" ? prevPrefs.frameChoice : ADMIN_FRAMES[id] ? "adm:" + id : id,
+      frameChoice: id === "off" ? prevPrefs.frameChoice : choiceOf(id),
     };
     setMyFramePrefsLocal(nextPrefs);
     setMine(getMyFramePrefs());
@@ -292,6 +302,22 @@ export default function FramesEntries() {
                 <AvatarPreview uri={profileImg} frameSource={ADMIN_FRAMES[k].still} size={84} />
               </PickCard>
             ))}
+
+            {ANGEL_FRAME_KEYS.map((k) => {
+              const owned = angelOwned(k);
+              return (
+                <PickCard
+                  key={k}
+                  label={ANGEL_FRAMES[k].label}
+                  sub={owned ? (current === k ? "Laga hua" : "Aapko mila") : "Locked"}
+                  active={current === k}
+                  locked={!owned}
+                  onPress={() => (owned ? pickFrame(k) : Alert.alert("Abhi locked hai", angelNeed[k]))}
+                >
+                  <AvatarPreview uri={profileImg} frameSource={ANGEL_FRAMES[k].still} size={84} />
+                </PickCard>
+              );
+            })}
 
             {FRAME_TIERS.map((t) => {
               const owned = t <= myTier;

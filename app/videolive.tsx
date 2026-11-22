@@ -1,10 +1,4 @@
-import LevelBadge from '../components/LevelBadge';
-import { warmBackend } from "../utils/warmBackend";
-import { getAgoraToken } from "../utils/agoraToken";
-import { createLiveSocket } from "../utils/liveSocket";
-import { reportVoiceAbuse } from "../utils/voiceReport";
-import OfficialLiveTools from "../components/live/OfficialLiveTools";
-import { blockIfProfane } from "../utils/guardText";
+// @ts-nocheck
 // @ts-nocheck
 // VideoLive.tsx
 //
@@ -22,2125 +16,46 @@ import { blockIfProfane } from "../utils/guardText";
 //                bar from gifts, countdown, win / lose / draw result.
 //  • Filters   → Agora beauty + colour-enhance presets (viewers see it too).
 //  • Mute      → host mic mute, viewer sound mute.
-//  • Video     → host can pause / resume video, flip camera.
-//  • Guests    → viewer taps the gold link button → host accepts → viewer joins the
-//                video call and appears as a tile on the right side (up to MAX_GUESTS).
-//                Host can mute / remove guests; guests can mute / hide camera / leave.
-//
-// Wired to the same `rooms` Firestore collection that all-live.js reads
-// and livevideostart.tsx writes to.
 
-import { notifyNewFollower } from "../utils/pushNotify";
-import { fmtPoints } from "../utils/familyUtils";
-import React, { useEffect, useRef, useState, useCallback, memo, forwardRef, useImperativeHandle } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Image,
-  TextInput,
-  Modal,
-  Platform,
-  StatusBar,
-  BackHandler,
-  FlatList,
-  KeyboardAvoidingView,
-  Keyboard,
-  Animated,
-  Easing,
-  PermissionsAndroid,
-  Dimensions,
-  ActivityIndicator,
-  Share,
-  ScrollView,
-  AppState,
-  Alert,
-  Switch,
-  TouchableWithoutFeedback,
-} from "react-native";
-import { scopedBackHandler } from "../utils/scopedBack";
-
-import { useLocalSearchParams, useFocusEffect } from "expo-router";
-import { useRouter } from "../utils/safeRouter";
-import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
-import * as ScreenCapture from "expo-screen-capture";
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-
-import { gifts } from "../assets/giftsData";
-import { callApi } from "../utils/api";
-import { chargeLiveGift } from "../utils/liveGiftApi";
-import { useLiveBanGuard } from "../utils/liveBan";
-import { checkUsername } from "../utils/usernameGate";
+import { createLiveSocket } from '../utils/liveSocket';
+import { reportVoiceAbuse } from '../utils/voiceReport';
+import OfficialLiveTools from '../components/live/OfficialLiveTools';
+import { blockIfProfane } from '../utils/guardText';
+import { notifyNewFollower } from '../utils/pushNotify';
+import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Image, Platform, StatusBar, FlatList, Keyboard, Animated, Easing, PermissionsAndroid, ActivityIndicator, Share, AppState, Alert, Switch, TouchableWithoutFeedback, InteractionManager } from 'react-native';
+import { scopedBackHandler } from '../utils/scopedBack';
+import { useLocalSearchParams, useFocusEffect } from 'expo-router';
+import { useRouter } from '../utils/safeRouter';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import * as ScreenCapture from 'expo-screen-capture';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { gifts } from '../assets/giftsData';
+import { callApi } from '../utils/api';
+import { chargeLiveGift } from '../utils/liveGiftApi';
+import { useLiveBanGuard } from '../utils/liveBan';
+import { checkUsername } from '../utils/usernameGate';
 import { useBlockedIds } from '../utils/useBlockedIds';
-import LevelFrame from "../components/LevelFrame";
-import JoinEntry from "../components/live/JoinEntry";
-import LevelBar from "../components/live/LevelBar";
-import { useJoinDelay, markJoinPending } from "../components/live/useJoinDelay";
-import { useRoomMusic, MusicSheet } from "../components/live/RoomMusic";
-
-import {
-  doc,
-  getDoc,
-  getDocs,
-  onSnapshot,
-  setDoc,
-  updateDoc,
-  addDoc,
-  deleteDoc,
-  deleteField,
-  increment,
-  collection,
-  query,
-  where,
-  orderBy,
-  limit,
-  writeBatch,
-  runTransaction,
-  serverTimestamp,
-} from "firebase/firestore";
-
-import {
-  createAgoraRtcEngine,
-  ChannelProfileType,
-  ClientRoleType,
-  RtcSurfaceView,
-} from "react-native-agora";
-import UserTick from '../components/UserTick';
-import useLiveSwipe from "../utils/useLiveSwipe";
-import { LinearGradient } from "expo-linear-gradient";
+import JoinEntry from '../components/live/JoinEntry';
+import { markJoinPending } from '../components/live/useJoinDelay';
+import { useRoomMusic, MusicSheet } from '../components/live/RoomMusic';
+import { doc, getDoc, getDocs, onSnapshot, setDoc, updateDoc, addDoc, deleteDoc, deleteField, increment, collection, query, where, orderBy, limit, writeBatch, runTransaction, serverTimestamp } from 'firebase/firestore';
+import { createAgoraRtcEngine, ChannelProfileType, ClientRoleType, RtcSurfaceView } from 'react-native-agora';
+import useLiveSwipe from '../utils/useLiveSwipe';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Image as ExpoImage } from 'expo-image';
-
-// Firebase safety check (same pattern as LiveRoom.js / all-live.js)
-let db: any = null;
-let auth: any = null;
-try {
-  const firebaseModule = require("./firebaseConfig");
-  db = firebaseModule.db;
-  auth = firebaseModule.auth;
-} catch (e) {
-  __DEV__ && console.log("Firebase config not found.");
-}
-
-const { width, height } = Dimensions.get("window");
-
-const AGORA_APP_ID = "f75d0020d44345edb12bbf6847ef3d38";
-const TOKEN_ENDPOINT = "https://topking-backend.onrender.com/token";
-const STABLE_AVATAR = "https://avatar.iran.liara.run/public/65";
-// ===== Same as LiveRoom.js: tick sirf jab verified === true; color sirf yellow/white =====
-const isVerified = (v: any) => v === true || v === "true";
-const normTickColor = (c: any) => (c === "yellow" ? "yellow" : "white");
-const cleanVerified = (o: any) => {
-  if (!o) return o;
-  const ok = isVerified(o.verified);
-  const out: any = { ...o, verified: ok };
-  if (ok) out.verifiedColor = o.verifiedColor === "yellow" ? "yellow" : "white";
-  else delete out.verifiedColor;
-  return out;
-};
-// Join animation: 'auto' (level se) | 'slide' | 'lv10' | 'lv20' | 'lv30' | 'lv40' | 'lv50'
-const JOIN_ANIM_VARIANT = "auto";
-
-// Same 30s window all-live.js uses to decide a room is still "live".
-const HEARTBEAT_INTERVAL = 60000; // COST FIX: pehle 8s
-
-// PK settings
-const PK_DURATION_SEC = 180; // 3 minutes
-const PK_RESULT_SHOW_MS = 6000; // PK ke baad 10 sec ruka rahe (loser punishment chalta hai), phir PK clear
-const PK_INVITE_TTL = 30000; // invite expires after 30s
-const PK_UID_OFFSET = 1000000; // uid used when we peek into the opponent's channel
-// PK friend list:
-//   "mutual"    = dono ek dusre ko follow kare
-//   "following" = jise main follow karta hu
-//   "either"    = jise main follow karta hu YA jo mujhe follow karta hai (default: koi live friend miss na ho)
-const PK_FRIEND_MODE: "mutual" | "following" | "either" = "either";
-const PK_FRIEND_LIMIT = 40; // PK sheet me max itne friends
-
-// Host camera quality  (HEAT FIX)
-// Pehle 720x1280 @ 24fps + 1500kbps tha: encoder + camera + modem teeno bahut
-// garam hote the (30 min me phone tapta tha). 540x960 @ 15fps live apps ke liye
-// kaafi sharp hai aur CPU / battery / data ~50% kam lagta hai.
-// Phone thanda rahe aur aur smooth chahiye to frameRate 20 try karo.
-const VIDEO_PROFILE = {
-  dimensions: { width: 540, height: 960 },
-  frameRate: 24, // SMOOTH: 20 -> 24 fps. Phone zyada garam ho to wapas 20 kar do (weak network par auto LOW profile already hai).
-  bitrate: 1100,
-  minBitrate: 400,
-  orientationMode: 2, // fixed portrait
-  degradationPreference: 1, // weak network → resolution pehle girta hai, motion smooth rehta hai
-};
-// Weak network / phone bahut garam hone par host automatically isi profile par aa jata hai
-const VIDEO_PROFILE_LOW = {
-  dimensions: { width: 360, height: 640 },
-  frameRate: 15,
-  bitrate: 450,
-  minBitrate: 150,
-  orientationMode: 2,
-  degradationPreference: 1,
-};
-
-// PK length choices the host can pick before inviting (seconds)
-const PK_DURATIONS = [180]; // fixed 3 minutes
-
-// ---- Guest seats: viewers who join the host's video call (tiles on the right) ----
-const MAX_GUESTS = 3; // seats at the same time (tiles stack on the right side)
-const GUEST_REQUEST_TTL = 5 * 60 * 1000; // old, never-answered requests are hidden
-const GUEST_JOIN_GRACE_MS = 20000; // host removes a seated guest who never showed up in the channel
-// Guests publish a SMALL stream (their tile is small) → light on data for everyone.
-const GUEST_VIDEO_PROFILE = {
-  dimensions: { width: 360, height: 640 },
-  frameRate: 15,
-  bitrate: 500,
-  minBitrate: 150,
-  orientationMode: 2,
-  degradationPreference: 1,
-};
-const GUEST_TILE_W = Math.round(Math.min(width * 0.27, 116));
-const GUEST_TILE_H = Math.round(GUEST_TILE_W * 1.3);
-const pkPanelHFixed = Math.round(Math.min((width / 2) * 1.547, height * 0.36)); // PK panel height (Tiki ratio 1.547)
-const PK_BAR_H = 16; // score bar height (Tiki)
-const PK_TIPS =
-  "Great performance and active interaction with the audience will help you win the PK battle!      •      Send gifts to support your host and win the PK!      •      ";
-
-// Weekly-host goal shown in the header pill + live-ended screen
-const WEEKLY_TARGET_MIN = 120; // 2 ghanta = 150 stars (24 ghante ke andar kul)
-// Random Match gives up after this many seconds
-const MATCH_TIMEOUT_SEC = 90;
-const WELCOME_TEXT =
-  "Welcome to TopKing Live, where you can interact with hosts and other viewers in real time. "
-  + "Please abide by our community guidelines to help us maintain a good community environment";
-
-// ===== SMOOTH FIX: collision-free Agora UID (LiveRoom.js jaisa SHA-256) =====
-// Pehle UID = char codes ka sum % 1000000 tha -> sirf ~2000 alag values, do viewers ka UID same hone par
-// Agora ek ko channel se nikal deta tha (rejoin / freeze). Ab sha256(uid) ke 4 bytes (server /token ke saath same).
-const _uidHashCache = new Map<string, number>();
-const sha256Bytes = (str: string): number[] => {
-  const K = [
-    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
-    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
-    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
-    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
-    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
-    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
-    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
-    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2,
-  ];
-  const H = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
-  const bytes: number[] = [];
-  const utf8 = unescape(encodeURIComponent(str));
-  for (let i = 0; i < utf8.length; i++) bytes.push(utf8.charCodeAt(i));
-  const bitLen = bytes.length * 8;
-  bytes.push(0x80);
-  while (bytes.length % 64 !== 56) bytes.push(0);
-  const hi = Math.floor(bitLen / 0x100000000);
-  const lo = bitLen >>> 0;
-  bytes.push((hi >>> 24) & 255, (hi >>> 16) & 255, (hi >>> 8) & 255, hi & 255,
-             (lo >>> 24) & 255, (lo >>> 16) & 255, (lo >>> 8) & 255, lo & 255);
-  const rotr = (x: number, n: number) => (x >>> n) | (x << (32 - n));
-  const w: number[] = new Array(64);
-  for (let off = 0; off < bytes.length; off += 64) {
-    for (let t = 0; t < 16; t++) {
-      w[t] = ((bytes[off + t*4] << 24) | (bytes[off + t*4 + 1] << 16) |
-              (bytes[off + t*4 + 2] << 8) | bytes[off + t*4 + 3]) | 0;
-    }
-    for (let t = 16; t < 64; t++) {
-      const s0 = rotr(w[t-15], 7) ^ rotr(w[t-15], 18) ^ (w[t-15] >>> 3);
-      const s1 = rotr(w[t-2], 17) ^ rotr(w[t-2], 19) ^ (w[t-2] >>> 10);
-      w[t] = (w[t-16] + s0 + w[t-7] + s1) | 0;
-    }
-    let [a,b,c,d,e,f,g,h] = H;
-    for (let t = 0; t < 64; t++) {
-      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
-      const ch = (e & f) ^ (~e & g);
-      const t1 = (h + S1 + ch + K[t] + w[t]) | 0;
-      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
-      const maj = (a & b) ^ (a & c) ^ (b & c);
-      const t2 = (S0 + maj) | 0;
-      h = g; g = f; f = e; e = (d + t1) | 0;
-      d = c; c = b; b = a; a = (t1 + t2) | 0;
-    }
-    H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
-    H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
-  }
-  const out: number[] = [];
-  H.forEach((x) => out.push((x >>> 24) & 255, (x >>> 16) & 255, (x >>> 8) & 255, x & 255));
-  return out;
-};
-const uidToNum = (id: string): number => {
-  if (!id) return 0;
-  let v = _uidHashCache.get(id);
-  if (v === undefined) {
-    const b = sha256Bytes(String(id));
-    v = Math.max(1, ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) & 0x7fffffff);
-    _uidHashCache.set(id, v);
-  }
-  return v;
-};
-const fmtK = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(2)}K` : String(n || 0));
-
-// Filter presets. `beauty` → Agora setBeautyEffectOptions,
-// `color` → Agora setColorEnhanceOptions. Both change the PUBLISHED stream,
-// so viewers see the filter too.
-const FILTERS = [
-  { id: "off", label: "Original", icon: "🚫", beauty: null, color: null },
-  {
-    id: "natural",
-    label: "Natural",
-    icon: "🌿",
-    beauty: { lighteningContrastLevel: 1, lighteningLevel: 0.4, smoothnessLevel: 0.4, rednessLevel: 0.2, sharpnessLevel: 0.2 },
-    color: null,
-  },
-  {
-    id: "smooth",
-    label: "Smooth",
-    icon: "✨",
-    beauty: { lighteningContrastLevel: 1, lighteningLevel: 0.3, smoothnessLevel: 0.85, rednessLevel: 0.15, sharpnessLevel: 0.1 },
-    color: null,
-  },
-  {
-    id: "bright",
-    label: "Bright",
-    icon: "☀️",
-    beauty: { lighteningContrastLevel: 2, lighteningLevel: 0.75, smoothnessLevel: 0.35, rednessLevel: 0.1, sharpnessLevel: 0.2 },
-    color: { strengthLevel: 0.4, skinProtectLevel: 1 },
-  },
-  {
-    id: "rosy",
-    label: "Rosy",
-    icon: "🌸",
-    beauty: { lighteningContrastLevel: 1, lighteningLevel: 0.45, smoothnessLevel: 0.5, rednessLevel: 0.75, sharpnessLevel: 0.1 },
-    color: null,
-  },
-  {
-    id: "vivid",
-    label: "Vivid",
-    icon: "🎨",
-    beauty: null,
-    color: { strengthLevel: 0.85, skinProtectLevel: 0.8 },
-  },
-  {
-    id: "sharp",
-    label: "Sharp",
-    icon: "🔍",
-    beauty: { lighteningContrastLevel: 2, lighteningLevel: 0.2, smoothnessLevel: 0.1, rednessLevel: 0.1, sharpnessLevel: 0.9 },
-    color: { strengthLevel: 0.3, skinProtectLevel: 1 },
-  },
-];
-
-// Extra filters (Glossy, Sunset, Clarendon, Rosy, ...) from the shared library.
-// Agora only supports beauty + colour-enhance, so these are mapped to the
-// closest Agora options (see toAgora() in constants/filterLibrary.js).
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { liveFilters } = require("../constants/filterLibrary");
-// Skip ids already defined above (e.g. "rosy") so React keys stay unique.
-liveFilters().forEach((lf: any) => {
-  if (!FILTERS.some((f) => f.id === lf.id)) FILTERS.push(lf);
-});
-
-// Where the "Recharge / Buy stars" button sends the user. Change to your real route.
-const RECHARGE_ROUTE = "/wallet";
-
-// HEAT FIX (LiveRoom jaisa): gift WebView (canvas) me pixel ratio 1.5 par cap.
-const GIFT_WEB_PRE_JS = "try{var __r=window.devicePixelRatio||1;Object.defineProperty(window,'devicePixelRatio',{get:function(){return Math.min(__r,1.5)}})}catch(e){}true;";
-const GIFT_GOLD = "#F5C451";
-// Normal (non-PK) mode me gift animation kitna UPAR ho (px). Zyada upar chahiye to number badhao.
-const GIFT_NORMAL_UP = 120;
-// Gift Firestore writes ke beech minimum gap (ms). Chhota = zyada fast, par zyada writes.
-const GIFT_WRITE_GAP = 500;
-
-// ---- Compact gift sheet pieces (same look as LiveRoom.js) ----
-const GIFTS_PER_PAGE = 8; // 4 columns x 2 rows
-const GIFT_PAGE_W = width; // Tiki jaisa: sheet edge-to-edge
-const GIFT_PAGES: any[] = (() => {
-  const pages: any[] = [];
-  for (let i = 0; i < gifts.length; i += GIFTS_PER_PAGE) {
-    pages.push({ key: "p" + i, items: gifts.slice(i, i + GIFTS_PER_PAGE) });
-  }
-  return pages;
-})();
-
-const GiftCard = memo(({ item, selected, onSelect }: any) => (
-  <TouchableOpacity
-    style={[styles.giftCard, selected && styles.giftCardSel]}
-    activeOpacity={0.7}
-    delayPressIn={0}
-    onPress={() => onSelect(item)}
-  >
-    <Image source={item.icon} style={{ width: 38, height: 38 }} resizeMode="contain" fadeDuration={0} />
-    <Text style={styles.giftName} numberOfLines={1}>{item.name}</Text>
-    <View style={{ flexDirection: "row", alignItems: "center", marginTop: 2 }}>
-      <Ionicons name="star" size={9} color="#8E8E93" />
-      <Text style={styles.giftCoin}>{item.price}</Text>
-    </View>
-  </TouchableOpacity>
-));
-
-const GiftPage = memo(({ page, selectedId, onSelect }: any) => (
-  <View style={{ width: GIFT_PAGE_W, flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-start" }}>
-    {page.items.map((item: any) => (
-      <GiftCard key={item.id} item={item} selected={String(item.id) === String(selectedId)} onSelect={onSelect} />
-    ))}
-  </View>
-));
-
-// Quick emoji row above the chat box
-const QUICK_EMOJIS = ["😂", "😍", "🔥", "👏", "🥰", "😮", "🎉", "💯"];
-
-// Simple client-side bad-word filter (add your own words; hindi/roman ok)
-const BAD_WORDS = ["fuck", "bitch", "sex", "porn", "madarchod", "bhosdi", "chutiya", "randi", "gaand", "lund"];
-const cleanText = (t: string) => {
-  let out = t;
-  BAD_WORDS.forEach((w) => {
-    out = out.replace(new RegExp(w, "gi"), "*".repeat(w.length));
-  });
-  return out;
-};
-
-const VOICE_ABUSE_REASON = "Gali / abuse (voice)";
-const REPORT_REASONS = ["Nudity / sexual content", VOICE_ABUSE_REASON, "Abuse / harassment", "Spam / scam", "Underage user", "Other"];
-
-const getLevelTheme = (level = 1) => {
-  if (level >= 50) return { bg: "#7B1FFF", border: "#FFD700", text: "#fff", icon: "#FFD700" };
-  if (level >= 40) return { bg: "#00BFFF", border: "#9EF8FF", text: "#fff", icon: "#fff" };
-  if (level >= 30) return { bg: "#FF0066", border: "#FFB6C1", text: "#fff", icon: "#fff" };
-  if (level >= 20) return { bg: "#FFC107", border: "#FFE082", text: "#000", icon: "#fff" };
-  if (level >= 10) return { bg: "#BDBDBD", border: "#fff", text: "#fff", icon: "#fff" };
-  return { bg: "#222", border: "#555", text: "#FFD700", icon: "#00E5FF" };
-};
-
-const fmtClock = (sec: number) => {
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-};
-
-// ---------- Agora token: shared helper (utils/agoraToken.js) ----------
-// Pehle yahan ek request + 25s timeout + 3 koshish thi => Render so raha ho to 30-40s "Waking up server".
-// Ab: cache (1 ghanta), live-list se prefetch, 3.5s me na aaye to parallel doosri request,
-// 60s ka retry budget, aur ban (403) par saaf error. Kabhi throw nahi karta.
-const warmUpBackend = () => {
-  // shared helper: server jaga hua ho to dobara ping nahi, soya ho to jagata hai
-  warmBackend(false);
-};
-
-type TokenResult = { token: string | null; uid: number; error?: { status?: number; code?: string; message?: string; until?: number }; cancelled?: boolean };
-
-// onSlow: request 3.5s se zyada le rahi hai (server jag raha hai). force: cache chhodo (token reject / renew).
-const fetchAgoraToken = (
-  channel: string,
-  uid: number,
-  isCancelled: () => boolean = () => false,
-  onSlow?: () => void,
-  force: boolean = false
-): Promise<TokenResult> => getAgoraToken(channel, uid, { isCancelled, onSlow, force }) as Promise<TokenResult>;
-
-// ============================================================
-// Small memoized components that live OUTSIDE VideoLive so a
-// re-render of the big screen doesn't restart them.
-// ============================================================
-
-// Gift button animation (HEAT FIX): pehle loop me 24/7 chalta tha (30 min = lagatar GPU/CPU).
-// Ab 1 baar chalta hai, phir 4 sec rukta hai -> duty cycle ~80% kam.
-const GiftButtonLottie = memo(() => (
-  <Image
-    source={require("../assets/giftLogo.webp")}
-    style={{ width: 32, height: 32 }}
-    resizeMode="contain"
-  />
-));
-
-// Live timer — only this tiny <Text> re-renders every second.
-const LiveTimer = memo(({ startTime }: { startTime: number | null }) => {
-  const [label, setLabel] = useState("00:00:00");
-
-  useEffect(() => {
-    if (!startTime) return;
-    const tick = () => {
-      const diff = Math.max(0, Date.now() - startTime);
-      const hrs = Math.floor(diff / 3600000);
-      const mins = Math.floor((diff % 3600000) / 60000);
-      const secs = Math.floor((diff % 60000) / 1000);
-      setLabel(
-        `${String(hrs).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
-      );
-    };
-    tick();
-    const interval = setInterval(tick, 1000);
-    return () => clearInterval(interval);
-  }, [startTime]);
-
-  return <Text style={styles.liveTagText}>LIVE {label}</Text>;
-});
-
-// Weekly-host minutes pill ("12/30 min") — own state, refreshes every 15s.
-const WeeklyMinutesPill = memo(({ startTime }: { startTime: number | null }) => {
-  const [mins, setMins] = useState(0);
-  useEffect(() => {
-    if (!startTime) return;
-    const tick = () => setMins(Math.max(0, Math.floor((Date.now() - startTime) / 60000)));
-    tick();
-    const i = setInterval(tick, 15000);
-    return () => clearInterval(i);
-  }, [startTime]);
-  const shown = Math.min(mins, WEEKLY_TARGET_MIN);
-  return (
-    <View style={styles.minPill}>
-      <View style={[styles.minFill, { width: `${(shown / WEEKLY_TARGET_MIN) * 100}%` }]} />
-      <Text style={styles.minTxt}>
-        {shown}/{WEEKLY_TARGET_MIN} min
-      </Text>
-    </View>
-  );
-});
-
-// "00:01" counter for Random Match
-const MatchTimer = memo(({ startAt, style }: any) => {
-  const [sec, setSec] = useState(0);
-  useEffect(() => {
-    const t = () => setSec(Math.max(0, Math.floor((Date.now() - startAt) / 1000)));
-    t();
-    const i = setInterval(t, 1000);
-    return () => clearInterval(i);
-  }, [startAt]);
-  return <Text style={style}>{fmtClock(sec)}</Text>;
-});
-
-// Circular progress ring built from two clipped half-rings (no SVG needed).
-const ProgressRing = ({ pct, size = 78, stroke = 7, color = "#FFD700", track = "rgba(255,255,255,0.18)", children }: any) => {
-  const p = Math.max(0, Math.min(100, pct));
-  const deg = p * 3.6;
-  const half = size / 2;
-  const circle: any = { position: "absolute", width: size, height: size, borderRadius: half, borderWidth: stroke };
-  return (
-    <View style={{ width: size, height: size, justifyContent: "center", alignItems: "center" }}>
-      <View style={[circle, { borderColor: track }]} />
-      <View style={{ position: "absolute", left: half, top: 0, width: half, height: size, overflow: "hidden" }}>
-        <View
-          style={[
-            circle,
-            {
-              left: -half,
-              top: 0,
-              borderColor: "transparent",
-              borderTopColor: color,
-              borderRightColor: color,
-              transform: [{ rotate: `${Math.min(deg, 180) - 135}deg` }],
-            },
-          ]}
-        />
-      </View>
-      <View style={{ position: "absolute", left: 0, top: 0, width: half, height: size, overflow: "hidden" }}>
-        <View
-          style={[
-            circle,
-            {
-              left: 0,
-              top: 0,
-              borderColor: "transparent",
-              borderBottomColor: color,
-              borderLeftColor: color,
-              transform: [{ rotate: `${Math.max(deg, 180) - 315}deg` }],
-            },
-          ]}
-        />
-      </View>
-      {children}
-    </View>
-  );
-};
-
-// ============================================================
-// GIFT (NO ANIMATION): gift bhejne ke baad Tiki jaisa chhota PNG row left side me dikhta hai
-// [avatar + naam + "Sent"] [gift PNG] x3 . Full-screen animation / Lottie / WebView sab hata diya.
-// Koi Animated nahi -> app hang nahi hoti. Har naye tap par sirf count (x1, x2, x3...) badalta hai.
-// ============================================================
-const ComboRow = memo(({ data, leaving }: any) => {
-  const gd = gifts.find((g: any) => String(g.id) === String(data.giftId));
-  const enter = useRef(new Animated.Value(0)).current; // 0 -> 1 slide/fade in
-  const pop = useRef(new Animated.Value(1)).current; // count bump
-  const fade = useRef(new Animated.Value(1)).current; // fade out
-  useEffect(() => {
-    Animated.timing(enter, { toValue: 1, duration: 220, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
-  }, []);
-  useEffect(() => {
-    pop.setValue(1.35);
-    Animated.spring(pop, { toValue: 1, friction: 5, tension: 220, useNativeDriver: true }).start();
-  }, [data.count]);
-  useEffect(() => {
-    Animated.timing(fade, { toValue: leaving ? 0 : 1, duration: leaving ? 260 : 80, useNativeDriver: true }).start();
-  }, [leaving]);
-  return (
-    <Animated.View
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        marginBottom: 4,
-        opacity: Animated.multiply(enter, fade),
-        transform: [{ translateX: enter.interpolate({ inputRange: [0, 1], outputRange: [-60, 0] }) }],
-      }}
-    >
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          paddingLeft: 4,
-          paddingRight: 34,
-          paddingVertical: 4,
-          borderRadius: 22,
-          backgroundColor: "rgba(0,0,0,0.28)", // halka black piche (Tiki jaisa) - zyada dark chahiye to 0.28 badhao
-        }}
-      >
-        <View style={{ width: 32, height: 32, marginLeft: 8 }}>
-          <Image
-            source={{ uri: data.senderImg || STABLE_AVATAR }}
-            style={{ width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.9)", backgroundColor: "#2a2b38" }}
-          />
-          {(!!data.senderId || Number(data.level) >= 10) && (
-            <LevelFrame level={Number(data.level) || 1} uid={data.senderId} lookup={false} animated={false}
-              style={{ position: "absolute", width: 54, height: 54, top: -11, left: -11, zIndex: 10 }} />
-          )}
-        </View>
-        <View style={{ marginLeft: 6, flexShrink: 1 }}>
-          <Text numberOfLines={1} style={{ color: "#fff", fontWeight: "700", fontSize: 12, textShadowColor: "rgba(0,0,0,0.5)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 }}>{data.senderName}</Text>
-          <Text numberOfLines={1} style={{ color: "rgba(255,255,255,0.92)", fontSize: 10, marginTop: 0, textShadowColor: "rgba(0,0,0,0.5)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 }}>Sent</Text>
-        </View>
-      </View>
-      {gd?.icon ? (
-        <Image source={gd.icon} fadeDuration={0} style={{ width: 46, height: 46, resizeMode: "contain", marginLeft: -26 }} />
-      ) : (
-        <View style={{ width: 20 }} />
-      )}
-      <Animated.Text
-        style={{
-          transform: [{ scale: pop }],
-          color: "#fff", fontSize: 24, fontWeight: "900", fontStyle: "italic", marginLeft: 6,
-          textShadowColor: "rgba(0,0,0,0.55)", textShadowOffset: { width: 1, height: 2 }, textShadowRadius: 3,
-        }}
-      >
-        x{data.count || 1}
-      </Animated.Text>
-    </Animated.View>
-  );
-});
-
-const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBottom }: any, ref: any) {
-  const [combos, setCombos] = useState<any[]>([]); // max 2 row, har sender ki apni row
-  const timersRef = useRef<any>({});
-  const leaveRef = useRef<any>({});
-
-  useImperativeHandle(ref, () => ({
-    // animation band: play / playDeferred ab kuch nahi karte (purane call sites safe rehte hain)
-    play() {},
-    playDeferred() {},
-    showCombo(data: any, onEnd?: () => void, ms = 2200) {
-      const key = String((data && data.senderName) || "user") + "_" + String((data && data.giftId) || "g"); // har gift ki apni row
-      const entry = { key, data };
-      setCombos((prev: any[]) => {
-        const i = prev.findIndex((c: any) => c.key === key);
-        if (i >= 0) { const n = prev.slice(); n[i] = entry; return n; }
-        return [...prev, entry].slice(-3); // nayi row niche judti hai, max 3
-      });
-      if (timersRef.current[key]) clearTimeout(timersRef.current[key]);
-      if (leaveRef.current[key]) clearTimeout(leaveRef.current[key]);
-      leaveRef.current[key] = setTimeout(() => {
-        setCombos((prev: any[]) => prev.map((c: any) => (c.key === key ? { ...c, leaving: true } : c)));
-      }, Math.max(0, ms - 280));
-      timersRef.current[key] = setTimeout(() => {
-        delete timersRef.current[key];
-        setCombos((prev: any[]) => prev.filter((c: any) => c.key !== key));
-        if (onEnd && Object.keys(timersRef.current).length === 0) onEnd(); // sab rows khatam hone par combo reset
-      }, ms);
-    },
-  }), []);
-
-  useEffect(() => () => {
-    Object.values(timersRef.current).forEach((t: any) => clearTimeout(t));
-    Object.values(leaveRef.current).forEach((t: any) => clearTimeout(t));
-  }, []);
-
-  if (!combos.length) return null;
-  return (
-    <View
-      pointerEvents="none"
-      style={[{ position: "absolute", left: 10, zIndex: 99998, elevation: 99998 }, comboBottom != null ? { bottom: comboBottom } : { top: comboTop != null ? comboTop : height * 0.25 }]}
-    >
-      {combos.map((c: any) => <ComboRow key={c.key} data={c.data} leaving={!!c.leaving} />)}
-    </View>
-  );
-}));
-
-// Pending (abhi write na hue) gift kharcha: chhota store + chhota component (LiveRoom jaisa).
-const giftPendingStore: any = {
-  v: 0,
-  subs: new Set<any>(),
-  set(n: number) {
-    giftPendingStore.v = n;
-    giftPendingStore.subs.forEach((f: any) => f(n));
-  },
-};
-const GiftBalance = memo(({ stars, style }: any) => {
-  const [pending, setPending] = useState<number>(giftPendingStore.v);
-  useEffect(() => {
-    setPending(giftPendingStore.v);
-    giftPendingStore.subs.add(setPending);
-    return () => { giftPendingStore.subs.delete(setPending); };
-  }, []);
-  return (
-    <Text style={style || { color: GIFT_GOLD, fontSize: 15, fontWeight: "bold", marginLeft: 4 }}>
-      {Math.max(0, stars - pending)}
-    </Text>
-  );
-});
-
-// One floating heart (tap-to-like). Native-driver only → cheap.
-const HEART_COLORS = ["#FF3D71", "#FF6B9D", "#FFB300", "#00E5FF", "#B388FF", "#69F0AE"];
-const FloatingHeart = memo(({ id, x, emoji, color, onDone }: any) => {
-  const prog = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    Animated.timing(prog, { toValue: 1, duration: 2200 + Math.random() * 600, useNativeDriver: true }).start(() =>
-      onDone(id)
-    );
-  }, []);
-  return (
-    <Animated.Text
-      pointerEvents="none"
-      style={{
-        position: "absolute",
-        bottom: 0,
-        right: x,
-        fontSize: 26,
-        color,
-        opacity: prog.interpolate({ inputRange: [0, 0.1, 0.8, 1], outputRange: [0, 1, 0.9, 0] }),
-        transform: [
-          { translateY: prog.interpolate({ inputRange: [0, 1], outputRange: [0, -260] }) },
-          { translateX: prog.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, x % 2 ? 22 : -22, x % 2 ? -12 : 12] }) },
-          { scale: prog.interpolate({ inputRange: [0, 0.15, 1], outputRange: [0.4, 1.15, 0.9] }) },
-        ],
-      }}
-    >
-      {emoji}
-    </Animated.Text>
-  );
-});
-
-// SMOOTH FIX: chat ka text yahin rehta hai -> har akshar par sirf ye chhota TextInput render hota hai
-const ChatBoxInput = forwardRef(({ style, onSubmit, autoFocus }: any, ref: any) => {
-  const [text, setText] = useState("");
-  const textRef = useRef("");
-  useImperativeHandle(ref, () => ({
-    getText: () => textRef.current,
-    clear: () => { textRef.current = ""; setText(""); },
-    append: (e: string) => { const n = (textRef.current + e).slice(0, 200); textRef.current = n; setText(n); },
-  }), []);
-  return (
-    <TextInput
-      style={style}
-      placeholder="Say something..."
-      placeholderTextColor="#aaa"
-      value={text}
-      onChangeText={(t) => { textRef.current = t; setText(t); }}
-      onSubmitEditing={() => onSubmit && onSubmit()}
-      returnKeyType="send"
-      maxLength={200}
-      blurOnSubmit={false}
-      autoFocus={autoFocus}
-    />
-  );
-});
-
-// ============================================================
-// COMBO BUTTON (Tiki jaisa): gift bhejte hi sheet band + neeche peela "Combo" button.
-// 3 sec ka countdown ring chalta hai; har tap par wahi gift dobara jata hai, count x1/10 ... x10/10
-// aur countdown reset. Apna state hai -> tap par poori live screen re-render nahi hoti (smooth).
-// Ring/bounce native-driver Animated hain (JS thread free).
-// ============================================================
-const COMBO_MAX = 10;
-const COMBO_WINDOW_MS = 3000;
-const ComboButton = memo(
-  forwardRef(({ bottom, onTap }: any, ref: any) => {
-    const [count, setCount] = useState(0); // 0 = hidden
-    const cntRef = useRef(0);
-    const timerRef = useRef<any>(null);
-    const ring = useRef(new Animated.Value(0)).current;
-    const pop = useRef(new Animated.Value(1)).current;
-    const onTapRef = useRef<any>(null);
-    onTapRef.current = onTap;
-
-    const clearTimer = () => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-    const hide = useCallback(() => {
-      clearTimer();
-      ring.stopAnimation();
-      cntRef.current = 0;
-      setCount(0);
-    }, [ring]);
-    const arm = useCallback(() => {
-      clearTimer();
-      ring.setValue(0);
-      Animated.timing(ring, { toValue: 1, duration: COMBO_WINDOW_MS, easing: Easing.linear, useNativeDriver: true }).start();
-      // 3s se zara pehle band: gift banner ka combo window (3s) bhi isi ke saath khatam hota hai
-      timerRef.current = setTimeout(hide, COMBO_WINDOW_MS - 50);
-    }, [ring, hide]);
-
-    useImperativeHandle(
-      ref,
-      () => ({
-        start: () => {
-          cntRef.current = 1;
-          setCount(1);
-          arm();
-        },
-        hide,
-      }),
-      [arm, hide]
-    );
-    useEffect(() => () => clearTimer(), []);
-
-    const press = () => {
-      if (cntRef.current < 1 || cntRef.current >= COMBO_MAX) return;
-      const ok = onTapRef.current ? onTapRef.current() : false;
-      if (!ok) {
-        hide(); // stars khatam / user nahi
-        return;
-      }
-      cntRef.current += 1;
-      setCount(cntRef.current);
-      pop.setValue(0.86);
-      Animated.spring(pop, { toValue: 1, friction: 4, tension: 220, useNativeDriver: true }).start();
-      if (cntRef.current >= COMBO_MAX) {
-        // 10/10 poora -> thodi der dikha ke band
-        clearTimer();
-        ring.stopAnimation();
-        timerRef.current = setTimeout(hide, 700);
-      } else {
-        arm();
-      }
-    };
-
-    if (count < 1) return null;
-    return (
-      <View pointerEvents="box-none" style={[styles.comboWrap, { bottom }]}>
-        <View style={styles.cbPill}>
-          <Text style={styles.cbPillTxt}>x{count}/{COMBO_MAX}</Text>
-        </View>
-        <View style={styles.comboBox}>
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              styles.comboRing,
-              {
-                opacity: ring.interpolate({ inputRange: [0, 1], outputRange: [0.95, 0.15] }),
-                transform: [{ scale: ring.interpolate({ inputRange: [0, 1], outputRange: [1.4, 1] }) }],
-              },
-            ]}
-          />
-          <Animated.View style={{ transform: [{ scale: pop }] }}>
-            <TouchableOpacity activeOpacity={0.85} delayPressIn={0} onPress={press} style={styles.comboBtn}>
-              <Text style={styles.comboNum}>{count}</Text>
-              <Text style={styles.comboLbl}>Combo</Text>
-            </TouchableOpacity>
-          </Animated.View>
-        </View>
-      </View>
-    );
-  })
-);
-
-// All floating hearts live HERE (own state). Tapping the screen or receiving
-// likes only re-renders this tiny layer, never the whole live screen.
-const HeartsLayer = memo(
-  forwardRef(({ bottom }: any, ref: any) => {
-    const [hearts, setHearts] = useState<any[]>([]);
-    const idRef = useRef(0);
-    const remove = useCallback((id: number) => setHearts((prev) => prev.filter((h) => h.id !== id)), []);
-
-    useImperativeHandle(
-      ref,
-      () => ({
-        spawn: (n: number) => {
-          const faces = ["❤️", "💖", "💗", "💜", "🧡", "😍"];
-          setHearts((prev) => {
-            if (prev.length >= 16) return prev;
-            const next = prev.slice();
-            for (let i = 0; i < n && next.length < 16; i++) {
-              idRef.current += 1;
-              next.push({
-                id: idRef.current,
-                x: Math.floor(Math.random() * 60) + 6,
-                emoji: faces[Math.floor(Math.random() * faces.length)],
-                color: HEART_COLORS[Math.floor(Math.random() * HEART_COLORS.length)],
-              });
-            }
-            return next;
-          });
-        },
-      }),
-      []
-    );
-
-    return (
-      <View pointerEvents="none" style={[styles.heartsLayer, { bottom }]}>
-        {hearts.map((h) => (
-          <FloatingHeart key={h.id} id={h.id} x={h.x} emoji={h.emoji} color={h.color} onDone={remove} />
-        ))}
-      </View>
-    );
-  })
-);
-
-// One chat row: join / gift / normal message (same three types as LiveRoom.js) — Tiki pill style.
-const ChatItem = memo(({ chat, onUser, onMenu }: any) => {
-  const joinWait = useJoinDelay(chat);
-  const theme = getLevelTheme(chat.level || 1);
-  const openUser = () =>
-    onUser &&
-    (chat.senderId || chat.uid) &&
-    onUser({
-      uid: chat.senderId || chat.uid,
-      name: chat.senderName,
-      username: chat.username,
-      img: chat.userImg,
-      level: chat.level,
-      verified: chat.verified,
-      verifiedColor: chat.verifiedColor,
-    });
-
-  const openMenu = () => onMenu && onMenu(chat);
-
-  if (chat.type === "join") {
-    if (joinWait) return null;
-    return (
-      <View style={styles.tkRow}>
-        <TouchableOpacity activeOpacity={0.8} onPress={openUser} style={styles.tkPill}>
-          <Text style={styles.tkTxt}>{chat.senderName}</Text>
-          <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={15} />
-          <Text style={styles.tkTxt}> has joined</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  if (chat.type === "gift") {
-    const gd = gifts.find((g: any) => String(g.id) === String(chat.giftId));
-    return (
-      <View style={styles.tkRow}>
-        <TouchableOpacity activeOpacity={0.8} onPress={openUser} style={styles.tkPill}>
-          <Ionicons name="megaphone" size={14} color="#fff" style={{ marginRight: 6 }} />
-          <Text style={styles.tkTxt}>{chat.senderName}</Text>
-          <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={15} />
-          <Text style={styles.tkTxt}> sent {chat.qty || 1} </Text>
-          {gd?.icon ? (
-            <Image source={gd.icon} style={{ width: 22, height: 22, resizeMode: "contain" }} />
-          ) : (
-            <Text style={styles.tkGiftName}>{chat.giftName}</Text>
-          )}
-          <Text style={styles.tkTxt}> to {chat.receiverName ? chat.receiverName : "the host"}</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.tkRow}>
-      <TouchableOpacity activeOpacity={0.85} onPress={openMenu} onLongPress={openMenu} delayLongPress={250} style={[styles.tkPill, { flexWrap: "nowrap", alignItems: "flex-start" }]}>
-        <View style={{ flexShrink: 1 }}>
-          {/* line 1: [HOST/MOD]  name  tick  level  (name par tap = profile) */}
-          <TouchableOpacity activeOpacity={0.8} onPress={openUser} onLongPress={openMenu} style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap" }}>
-            {chat.role === "host" && (
-              <View style={[styles.roleTag, { backgroundColor: "#F71084", marginLeft: 0, marginRight: 5 }]}>
-                <Text style={styles.roleTagTxt}>HOST</Text>
-              </View>
-            )}
-            {chat.role === "mod" && (
-              <View style={[styles.roleTag, { backgroundColor: "#2D9CFF", marginLeft: 0, marginRight: 5 }]}>
-                <Text style={styles.roleTagTxt}>MOD</Text>
-              </View>
-            )}
-            <Text style={styles.tkName}>{chat.senderName}</Text>
-            <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={14} />
-            <LevelBadge level={chat.level || 1} size={8} style={{ marginLeft: 6 }} />
-          </TouchableOpacity>
-          {/* reply quote (Tiki jaisa) */}
-          {!!chat.replyTo && (
-            <View style={styles.tkReply}>
-              <Text numberOfLines={1} style={styles.tkReplyTxt}>
-                {"\u21A9 "}{chat.replyTo.name}: {chat.replyTo.text}
-              </Text>
-            </View>
-          )}
-          {/* line 2: message (tap = Reply / Delete menu) */}
-          <Text style={styles.tkTxt}>{chat.message}</Text>
-        </View>
-      </TouchableOpacity>
-    </View>
-  );
-}, (prev: any, next: any) => prev.chat.id === next.chat.id && prev.onUser === next.onUser && prev.onMenu === next.onMenu);
-// SMOOTH: chat message kabhi edit nahi hota -> sirf id compare, purani rows re-render nahi.
-
-const chatKeyExtractor = (item: any, index: number) => item.id || String(index);
-
-// Round tool button (right side column)
-const ToolBtn = ({ icon, label, onPress, active, badge }: any) => (
-  <TouchableOpacity style={styles.toolWrap} onPress={onPress} activeOpacity={0.7}>
-    <View style={[styles.toolBtn, active && styles.toolBtnActive]}>{icon}</View>
-    <Text style={styles.toolLabel}>{label}</Text>
-    {badge ? <View style={styles.toolBadge} /> : null}
-  </TouchableOpacity>
-);
-
-// ---------- PK countdown pill ----------
-// Own state → only this tiny pill re-renders every tick (not the whole screen).
-// Last 10 seconds: turns red and pulses, like every real PK.
-const PkTimerPill = memo(({ endAt, result }: { endAt: number; result?: boolean }) => {
-  const calc = () => Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
-  const [left, setLeft] = useState(calc);
-  const pulse = useRef(new Animated.Value(1)).current;
-
-  useEffect(() => {
-    setLeft(calc());
-    const i = setInterval(() => setLeft(calc()), 250);
-    return () => clearInterval(i);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [endAt]);
-
-  const urgent = !result && left > 0 && left <= 10;
-  useEffect(() => {
-    if (!urgent) {
-      pulse.setValue(1);
-      return;
-    }
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, { toValue: 1.18, duration: 320, useNativeDriver: true }),
-        Animated.timing(pulse, { toValue: 1, duration: 320, useNativeDriver: true }),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [urgent]);
-
-  return (
-    <Animated.View
-      pointerEvents="none"
-      style={[styles.pkTimerPill, urgent && { backgroundColor: "rgba(220,38,38,0.95)" }, { transform: [{ scale: pulse }] }]}
-    >
-      {!result && (
-        <Text style={styles.pkTimerPk}>
-          <Text style={{ color: "#35C8FF" }}>P</Text>
-          <Text style={{ color: "#FF3D9A" }}>K</Text>
-        </Text>
-      )}
-      <Text style={styles.pkTimerTxt}>{fmtClock(left)}</Text>
-    </Animated.View>
-  );
-});
-
-// ---------- Tiki-style PK parts ----------
-// Centre graphic: blue glove  ⚡  pink glove with a small "PK" plate (pulses softly).
-const PkGlovesVs = memo(({ startAt }: { startAt?: number }) => {
-  const beat = useRef(new Animated.Value(0)).current;
-  const enter = useRef(new Animated.Value(0)).current; // pop-in
-  const fade = useRef(new Animated.Value(1)).current;
-  const [show, setShow] = useState(true);
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(beat, { toValue: 1, duration: 420, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
-        Animated.timing(beat, { toValue: 0, duration: 420, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
-      ])
-    );
-    loop.start();
-    Animated.spring(enter, { toValue: 1, friction: 5, tension: 90, useNativeDriver: true }).start();
-    // visible ~3s from the PK start (late joiners only see the remainder), then fade away
-    const left = Math.max(0, 3000 - (Date.now() - (startAt || Date.now())));
-    const t = setTimeout(() => {
-      Animated.timing(fade, { toValue: 0, duration: 350, useNativeDriver: true }).start(() => setShow(false));
-    }, left);
-    return () => {
-      loop.stop();
-      clearTimeout(t);
-    };
-  }, []);
-  if (!show) return null;
-  const sc = beat.interpolate({ inputRange: [0, 1], outputRange: [1, 1.07] });
-  const pop = enter.interpolate({ inputRange: [0, 1], outputRange: [0.3, 1] });
-  return (
-    <Animated.View pointerEvents="none" style={[styles.pkVsStage, { opacity: fade, transform: [{ scale: Animated.multiply(sc, pop) }] }]}>
-      <Ionicons name="flash" size={104} color="rgba(255,225,60,0.95)" style={styles.pkVsBolt} />
-      <MaterialCommunityIcons
-        name="boxing-glove"
-        size={54}
-        color="#2F8CFF"
-        style={[styles.pkGlove, { left: 0, transform: [{ scaleX: -1 }] }]}
-      />
-      <MaterialCommunityIcons name="boxing-glove" size={54} color="#FF2D75" style={[styles.pkGlove, { right: 0 }]} />
-      <View style={styles.pkVsPlate}>
-        <Text style={styles.pkVsPlateTxt}>
-          <Text style={{ color: "#2F8CFF" }}>P</Text>
-          <Text style={{ color: "#FF2D75" }}>K</Text>
-        </Text>
-      </View>
-    </Animated.View>
-  );
-});
-
-// Big result on each panel after the PK ends (Tiki style): winner = crown + gold WIN + confetti, loser = LOSE.
-const CONFETTI_COLORS = ["#FFD700", "#FF3D9A", "#35C8FF", "#7CFF6B", "#FF8A00", "#B388FF"];
-const PkConfetti = memo(() => {
-  const N = 14;
-  const vals = useRef(Array.from({ length: N }, () => new Animated.Value(0))).current;
-  useEffect(() => {
-    const loops = vals.map((v, i) => {
-      const l = Animated.loop(
-        Animated.sequence([
-          Animated.delay((i % 7) * 260),
-          Animated.timing(v, { toValue: 1, duration: 1800 + (i % 4) * 300, easing: Easing.linear, useNativeDriver: true }),
-          Animated.timing(v, { toValue: 0, duration: 0, useNativeDriver: true }),
-        ])
-      );
-      l.start();
-      return l;
-    });
-    return () => loops.forEach((l) => l.stop());
-  }, []);
-  const pw = width / 2;
-  return (
-    <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-      {vals.map((v, i) => (
-        <Animated.View
-          key={i}
-          style={{
-            position: "absolute",
-            top: -12,
-            left: ((i * 37) % 100) / 100 * (pw - 8),
-            width: 6,
-            height: 10,
-            borderRadius: 1.5,
-            backgroundColor: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
-            opacity: v.interpolate({ inputRange: [0, 0.1, 0.85, 1], outputRange: [0, 1, 1, 0] }),
-            transform: [
-              { translateY: v.interpolate({ inputRange: [0, 1], outputRange: [0, pkPanelHFixed + 20] }) },
-              { rotate: v.interpolate({ inputRange: [0, 1], outputRange: ["0deg", `${360 + i * 40}deg`] }) },
-            ],
-          }}
-        />
-      ))}
-    </View>
-  );
-});
-
-// Tiki trophy (copied from the real screenshots).
-// WIN : blue-purple dotted ring, pink disc, gold cup with star, gold ribbon with swallow-tails + pink gems, gold sparkle.
-// LOSE: everything pale silver-blue, same shape, small cloud on the top-right.
-// DRAW: blue version.
-const TrophyBadge = memo(({ kind, size = 84 }: { kind: "win" | "lose" | "draw"; size?: number }) => {
-  const win = kind === "win";
-  const draw = kind === "draw";
-  const ring = win ? ["#6F6BFF", "#8B5CF6"] : draw ? ["#5EA8FF", "#9B7BFF"] : ["#C4CAE6", "#A3ABD0"];
-  const disc = win ? ["#FF9DB0", "#EE5F7E"] : draw ? ["#9CC8FF", "#5E9BFF"] : ["#B3BAD9", "#9AA3C8"];
-  const cup = win ? "#FFC928" : draw ? "#F2F7FF" : "#EEF1FA";
-  const starCol = win ? "#FFE98A" : "#D5DBEF";
-  const ribbon = win ? ["#FFDD55", "#F5A81C"] : draw ? ["#9FD0FF", "#4F8DFF"] : ["#D2DBF3", "#B3BFE3"];
-  const tail = win ? "#E8920F" : draw ? "#3E78E6" : "#98A5CF";
-  const label = win ? "WIN" : draw ? "DRAW" : "LOSE";
-  const W = size * 1.3;
-  const innerSz = size * 0.8;
-  const rh = size * 0.27; // ribbon height
-  const dots = Array.from({ length: 12 }, (_, i) => i);
-  return (
-    <View style={{ width: W, alignItems: "center" }}>
-      {/* ring + disc + cup */}
-      <LinearGradient
-        colors={ring}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={{ width: size, height: size, borderRadius: size / 2, justifyContent: "center", alignItems: "center" }}
-      >
-        {dots.map((i) => {
-          const ang = (i / dots.length) * Math.PI * 2;
-          const r = size * 0.45;
-          return (
-            <View
-              key={i}
-              style={{
-                position: "absolute",
-                width: size * 0.035,
-                height: size * 0.035,
-                borderRadius: size,
-                backgroundColor: "rgba(255,255,255,0.85)",
-                left: size / 2 + r * Math.cos(ang) - size * 0.0175,
-                top: size / 2 + r * Math.sin(ang) - size * 0.0175,
-              }}
-            />
-          );
-        })}
-        <LinearGradient
-          colors={disc}
-          start={{ x: 0.2, y: 0 }}
-          end={{ x: 0.8, y: 1 }}
-          style={{ width: innerSz, height: innerSz, borderRadius: innerSz / 2, justifyContent: "center", alignItems: "center" }}
-        >
-          <Ionicons name="trophy" size={size * 0.56} color={cup} style={{ marginTop: -size * 0.06 }} />
-          <Ionicons
-            name="star"
-            size={size * 0.15}
-            color={starCol}
-            style={{ position: "absolute", top: innerSz * 0.22 }}
-          />
-        </LinearGradient>
-      </LinearGradient>
-
-      {/* sparkle (win) / cloud (lose) */}
-      {win && (
-        <Ionicons name="star" size={size * 0.24} color="#FFD84D" style={{ position: "absolute", top: -size * 0.06, left: W * 0.08 }} />
-      )}
-      {!win && !draw && (
-        <>
-          <Ionicons name="cloud" size={size * 0.3} color="#F4F6FF" style={{ position: "absolute", top: size * 0.62, right: W * 0.02 }} />
-          <Ionicons name="star" size={size * 0.12} color="#8E9BC9" style={{ position: "absolute", top: size * 0.02, left: W * 0.14 }} />
-        </>
-      )}
-
-      {/* ribbon with swallow-tails */}
-      <View style={{ marginTop: -size * 0.24, width: W, height: rh * 1.25, alignItems: "center" }}>
-        <View style={{ position: "absolute", left: 0, top: rh * 0.25, width: W * 0.28, height: rh, backgroundColor: tail, borderRadius: 2 }} />
-        <View style={{ position: "absolute", right: 0, top: rh * 0.25, width: W * 0.28, height: rh, backgroundColor: tail, borderRadius: 2 }} />
-        {/* swallow-tail notches */}
-        <View style={{ position: "absolute", left: -rh * 0.28, top: rh * 0.25 + rh * 0.22, width: rh * 0.56, height: rh * 0.56, backgroundColor: "#1B1545", transform: [{ rotate: "45deg" }] }} />
-        <View style={{ position: "absolute", right: -rh * 0.28, top: rh * 0.25 + rh * 0.22, width: rh * 0.56, height: rh * 0.56, backgroundColor: "#1B1545", transform: [{ rotate: "45deg" }] }} />
-        <LinearGradient
-          colors={ribbon}
-          style={{ width: W * 0.82, height: rh, borderRadius: 3, justifyContent: "center", alignItems: "center" }}
-        >
-          <Text
-            style={{
-              color: "#fff",
-              fontSize: size * 0.21,
-              fontWeight: "900",
-              fontStyle: "italic",
-              letterSpacing: 0.3,
-              textShadowColor: win ? "rgba(160,80,0,0.55)" : "rgba(80,90,140,0.5)",
-              textShadowOffset: { width: 0, height: 1 },
-              textShadowRadius: 2,
-            }}
-          >
-            {label}
-          </Text>
-        </LinearGradient>
-        {win && (
-          <>
-            <View style={{ position: "absolute", left: W * 0.1, top: -rh * 0.1, width: size * 0.1, height: size * 0.1, borderRadius: size, backgroundColor: "#FF5C8A" }} />
-            <View style={{ position: "absolute", right: W * 0.1, top: -rh * 0.1, width: size * 0.1, height: size * 0.1, borderRadius: size, backgroundColor: "#FF5C8A" }} />
-          </>
-        )}
-      </View>
-    </View>
-  );
-});
-
-const resultKind = (r?: string): "win" | "lose" | "draw" => (r === "win" ? "win" : r === "draw" ? "draw" : "lose");
-
-// Big trophy in the middle for the first ~3.5s after the PK ends (Tiki), then it shrinks away.
-const PkCenterTrophy = memo(({ result, endedAt }: { result?: string; endedAt?: number }) => {
-  const pop = useRef(new Animated.Value(0)).current;
-  const [show, setShow] = useState(true);
-  useEffect(() => {
-    Animated.spring(pop, { toValue: 1, friction: 5, tension: 80, useNativeDriver: true }).start();
-    const left = Math.max(0, 3500 - (Date.now() - (Number(endedAt) || Date.now())));
-    const t = setTimeout(() => {
-      Animated.timing(pop, { toValue: 0, duration: 300, useNativeDriver: true }).start(() => setShow(false));
-    }, left);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  if (!show || !result) return null;
-  return (
-    <Animated.View
-      pointerEvents="none"
-      style={[
-        styles.pkCenterTrophy,
-        { opacity: pop, transform: [{ scale: pop.interpolate({ inputRange: [0, 1], outputRange: [0.2, 1] }) }] },
-      ]}
-    >
-      <TrophyBadge kind={resultKind(result)} size={92} />
-    </Animated.View>
-  );
-});
-
-// Small WIN / LOSE trophy above the seats of each panel (appears after the big one is gone) + confetti for the winner.
-const PkPanelResult = memo(({ result, endedAt }: { result?: string; endedAt?: number }) => {
-  const pop = useRef(new Animated.Value(0)).current;
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    const left = Math.max(0, 3500 - (Date.now() - (Number(endedAt) || Date.now())));
-    const t = setTimeout(() => {
-      setReady(true);
-      Animated.spring(pop, { toValue: 1, friction: 5, tension: 80, useNativeDriver: true }).start();
-    }, left);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  if (!result) return null;
-  const kind = resultKind(result);
-  return (
-    <View pointerEvents="none" style={styles.pkResultWrapNew}>
-      {kind === "win" && !ready && <PkConfetti />}
-      {ready && (
-        <Animated.View
-          style={[
-            styles.pkPanelTrophy,
-            { opacity: pop, transform: [{ scale: pop.interpolate({ inputRange: [0, 1], outputRange: [0.3, 1] }) }] },
-          ]}
-        >
-          <TrophyBadge kind={kind} size={48} />
-        </Animated.View>
-      )}
-    </View>
-  );
-});
-
-// ---------- Last 10 seconds: BIG centre countdown 10 9 8 ... 1 (Tiki) ----------
-const PkFinalCountdown = memo(({ endAt }: { endAt: number }) => {
-  const calc = () => Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
-  const [left, setLeft] = useState(calc);
-  const pop = useRef(new Animated.Value(1)).current;
-  useEffect(() => {
-    setLeft(calc());
-    const i = setInterval(() => setLeft(calc()), 250);
-    return () => clearInterval(i);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [endAt]);
-  const show = left > 0 && left <= 10;
-  useEffect(() => {
-    if (!show) return;
-    pop.setValue(0);
-    Animated.spring(pop, { toValue: 1, friction: 4, tension: 120, useNativeDriver: true }).start();
-  }, [left, show]);
-  if (!show) return null;
-  const hot = left <= 3;
-  return (
-    <View pointerEvents="none" style={styles.pkFinalWrap}>
-      <Animated.Text
-        style={[
-          styles.pkFinalNum,
-          hot && { color: "#FF3B3B" },
-          {
-            opacity: pop.interpolate({ inputRange: [0, 0.4, 1], outputRange: [0, 1, 1] }),
-            transform: [{ scale: pop.interpolate({ inputRange: [0, 1], outputRange: [2.4, 1] }) }],
-          },
-        ]}
-      >
-        {left}
-      </Animated.Text>
-    </View>
-  );
-});
-
-// ---------- LOSER punishment (shown on the losing panel for PK_RESULT_SHOW_MS) ----------
-// BOMB drops on the face -> fuse burns -> BOOM (fireball, shock ring, sparks, flash) ->
-// face turns black, burnt hair, eyes cry (tears), moustache + beard appear, mouth bawls. No emoji, all drawn with shapes.
-// Face TRACKING: the losing host's Agora face detection (onFacePositionChanged) is sent through
-// Firestore (rooms/{id}.pk.face, fractions 0..1) and the whole face group follows it smoothly.
-// Face data na mile (device unsupported) → fixed jagah par dikhta hai.
-const FACE_PAD = 1.35; // tracked face rect x yeh = kale chehre ka size (kaan/sir cover)
-const FACE_SMOOTH_MS = 200; // movement smoothing
-const FACE_FALLBACK_Y = 0.36; // face data na ho to panel height ka fraction
-const FACE_FALLBACK_W = 0.5; // face data na ho to panel width ka fraction
-const FACE_FLIP_X = false; // agar mooch/aansu left-right ULTE chalein to true karo
-
-const Tear = ({ x, y, fall, delay }: { x: number; y: number; fall: number; delay: number }) => {
-  const t = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.delay(delay),
-        Animated.timing(t, { toValue: 1, duration: 1100, easing: Easing.in(Easing.quad), useNativeDriver: true }),
-        Animated.timing(t, { toValue: 0, duration: 0, useNativeDriver: true }),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return (
-    <Animated.View
-      style={{
-        position: "absolute",
-        left: x - 5,
-        top: y,
-        width: 10,
-        height: 14,
-        borderTopLeftRadius: 5,
-        borderTopRightRadius: 5,
-        borderBottomLeftRadius: 8,
-        borderBottomRightRadius: 8,
-        backgroundColor: "#5CC8FF",
-        borderWidth: 1,
-        borderColor: "#BFE9FF",
-        opacity: t.interpolate({ inputRange: [0, 0.1, 0.8, 1], outputRange: [0, 1, 0.9, 0] }),
-        transform: [{ translateY: t.interpolate({ inputRange: [0, 1], outputRange: [0, fall] }) }],
-      }}
-    />
-  );
-};
-
-// face = { cx, cy, w, h, ar } (fractions of the camera image, ar = image width / height)
-// mirror = true when this panel is the host's OWN local preview on the front camera
-const FW = 100; // design units of the face group (it is scaled to the real face)
-const FH = 112;
-const BOMB_BOOM_AT = 1100; // ms: bomb sits on the face, fuse burns, then BOOM
-
-// Smoke puff that keeps rising from the burnt face after the blast
-const Smoke = memo(({ x, size, start }: { x: number; size: number; start: number }) => {
-  const t = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    const seq = Animated.sequence([
-      Animated.delay(start),
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(t, { toValue: 1, duration: 1900, easing: Easing.out(Easing.quad), useNativeDriver: true }),
-          Animated.timing(t, { toValue: 0, duration: 0, useNativeDriver: true }),
-        ])
-      ),
-    ]);
-    seq.start();
-    return () => seq.stop();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return (
-    <Animated.View
-      style={{
-        position: "absolute",
-        left: x - size / 2,
-        top: FH * 0.12,
-        width: size,
-        height: size,
-        borderRadius: size / 2,
-        backgroundColor: "rgba(70,64,64,0.8)",
-        opacity: t.interpolate({ inputRange: [0, 0.15, 1], outputRange: [0, 0.85, 0] }),
-        transform: [
-          { translateY: t.interpolate({ inputRange: [0, 1], outputRange: [0, -FH * 0.95] }) },
-          { translateX: t.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 6, -4] }) },
-          { scale: t.interpolate({ inputRange: [0, 1], outputRange: [0.4, 1.7] }) },
-        ],
-      }}
-    />
-  );
-});
-
-// flying spark of the blast
-const SPARKS = Array.from({ length: 12 }, (_, i) => ({
-  ang: (i / 12) * Math.PI * 2 + (i % 2) * 0.16,
-  dist: FW * (0.78 + (i % 3) * 0.24),
-  size: 4 + (i % 3) * 1.6,
-  color: ["#FFE066", "#FF9F1C", "#FFFFFF"][i % 3],
-}));
-const Spark = memo(({ boom, ang, dist, size, color }: any) => (
-  <Animated.View
-    style={{
-      position: "absolute",
-      left: FW / 2 - size / 2,
-      top: FH / 2 - size,
-      width: size,
-      height: size * 2.2,
-      borderRadius: size,
-      backgroundColor: color,
-      opacity: boom.interpolate({ inputRange: [0, 0.05, 0.7, 1], outputRange: [0, 1, 0.9, 0] }),
-      transform: [
-        { translateX: boom.interpolate({ inputRange: [0, 1], outputRange: [0, Math.cos(ang) * dist] }) },
-        { translateY: boom.interpolate({ inputRange: [0, 1], outputRange: [0, Math.sin(ang) * dist] }) },
-        { rotate: `${(ang * 180) / Math.PI + 90}deg` },
-        { scaleY: boom.interpolate({ inputRange: [0, 0.3, 1], outputRange: [0.3, 1.6, 0.5] }) },
-      ],
-    }}
-  />
-));
-
-// burnt, standing-up hair spikes along the top of the face oval
-const HAIR = [0.15, 0.27, 0.39, 0.5, 0.61, 0.73, 0.85];
-const HairSpike = ({ u, i }: { u: number; i: number }) => {
-  const t = (u - 0.5) / 0.5; // -1 .. 1
-  const baseY = (FH / 2) * (1 - Math.sqrt(Math.max(0, 1 - t * t)));
-  const h = FH * (0.2 + (i % 3) * 0.06);
-  const w = FW * 0.07;
-  return (
-    <View
-      style={{
-        position: "absolute",
-        left: u * FW - w,
-        top: baseY - h * 0.7,
-        width: 0,
-        height: 0,
-        borderLeftWidth: w,
-        borderRightWidth: w,
-        borderBottomWidth: h,
-        borderLeftColor: "transparent",
-        borderRightColor: "transparent",
-        borderBottomColor: "#141010",
-        transform: [{ rotate: `${t * 38}deg` }],
-      }}
-    />
-  );
-};
-
-const PkLoserPunish = memo(({ panelW, panelH, face, mirror }: { panelW: number; panelH: number; face?: any; mirror?: boolean }) => {
-  const bombIn = useRef(new Animated.Value(0)).current; // bomb pops onto the face
-  const fuse = useRef(new Animated.Value(0)).current; // 0..1 while the fuse burns (shake + swell + spark)
-  const bombGone = useRef(new Animated.Value(0)).current;
-  const boom = useRef(new Animated.Value(0)).current; // blast
-  const flash = useRef(new Animated.Value(0)).current; // white screen flash
-  const quake = useRef(new Animated.Value(0)).current; // face shakes after the blast
-  const soot = useRef(new Animated.Value(0)).current; // face turns black
-  const props = useRef(new Animated.Value(0)).current; // moustache / beard / mouth pop in
-  const cry = useRef(new Animated.Value(0)).current; // mouth bawling loop
-  const tx = useRef(new Animated.Value(0)).current;
-  const ty = useRef(new Animated.Value(0)).current;
-  const sc = useRef(new Animated.Value(1)).current;
-  const firstPos = useRef(true);
-
-  // timeline: bomb -> fuse burns -> BOOM -> face black -> moustache + beard + crying
-  useEffect(() => {
-    const timeline = Animated.parallel([
-      Animated.spring(bombIn, { toValue: 1, friction: 5, tension: 110, useNativeDriver: true }),
-      Animated.timing(fuse, { toValue: 1, duration: BOMB_BOOM_AT, easing: Easing.linear, useNativeDriver: true }),
-      Animated.sequence([
-        Animated.delay(BOMB_BOOM_AT),
-        Animated.parallel([
-          Animated.timing(bombGone, { toValue: 1, duration: 60, useNativeDriver: true }),
-          Animated.timing(boom, { toValue: 1, duration: 850, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-          Animated.timing(quake, { toValue: 1, duration: 650, easing: Easing.linear, useNativeDriver: true }),
-          Animated.sequence([
-            Animated.timing(flash, { toValue: 1, duration: 70, useNativeDriver: true }),
-            Animated.timing(flash, { toValue: 0, duration: 450, useNativeDriver: true }),
-          ]),
-          Animated.sequence([
-            Animated.delay(160),
-            Animated.timing(soot, { toValue: 1, duration: 600, useNativeDriver: true }),
-          ]),
-          Animated.sequence([
-            Animated.delay(750),
-            Animated.spring(props, { toValue: 1, friction: 5, tension: 90, useNativeDriver: true }),
-          ]),
-        ]),
-      ]),
-    ]);
-    timeline.start();
-    const bawl = Animated.loop(
-      Animated.sequence([
-        Animated.timing(cry, { toValue: 1, duration: 260, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
-        Animated.timing(cry, { toValue: 0, duration: 260, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
-      ])
-    );
-    bawl.start();
-    return () => {
-      timeline.stop();
-      bawl.stop();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // follow the face
-  useEffect(() => {
-    const baseX = panelW / 2;
-    const baseY = panelH * FACE_FALLBACK_Y;
-    let cxp = baseX;
-    let cyp = baseY;
-    let wpx = panelW * FACE_FALLBACK_W;
-    const hasFace = !!(face && Number(face.ar) > 0 && Number(face.w) > 0);
-    if (hasFace) {
-      // the video fills the panel (crop): same maths as Agora's "hidden" render mode
-      const ar = Number(face.ar);
-      const k = Math.max(panelW / ar, panelH);
-      const dw = ar * k;
-      const dh = k;
-      const ox = (panelW - dw) / 2;
-      const oy = (panelH - dh) / 2;
-      let fx = Number(face.cx);
-      if (mirror !== FACE_FLIP_X) fx = 1 - fx; // front-cam local preview is mirrored
-      cxp = ox + fx * dw;
-      cyp = oy + Number(face.cy) * dh;
-      wpx = Number(face.w) * dw * FACE_PAD;
-    }
-    const toX = cxp - baseX;
-    const toY = cyp - baseY;
-    const toS = Math.max(0.3, Math.min(4, wpx / FW));
-    if (firstPos.current) {
-      // snap (no sliding) to the first real face position; until it arrives sit at the fallback spot
-      tx.setValue(toX);
-      ty.setValue(toY);
-      sc.setValue(toS);
-      if (hasFace) firstPos.current = false;
-      return;
-    }
-    Animated.parallel([
-      Animated.timing(tx, { toValue: toX, duration: FACE_SMOOTH_MS, useNativeDriver: true }),
-      Animated.timing(ty, { toValue: toY, duration: FACE_SMOOTH_MS, useNativeDriver: true }),
-      Animated.timing(sc, { toValue: toS, duration: FACE_SMOOTH_MS, useNativeDriver: true }),
-    ]).start();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [face?.cx, face?.cy, face?.w, face?.ar, mirror, panelW, panelH]);
-
-  // ---- layout of the face parts (design units) ----
-  const eyeY = FH * 0.36;
-  const eyeDX = FW * 0.2;
-  const eyeW = FW * 0.22;
-  const eyeH = eyeW * 0.78;
-  const lx = FW / 2 - eyeDX;
-  const rx = FW / 2 + eyeDX;
-  const browY = eyeY - eyeH * 0.95;
-  const mustY = FH * 0.6;
-  const mustW = FW * 0.36;
-  const mustH = FW * 0.12;
-  const mouthW = FW * 0.3;
-  const mouthH = FH * 0.17;
-  const mouthY = FH * 0.74;
-  const beardW = FW * 0.84;
-  const beardH = FH * 0.52;
-  const beardTop = FH * 0.64;
-  const fall = FH * 0.95;
-  const B = FW * 0.62; // bomb size
-
-  const eye = (x: number) => (
-    <>
-      {/* water pooling under the eye */}
-      <View
-        style={{
-          position: "absolute",
-          left: x - eyeW * 0.55,
-          top: eyeY + eyeH * 0.25,
-          width: eyeW * 1.1,
-          height: eyeH * 0.55,
-          borderRadius: eyeW,
-          backgroundColor: "rgba(120,205,255,0.5)",
-        }}
-      />
-      <View
-        style={{
-          position: "absolute",
-          left: x - eyeW / 2,
-          top: eyeY - eyeH / 2,
-          width: eyeW,
-          height: eyeH,
-          borderRadius: eyeW,
-          backgroundColor: "#fff",
-          justifyContent: "center",
-          alignItems: "center",
-        }}
-      >
-        <View
-          style={{
-            width: eyeH * 0.62,
-            height: eyeH * 0.62,
-            borderRadius: eyeH,
-            backgroundColor: "#0b0b0b",
-            marginTop: eyeH * 0.1,
-          }}
-        >
-          <View
-            style={{
-              position: "absolute",
-              left: eyeH * 0.12,
-              top: eyeH * 0.1,
-              width: eyeH * 0.18,
-              height: eyeH * 0.18,
-              borderRadius: eyeH,
-              backgroundColor: "#fff",
-            }}
-          />
-        </View>
-      </View>
-    </>
-  );
-
-  const brow = (x: number, rot: string) => (
-    <View
-      style={{
-        position: "absolute",
-        left: x - eyeW * 0.6,
-        top: browY,
-        width: eyeW * 1.2,
-        height: FH * 0.034,
-        borderRadius: 3,
-        backgroundColor: "#d8cfc8",
-        transform: [{ rotate: rot }],
-      }}
-    />
-  );
-
-  const shakeX = quake.interpolate({
-    inputRange: [0, 0.08, 0.16, 0.26, 0.38, 0.52, 0.7, 1],
-    outputRange: [0, -9, 9, -7, 5, -3, 1, 0],
-  });
-  const bombRot = fuse.interpolate({
-    inputRange: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
-    outputRange: ["0deg", "-5deg", "5deg", "-5deg", "6deg", "-7deg", "7deg", "-9deg", "9deg", "-12deg", "12deg"],
-  });
-  const bombScale = Animated.multiply(
-    bombIn.interpolate({ inputRange: [0, 1], outputRange: [0.2, 1] }),
-    fuse.interpolate({ inputRange: [0, 0.65, 1], outputRange: [1, 1, 1.28] })
-  );
-  const sparkFlick = fuse.interpolate({
-    inputRange: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
-    outputRange: [1, 1.7, 1, 1.8, 1.1, 1.9, 1, 1.8, 1.2, 2, 1.4],
-  });
-  const bodyD = B * 0.86;
-
-  return (
-    <View pointerEvents="none" style={[StyleSheet.absoluteFill, { overflow: "hidden" }]}>
-      {/* panel gets a bit darker (smoke) */}
-      <Animated.View style={[StyleSheet.absoluteFill, { opacity: soot, backgroundColor: "rgba(0,0,0,0.2)" }]} />
-
-      {/* everything below moves + scales with the tracked face */}
-      <Animated.View
-        style={{
-          position: "absolute",
-          left: panelW / 2 - FW / 2,
-          top: panelH * FACE_FALLBACK_Y - FH / 2,
-          width: FW,
-          height: FH,
-          transform: [{ translateX: tx }, { translateY: ty }, { scale: sc }],
-        }}
-      >
-        <Animated.View style={{ width: FW, height: FH, transform: [{ translateX: shakeX }] }}>
-          {/* ---------- burnt hair ---------- */}
-          <Animated.View style={[StyleSheet.absoluteFill, { opacity: props }]}>
-            {HAIR.map((u, i) => (
-              <HairSpike key={i} u={u} i={i} />
-            ))}
-          </Animated.View>
-
-          {/* ---------- black face (soft, 2 layers) ---------- */}
-          <Animated.View
-            style={{
-              position: "absolute",
-              left: -FW * 0.07,
-              top: -FH * 0.07,
-              width: FW * 1.14,
-              height: FH * 1.14,
-              borderRadius: FW,
-              backgroundColor: "rgba(0,0,0,0.3)",
-              opacity: soot,
-            }}
-          />
-          <Animated.View
-            style={{
-              position: "absolute",
-              left: 0,
-              top: 0,
-              width: FW,
-              height: FH,
-              borderRadius: FW,
-              backgroundColor: "rgba(10,8,8,0.9)",
-              opacity: soot,
-            }}
-          />
-
-          {/* ---------- beard ---------- */}
-          <Animated.View
-            style={{
-              position: "absolute",
-              left: (FW - beardW) / 2,
-              top: beardTop,
-              width: beardW,
-              height: beardH,
-              borderTopLeftRadius: beardW * 0.22,
-              borderTopRightRadius: beardW * 0.22,
-              borderBottomLeftRadius: beardW * 0.5,
-              borderBottomRightRadius: beardW * 0.5,
-              backgroundColor: "#4A2A12",
-              borderWidth: 1.5,
-              borderColor: "#1a0d05",
-              opacity: props,
-              transform: [{ scale: props }],
-              overflow: "hidden",
-            }}
-          >
-            {[0.2, 0.36, 0.5, 0.64, 0.8].map((p, i) => (
-              <View
-                key={i}
-                style={{
-                  position: "absolute",
-                  left: beardW * p,
-                  top: beardH * 0.3,
-                  width: 2,
-                  height: beardH * 0.62,
-                  borderRadius: 1,
-                  backgroundColor: "rgba(160,100,50,0.55)",
-                }}
-              />
-            ))}
-          </Animated.View>
-
-          {/* ---------- eyes + brows ---------- */}
-          <Animated.View style={[StyleSheet.absoluteFill, { opacity: soot }]}>
-            {eye(lx)}
-            {eye(rx)}
-          </Animated.View>
-          <Animated.View style={[StyleSheet.absoluteFill, { opacity: props }]}>
-            {brow(lx, "-20deg")}
-            {brow(rx, "20deg")}
-          </Animated.View>
-
-          {/* ---------- tears (streaks + falling drops) ---------- */}
-          <Animated.View style={[StyleSheet.absoluteFill, { opacity: props }]}>
-            <View
-              style={{
-                position: "absolute",
-                left: lx - 2.5,
-                top: eyeY + eyeH * 0.5,
-                width: 5,
-                height: FH * 0.34,
-                borderRadius: 3,
-                backgroundColor: "rgba(120,205,255,0.35)",
-              }}
-            />
-            <View
-              style={{
-                position: "absolute",
-                left: rx - 2.5,
-                top: eyeY + eyeH * 0.5,
-                width: 5,
-                height: FH * 0.34,
-                borderRadius: 3,
-                backgroundColor: "rgba(120,205,255,0.35)",
-              }}
-            />
-          </Animated.View>
-          <Animated.View style={[StyleSheet.absoluteFill, { opacity: soot }]}>
-            {[0, 1, 2].map((i) => (
-              <React.Fragment key={i}>
-                <Tear x={lx + (i - 1) * 3} y={eyeY + eyeH * 0.4} fall={fall} delay={i * 330} />
-                <Tear x={rx + (i - 1) * 3} y={eyeY + eyeH * 0.4} fall={fall} delay={i * 330 + 140} />
-              </React.Fragment>
-            ))}
-          </Animated.View>
-
-          {/* ---------- bawling mouth ---------- */}
-          <Animated.View
-            style={{
-              position: "absolute",
-              left: FW / 2 - mouthW / 2,
-              top: mouthY,
-              width: mouthW,
-              height: mouthH,
-              borderRadius: mouthW,
-              backgroundColor: "#6e0d1b",
-              borderWidth: 1.5,
-              borderColor: "#240407",
-              overflow: "hidden",
-              opacity: props,
-              transform: [
-                { scale: props },
-                { scaleY: cry.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1.2] }) },
-              ],
-            }}
-          >
-            <View
-              style={{
-                position: "absolute",
-                left: mouthW * 0.2,
-                bottom: -mouthH * 0.15,
-                width: mouthW * 0.6,
-                height: mouthH * 0.5,
-                borderRadius: mouthW,
-                backgroundColor: "#ee6a85",
-              }}
-            />
-          </Animated.View>
-
-          {/* ---------- moustache (2 curls) ---------- */}
-          <Animated.View style={[StyleSheet.absoluteFill, { opacity: props, transform: [{ scale: props }] }]}>
-            <View
-              style={{
-                position: "absolute",
-                left: FW / 2 - mustW,
-                top: mustY,
-                width: mustW,
-                height: mustH,
-                borderTopLeftRadius: mustH,
-                borderBottomLeftRadius: mustH * 0.2,
-                borderTopRightRadius: mustH * 0.4,
-                borderBottomRightRadius: mustH,
-                backgroundColor: "#6B3E1A",
-                borderWidth: 1.5,
-                borderColor: "#1a0d05",
-                transform: [{ rotate: "-9deg" }],
-              }}
-            />
-            <View
-              style={{
-                position: "absolute",
-                left: FW / 2,
-                top: mustY,
-                width: mustW,
-                height: mustH,
-                borderTopRightRadius: mustH,
-                borderBottomRightRadius: mustH * 0.2,
-                borderTopLeftRadius: mustH * 0.4,
-                borderBottomLeftRadius: mustH,
-                backgroundColor: "#6B3E1A",
-                borderWidth: 1.5,
-                borderColor: "#1a0d05",
-                transform: [{ rotate: "9deg" }],
-              }}
-            />
-          </Animated.View>
-
-          {/* ---------- smoke rising from the burnt face ---------- */}
-          <Smoke x={FW * 0.3} size={26} start={BOMB_BOOM_AT + 250} />
-          <Smoke x={FW * 0.5} size={34} start={BOMB_BOOM_AT + 700} />
-          <Smoke x={FW * 0.7} size={26} start={BOMB_BOOM_AT + 1150} />
-
-          {/* ---------- BOMB on the face ---------- */}
-          <Animated.View
-            style={{
-              position: "absolute",
-              left: FW / 2 - B / 2,
-              top: FH * 0.5 - B / 2,
-              width: B,
-              height: B,
-              opacity: Animated.multiply(bombIn, bombGone.interpolate({ inputRange: [0, 1], outputRange: [1, 0] })),
-              transform: [{ scale: bombScale }, { rotate: bombRot }],
-            }}
-          >
-            {/* body */}
-            <View
-              style={{
-                position: "absolute",
-                left: (B - bodyD) / 2,
-                top: B * 0.14,
-                width: bodyD,
-                height: bodyD,
-                borderRadius: bodyD / 2,
-                backgroundColor: "#17171d",
-                borderWidth: 2,
-                borderColor: "#4b4b57",
-              }}
-            />
-            {/* shine */}
-            <View
-              style={{
-                position: "absolute",
-                left: B * 0.22,
-                top: B * 0.3,
-                width: B * 0.2,
-                height: B * 0.1,
-                borderRadius: B,
-                backgroundColor: "rgba(255,255,255,0.4)",
-                transform: [{ rotate: "-32deg" }],
-              }}
-            />
-            {/* cap */}
-            <View
-              style={{
-                position: "absolute",
-                left: B / 2 - B * 0.14,
-                top: B * 0.05,
-                width: B * 0.28,
-                height: B * 0.15,
-                borderRadius: 3,
-                backgroundColor: "#6b6b78",
-                borderWidth: 1.5,
-                borderColor: "#2b2b33",
-              }}
-            />
-            {/* fuse */}
-            <View
-              style={{
-                position: "absolute",
-                left: B / 2 - 1.5,
-                top: -B * 0.1,
-                width: 3,
-                height: B * 0.18,
-                borderRadius: 2,
-                backgroundColor: "#c8a15a",
-                transform: [{ rotate: "20deg" }],
-              }}
-            />
-            <View
-              style={{
-                position: "absolute",
-                left: B / 2 + B * 0.05,
-                top: -B * 0.22,
-                width: 3,
-                height: B * 0.14,
-                borderRadius: 2,
-                backgroundColor: "#c8a15a",
-                transform: [{ rotate: "-28deg" }],
-              }}
-            />
-            {/* burning spark */}
-            <Animated.View
-              style={{
-                position: "absolute",
-                left: B / 2 + B * 0.02,
-                top: -B * 0.36,
-                width: B * 0.22,
-                height: B * 0.22,
-                borderRadius: B,
-                backgroundColor: "#FF7A00",
-                justifyContent: "center",
-                alignItems: "center",
-                transform: [{ scale: sparkFlick }],
-              }}
-            >
-              <View style={{ width: B * 0.11, height: B * 0.11, borderRadius: B, backgroundColor: "#FFF2A0" }} />
-            </Animated.View>
-          </Animated.View>
-
-          {/* ---------- BLAST (fireball, shock ring, sparks) ---------- */}
-          <Animated.View
-            style={{
-              position: "absolute",
-              left: FW / 2 - FW * 0.85,
-              top: FH / 2 - FW * 0.85,
-              width: FW * 1.7,
-              height: FW * 1.7,
-              borderRadius: FW,
-              backgroundColor: "#FF5A00",
-              opacity: boom.interpolate({ inputRange: [0, 0.04, 0.5, 1], outputRange: [0, 1, 0.8, 0] }),
-              transform: [{ scale: boom.interpolate({ inputRange: [0, 0.25, 1], outputRange: [0.1, 1, 1.25] }) }],
-            }}
-          />
-          <Animated.View
-            style={{
-              position: "absolute",
-              left: FW / 2 - FW * 0.6,
-              top: FH / 2 - FW * 0.6,
-              width: FW * 1.2,
-              height: FW * 1.2,
-              borderRadius: FW,
-              backgroundColor: "#FF9F1C",
-              opacity: boom.interpolate({ inputRange: [0, 0.04, 0.35, 0.8], outputRange: [0, 1, 0.9, 0] }),
-              transform: [{ scale: boom.interpolate({ inputRange: [0, 0.25, 1], outputRange: [0.1, 0.9, 1.05] }) }],
-            }}
-          />
-          <Animated.View
-            style={{
-              position: "absolute",
-              left: FW / 2 - FW * 0.35,
-              top: FH / 2 - FW * 0.35,
-              width: FW * 0.7,
-              height: FW * 0.7,
-              borderRadius: FW,
-              backgroundColor: "#FFF3A0",
-              opacity: boom.interpolate({ inputRange: [0, 0.04, 0.25, 0.5], outputRange: [0, 1, 0.8, 0] }),
-              transform: [{ scale: boom.interpolate({ inputRange: [0, 0.2, 1], outputRange: [0.1, 1, 0.6] }) }],
-            }}
-          />
-          <Animated.View
-            style={{
-              position: "absolute",
-              left: FW / 2 - FW * 0.55,
-              top: FH / 2 - FW * 0.55,
-              width: FW * 1.1,
-              height: FW * 1.1,
-              borderRadius: FW,
-              borderWidth: 4,
-              borderColor: "rgba(255,255,255,0.9)",
-              opacity: boom.interpolate({ inputRange: [0, 0.05, 1], outputRange: [0, 0.9, 0] }),
-              transform: [{ scale: boom.interpolate({ inputRange: [0, 1], outputRange: [0.3, 2.8] }) }],
-            }}
-          />
-          {SPARKS.map((s, i) => (
-            <Spark key={i} boom={boom} ang={s.ang} dist={s.dist} size={s.size} color={s.color} />
-          ))}
-        </Animated.View>
-      </Animated.View>
-
-      {/* white flash on the whole panel at the moment of the blast */}
-      <Animated.View
-        style={[StyleSheet.absoluteFill, { backgroundColor: "#fff", opacity: flash.interpolate({ inputRange: [0, 1], outputRange: [0, 0.85] }) }]}
-      />
-    </View>
-  );
-});
-
-// 3 round "seats" at the bottom of each panel (Tiki): sofa when empty, else the top-3 gifters.
-// #1 gets a crown + MVP ribbon, #2 / #3 a small number. Left panel is mirrored so #1 always sits next to the centre.
-const SEAT_COL = ["#FFD700", "#C0C0C0", "#CD7F32"];
-const SEAT_BADGE = ["#F59E0B", "#8A96AB", "#B8693A"];
-const PkSeats = memo(({ gifters, mirror }: any) => {
-  const top: any[] = Object.values(gifters || {})
-    .filter((g: any) => g && g.uid && Number(g.stars) > 0)
-    .sort((a: any, b: any) => Number(b.stars) - Number(a.stars))
-    .slice(0, 3);
-  const order = mirror ? [2, 1, 0] : [0, 1, 2];
-  return (
-    <View pointerEvents="none" style={styles.pkSeatRow}>
-      {order.map((i) => {
-        const g = top[i];
-        return (
-          <View key={i} style={styles.pkSeatWrap}>
-            {g ? (
-              <Image
-                source={{ uri: g.img || STABLE_AVATAR }}
-                style={[styles.pkSeat, { borderColor: SEAT_COL[i], borderWidth: 2 }]}
-              />
-            ) : (
-              <View style={[styles.pkSeat, styles.pkSeatEmpty]}>
-                <MaterialCommunityIcons name="sofa" size={14} color="rgba(214,170,90,0.95)" />
-              </View>
-            )}
-            {!!g && i === 0 && <Text style={styles.pkSeatCrown}>👑</Text>}
-            {!!g && (
-              <View style={[styles.pkSeatNum, { backgroundColor: SEAT_BADGE[i] }]}>
-                <Text style={styles.pkSeatNumTxt}>{i === 0 ? "MVP" : i + 1}</Text>
-              </View>
-            )}
-          </View>
-        );
-      })}
-    </View>
-  );
-});
-
-// Panel shown while a video is not there yet: blurred avatar (no flat black) + spinner.
-const PkWaiting = memo(({ img, loading }: any) => (
-  <View style={styles.pkWaiting}>
-    <Image
-      source={{ uri: img || STABLE_AVATAR }}
-      style={StyleSheet.absoluteFill}
-      blurRadius={Platform.OS === "android" ? 14 : 24}
-    />
-    <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(28,20,70,0.55)" }]} />
-    <ExpoImage source={{ uri: img || STABLE_AVATAR }} style={styles.pkWaitAvatar} cachePolicy="memory-disk" transition={0} />
-    {!!loading && (
-      <>
-        <ActivityIndicator size="small" color="#fff" style={{ marginTop: 10 }} />
-        <Text style={styles.pkWaitTxt}>Connecting...</Text>
-      </>
-    )}
-  </View>
-));
-
-// Scrolling tip under the PK panels (Tiki). Pure native-driver translate = cheap.
-const PkTicker = memo(({ top }: { top: number }) => {
-  const x = useRef(new Animated.Value(0)).current;
-  const boxW = Math.round(width * 0.6);
-  const textW = Math.round(PK_TIPS.length * 6.4);
-  useEffect(() => {
-    x.setValue(boxW);
-    const loop = Animated.loop(
-      Animated.timing(x, { toValue: -textW, duration: (textW + boxW) * 30, easing: Easing.linear, useNativeDriver: true })
-    );
-    loop.start();
-    return () => loop.stop();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return (
-    <View pointerEvents="none" style={[styles.pkTicker, { top, width: boxW, left: Math.round((width - boxW) / 2) }]}>
-      <Animated.Text numberOfLines={1} style={[styles.pkTickerTxt, { width: textW, transform: [{ translateX: x }] }]}>
-        {PK_TIPS}
-      </Animated.Text>
-    </View>
-  );
-});
+import { AGORA_APP_ID, STABLE_AVATAR, isVerified, normTickColor, cleanVerified, JOIN_ANIM_VARIANT, HEARTBEAT_INTERVAL, PK_DURATION_SEC, PK_RESULT_SHOW_MS, PK_INVITE_TTL, PK_UID_OFFSET, PK_FRIEND_MODE, PK_FRIEND_LIMIT, VIDEO_PROFILE, VIDEO_PROFILE_LOW, MAX_GUESTS, GUEST_REQUEST_TTL, GUEST_JOIN_GRACE_MS, GUEST_TILE_W, pkPanelHFixed, PK_BAR_H, MATCH_TIMEOUT_SEC, WELCOME_TEXT, uidToNum, fmtK, FILTERS, RECHARGE_ROUTE, GIFT_WRITE_GAP, width, height } from '../components/videolive/constants';
+import { QUICK_EMOJIS, cleanText, VOICE_ABUSE_REASON, getLevelTheme, warmUpBackend, fetchAgoraToken } from '../components/videolive/helpers';
+import { GiftLayer, giftPendingStore, ChatBoxInput } from '../components/videolive/LiveWidgets';
+import { ComboButton, HeartsLayer, ChatItem, chatKeyExtractor } from '../components/videolive/ComboHearts';
+import { PkTimerPill } from '../components/videolive/PkWidgets';
+import { styles } from '../components/videolive/styles';
+import { db, auth } from '../components/videolive/vlFirebase';
+import { registerTick } from '../components/videolive/tickScheduler';
+import { BackgroundStage, PkPills, GuestTiles, TopHeader, BottomControls } from '../components/videolive/LiveOverlays';
+import { ExitModal, GiftModal, ViewerListModal, RankModal, ProfileCardModal, ChatMenuModal, ReportModal, SettingsModal, SummaryModal, GuestsMenuModals, FilterModal } from '../components/videolive/LiveModals';
+import { PkSheetModal, PkMatchingModal, PkInviteModal } from '../components/videolive/PkModals';
 
 export default function VideoLive() {
   const insets = useSafeAreaInsets();
@@ -2192,7 +107,6 @@ export default function VideoLive() {
   const [myVerifiedColor, setMyVerifiedColor] = useState("white");
   const [profileReady, setProfileReady] = useState(false);
   const [stars, setStars] = useState(0);
-  const [myLevelStars, setMyLevelStars] = useState<number | undefined>(undefined);
   const [myTotalSpent, setMyTotalSpent] = useState(0);   // gift popup level bar
   const [myWalletLevel, setMyWalletLevel] = useState(0);
 
@@ -2456,7 +370,11 @@ export default function VideoLive() {
   // socket chal raha ho to server ki sahi ginti (200 ki limit nahi, purane presence docs nahi); warna audience list
   // FIX: socket ki ginti tab kam aati thi jab kuch viewers ka socket judta nahi (host ko 1 dikhta tha, 8-10 the).
   // Ab socket aur audience list dono me se jo BADI ho wahi dikhegi -> kam nahi dikhega.
-  const viewerCount = socketUp && socketViewers !== null ? Math.max(socketViewers, audienceArray.length) : audienceArray.length;
+  const viewerCount = socketUp && socketViewers !== null
+    ? Math.max(socketViewers, audienceArray.length)
+    : isHost
+    ? audienceArray.length
+    : Math.max(audienceArray.length, Number(roomData?.viewerCount || 0));
   if (viewerCount > peakViewersRef.current) peakViewersRef.current = viewerCount;
 
   // ---------- premium derived values ----------
@@ -2509,7 +427,6 @@ export default function VideoLive() {
       if (snap.exists()) {
         setStars(snap.data()?.stars || 0);
         setMyTotalSpent(snap.data()?.totalSpent || 0);
-        setMyLevelStars(snap.data()?.levelStars);
         setMyWalletLevel(snap.data()?.level || 0);
         // wallet update ho gaya -> in-flight spend ab stars me included hai
         inflightSpendRef.current = 0;
@@ -2618,8 +535,10 @@ export default function VideoLive() {
 
       let core = "";
       try {
-        const { liveGift: _g1, seatStars: _g2, topGifters: _g3, ...coreRest } = restOfRoom;
-        core = JSON.stringify(coreRest);
+        const { liveGift: _g1, seatStars: _g2, topGifters: _g3, pk: _pk, ...coreRest } = restOfRoom;
+        // SMOOTH PK: PK me har gift par pk.score badalta hai (aur loser face ~4x/sec) -> pehle har baar poori
+        // screen turant re-render hoti thi. Ab score/face badlav throttle hote hain; status/pkId jaisi asli badlav turant.
+        core = JSON.stringify(coreRest) + "|" + JSON.stringify(_pk ? { ..._pk, score: 0, face: null } : null);
       } catch (_) {}
       if (!core || core !== coreSig) {
         coreSig = core;
@@ -2632,7 +551,7 @@ export default function VideoLive() {
           throttleTimer = setTimeout(() => {
             throttleTimer = null;
             if (pendingRoom) { const d = pendingRoom; pendingRoom = null; setRoomData(d); }
-          }, 700);
+          }, (data as any)?.pk?.status === "active" ? 350 : 700); // PK me score bar thoda tez (350ms)
         }
       }
 
@@ -2701,9 +620,9 @@ export default function VideoLive() {
       }
     })();
 
-    heartbeatRef.current = setInterval(() => {
+    heartbeatRef.current = registerTick("heartbeat", HEARTBEAT_INTERVAL, () => {
       updateDoc(roomRef, { lastHeartbeat: serverTimestamp() }).catch(() => {});
-    }, HEARTBEAT_INTERVAL);
+    });
 
     // Live reward: host ka time server gintta hai (30s ping)
     const rewardPing = () => {
@@ -2711,11 +630,11 @@ export default function VideoLive() {
       callApi("/reward/live-ping", { roomId, source: "videolive" }).catch(() => {});
     };
     rewardPing();
-    rewardPingRef.current = setInterval(rewardPing, 30000);
+    rewardPingRef.current = registerTick("rewardPing", 30000, rewardPing);
 
     return () => {
-      clearInterval(heartbeatRef.current);
-      clearInterval(rewardPingRef.current);
+      heartbeatRef.current?.();
+      rewardPingRef.current?.();
       // Host leaving → live is really over, take it out of the list.
       updateDoc(roomRef, {
         status: "ended",
@@ -2834,7 +753,9 @@ export default function VideoLive() {
     const audienceQuery = query(
       collection(db, "rooms", roomId, "audience"),
       orderBy("joinedAt", "desc"),
-      limit(200)
+      // COST FIX: har viewer join par 200 reads lagte the (aur har join/leave sabko). Viewer ko 50 kaafi;
+      // sahi count socket / room.viewerCount se aata hai. Host ko poori (200) list.
+      limit(isHost ? 200 : 50)
     );
 
     // First load is instant, then updates are coalesced (max 1 render / 600ms).
@@ -2876,7 +797,7 @@ export default function VideoLive() {
       unsubAudience();
       if (flushTimer) clearTimeout(flushTimer);
     };
-  }, [roomId]);
+  }, [roomId, isHost]);
 
   // ---------- host: publish viewer count (PK list shows it) ----------
   useEffect(() => {
@@ -2885,7 +806,7 @@ export default function VideoLive() {
       // socket chal raha ho to server 15s me ek baar likhta hai (har badlav par nahi => reads bachte hain)
       if (liveSocketRef.current?.isConnected?.()) return;
       updateDoc(doc(db, "rooms", roomId), { viewerCount }).catch(() => {});
-    }, 4000);
+    }, 15000); // COST FIX: 4s -> 15s (har write sabhi viewers ka read hota hai)
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewerCount, roomId, isHost]);
@@ -3057,9 +978,9 @@ export default function VideoLive() {
   useFocusEffect(
     useCallback(() => {
       keepAwakeOn();
-      const t = setInterval(keepAwakeOn, 15000);
+      const t = registerTick("keepAwake", 15000, keepAwakeOn);
       return () => {
-        clearInterval(t);
+        t();
         try {
           deactivateKeepAwake("video-live");
         } catch (_) {}
@@ -3115,6 +1036,9 @@ export default function VideoLive() {
       setOppRoom(null);
       return;
     }
+    let oppCore = "";
+    let oppPendingOd: any = null;
+    let oppTimer: any = null;
     const unsub = onSnapshot(
       doc(db, "rooms", oppRoomId),
       { includeMetadataChanges: true },
@@ -3133,12 +1057,33 @@ export default function VideoLive() {
         } catch (_) {}
         if (osig !== lastOppSigRef.current) {
           lastOppSigRef.current = osig;
-          setOppRoom(od);
+          // SMOOTH PK: sirf score/face badla to 300ms me ek hi baar render; status/pkId badle to turant
+          let core = "null";
+          try {
+            if (od) core = JSON.stringify({ status: od.status, pk: od.pk ? { ...od.pk, score: 0, face: null } : null });
+          } catch (_) {}
+          if (core !== oppCore) {
+            oppCore = core;
+            oppPendingOd = null;
+            if (oppTimer) { clearTimeout(oppTimer); oppTimer = null; }
+            setOppRoom(od);
+          } else {
+            oppPendingOd = od;
+            if (!oppTimer) {
+              oppTimer = setTimeout(() => {
+                oppTimer = null;
+                if (oppPendingOd) { const d = oppPendingOd; oppPendingOd = null; setOppRoom(d); }
+              }, 300);
+            }
+          }
         }
         setOppLoaded(true);
       }
     );
-    return () => unsub();
+    return () => {
+      unsub();
+      if (oppTimer) clearTimeout(oppTimer);
+    };
   }, [oppRoomId]);
 
   // End PK. Natural end → each host writes only its OWN room.
@@ -3329,16 +1274,8 @@ export default function VideoLive() {
     return () => clearTimeout(t);
   }, [isHost, pkInvite?.pkId]);
 
-  // active hosts I could battle (used by the PK sheet and Random Match)
-  // SPEED/READS: ye saare active rooms padhta hai. 4 sec ke andar dobara bulaya to wahi list (force=true par taaza).
-  const pkCandCacheRef = useRef<{ at: number; list: any[] } | null>(null);
-  const fetchPkCandidates = async (includeBusy = false, force = false) => {
-    if (!db) return [];
-    const cached = pkCandCacheRef.current;
-    if (!force && cached && Date.now() - cached.at < 4000) {
-      return includeBusy ? cached.list : cached.list.filter((c: any) => !c.busy);
-    }
-    const snap = await getDocs(query(collection(db, "rooms"), where("status", "==", "active")));
+  // rooms snapshot -> PK candidate list (online = free, busy = "In PK" / "Voice room")
+  const buildPkCandidates = (snap: any) => {
     const now = Date.now();
     const list: any[] = [];
     snap.forEach((d) => {
@@ -3347,7 +1284,9 @@ export default function VideoLive() {
       if (!x?.hostId || x.hostId === currentUid) return;
       if (blockedRef.current.has(x.hostId)) return; // BLOCK: PK list me blocked host nahi
       const hb = x.lastHeartbeat?.toMillis?.() || 0;
-      if (!hb || now - hb > 45000) return; // not really live anymore
+      // FIX: host heartbeat ab 60s par likhta hai (HEARTBEAT_INTERVAL), to 45s ka filter har minute me
+      // ~15s ke liye live host ko list se gayab kar deta tha. 2.5 x heartbeat = 150s.
+      if (!hb || now - hb > 150000) return; // not really live anymore
       // voice rooms can't PK / already in a PK or has a pending invite
       const busy = x.seatsData ? "Voice room" : x.pk || x.pkInvite ? "In PK" : "";
       list.push({
@@ -3361,6 +1300,21 @@ export default function VideoLive() {
         stars: Number(x.seatStars?.[x.hostId] || 0),
       });
     });
+    return list;
+  };
+
+  // active hosts I could battle (used by the PK sheet and Random Match)
+  // SPEED/READS: ye saare active rooms padhta hai. 4 sec ke andar dobara bulaya to wahi list (force=true par taaza).
+  const pkCandCacheRef = useRef<{ at: number; list: any[] } | null>(null);
+  const fetchPkCandidates = async (includeBusy = false, force = false) => {
+    if (!db) return [];
+    const cached = pkCandCacheRef.current;
+    // READS SAVER: random match har 3s poochta hai; list 10s tak same rakho (pehle 4s)
+    if (!force && cached && Date.now() - cached.at < 10000) {
+      return includeBusy ? cached.list : cached.list.filter((c: any) => !c.busy);
+    }
+    const snap = await getDocs(query(collection(db, "rooms"), where("status", "==", "active")));
+    const list = buildPkCandidates(snap);
     pkCandCacheRef.current = { at: Date.now(), list };
     return includeBusy ? list : list.filter((c: any) => !c.busy);
   };
@@ -3380,19 +1334,26 @@ export default function VideoLive() {
   // my friends for the PK sheet (profiles cached for the session)
   // friendIdSet holds EVERY friend uid, so a friend who is live is always shown
   // (live rows come from the rooms query, they don't need a profile read).
-  const loadFriends = async () => {
+  const friendsLoadedAtRef = useRef(0);
+  const loadFriends = async (force = false) => {
     if (!db || !currentUid) return;
+    // SPEED/COST: friends list 5 min tak cache (sheet baar baar kholne par dobara reads nahi)
+    if (!force && friendsLoadedAtRef.current && Date.now() - friendsLoadedAtRef.current < 300000) return;
     try {
-      const fSnap = await getDocs(query(collection(db, "users", currentUid, "following"), limit(300)));
+      const needFollowers = PK_FRIEND_MODE === "mutual" || PK_FRIEND_MODE === "either";
+      // SPEED: following + followers ek saath (pehle ek ke baad ek)
+      const [fSnap, rSnap] = await Promise.all([
+        getDocs(query(collection(db, "users", currentUid, "following"), limit(300))),
+        needFollowers ? getDocs(query(collection(db, "users", currentUid, "followers"), limit(300))) : Promise.resolve(null as any),
+      ]);
       const following = new Set<string>();
-      fSnap.forEach((d) => following.add(d.id));
+      fSnap.forEach((d: any) => following.add(d.id));
       setFollowingIds(following);
 
       let ids: string[] = Array.from(following);
-      if (PK_FRIEND_MODE === "mutual" || PK_FRIEND_MODE === "either") {
-        const rSnap = await getDocs(query(collection(db, "users", currentUid, "followers"), limit(300)));
+      if (rSnap) {
         const followers = new Set<string>();
-        rSnap.forEach((d) => followers.add(d.id));
+        rSnap.forEach((d: any) => followers.add(d.id));
         ids =
           PK_FRIEND_MODE === "mutual"
             ? ids.filter((id) => followers.has(id))
@@ -3400,55 +1361,99 @@ export default function VideoLive() {
       }
       ids = ids.filter((id) => id !== currentUid && !blockedRef.current.has(id));
       setFriendIdSet(new Set(ids));
+      friendsLoadedAtRef.current = Date.now();
 
-      // profiles (for the OFFLINE rows) only for the first PK_FRIEND_LIMIT
-      const list = await Promise.all(
-        ids.slice(0, PK_FRIEND_LIMIT).map(async (uid) => {
-          if (friendProfilesRef.current[uid]) return friendProfilesRef.current[uid];
-          let prof: any = { uid, name: "User", img: STABLE_AVATAR };
-          try {
-            const sn = await getDoc(doc(db, "users", uid));
-            if (sn.exists()) {
-              const u: any = sn.data();
-              prof = { uid, name: u.username || u.name || "User", img: u.profileImg || u.photoURL || STABLE_AVATAR };
-            }
-          } catch (e) {}
-          friendProfilesRef.current[uid] = prof;
-          return prof;
-        })
-      );
-      setFriendsList(list);
+      const top = ids.slice(0, PK_FRIEND_LIMIT);
+      // SPEED: jinke profile pehle se cache me hain wo turant dikhao, baaki baad me
+      const cachedNow = top.filter((uid) => friendProfilesRef.current[uid]).map((uid) => friendProfilesRef.current[uid]);
+      if (cachedNow.length) setFriendsList(cachedNow);
+
+      const missing = top.filter((uid) => !friendProfilesRef.current[uid]);
+      if (missing.length) {
+        await Promise.all(
+          missing.map(async (uid) => {
+            let prof: any = { uid, name: "User", img: STABLE_AVATAR };
+            try {
+              const sn = await getDoc(doc(db, "users", uid));
+              if (sn.exists()) {
+                const u: any = sn.data();
+                prof = { uid, name: u.username || u.name || "User", img: u.profileImg || u.photoURL || STABLE_AVATAR };
+              }
+            } catch (e) {}
+            friendProfilesRef.current[uid] = prof;
+          })
+        );
+      }
+      setFriendsList(top.map((uid) => friendProfilesRef.current[uid]).filter(Boolean));
     } catch (e) {
+      friendsLoadedAtRef.current = 0;
       __DEV__ && console.log("FRIENDS LOAD ERROR:", e);
     }
   };
 
-  const openPkList = async () => {
+  const openPkList = () => {
     if (!db) return;
-    warmUpBackend(); // wake the token server now so the opponent video loads fast
+    // SPEED: sheet TURANT khulti hai; list cache se foran dikhti hai, fresh data live listener se aata hai
     setPkListVisible(true);
-    setPkLoading(true);
-    loadFriends();
-    try {
-      setPkCandidates(await fetchPkCandidates(true, true));
-    } catch (e) {
-      __DEV__ && console.log("PK LIST ERROR:", e);
+    const cached = pkCandCacheRef.current;
+    if (cached?.list?.length) {
+      setPkCandidates(cached.list);
+      setPkLoading(false);
+    } else {
+      setPkLoading(true);
     }
-    setPkLoading(false);
+    loadFriends();
+    warmUpBackend(); // wake the token server now so the opponent video loads fast
   };
 
-  // PK sheet open → refresh live list every 8s so a friend who just went live shows up
-  // (app background me ho to poll nahi - bekaar reads)
+  // Room pehle smooth khule (camera + live start) — uske BAAD hi friends + live list chupke se load hoti hai,
+  // taaki PK icon dabate hi sab data turant dikhe. Room khulte waqt koi extra kaam nahi.
   useEffect(() => {
-    if (!pkListVisible || !isHost) return;
+    if (!isHost || !db || !roomId || !currentUid || !agoraReady || !localReady) return;
     let stop = false;
-    const i = setInterval(async () => {
+    let t2: any = null;
+    const t1 = setTimeout(() => {
+      InteractionManager.runAfterInteractions(() => {
+        if (stop) return;
+        loadFriends();
+        // list alag se thodi der baad, dono ek saath na chalein (jank nahi)
+        t2 = setTimeout(() => {
+          if (!stop) fetchPkCandidates(true, false).catch(() => {});
+        }, 1500);
+      });
+    }, 5000);
+    return () => {
+      stop = true;
+      clearTimeout(t1);
+      if (t2) clearTimeout(t2);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHost, roomId, currentUid, agoraReady, localReady]);
+
+  // PK sheet open → list cache se turant; cache 20s se purani ho to ek baar refresh, phir har 30s.
+  // COST FIX: live listener har room ka har badlav (likes/gifts/heartbeat) padhta tha = bahut reads.
+  // Polling sasta hai; invite bhejte waqt wo host ek baar aur check hota hai (sendPkInvite), isliye galat invite nahi jata.
+  useEffect(() => {
+    if (!pkListVisible || !isHost || !db) return;
+    let stop = false;
+    let lastSig = "";
+    const refresh = async () => {
       if (AppState.currentState !== "active") return;
       try {
         const l = await fetchPkCandidates(true, true);
-        if (!stop) setPkCandidates(l);
+        if (stop) return;
+        const sig = l.map((c: any) => `${c.id}:${c.busy}:${c.viewers}`).join("|");
+        if (sig !== lastSig) {
+          lastSig = sig;
+          setPkCandidates(l);
+        }
       } catch (e) {}
-    }, 8000);
+      if (!stop) setPkLoading(false);
+    };
+    const cached = pkCandCacheRef.current;
+    if (!cached || Date.now() - cached.at > 20000) refresh();
+    else setPkLoading(false);
+    const i = setInterval(refresh, 30000);
     return () => {
       stop = true;
       clearInterval(i);
@@ -4092,7 +2097,7 @@ export default function VideoLive() {
   const lastProfileSwitchRef = useRef(0);
   useEffect(() => {
     if (!isHost || !agoraReady) return;
-    const t = setInterval(() => {
+    const t = registerTick("autoProfile", 5000, () => {
       const engine = agoraEngineRef.current;
       const q = netQualityRef.current;
       if (!engine || !q) return;
@@ -4111,8 +2116,8 @@ export default function VideoLive() {
       } catch (e) {
         __DEV__ && console.log("AUTO PROFILE ERROR:", e);
       }
-    }, 5000);
-    return () => clearInterval(t);
+    });
+    return () => t();
   }, [isHost, agoraReady]);
 
   // SMOOTH PK: PK me viewers ko aadha panel dikhta hai + host 2 video decode karta hai ->
@@ -4153,9 +2158,9 @@ export default function VideoLive() {
       setFace(true);
       offTimer = setTimeout(() => setFace(false), 6000);
     };
-    const iv = setInterval(cycle, 30000);
+    const iv = registerTick("faceCycle", 30000, cycle);
     offTimer = setTimeout(() => setFace(false), 6000); // pehle 6s ke baad band
-    return () => { clearInterval(iv); if (offTimer) clearTimeout(offTimer); };
+    return () => { iv(); if (offTimer) clearTimeout(offTimer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHost, agoraReady, pkEnded]);
 
@@ -4314,7 +2319,7 @@ export default function VideoLive() {
     if (!isHost || !roomId || !db) return;
     const NO_FACE_LIMIT_MS = 5 * 60 * 1000;
     const WARN_AT_MS = 4 * 60 * 1000;
-    const iv = setInterval(() => {
+    const iv = registerTick("noFaceBan", 10000, () => {
       if (!faceCheckOnRef.current || faceBanFiredRef.current) return;
       const idle = Date.now() - lastFaceAtRef.current;
       if (idle < WARN_AT_MS) {
@@ -4341,8 +2346,8 @@ export default function VideoLive() {
       callApi("/live/auto-video-ban", { roomId }).catch(() => {
         try { router.replace("/"); } catch (_) {}
       });
-    }, 10000);
-    return () => clearInterval(iv);
+    });
+    return () => iv();
   }, [isHost, roomId]);
 
   const confirmExit = () => {
@@ -4354,7 +2359,7 @@ export default function VideoLive() {
         .filter((g: any) => g && Number(g.stars) > 0)
         .sort((a: any, b: any) => Number(b.stars) - Number(a.stars))
         .slice(0, 3);
-      clearInterval(heartbeatRef.current);
+      heartbeatRef.current?.();
       setSummary({
         durationMs: Date.now() - (roomStartTime || Date.now()),
         peak: Math.max(peakViewersRef.current, viewerCount),
@@ -4655,7 +2660,7 @@ export default function VideoLive() {
   // host: a guest who crashed / lost network never leaves by himself → free the seat
   useEffect(() => {
     if (!isHost || !db || !roomId) return;
-    const t = setInterval(() => {
+    const t = registerTick("guestGhosts", 6000, () => {
       const guests = roomDataRef.current?.guests || {};
       Object.values(guests).forEach((g: any) => {
         if (!g?.uid) return;
@@ -4665,8 +2670,8 @@ export default function VideoLive() {
           updateDoc(doc(db, "rooms", roomId), { [`guests.${g.uid}`]: deleteField() }).catch(() => {});
         }
       });
-    }, 6000);
-    return () => clearInterval(t);
+    });
+    return () => t();
   }, [isHost, roomId]);
 
   // PK shuru hote hi call par baithe sabhi guests hata do (aur pending requests bhi saaf).
@@ -5679,13 +3684,6 @@ export default function VideoLive() {
     ? [
         { key: "flip", label: "Flip", icon: <Ionicons name="camera-reverse-outline" size={24} color="#fff" />, onPress: flipCamera },
         {
-          key: "beauty",
-          label: "Beauty",
-          active: filterId !== "off",
-          icon: <MaterialCommunityIcons name="face-woman-shimmer-outline" size={24} color="#fff" />,
-          onPress: () => setFilterModalVisible(true),
-        },
-        {
           key: "mic",
           label: micMuted ? "Unmute" : "Mute",
           active: micMuted,
@@ -5752,28 +3750,37 @@ export default function VideoLive() {
         },
       ];
 
-  const liveByHost = new Map<string, any>(pkCandidates.map((c: any) => [c.hostId, c]));
-  const friendRank = (r: any) => (r.offline ? 2 : r.busy ? 1 : 0);
-  // 1) every friend who is live right now (even if not in the first PK_FRIEND_LIMIT profiles)
-  const liveFriendRows = pkCandidates.filter((c: any) => friendIdSet.has(c.hostId));
-  // 2) friends who are not live
-  const offlineFriendRows = friendsList
-    .filter((f: any) => !liveByHost.has(f.uid))
-    .map((f: any) => ({
-      id: `off_${f.uid}`,
-      hostId: f.uid,
-      name: f.name,
-      img: f.img,
-      offline: true,
-      viewers: 0,
-      stars: 0,
-    }));
-  const pkFriendRows = [...liveFriendRows, ...offlineFriendRows].sort((x: any, y: any) => friendRank(x) - friendRank(y));
-  const pkFriendsLive = pkFriendRows.filter((r: any) => !r.offline && !r.busy).length;
-  const pkRecommended = pkCandidates
-    .filter((c: any) => !c.busy && !friendIdSet.has(c.hostId))
-    .slice()
-    .sort((a: any, b: any) => b.viewers - a.viewers);
+  // SMOOTH: PK list ke rows (map + sort) pehle HAR render par ban rahe the, sheet band ho tab bhi.
+  // Ab sirf jab sheet khuli ho aur data badle tab (useMemo).
+  const pkRows = React.useMemo(() => {
+    if (!pkListVisible) return { friendRows: [] as any[], friendsLive: 0, recommended: [] as any[] };
+    const liveByHost = new Map<string, any>(pkCandidates.map((c: any) => [c.hostId, c]));
+    const friendRank = (r: any) => (r.offline ? 2 : r.busy ? 1 : 0);
+    // 1) every friend who is live right now (even if not in the first PK_FRIEND_LIMIT profiles)
+    const liveFriendRows = pkCandidates.filter((c: any) => friendIdSet.has(c.hostId));
+    // 2) friends who are not live
+    const offlineFriendRows = friendsList
+      .filter((f: any) => !liveByHost.has(f.uid))
+      .map((f: any) => ({
+        id: `off_${f.uid}`,
+        hostId: f.uid,
+        name: f.name,
+        img: f.img,
+        offline: true,
+        viewers: 0,
+        stars: 0,
+      }));
+    const friendRows = [...liveFriendRows, ...offlineFriendRows].sort((x: any, y: any) => friendRank(x) - friendRank(y));
+    const friendsLive = friendRows.filter((r: any) => !r.offline && !r.busy).length;
+    const recommended = pkCandidates
+      .filter((c: any) => !c.busy && !friendIdSet.has(c.hostId))
+      .slice()
+      .sort((a: any, b: any) => b.viewers - a.viewers);
+    return { friendRows, friendsLive, recommended };
+  }, [pkListVisible, pkCandidates, friendsList, friendIdSet]);
+  const pkFriendRows = pkRows.friendRows;
+  const pkFriendsLive = pkRows.friendsLive;
+  const pkRecommended = pkRows.recommended;
 
   const renderPkRow = (item: any) => {
     const off = !!item.offline;
@@ -5791,8 +3798,13 @@ export default function VideoLive() {
           </Text>
           {off ? (
             <Text style={[styles.pkListStat, { marginLeft: 0, marginTop: 3 }]}>Offline</Text>
+          ) : busy ? (
+            <Text style={[styles.pkListStat, { marginLeft: 0, marginTop: 3, color: "#FF8A4C" }]}>
+              {item.busy === "In PK" ? "Playing PK" : item.busy}
+            </Text>
           ) : (
             <View style={{ flexDirection: "row", alignItems: "center", marginTop: 3 }}>
+              <Text style={[styles.pkListStat, { marginLeft: 0, marginRight: 10, color: "#2ee6a6", fontWeight: "700" }]}>Online</Text>
               <Ionicons name="people" size={11} color="#9aa0b4" />
               <Text style={styles.pkListStat}>{fmtK(item.viewers)}</Text>
               <Ionicons name="star" size={11} color="#FFC107" style={{ marginLeft: 12 }} />
@@ -5809,7 +3821,7 @@ export default function VideoLive() {
             numberOfLines={1}
             style={[styles.inviteYellowTxt, !canInvite && { color: "#9aa0b4", fontSize: 11 }]}
           >
-            {off ? "Offline" : busy ? item.busy : "Invite"}
+            {off ? "Offline" : busy ? (item.busy === "In PK" ? "Off" : item.busy) : "Invite"}
           </Text>
         </TouchableOpacity>
       </View>
@@ -5859,154 +3871,7 @@ export default function VideoLive() {
     <View style={styles.container}>
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
 
-      {/* ================= BACKGROUND VIDEO / PK STAGE ================= */}
-      {!showPk ? (
-        <>
-          {mainVideoArea()}
-          {isHost && videoOff && pausedOverlay("Your video is paused", StyleSheet.absoluteFill)}
-          {!isHost && hostVideoOff && pausedOverlay("Host paused the video", StyleSheet.absoluteFill)}
-        </>
-      ) : (
-        <>
-          {/* Tiki background: navy -> purple gradient (no flat black) */}
-          <LinearGradient
-            colors={["#0F0D33", "#1A1450", "#2C2168", "#3B2B7D"]}
-            locations={[0, 0.35, 0.7, 1]}
-            style={StyleSheet.absoluteFill}
-          />
-          <LinearGradient
-            pointerEvents="none"
-            colors={["rgba(40,110,255,0.38)", "rgba(40,110,255,0)"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={{ position: "absolute", top: 0, left: 0, width: width * 0.7, height: 230 }}
-          />
-          <LinearGradient
-            pointerEvents="none"
-            colors={["rgba(255,45,117,0.32)", "rgba(255,45,117,0)"]}
-            start={{ x: 1, y: 0 }}
-            end={{ x: 0, y: 1 }}
-            style={{ position: "absolute", top: 0, right: 0, width: width * 0.7, height: 230 }}
-          />
-
-          {/* score bar: BLUE (me) | PINK (opponent) */}
-          <View style={[styles.pkBarWrap, { top: pkBarTop }]}>
-            <View style={styles.pkBar}>
-              <Animated.View
-                style={{
-                  ...StyleSheet.absoluteFillObject,
-                  backgroundColor: "#1E8CFF",
-                  transform: [{ translateX: pkBarAnim.interpolate({ inputRange: [0, 100], outputRange: [-width, 0] }) }],
-                }}
-              />
-            </View>
-            <Animated.View
-              pointerEvents="none"
-              style={[
-                styles.pkSpark,
-                { left: 0, transform: [{ translateX: pkBarAnim.interpolate({ inputRange: [0, 100], outputRange: [0, width] }) }] },
-              ]}
-            >
-              <View style={styles.pkSparkGlow} />
-            </Animated.View>
-            <View pointerEvents="none" style={[styles.pkScoreWrap, { left: 4 }]}>
-              <View style={styles.pkStarBox}>
-                <Ionicons name="star" size={11} color="#1E8CFF" />
-              </View>
-              <Text style={styles.pkScoreTxt}>{shownMy}</Text>
-            </View>
-            <View pointerEvents="none" style={[styles.pkScoreWrap, { right: 4 }]}>
-              <Text style={styles.pkScoreTxt}>{shownOpp}</Text>
-              <View style={styles.pkStarBox}>
-                <Ionicons name="star" size={11} color="#FF2D75" />
-              </View>
-            </View>
-          </View>
-
-          {/* two video panels */}
-          <View style={[styles.pkPanels, { top: pkPanelTop, height: pkPanelH }]}>
-            {/* LEFT = this room's host */}
-            <View style={{ width: pkPanelW, height: pkPanelH, backgroundColor: "#1B1545" }}>
-              {showLocalVideo ? (
-                <RtcSurfaceView style={{ flex: 1 }} canvas={{ uid: 0 }} />
-              ) : showRemoteVideo ? (
-                <RtcSurfaceView style={{ flex: 1 }} canvas={{ uid: hostRemoteUid as number }} />
-              ) : (
-                <PkWaiting img={hostImg} />
-              )}
-              {(isHost ? videoOff : hostVideoOff) && pausedOverlay("Video paused", StyleSheet.absoluteFill, false)}
-                            {pkEnded && !!myResult && <PkPanelResult key={`res_me_${pk?.pkId}`} result={myResult} endedAt={pk?.endedAt} />}
-              {pkEnded && myResult === "lose" && <PkLoserPunish key={`pun_me_${pk?.pkId}`} panelW={pkPanelW} panelH={pkPanelH} face={pk?.face} mirror={isHost && camFrontRef.current} />}
-              <PkSeats gifters={pk?.gifters} mirror />
-            </View>
-
-            {/* RIGHT = opponent host (their channel) */}
-            <View style={{ width: pkPanelW, height: pkPanelH, backgroundColor: "#1B1545" }}>
-              {oppRemoteUid && pkConn ? (
-                <RtcSurfaceView style={{ flex: 1 }} canvas={{ uid: oppRemoteUid }} connection={pkConn} />
-              ) : (
-                <PkWaiting img={pk?.opponentImg} loading={pkActive} />
-              )}
-              {pkEnded && !!myResult && <PkPanelResult key={`res_opp_${pk?.pkId}`} result={oppResult} endedAt={pk?.endedAt} />}
-              {pkEnded && oppResult === "lose" && <PkLoserPunish key={`pun_opp_${pk?.pkId}`} panelW={pkPanelW} panelH={pkPanelH} face={oppRoom?.pk?.face} mirror={false} />}
-              <PkSeats gifters={oppRoom?.pk?.gifters} />
-            </View>
-
-            {/* viewer ki side: glow border (native-driven, smooth) + hint doosri side par */}
-            {!isHost && pkActive && !!pk?.opponentHostId && (
-              <>
-                <Animated.View
-                  pointerEvents="none"
-                  style={[
-                    styles.pkSideGlow,
-                    { left: 0, width: pkPanelW, height: pkPanelH, borderColor: "#1E8CFF", opacity: pkSideAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) },
-                  ]}
-                />
-                <Animated.View
-                  pointerEvents="none"
-                  style={[
-                    styles.pkSideGlow,
-                    { left: pkPanelW, width: pkPanelW, height: pkPanelH, borderColor: "#FF2D75", opacity: pkSideAnim },
-                  ]}
-                />
-                <Animated.View
-                  pointerEvents="none"
-                  style={[styles.pkSideHint, { left: 0, width: pkPanelW, opacity: pkSideAnim }]}
-                >
-                  <Text style={styles.pkSideHintTxt}>Tap to join & support</Text>
-                </Animated.View>
-                <Animated.View
-                  pointerEvents="none"
-                  style={[
-                    styles.pkSideHint,
-                    { left: pkPanelW, width: pkPanelW, opacity: pkSideAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) },
-                  ]}
-                >
-                  <Text style={styles.pkSideHintTxt}>Tap to join & support</Text>
-                </Animated.View>
-              </>
-            )}
-
-            {/* gloves + lightning in the middle */}
-            {pkActive && Date.now() - (pk?.startAt || 0) < 3500 && <PkGlovesVs key={`vs_${pk?.pkId}`} startAt={pk?.startAt} />}
-
-            {/* big trophy in the middle right after the PK ends */}
-            {pkEnded && !!myResult && <PkCenterTrophy key={`ct_${pk?.pkId}`} result={myResult} endedAt={pk?.endedAt} />}
-
-            {/* countdown (own component → no whole-screen re-render) */}
-            {pkActive && !!pk?.endAt && <PkTimerPill key={`timer_${pk?.pkId}`} endAt={pk.endAt} />}
-            {/* last 10 seconds: big 10 9 8 ... 1 */}
-            {pkActive && !!pk?.endAt && <PkFinalCountdown key={`fcd_${pk?.pkId}`} endAt={pk.endAt} />}
-            {/* after the PK: "00:09" result countdown (Tiki) */}
-            {pkEnded && !!pk?.endedAt && (
-              <PkTimerPill key={`rtimer_${pk?.pkId}`} endAt={Number(pk.endedAt) + PK_RESULT_SHOW_MS} result />
-            )}
-          </View>
-
-          {/* scrolling tip under the panels */}
-          <PkTicker top={pkPanelTop + pkPanelH + 8} />
-        </>
-      )}
+      <BackgroundStage camFrontRef={camFrontRef} hostImg={hostImg} hostRemoteUid={hostRemoteUid} hostVideoOff={hostVideoOff} isHost={isHost} mainVideoArea={mainVideoArea} myResult={myResult} oppRemoteUid={oppRemoteUid} oppResult={oppResult} oppRoom={oppRoom} pausedOverlay={pausedOverlay} pk={pk} pkActive={pkActive} pkBarAnim={pkBarAnim} pkBarTop={pkBarTop} pkConn={pkConn} pkEnded={pkEnded} pkPanelH={pkPanelH} pkPanelTop={pkPanelTop} pkPanelW={pkPanelW} pkSideAnim={pkSideAnim} showLocalVideo={showLocalVideo} showPk={showPk} showRemoteVideo={showRemoteVideo} shownMy={shownMy} shownOpp={shownOpp} videoOff={videoOff} />
 
       {/* tap anywhere on the video = send a heart */}
       <View style={StyleSheet.absoluteFill} {...liveSwipe.panHandlers}>
@@ -6026,64 +3891,7 @@ export default function VideoLive() {
         </TouchableOpacity>
       )}
 
-      {/* PK: name pills + follow / Friend + mute -> tap overlay ke UPAR (warna tap nahi pakadte) */}
-      {showPk && (
-        <View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, top: pkPanelTop, height: pkPanelH, flexDirection: "row" }}>
-          <View pointerEvents="box-none" style={{ width: pkPanelW, height: pkPanelH }}>
-              {/* left host name + follow "+" / Friend (viewers + opponent host dekh sakte hain) */}
-              {!!hostId && (
-                <View style={[styles.pkOppPill, { right: undefined, left: 6, paddingLeft: 9, paddingRight: hostId === currentUid ? 9 : 3 }]}>
-                  <Text numberOfLines={1} style={styles.pkOppName}>
-                    {hostName}
-                  </Text>
-                  {hostId !== currentUid && (iFollowId(hostId) ? (
-                    <View style={[styles.pkFriendTag, !isFriendId(hostId) && styles.pkFollowingTag]}>
-                      <Ionicons name={isFriendId(hostId) ? "people" : "checkmark"} size={9} color="#fff" />
-                      <Text style={styles.pkFriendTxt}>{isFriendId(hostId) ? "Friend" : "Following"}</Text>
-                    </View>
-                  ) : (
-                    <TouchableOpacity
-                      style={styles.pkOppPlus}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      onPress={() => followGuest({ uid: hostId, name: hostName, img: hostImg })}
-                    >
-                      <Ionicons name="add" size={13} color="#111" />
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              )}
-          </View>
-          <View pointerEvents="box-none" style={{ width: pkPanelW, height: pkPanelH }}>
-                            {pkActive && !!oppRemoteUid && (
-                <TouchableOpacity style={styles.pkMuteBtn} onPress={toggleOppMute} activeOpacity={0.8}>
-                  <Ionicons name={oppMuted ? "volume-mute" : "volume-high"} size={14} color="#fff" />
-                </TouchableOpacity>
-              )}
-              {/* opponent name + yellow follow "+" (top-right, like Tiki) */}
-              <View style={styles.pkOppPill}>
-                <Text numberOfLines={1} style={styles.pkOppName}>
-                  {pk?.opponentName || "Opponent"}
-                </Text>
-                {!!pk?.opponentHostId && pk.opponentHostId !== currentUid && (
-                  iFollowId(pk.opponentHostId) ? (
-                    <View style={[styles.pkFriendTag, !isFriendId(pk.opponentHostId) && styles.pkFollowingTag]}>
-                      <Ionicons name={isFriendId(pk.opponentHostId) ? "people" : "checkmark"} size={9} color="#fff" />
-                      <Text style={styles.pkFriendTxt}>{isFriendId(pk.opponentHostId) ? "Friend" : "Following"}</Text>
-                    </View>
-                  ) : (
-                    <TouchableOpacity
-                      style={styles.pkOppPlus}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      onPress={() => followGuest({ uid: pk.opponentHostId, name: pk.opponentName, img: pk.opponentImg })}
-                    >
-                      <Ionicons name="add" size={13} color="#111" />
-                    </TouchableOpacity>
-                  )
-                )}
-              </View>
-          </View>
-        </View>
-      )}
+      <PkPills currentUid={currentUid} followGuest={followGuest} hostId={hostId} hostImg={hostImg} hostName={hostName} iFollowId={iFollowId} isFriendId={isFriendId} oppMuted={oppMuted} oppRemoteUid={oppRemoteUid} pk={pk} pkActive={pkActive} pkPanelH={pkPanelH} pkPanelTop={pkPanelTop} pkPanelW={pkPanelW} showPk={showPk} toggleOppMute={toggleOppMute} />
 
       {/* soft top/bottom scrims so the white text stays readable */}
       {!showPk && (
@@ -6093,161 +3901,9 @@ export default function VideoLive() {
         </>
       )}
 
-      {/* ================= GUEST TILES (viewers on the call with the host) ================= */}
-      {!showPk && guestList.length > 0 && (
-        <View
-          pointerEvents="box-none"
-          style={[
-            styles.guestColumn,
-            // TopKing Event button (bottom+62, ~58px height) ke thik upar se guests niche se start hon
-            { bottom: (Platform.OS === "android" ? insets.bottom + 8 : insets.bottom) + 62 + 60 + 40 },
-          ]}
-        >
-          {guestList.map((g: any) => {
-            const isMe = g.uid === currentUid;
-            const aid = Number(g.agoraUid || 0);
-            const videoOn = isMe ? guestCamOn && guestPublishingRef.current : !!aid && remoteVideoOn[aid] === true;
-            const micOff = isMe ? hostMutedMe || !guestMicOn : !!g.hostMuted;
-            const followed = followingIds.has(g.uid) || guestFollowed.has(g.uid) || (g.uid === hostId && isFollowing);
-            return (
-              <TouchableOpacity
-                key={g.uid}
-                activeOpacity={0.9}
-                onPress={() => onGuestTilePress(g)}
-                style={styles.guestTile}
-              >
-                {videoOn ? (
-                  <RtcSurfaceView
-                    style={StyleSheet.absoluteFill}
-                    canvas={{ uid: isMe ? 0 : aid }}
-                    zOrderMediaOverlay
-                  />
-                ) : (
-                  <View style={styles.guestAvaWrap}>
-                    <View style={styles.guestAvaRing}>
-                      <ExpoImage source={{ uri: g.img || STABLE_AVATAR }} style={styles.guestAva} cachePolicy="memory-disk" transition={0} />
-                    </View>
-                  </View>
-                )}
-                {micOff && (
-                  <View style={styles.guestMicOff}>
-                    <Ionicons name="mic-off" size={11} color="#fff" />
-                  </View>
-                )}
-                <View style={styles.guestNameRow}>
-                  <Text numberOfLines={1} style={styles.guestNameTxt}>
-                    {isMe ? "You" : g.name || "Guest"}
-                  </Text>
-                  <UserTick uid={g.uid} verified={isMe ? !!myVerified : !!g.verified} verifiedColor={isMe ? myVerifiedColor : g.verifiedColor} size={12} />
-                  {!isMe && !isHost && !followed && (
-                    <TouchableOpacity
-                      style={styles.guestPlus}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      onPress={() => followGuest(g)}
-                    >
-                      <Ionicons name="add" size={14} color="#111" />
-                    </TouchableOpacity>
-                  )}
-                </View>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      )}
+      <GuestTiles currentUid={currentUid} followGuest={followGuest} followingIds={followingIds} guestCamOn={guestCamOn} guestFollowed={guestFollowed} guestList={guestList} guestMicOn={guestMicOn} guestPublishingRef={guestPublishingRef} hostId={hostId} hostMutedMe={hostMutedMe} insets={insets} isFollowing={isFollowing} isHost={isHost} myVerified={myVerified} myVerifiedColor={myVerifiedColor} onGuestTilePress={onGuestTilePress} remoteVideoOn={remoteVideoOn} showPk={showPk} />
 
-      {/* ================= TOP HEADER ================= */}
-      <View style={[styles.topHeader, { top: safeTop + 12 }]} pointerEvents="box-none">
-        <View style={styles.topRow}>
-          <View style={styles.hostPill}>
-            <TouchableOpacity activeOpacity={0.85} onPress={openHostCard} style={styles.hostAvatarContainer}>
-              <ExpoImage source={{ uri: hostImg }} style={styles.hostAvatarImg} cachePolicy="memory-disk" transition={0} />
-              {(hostLevel >= 10 || !!hostId) && (
-                <LevelFrame level={hostLevel} uid={hostId} lookup={false} animated={false} style={styles.hostLevelFrame} />
-              )}
-            </TouchableOpacity>
-
-            <View style={{ marginLeft: 8, flexShrink: 1 }}>
-              <View style={styles.nameRow}>
-                <Text style={styles.hostNameText} numberOfLines={1}>
-                  {hostName}
-                </Text>
-                <UserTick uid={hostId} verified={!!hostVerified} verifiedColor={hostVerifiedColor} size={14} />
-              </View>
-              <View style={{ flexDirection: "row", alignItems: "center" }}>
-                <Ionicons name="star" size={11} color="#FFE600" />
-                <Text style={[styles.starsText, { color: "#fff", marginLeft: 3 }]}>{hostStars}</Text>
-              </View>
-            </View>
-
-            {!isHost && !!hostId && hostId !== currentUid && !isFollowing && (
-              <TouchableOpacity onPress={toggleFollowHost} disabled={followBusy} style={styles.followPlus}>
-                <Ionicons name="add" size={18} color="#000" />
-              </TouchableOpacity>
-            )}
-          </View>
-
-          <View style={styles.rightGroup}>
-            <View style={styles.topStack}>
-              {headerFive.map((u: any, i: number) => (
-                <TouchableOpacity
-                  key={u.uid}
-                  activeOpacity={0.8}
-                  style={styles.topChip}
-                  onPress={() =>
-                    setProfileCard({
-                      uid: u.uid,
-                      name: u.name || u.username,
-                      username: u.username,
-                      img: u.img,
-                      level: u.level,
-                      verified: u.verified,
-                      verifiedColor: u.verifiedColor,
-                    })
-                  }
-                >
-                  <Image
-                    source={{ uri: u.img || STABLE_AVATAR }}
-                    style={[styles.topChipAva, { borderColor: u.isGifter && i < 3 ? SEAT_COL[i] : "#fff" }]}
-                  />
-                  {u.isGifter && i < 3 && (
-                    <>
-                      {i === 0 && <Text style={styles.topChipCrown}>👑</Text>}
-                      <View style={[styles.topChipTag, { backgroundColor: SEAT_BADGE[i] }]}>
-                        <Text style={styles.topChipTagTxt}>TOP{i + 1}</Text>
-                      </View>
-                    </>
-                  )}
-                </TouchableOpacity>
-              ))}
-              <TouchableOpacity activeOpacity={0.8} style={styles.viewerCountCircle} onPress={() => setViewerListVisible(true)}>
-                <Text style={styles.viewerStackCount}>{viewerCount}</Text>
-              </TouchableOpacity>
-            </View>
-            <TouchableOpacity style={styles.closeBtn} onPress={() => setExitModalVisible(true)}>
-              <Ionicons name="close" size={22} color="#fff" />
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {!showPk && (
-        <View style={styles.weeklyRow}>
-          <View style={styles.weeklyTag}>
-            <Ionicons name="stats-chart" size={12} color="#FFD700" />
-            <Text style={styles.weeklyTxt}>Weekly Host</Text>
-          </View>
-          {isHost && <WeeklyMinutesPill startTime={roomStartTime} />}
-          {hostMicMuted && <Ionicons name="mic-off" size={13} color="#fff" style={{ marginLeft: 8 }} />}
-          {netQuality > 0 && (
-            <Ionicons
-              name="cellular"
-              size={13}
-              color={netQuality >= 4 ? "#FF5252" : netQuality === 3 ? "#FFC107" : "#69F0AE"}
-              style={{ marginLeft: 8 }}
-            />
-          )}
-        </View>
-        )}
-      </View>
+      <TopHeader currentUid={currentUid} followBusy={followBusy} headerFive={headerFive} hostId={hostId} hostImg={hostImg} hostLevel={hostLevel} hostMicMuted={hostMicMuted} hostName={hostName} hostStars={hostStars} hostVerified={hostVerified} hostVerifiedColor={hostVerifiedColor} isFollowing={isFollowing} isHost={isHost} netQuality={netQuality} openHostCard={openHostCard} roomStartTime={roomStartTime} safeTop={safeTop} setExitModalVisible={setExitModalVisible} setProfileCard={setProfileCard} setViewerListVisible={setViewerListVisible} showPk={showPk} toggleFollowHost={toggleFollowHost} viewerCount={viewerCount} />
 
       {/* title / pinned message / weak network */}
       {!showPk && (!!roomTitle || !!pinnedText || netQuality >= 4) && (
@@ -6333,110 +3989,7 @@ export default function VideoLive() {
         onTap={comboTap}
       />
 
-      {/* ================= BOTTOM BAR ================= */}
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 80 : 0}
-        style={[
-          styles.bottomNav,
-          {
-            bottom: keyboardHeight,
-            paddingBottom: Platform.OS === "android" ? insets.bottom + 8 : insets.bottom,
-          },
-        ]}
-      >
-        {chatOpen ? (
-          <>
-            <View style={styles.inputBox}>
-              <View style={{ flexDirection: "row", alignItems: "center" }}>
-                <ChatBoxInput
-                  ref={chatInputRef}
-                  style={[styles.inputStyle, { flex: 1 }]}
-                  onSubmit={handleSendChat}
-                  autoFocus
-                />
-                <TouchableOpacity onPress={() => setEmojiOpen((v) => !v)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                  <Text style={{ fontSize: 20 }}>😊</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-            <TouchableOpacity style={styles.sendBtn} onPress={handleSendChat}>
-              <Ionicons name="send" size={18} color="#fff" />
-            </TouchableOpacity>
-          </>
-        ) : (
-          <>
-            <TouchableOpacity style={styles.chatPill} onPress={openChat} activeOpacity={0.8}>
-              <Ionicons name="chatbubble-outline" size={22} color="#fff" />
-              <Text style={styles.chatPillTxt}>Chat</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.circleBtn} onPress={handleShare}>
-              <Ionicons name="arrow-redo" size={23} color="#fff" />
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.circleBtn} onPress={() => setMenuVisible(true)}>
-              <Ionicons name="menu" size={26} color="#fff" />
-            </TouchableOpacity>
-
-            {!showPk && (
-            <TouchableOpacity
-              style={[styles.circleBtn, amGuest && styles.circleBtnOn]}
-              onPress={isHost ? () => setGuestSheetVisible(true) : sendGuestRequest}
-            >
-              <MaterialCommunityIcons
-                name={amGuest ? "phone-in-talk" : "link-variant"}
-                size={20}
-                color={amGuest ? "#fff" : myReqPending ? "#9aa0b4" : "#FFC107"}
-              />
-              {isHost && pendingRequests.length > 0 && (
-                <View style={styles.guestBadge}>
-                  <Text style={styles.guestBadgeTxt}>{Math.min(pendingRequests.length, 9)}</Text>
-                </View>
-              )}
-            </TouchableOpacity>
-            )}
-
-            <View style={{ flex: 1 }} />
-
-            {isHost ? (
-              <>
-                {pkActive && (
-                  <TouchableOpacity style={styles.giftCircle} onPress={openGiftModal}>
-                    <GiftButtonLottie />
-                  </TouchableOpacity>
-                )}
-                {matching && matchMini ? (
-                  <TouchableOpacity style={styles.matchMiniPill} onPress={() => setMatchMini(false)}>
-                    <Text style={styles.matchMiniTxt}>Matching...</Text>
-                    <MatchTimer startAt={matchStartRef.current} style={styles.matchMiniTime} />
-                  </TouchableOpacity>
-                ) : (
-                  <TouchableOpacity
-                    style={[styles.pkBadgeBtn, pkActive && styles.pkEndBtn]}
-                    onPress={onPkButton}
-                    activeOpacity={0.8}
-                  >
-                    {pkActive ? (
-                      <Text style={styles.pkBadgeBtnTxt}>END</Text>
-                    ) : (
-                      <Text style={styles.pkLogoBtnTxt}>
-                        <Text style={{ color: "#35C8FF" }}>P</Text>
-                        <Text style={{ color: "#FF3D9A" }}>K</Text>
-                      </Text>
-                    )}
-                    {showInvite && <View style={styles.pkBadgeDot} />}
-                  </TouchableOpacity>
-                )}
-              </>
-            ) : (
-              <TouchableOpacity style={styles.giftCircle} onPress={openGiftModal}>
-                <GiftButtonLottie />
-              </TouchableOpacity>
-            )}
-          </>
-        )}
-      </KeyboardAvoidingView>
+      <BottomControls filterId={filterId} setFilterModalVisible={setFilterModalVisible} amGuest={amGuest} chatInputRef={chatInputRef} chatOpen={chatOpen} handleSendChat={handleSendChat} handleShare={handleShare} insets={insets} isHost={isHost} keyboardHeight={keyboardHeight} matchMini={matchMini} matchStartRef={matchStartRef} matching={matching} myReqPending={myReqPending} onPkButton={onPkButton} openChat={openChat} openGiftModal={openGiftModal} pendingRequests={pendingRequests} pkActive={pkActive} sendGuestRequest={sendGuestRequest} setEmojiOpen={setEmojiOpen} setGuestSheetVisible={setGuestSheetVisible} setMatchMini={setMatchMini} setMenuVisible={setMenuVisible} showInvite={showInvite} showPk={showPk} />
 
 
       {!chatOpen && keyboardHeight === 0 && (
@@ -6525,792 +4078,25 @@ export default function VideoLive() {
         />
       )}
 
-      {/* ================= EXIT CONFIRM MODAL ================= */}
-      <Modal transparent visible={exitModalVisible} animationType="fade" onRequestClose={() => setExitModalVisible(false)}>
-        <View style={styles.overlay}>
-          <View style={styles.exitBox}>
-            <Text style={styles.exitTitle}>{isHost ? "End Live?" : "Leave Live?"}</Text>
-            <Text style={styles.exitSub}>
-              {isHost
-                ? "Your live stream will end for everyone watching."
-                : "You can rejoin anytime while the host is still live."}
-            </Text>
-            <View style={styles.btnRow}>
-              <TouchableOpacity style={styles.noBtn} onPress={() => setExitModalVisible(false)}>
-                <Text style={styles.btnText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.yesBtn} onPress={confirmExit}>
-                <Text style={styles.btnText}>{isHost ? "End Live" : "Leave"}</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      <ExitModal confirmExit={confirmExit} exitModalVisible={exitModalVisible} isHost={isHost} setExitModalVisible={setExitModalVisible} />
 
-      {/* ================= GIFT MODAL (compact, same as LiveRoom) ================= */}
-      <Modal
-        visible={giftModalVisible}
-        transparent
-        animationType="none"
-        statusBarTranslucent
-        hardwareAccelerated
-        onRequestClose={closeGiftModal}
-      >
-        <View style={styles.giftOverlay}>
-          <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={closeGiftModal} />
+      <GiftModal closeGiftModal={closeGiftModal} giftModalAnim={giftModalAnim} giftModalVisible={giftModalVisible} giftPageIdx={giftPageIdx} giftQty={giftQty} giftSelId={giftSelId} goRecharge={goRecharge} insets={insets} myTotalSpent={myTotalSpent} myWalletLevel={myWalletLevel} sendSelectedGift={sendSelectedGift} setGiftPageIdx={setGiftPageIdx} setGiftQty={setGiftQty} stableSelectGift={stableSelectGift} stars={stars} />
 
-          <Animated.View
-            style={[
-              styles.giftSheet,
-              {
-                paddingBottom: Math.max(insets.bottom, Platform.OS === "android" ? 28 : 14) + 10,
-                transform: [{ translateY: giftModalAnim }],
-              },
-            ]}
-          >
-            {/* level bar: kitna star bheju to agla level mile */}
-            <LevelBar
-              style={{ marginHorizontal: 14 }}
-              totalSpent={myTotalSpent}
-              levelStars={myLevelStars}
-              walletLevel={myWalletLevel}
-              pendingStore={giftPendingStore}
-              onUpgrade={goRecharge}
-            />
+      <ViewerListModal askKick={askKick} audienceArray={audienceArray} audienceSorted={audienceSorted} canModerate={canModerate} chatLocked={chatLocked} deleteAllChats={deleteAllChats} hostId={hostId} hostImg={hostImg} hostName={hostName} isMod={isMod} mods={mods} mutedUsers={mutedUsers} openHostCard={openHostCard} setProfileCard={setProfileCard} setViewerListVisible={setViewerListVisible} toggleChatLock={toggleChatLock} viewerCount={viewerCount} viewerListVisible={viewerListVisible} />
 
-            {/* gift pages: 4 columns x 2 rows, snap paging */}
-            <FlatList
-              data={GIFT_PAGES}
-              keyExtractor={(p: any) => p.key}
-              extraData={giftSelId}
-              renderItem={({ item }: any) => <GiftPage page={item} selectedId={giftSelId} onSelect={stableSelectGift} />}
-              horizontal
-              snapToInterval={GIFT_PAGE_W}
-              snapToAlignment="start"
-              disableIntervalMomentum
-              decelerationRate="fast"
-              showsHorizontalScrollIndicator={false}
-              getItemLayout={(_: any, index: number) => ({ length: GIFT_PAGE_W, offset: GIFT_PAGE_W * index, index })}
-              initialNumToRender={2}
-              maxToRenderPerBatch={2}
-              windowSize={5}
-              removeClippedSubviews={false}
-              bounces={Platform.OS === "ios"}
-              overScrollMode="never"
-              nestedScrollEnabled
-              keyboardShouldPersistTaps="handled"
-              onMomentumScrollEnd={(e: any) => {
-                const idx = Math.max(
-                  0,
-                  Math.min(GIFT_PAGES.length - 1, Math.round(e.nativeEvent.contentOffset.x / GIFT_PAGE_W))
-                );
-                setGiftPageIdx((prev) => (prev === idx ? prev : idx));
-              }}
-            />
+      <RankModal rankVisible={rankVisible} rankedGifters={rankedGifters} setProfileCard={setProfileCard} setRankVisible={setRankVisible} stars={stars} />
 
-            {GIFT_PAGES.length > 1 && (
-              <View style={{ flexDirection: "row", justifyContent: "center", alignItems: "center", paddingTop: 4, paddingBottom: 8 }}>
-                {GIFT_PAGES.map((p: any, i: number) => (
-                  <View
-                    key={p.key}
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: 3,
-                      marginHorizontal: 3,
-                      backgroundColor: i === giftPageIdx ? "#FFFFFF" : "rgba(255,255,255,0.3)",
-                    }}
-                  />
-                ))}
-              </View>
-            )}
+      <ProfileCardModal canModerate={canModerate} currentUid={currentUid} goUserProfile={goUserProfile} hostId={hostId} insets={insets} isHost={isHost} kickBlock={kickBlock} kickDlg={kickDlg} kickUser={kickUser} manageOpen={manageOpen} mods={mods} muteGuest={muteGuest} muteUser={muteUser} mutedUsers={mutedUsers} openGiftModal={openGiftModal} params={params} pcInfo={pcInfo} profileCard={profileCard} profileFollowing={profileFollowing} removeGuest={removeGuest} roomData={roomData} router={router} setKickBlock={setKickBlock} setKickDlg={setKickDlg} setManageOpen={setManageOpen} setProfileCard={setProfileCard} setReportTarget={setReportTarget} toggleMod={toggleMod} toggleProfileFollow={toggleProfileFollow} />
 
-            {/* bottom bar (Tiki): [star balance / Recharge >]   [1 9 99 199 999]  [Send] */}
-            <View style={styles.giftBottomRow}>
-              <View style={{ minWidth: 70 }}>
-                <View style={{ flexDirection: "row", alignItems: "center" }}>
-                  <Ionicons name="star" size={14} color="#FFC800" />
-                  <GiftBalance stars={stars} style={styles.giftBalTxt} />
-                </View>
-                <TouchableOpacity onPress={goRecharge} activeOpacity={0.7} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                  <Text style={styles.giftRechargeTxt}>Recharge ›</Text>
-                </TouchableOpacity>
-              </View>
+      <ChatMenuModal canDeleteChat={canDeleteChat} chatMenu={chatMenu} currentUid={currentUid} deleteChatMsg={deleteChatMsg} insets={insets} openProfile={openProfile} setChatMenu={setChatMenu} setReportTarget={setReportTarget} startReply={startReply} />
 
-              <View style={styles.giftQtyPill}>
-                {[1, 9, 99, 199, 999].map((q) => (
-                  <TouchableOpacity
-                    key={q}
-                    activeOpacity={0.7}
-                    delayPressIn={0}
-                    onPress={() => setGiftQty(q)}
-                    style={[styles.giftQtyChip, giftQty === q && styles.giftQtyChipSel]}
-                  >
-                    <Text style={[styles.giftQtyTxt, giftQty === q && styles.giftQtyTxtSel]}>{q}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+      <ReportModal reportTarget={reportTarget} setReportTarget={setReportTarget} submitReport={submitReport} />
 
-              <TouchableOpacity style={styles.giftSendBtn} activeOpacity={0.8} delayPressIn={0} onPress={sendSelectedGift}>
-                <Text style={styles.giftSendTxt}>Send</Text>
-              </TouchableOpacity>
-            </View>
-          </Animated.View>
-        </View>
-      </Modal>
+      <SettingsModal deleteAllChats={deleteAllChats} lockDraft={lockDraft} pinDraft={pinDraft} saveSettings={saveSettings} setLockDraft={setLockDraft} setPinDraft={setPinDraft} setSettingsVisible={setSettingsVisible} setTitleDraft={setTitleDraft} settingsVisible={settingsVisible} titleDraft={titleDraft} />
 
-      {/* ================= VIEWER LIST ================= */}
-      <Modal transparent visible={viewerListVisible} animationType="slide" onRequestClose={() => setViewerListVisible(false)}>
-        <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={() => setViewerListVisible(false)}>
-          <TouchableOpacity activeOpacity={1} style={[styles.sheet, { height: height * 0.6 }]}>
-            <Text style={styles.sheetTitle}>👥 Viewers ({viewerCount})</Text>
-            <Text style={styles.sheetSub}>Tap a person to see their profile.</Text>
-            {isMod && (
-              <View style={styles.modBar}>
-                <TouchableOpacity
-                  style={[styles.modBarBtn, chatLocked && { backgroundColor: "#F71084" }]}
-                  onPress={toggleChatLock}
-                >
-                  <Ionicons name={chatLocked ? "lock-closed" : "lock-open-outline"} size={15} color="#fff" />
-                  <Text style={styles.modBarTxt}>{chatLocked ? "Chat locked" : "Lock chat"}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={[styles.modBarBtn, { backgroundColor: "#DC2626" }]} onPress={deleteAllChats}>
-                  <Ionicons name="trash-outline" size={15} color="#fff" />
-                  <Text style={styles.modBarTxt}>Delete all chats</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-            {hostId ? (
-              <TouchableOpacity
-                style={styles.pkRow}
-                onPress={() => {
-                  setViewerListVisible(false);
-                  openHostCard();
-                }}
-              >
-                <ExpoImage source={{ uri: hostImg }} style={styles.pkRowAva} cachePolicy="memory-disk" transition={0} />
-                <View style={{ flex: 1, marginLeft: 12 }}>
-                  <Text style={styles.pkRowName} numberOfLines={1}>
-                    {hostName}
-                  </Text>
-                </View>
-                <View style={[styles.roleTag, { backgroundColor: "#F71084" }]}>
-                  <Text style={styles.roleTagTxt}>HOST</Text>
-                </View>
-              </TouchableOpacity>
-            ) : null}
-            {audienceArray.length === 0 ? (
-              <Text style={styles.emptyTxt}>No viewers yet. Share the live to get people in!</Text>
-            ) : (
-              <FlatList
-                data={audienceSorted}
-                initialNumToRender={10}
-                maxToRenderPerBatch={8}
-                windowSize={5}
-                removeClippedSubviews
-                keyExtractor={(i: any) => i.uid}
-                renderItem={({ item }: any) => {
-                  const th = getLevelTheme(item.level || 1);
-                  return (
-                    <TouchableOpacity
-                      style={styles.pkRow}
-                      onPress={() => {
-                        setViewerListVisible(false);
-                        setProfileCard({
-                          uid: item.uid,
-                          name: item.name || item.username,
-                          username: item.username,
-                          img: item.img,
-                          level: item.level,
-                          verified: item.verified,
-                          verifiedColor: item.verifiedColor,
-                        });
-                      }}
-                    >
-                      <ExpoImage source={{ uri: item.img || STABLE_AVATAR }} style={styles.pkRowAva} cachePolicy="memory-disk" transition={0} />
-                      <View style={{ flex: 1, marginLeft: 12 }}>
-                        <View style={{ flexDirection: "row", alignItems: "center" }}>
-                          <Text style={styles.pkRowName} numberOfLines={1}>
-                            {item.name || item.username || "User"}
-                          </Text>
-                          <UserTick uid={item.uid || item.userId || item.senderId || item.id} verified={!!(!!item.verified)} verifiedColor={item.verifiedColor} size={14} />
-                          <LevelBadge level={item.level || 1} size={9} style={{ marginLeft: 6 }} />
-                        </View>
-                        {(mods[item.uid] || mutedUsers[item.uid]) && (
-                          <Text style={styles.pkRowSub}>
-                            {mods[item.uid] ? "Moderator" : ""}
-                            {mods[item.uid] && mutedUsers[item.uid] ? " · " : ""}
-                            {mutedUsers[item.uid] ? "Muted" : ""}
-                          </Text>
-                        )}
-                      </View>
-                      {canModerate(item) ? (
-                        <TouchableOpacity
-                          style={styles.kickBtn}
-                          onPress={() => askKick({ uid: item.uid, name: item.name || item.username, img: item.img, level: item.level, verified: item.verified, verifiedColor: item.verifiedColor })}
-                        >
-                          <Text style={styles.kickBtnTxt}>Kick</Text>
-                        </TouchableOpacity>
-                      ) : (
-                        <Ionicons name="chevron-forward" size={18} color="#6b7280" />
-                      )}
-                    </TouchableOpacity>
-                  );
-                }}
-              />
-            )}
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+      <SummaryModal doLeaveNow={doLeaveNow} fmtDur={fmtDur} stars={stars} summary={summary} />
 
-      {/* ================= TOP GIFTERS RANKING ================= */}
-      <Modal transparent visible={rankVisible} animationType="slide" onRequestClose={() => setRankVisible(false)}>
-        <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={() => setRankVisible(false)}>
-          <TouchableOpacity activeOpacity={1} style={[styles.sheet, { height: height * 0.55 }]}>
-            <Text style={styles.sheetTitle}>🏆 Top Gifters</Text>
-            <Text style={styles.sheetSub}>Ranked by stars sent in this live.</Text>
-            {rankedGifters.length === 0 ? (
-              <Text style={styles.emptyTxt}>No gifts yet. Be the first to send one! 🎁</Text>
-            ) : (
-              <FlatList
-                data={rankedGifters}
-                initialNumToRender={10}
-                maxToRenderPerBatch={8}
-                windowSize={5}
-                removeClippedSubviews
-                keyExtractor={(i: any) => i.uid}
-                renderItem={({ item, index }: any) => (
-                  <TouchableOpacity
-                    style={styles.pkRow}
-                    onPress={() => {
-                      setRankVisible(false);
-                      setProfileCard({
-                        uid: item.uid,
-                        name: item.name,
-                        img: item.img,
-                        level: item.level,
-                        verified: item.verified,
-                        verifiedColor: item.verifiedColor,
-                      });
-                    }}
-                  >
-                    <Text style={[styles.rankNum, index < 3 && { color: ["#FFD700", "#C0C0C0", "#CD7F32"][index] }]}>
-                      {index + 1}
-                    </Text>
-                    <ExpoImage source={{ uri: item.img || STABLE_AVATAR }} style={styles.pkRowAva} cachePolicy="memory-disk" transition={0} />
-                    <View style={{ flex: 1, marginLeft: 12 }}>
-                      <View style={{ flexDirection: "row", alignItems: "center" }}>
-                        <Text style={styles.pkRowName} numberOfLines={1}>
-                          {item.name || "User"}
-                        </Text>
-                        <UserTick uid={item.uid} verified={!!item.verified} verifiedColor={item.verifiedColor} size={14} />
-                      </View>
-                      <Text style={styles.pkRowSub}>LV {item.level || 1}</Text>
-                    </View>
-                    <Text style={styles.rankStars}>⭐ {item.stars}</Text>
-                  </TouchableOpacity>
-                )}
-              />
-            )}
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* ================= USER PROFILE CARD (bottom sheet) ================= */}
-      <Modal transparent visible={!!profileCard} animationType="slide" statusBarTranslucent onRequestClose={() => setProfileCard(null)}>
-        <View style={styles.pcOverlay}>
-          <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPressIn={() => setProfileCard(null)} />
-          {profileCard && (
-            <View style={[styles.pcSheet, { paddingBottom: 16 + insets.bottom }]}>
-              {(canModerate(profileCard) || (isHost && !!profileCard.isGuestCard && profileCard.uid !== currentUid)) && (
-                <TouchableOpacity style={styles.pcManage} activeOpacity={0.7} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} onPress={() => setManageOpen(true)}>
-                  <Text style={styles.pcManageTxt}>Manage</Text>
-                </TouchableOpacity>
-              )}
-              <TouchableOpacity activeOpacity={0.85} style={styles.pcAvaWrap} onPress={() => goUserProfile(profileCard)}>
-                <ExpoImage source={{ uri: profileCard.img || STABLE_AVATAR }} style={styles.pcAva} cachePolicy="memory-disk" transition={0} />
-                {(Number(profileCard.level) >= 10 || !!profileCard.uid) && (
-                  <LevelFrame level={Number(profileCard.level)} uid={profileCard.uid} lookup={false} animated style={{ position: "absolute", width: 110, height: 110 }} />
-                )}
-              </TouchableOpacity>
-
-              <View style={{ flexDirection: "row", alignItems: "center", marginTop: 10 }}>
-                <Text style={styles.pcName} numberOfLines={1}>{profileCard.name || profileCard.username || "User"}</Text>
-                <UserTick uid={profileCard.uid || profileCard.userId || profileCard.senderId || profileCard.id} verified={!!profileCard.verified} verifiedColor={profileCard.verifiedColor} size={17} />
-                {profileCard.uid === hostId && (
-                  <View style={[styles.roleTag, { backgroundColor: "#F71084", marginLeft: 6 }]}><Text style={styles.roleTagTxt}>HOST</Text></View>
-                )}
-                {!!mods[profileCard.uid] && (
-                  <View style={[styles.roleTag, { backgroundColor: "#2D9CFF", marginLeft: 6 }]}><Text style={styles.roleTagTxt}>MOD</Text></View>
-                )}
-                {!!mutedUsers[profileCard.uid] && (
-                  <View style={[styles.roleTag, { backgroundColor: "#6b7280", marginLeft: 6 }]}><Text style={styles.roleTagTxt}>MUTED</Text></View>
-                )}
-              </View>
-
-              {/* Followers / Following / Likes */}
-              <View style={styles.pcStats}>
-                <View style={styles.pcStat}><Text style={styles.pcStatN}>{pcInfo ? pcInfo.followers : "—"}</Text><Text style={styles.pcStatL}>Followers</Text></View>
-                <View style={styles.pcStat}><Text style={styles.pcStatN}>{pcInfo ? pcInfo.following : "—"}</Text><Text style={styles.pcStatL}>Following</Text></View>
-                <View style={styles.pcStat}><Text style={styles.pcStatN}>{pcInfo ? pcInfo.likes : "—"}</Text><Text style={styles.pcStatL}>Likes</Text></View>
-              </View>
-
-              {/* Level card  +  FAMILY card (sirf jab user family me ho) */}
-              <View style={styles.pcCards}>
-                {(() => {
-                  const lv = Number(profileCard.level) || 1;
-                  const th = getLevelTheme(lv);
-                  return (
-                    <TouchableOpacity activeOpacity={0.8} style={styles.pcCard} onPress={() => goUserProfile(profileCard)}>
-                      <View style={[styles.pcLvPill, { backgroundColor: th.bg, borderColor: th.border }]}>
-                        <MaterialCommunityIcons name="diamond-stone" size={13} color={th.icon} />
-                        <Text style={[styles.pcLvTxt, { color: th.text }]}>{lv}LV</Text>
-                      </View>
-                      <Text style={styles.pcLvMore}>Level &gt;</Text>
-                    </TouchableOpacity>
-                  );
-                })()}
-
-                {!!pcInfo?.familyId && (
-                  <TouchableOpacity
-                    activeOpacity={0.8}
-                    style={[styles.pcCard, { marginLeft: 10 }]}
-                    onPress={() => { const fid = pcInfo.familyId; setProfileCard(null); router.push({ pathname: "/familyDetail", params: { id: fid } } as any); }}
-                  >
-                    <ExpoImage source={{ uri: pcInfo.familyLogo || STABLE_AVATAR }} style={styles.pcFamLogo} cachePolicy="memory-disk" transition={0} />
-                    <View style={{ flex: 1, marginLeft: 10 }}>
-                      <Text style={styles.pcFamName} numberOfLines={1}>{pcInfo.familyName}</Text>
-                      <View style={{ flexDirection: "row", alignItems: "center", marginTop: 2 }}>
-                        <Ionicons name="people" size={12} color="#aaa" />
-                        <Text style={styles.pcFamSub}> {pcInfo.familyMembers || 1}</Text>
-                        <Ionicons name="flame-outline" size={12} color="#aaa" style={{ marginLeft: 8 }} />
-                        <Text style={styles.pcFamSub}> {fmtPoints(pcInfo.familyPoints)}</Text>
-                      </View>
-                    </View>
-                  </TouchableOpacity>
-                )}
-              </View>
-
-              {/* Profile + Follow */}
-              <View style={styles.pcMainBtns}>
-                <TouchableOpacity style={styles.pcProfileBtn} onPress={() => goUserProfile(profileCard)}>
-                  <Text style={styles.pcProfileTxt}>Profile</Text>
-                </TouchableOpacity>
-                {profileCard.uid !== currentUid && (
-                  <TouchableOpacity
-                    style={[styles.pcFollowBtn, profileFollowing && { backgroundColor: "#3a3a3a" }]}
-                    onPress={toggleProfileFollow}
-                  >
-                    <Text style={[styles.pcFollowTxt, profileFollowing && { color: "#fff" }]}>{profileFollowing ? "Following" : "Follow"}</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-
-              {/* Extra actions (gift / mod / mute / kick / report) */}
-              {profileCard.uid !== currentUid && (
-                <View style={styles.pcChips}>
-                  {profileCard.isHostCard && !isHost && (
-                    <TouchableOpacity style={[styles.pcChip, { backgroundColor: "#F59E0B" }]} onPress={() => { setProfileCard(null); openGiftModal(); }}>
-                      <Text style={styles.pcChipTxt}>🎁 Send Gift</Text>
-                    </TouchableOpacity>
-                  )}
-                  {isHost && profileCard.uid !== hostId && (
-                    <TouchableOpacity style={[styles.pcChip, { backgroundColor: "#2D9CFF" }]} onPress={() => toggleMod(profileCard)}>
-                      <Text style={styles.pcChipTxt}>{mods[profileCard.uid] ? "Remove mod" : "🛡 Make mod"}</Text>
-                    </TouchableOpacity>
-                  )}
-                  <TouchableOpacity style={[styles.pcChip, { backgroundColor: "transparent", borderWidth: 1, borderColor: "#4b5563" }]} onPress={() => { setReportTarget(profileCard); setProfileCard(null); }}>
-                    <Text style={[styles.pcChipTxt, { color: "#f87171" }]}>⚑ Report</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-            </View>
-          )}
-
-          {/* ---- Manage sheet: Mute / Kick Out / Cancel (Tiki) ---- */}
-          {manageOpen && !!profileCard && (
-            <View style={styles.mgOverlay}>
-              <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPressIn={() => setManageOpen(false)} />
-              <View style={[styles.mgSheet, { paddingBottom: 10 + insets.bottom }]}>
-                {isHost && !!profileCard.isGuestCard && !!roomData?.guests?.[profileCard.uid] && (
-                  <>
-                    <TouchableOpacity
-                      style={styles.mgRow}
-                      activeOpacity={0.7}
-                      onPress={() => {
-                        const gm = !!roomData?.guests?.[profileCard.uid]?.hostMuted;
-                        setManageOpen(false);
-                        setProfileCard(null);
-                        muteGuest(profileCard.uid, !gm);
-                      }}
-                    >
-                      <Text style={styles.mgTxt}>{roomData?.guests?.[profileCard.uid]?.hostMuted ? "Unmute guest" : "Mute guest"}</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.mgRow}
-                      activeOpacity={0.7}
-                      onPress={() => {
-                        const uid = profileCard.uid;
-                        setManageOpen(false);
-                        setProfileCard(null);
-                        removeGuest(uid);
-                      }}
-                    >
-                      <Text style={[styles.mgTxt, { color: "#DC2626" }]}>Remove from call</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.mgRow} activeOpacity={0.7} onPress={() => setManageOpen(false)}>
-                      <Text style={styles.mgTxt}>Cancel</Text>
-                    </TouchableOpacity>
-                  </>
-                )}
-                {!(isHost && !!profileCard.isGuestCard && !!roomData?.guests?.[profileCard.uid]) && (
-                <>
-                <TouchableOpacity
-                  style={styles.mgRow}
-                  activeOpacity={0.7}
-                  onPress={() => {
-                    setManageOpen(false);
-                    muteUser(profileCard, !mutedUsers[profileCard.uid]);
-                  }}
-                >
-                  <Text style={styles.mgTxt}>{mutedUsers[profileCard.uid] ? "Unmute" : "Mute"}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.mgRow}
-                  activeOpacity={0.7}
-                  onPress={() => {
-                    setManageOpen(false);
-                    setKickBlock(false);
-                    setKickDlg(true);
-                  }}
-                >
-                  <Text style={styles.mgTxt}>Kick Out</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.mgRow} activeOpacity={0.7} onPress={() => setManageOpen(false)}>
-                  <Text style={styles.mgTxt}>Cancel</Text>
-                </TouchableOpacity>
-                </>
-                )}
-              </View>
-            </View>
-          )}
-
-          {/* ---- Kick Out confirm: "Add to Blocked List" ---- */}
-          {kickDlg && !!profileCard && (
-            <View style={styles.kdOverlay}>
-              <View style={styles.kdBox}>
-                <Text style={styles.kdTitle}>Do you want to kick out this viewer?</Text>
-                <TouchableOpacity style={styles.kdChkRow} activeOpacity={0.7} onPress={() => setKickBlock((v) => !v)}>
-                  <View style={[styles.kdChk, kickBlock && styles.kdChkOn]}>
-                    {kickBlock && <Ionicons name="checkmark" size={12} color="#fff" />}
-                  </View>
-                  <Text style={styles.kdChkTxt}>Add to Blocked List</Text>
-                </TouchableOpacity>
-                <View style={styles.kdBtns}>
-                  <TouchableOpacity style={[styles.kdBtn, { borderRightWidth: StyleSheet.hairlineWidth, borderRightColor: "#d4d4d8" }]} onPress={() => setKickDlg(false)}>
-                    <Text style={styles.kdBtnTxt}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.kdBtn} onPress={() => kickUser(profileCard, kickBlock)}>
-                    <Text style={styles.kdBtnTxt}>Confirm</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
-          )}
-        </View>
-      </Modal>
-
-      {/* ================= COMMENT MENU: Reply / Delete ================= */}
-      <Modal transparent visible={!!chatMenu} animationType="fade" statusBarTranslucent onRequestClose={() => setChatMenu(null)}>
-        <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={() => setChatMenu(null)}>
-          <TouchableOpacity activeOpacity={1} style={[styles.sheet, { paddingBottom: 14 + insets.bottom }]}>
-            <Text style={styles.sheetTitle} numberOfLines={1}>{chatMenu?.senderName || chatMenu?.username || "Comment"}</Text>
-            {!!chatMenu?.message && <Text style={styles.sheetSub} numberOfLines={2}>{chatMenu.message}</Text>}
-            {!chatMenu?.type && (
-              <TouchableOpacity style={styles.reasonRow} onPress={() => startReply(chatMenu)}>
-                <Text style={styles.reasonTxt}>Reply</Text>
-                <Ionicons name="arrow-undo-outline" size={16} color="#9ca3af" />
-              </TouchableOpacity>
-            )}
-            {canDeleteChat(chatMenu) && (
-              <TouchableOpacity style={styles.reasonRow} onPress={() => deleteChatMsg(chatMenu)}>
-                <Text style={[styles.reasonTxt, { color: "#f87171" }]}>Delete</Text>
-                <Ionicons name="trash-outline" size={16} color="#f87171" />
-              </TouchableOpacity>
-            )}
-            {!!(chatMenu?.senderId || chatMenu?.uid) && (
-              <TouchableOpacity
-                style={styles.reasonRow}
-                onPress={() => {
-                  const c = chatMenu;
-                  setChatMenu(null);
-                  openProfile({ uid: c.senderId || c.uid, name: c.senderName, username: c.username, img: c.userImg, level: c.level, verified: c.verified, verifiedColor: c.verifiedColor });
-                }}
-              >
-                <Text style={styles.reasonTxt}>View profile</Text>
-                <Ionicons name="person-outline" size={16} color="#9ca3af" />
-              </TouchableOpacity>
-            )}
-            {!!chatMenu?.senderId && chatMenu.senderId !== currentUid && (
-              <TouchableOpacity
-                style={styles.reasonRow}
-                onPress={() => {
-                  const c = chatMenu;
-                  setChatMenu(null);
-                  setReportTarget({ uid: c.senderId, name: c.senderName });
-                }}
-              >
-                <Text style={styles.reasonTxt}>Report</Text>
-                <Ionicons name="flag-outline" size={16} color="#9ca3af" />
-              </TouchableOpacity>
-            )}
-            <TouchableOpacity style={styles.reasonRow} onPress={() => setChatMenu(null)}>
-              <Text style={styles.reasonTxt}>Cancel</Text>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* ================= REPORT REASON ================= */}
-      <Modal transparent visible={!!reportTarget} animationType="slide" onRequestClose={() => setReportTarget(null)}>
-        <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={() => setReportTarget(null)}>
-          <TouchableOpacity activeOpacity={1} style={styles.sheet}>
-            <Text style={styles.sheetTitle}>Report {reportTarget?.name || "user"}</Text>
-            <Text style={styles.sheetSub}>Why are you reporting?</Text>
-            {REPORT_REASONS.map((r) => (
-              <TouchableOpacity key={r} style={styles.reasonRow} onPress={() => submitReport(r)}>
-                <Text style={styles.reasonTxt}>{r}</Text>
-                <Ionicons name="chevron-forward" size={16} color="#6b7280" />
-              </TouchableOpacity>
-            ))}
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* ================= HOST SETUP (title / pinned / chat) ================= */}
-      <Modal transparent visible={settingsVisible} animationType="slide" onRequestClose={() => setSettingsVisible(false)}>
-        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
-          <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={() => setSettingsVisible(false)}>
-            <TouchableOpacity activeOpacity={1} style={styles.sheet}>
-              <Text style={styles.sheetTitle}>Live Setup</Text>
-
-              <Text style={styles.fieldLbl}>Live title</Text>
-              <TextInput
-                style={styles.fieldInput}
-                value={titleDraft}
-                onChangeText={setTitleDraft}
-                placeholder="e.g. Singing tonight 🎤"
-                placeholderTextColor="#6b7280"
-                maxLength={60}
-              />
-
-              <Text style={styles.fieldLbl}>Pinned message (shown to everyone)</Text>
-              <TextInput
-                style={[styles.fieldInput, { height: 70, textAlignVertical: "top" }]}
-                value={pinDraft}
-                onChangeText={setPinDraft}
-                placeholder="Welcome! Follow & send gifts 💖"
-                placeholderTextColor="#6b7280"
-                multiline
-                maxLength={140}
-              />
-
-              <View style={styles.switchRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.fieldLblDark}>Turn off chat for viewers</Text>
-                  <Text style={styles.pkRowSub}>You and moderators can still chat.</Text>
-                </View>
-                <Switch value={lockDraft} onValueChange={setLockDraft} trackColor={{ true: "#F71084", false: "#374151" }} />
-              </View>
-
-              <TouchableOpacity
-                style={[styles.modBarBtn, { backgroundColor: "#DC2626", marginTop: 16, justifyContent: "center", paddingVertical: 11 }]}
-                onPress={deleteAllChats}
-              >
-                <Ionicons name="trash-outline" size={16} color="#fff" />
-                <Text style={styles.modBarTxt}>Delete all chats</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={styles.saveBtn} onPress={saveSettings}>
-                <Text style={styles.saveBtnTxt}>Save</Text>
-              </TouchableOpacity>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* ================= HOST: LIVE ENDED ================= */}
-      <Modal transparent visible={!!summary} animationType="fade" onRequestClose={doLeaveNow}>
-        <View style={styles.endBg}>
-          <View style={styles.endHeader}>
-            <TouchableOpacity onPress={doLeaveNow} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-              <Ionicons name="chevron-back" size={26} color="#fff" />
-            </TouchableOpacity>
-            <Text style={styles.endHeaderTxt}>LIVE has ended</Text>
-            <View style={{ width: 26 }} />
-          </View>
-
-          <ScrollView contentContainerStyle={{ padding: 14, paddingBottom: 40 }}>
-            <View style={styles.endCard}>
-              <Text style={styles.endCardTitle}>Live Data</Text>
-              <View style={styles.endGrid}>
-                {[
-                  { k: "Total Viewers", v: String(summary?.peak || 0) },
-                  { k: "Stars earned", v: String(summary?.stars || 0) },
-                  { k: "New Fans", v: String(summary?.followers || 0) },
-                  { k: "LIVE Time", v: fmtDur(summary?.durationMs || 0) },
-                ].map((c) => (
-                  <View key={c.k} style={styles.endCell}>
-                    <Text style={styles.endVal}>{c.v}</Text>
-                    <Text style={styles.endLbl}>{c.k}</Text>
-                  </View>
-                ))}
-              </View>
-            </View>
-
-            {(() => {
-              const mins = Math.floor((summary?.durationMs || 0) / 60000);
-              const pct = Math.min(100, Math.round((mins / WEEKLY_TARGET_MIN) * 100));
-              const left = Math.max(0, WEEKLY_TARGET_MIN - mins);
-              return (
-                <View style={[styles.endCard, { flexDirection: "row", alignItems: "center" }]}>
-                  <ProgressRing pct={pct}>
-                    <Text style={styles.endPct}>{pct}%</Text>
-                  </ProgressRing>
-                  <View style={{ marginLeft: 22, flex: 1 }}>
-                    <Text style={styles.endProgTitle}>Broadcast 2 hours live = 150 stars</Text>
-                    <Text style={styles.endProgSub}>
-                      {left > 0 ? `${left} more min to complete` : "Goal completed!"}
-                    </Text>
-                  </View>
-                </View>
-              );
-            })()}
-
-            {!!summary?.gifters?.length && (
-              <View style={styles.endCard}>
-                <Text style={styles.endCardTitle}>Top gifters</Text>
-                {summary.gifters.map((g: any, i: number) => (
-                  <View key={g.uid} style={styles.sumGifter}>
-                    <Text style={{ color: ["#FFD700", "#C0C0C0", "#CD7F32"][i], fontWeight: "800", width: 20 }}>{i + 1}</Text>
-                    <Image source={{ uri: g.img || STABLE_AVATAR }} style={{ width: 34, height: 34, borderRadius: 17 }} />
-                    <Text style={styles.sumGifterName} numberOfLines={1}>
-                      {g.name}
-                    </Text>
-                    <UserTick uid={g.uid} verified={!!g.verified} verifiedColor={g.verifiedColor} size={14} />
-                    <Text style={styles.rankStars}>⭐ {g.stars}</Text>
-                  </View>
-                ))}
-              </View>
-            )}
-
-            <TouchableOpacity style={styles.endCentre} onPress={doLeaveNow} activeOpacity={0.85}>
-              <View style={styles.endCentreIcon}>
-                <Ionicons name="mic" size={22} color="#111" />
-              </View>
-              <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={styles.endCentreTitle}>Done</Text>
-                <Text style={styles.endCentreSub}>Back to home</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color="#111" />
-            </TouchableOpacity>
-          </ScrollView>
-        </View>
-      </Modal>
-
-      {/* ================= TOOLS MENU (hamburger) ================= */}
-      {/* ================= GUEST REQUESTS / GUESTS (host) ================= */}
-      <Modal
-        transparent
-        visible={guestSheetVisible}
-        animationType="slide"
-        onRequestClose={() => setGuestSheetVisible(false)}
-      >
-        <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={() => setGuestSheetVisible(false)}>
-          <TouchableOpacity activeOpacity={1} style={[styles.sheet, { maxHeight: height * 0.7 }]}>
-            <Text style={styles.sheetTitle}>Guest call</Text>
-            <Text style={styles.sheetSub}>
-              {guestList.length}/{MAX_GUESTS} seats used · viewers can tap the gold link button to ask to join
-            </Text>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <Text style={styles.guestSecTitle}>On the call</Text>
-              {guestList.length === 0 ? (
-                <Text style={styles.guestEmpty}>No one is on the call yet</Text>
-              ) : (
-                guestList.map((g: any) => (
-                  <TouchableOpacity
-                    key={g.uid}
-                    activeOpacity={0.7}
-                    style={styles.guestRow}
-                    onPress={() => {
-                      setGuestSheetVisible(false);
-                      setTimeout(() => onGuestTilePress(g), 250);
-                    }}
-                  >
-                    <ExpoImage source={{ uri: g.img || STABLE_AVATAR }} style={styles.guestRowAva} cachePolicy="memory-disk" transition={0} />
-                    <Text numberOfLines={1} style={styles.guestRowName}>
-                      {g.name || "Guest"}
-                    </Text>
-                    <UserTick uid={g.uid} verified={!!g.verified} verifiedColor={g.verifiedColor} size={14} />
-                    {!!g.hostMuted && <Ionicons name="mic-off" size={15} color="#F71084" style={{ marginRight: 6 }} />}
-                    <Ionicons name="chevron-forward" size={18} color="#9ca3af" />
-                  </TouchableOpacity>
-                ))
-              )}
-
-              <Text style={[styles.guestSecTitle, { marginTop: 16 }]}>Requests ({pendingRequests.length})</Text>
-              {pendingRequests.length === 0 ? (
-                <Text style={styles.guestEmpty}>No waiting requests</Text>
-              ) : (
-                pendingRequests.map((r: any) => (
-                  <View key={r.uid} style={styles.guestRow}>
-                    <ExpoImage source={{ uri: r.img || STABLE_AVATAR }} style={styles.guestRowAva} cachePolicy="memory-disk" transition={0} />
-                    <Text numberOfLines={1} style={styles.guestRowName}>
-                      {r.username || r.name || "Viewer"}
-                    </Text>
-                    <UserTick uid={r.uid} verified={isVerified(r.verified)} verifiedColor={r.verifiedColor} size={14} />
-                    <TouchableOpacity style={[styles.guestBtn, { backgroundColor: "#2a2b38" }]} onPress={() => rejectGuest(r)}>
-                      <Ionicons name="close" size={16} color="#fff" />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.guestAccept, guestList.length >= MAX_GUESTS && { opacity: 0.4 }]}
-                      disabled={guestList.length >= MAX_GUESTS}
-                      onPress={() => acceptGuest(r)}
-                    >
-                      <Text style={styles.guestAcceptTxt}>Accept</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))
-              )}
-            </ScrollView>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
-
-      <Modal transparent visible={menuVisible} animationType="slide" onRequestClose={() => setMenuVisible(false)}>
-        <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={() => setMenuVisible(false)}>
-          <TouchableOpacity activeOpacity={1} style={styles.sheet}>
-            <View style={styles.menuGrid}>
-              {menuItems.map((it: any) => (
-                <TouchableOpacity
-                  key={it.key}
-                  style={styles.menuItem}
-                  activeOpacity={0.8}
-                  onPress={() => {
-                    setMenuVisible(false);
-                    setTimeout(() => it.onPress && it.onPress(), 280);
-                  }}
-                >
-                  <View style={[styles.menuIcon, it.active && styles.menuIconOn]}>{it.icon}</View>
-                  <Text style={styles.menuLbl} numberOfLines={1}>
-                    {it.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+      <GuestsMenuModals acceptGuest={acceptGuest} guestList={guestList} guestSheetVisible={guestSheetVisible} menuItems={menuItems} menuVisible={menuVisible} onGuestTilePress={onGuestTilePress} pendingRequests={pendingRequests} rejectGuest={rejectGuest} setGuestSheetVisible={setGuestSheetVisible} setMenuVisible={setMenuVisible} />
 
       {/* ================= MUSIC SHEET (host) ================= */}
       {isHost && (
@@ -7324,1456 +4110,16 @@ export default function VideoLive() {
         />
       )}
 
-      {/* ================= FILTER MODAL (host) ================= */}
-      <Modal
-        transparent
-        visible={filterModalVisible}
-        animationType="slide"
-        onRequestClose={() => setFilterModalVisible(false)}
-      >
-        <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={() => setFilterModalVisible(false)}>
-          <TouchableOpacity
-            activeOpacity={1}
-            style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, Platform.OS === "android" ? 28 : 14) + 20 }]}
-          >
-            <Text style={styles.sheetTitle}>Beauty & Filters</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingVertical: 6 }}>
-              {FILTERS.map((f) => (
-                <TouchableOpacity key={f.id} style={styles.filterItem} onPress={() => applyFilter(f)}>
-                  <View style={[styles.filterCircle, filterId === f.id && styles.filterCircleActive]}>
-                    <Text style={{ fontSize: 24 }}>{f.icon}</Text>
-                  </View>
-                  <Text style={[styles.filterLabel, filterId === f.id && { color: "#F71084" }]}>{f.label}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+      <FilterModal applyFilter={applyFilter} filterId={filterId} filterModalVisible={filterModalVisible} insets={insets} setFilterModalVisible={setFilterModalVisible} />
 
-      {/* ================= PK: SHEET (host) ================= */}
-      <Modal transparent visible={pkListVisible} animationType="slide" onRequestClose={() => setPkListVisible(false)}>
-        <TouchableOpacity style={styles.pkSheetOverlay} activeOpacity={1} onPress={() => setPkListVisible(false)}>
-          <TouchableOpacity activeOpacity={1} style={styles.pkSheet}>
-            <View style={styles.pkSheetHead}>
-              <TouchableOpacity style={styles.pkHeadIcon} onPress={() => Alert.alert("PK history", "No PK battles yet.")}>
-                <Ionicons name="time-outline" size={22} color="#fff" />
-              </TouchableOpacity>
-              <Text style={styles.pkLogo}>
-                <Text style={{ color: "#29D3F5" }}>P</Text>
-                <Text style={{ color: "#FF3FA4" }}>K</Text>
-              </Text>
-              <View style={{ flexDirection: "row" }}>
-                <TouchableOpacity
-                  style={styles.pkHeadIcon}
-                  onPress={() =>
-                    Alert.alert(
-                      "PK Battle",
-                      "Challenge another live host. The host who receives the most gifts when the timer ends wins. Random Match finds an online host for you automatically."
-                    )
-                  }
-                >
-                  <Ionicons name="help-circle-outline" size={24} color="#fff" />
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.pkHeadIcon} onPress={() => setPkSettingsOpen((v) => !v)}>
-                  <Ionicons name="settings-outline" size={22} color="#fff" />
-                </TouchableOpacity>
-              </View>
-            </View>
+      <PkSheetModal friendsList={friendsList} pkCandidates={pkCandidates} pkDuration={pkDuration} pkFriendRows={pkFriendRows} pkFriendsLive={pkFriendsLive} pkListVisible={pkListVisible} pkLoading={pkLoading} pkRecommended={pkRecommended} pkSettingsOpen={pkSettingsOpen} renderPkRow={renderPkRow} setPkDuration={setPkDuration} setPkListVisible={setPkListVisible} setPkSettingsOpen={setPkSettingsOpen} startRandomMatch={startRandomMatch} />
 
-            {pkSettingsOpen && (
-              <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}>
-                <Text style={styles.qtyLbl}>Battle length</Text>
-                {PK_DURATIONS.map((d) => (
-                  <TouchableOpacity
-                    key={d}
-                    onPress={() => setPkDuration(d)}
-                    style={[styles.qtyChip, pkDuration === d && styles.qtyChipOn]}
-                  >
-                    <Text style={[styles.qtyChipTxt, pkDuration === d && { color: "#fff" }]}>{d / 60} min</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
+      <PkMatchingModal cancelMatching={cancelMatching} hostImg={hostImg} isHost={isHost} matchMini={matchMini} matchStartRef={matchStartRef} matching={matching} setMatchMini={setMatchMini} />
 
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 30 }}>
-              <View style={styles.pkCardsRow}>
-                <TouchableOpacity
-                  style={[styles.pkCard, { backgroundColor: "#8E44FF", marginRight: 10 }]}
-                  activeOpacity={0.85}
-                  onPress={startRandomMatch}
-                >
-                  <View style={styles.pkCardIcon}>
-                    <Ionicons name="shuffle" size={24} color="#fff" />
-                  </View>
-                  <View style={{ flex: 1, marginLeft: 10 }}>
-                    <Text style={styles.pkCardTitle}>Random Match</Text>
-                    <Text style={styles.pkCardSub} numberOfLines={2}>
-                      PK with other hosts online
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.pkCard, { backgroundColor: "#FF8A4C" }]}
-                  activeOpacity={0.85}
-                  onPress={() => Alert.alert("Family PK", "Family PK is coming soon.")}
-                >
-                  <View style={styles.pkCardIcon}>
-                    <Ionicons name="trophy" size={22} color="#fff" />
-                  </View>
-                  <View style={{ flex: 1, marginLeft: 10 }}>
-                    <Text style={styles.pkCardTitle}>Family PK</Text>
-                    <Text style={styles.pkCardSub} numberOfLines={2}>
-                      Start a PK against other families
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              </View>
-
-              {pkLoading && pkCandidates.length === 0 && friendsList.length === 0 ? (
-                <ActivityIndicator color="#F71084" style={{ marginTop: 40 }} />
-              ) : (
-                <>
-                  <Text style={styles.pkSectionTitle}>
-                    Friends{pkFriendsLive > 0 ? `  ·  ${pkFriendsLive} live` : ""}
-                  </Text>
-                  {pkFriendRows.length === 0 ? (
-                    <Text style={styles.pkEmptySmall}>
-                      {PK_FRIEND_MODE === "mutual"
-                        ? "No friends yet. Follow each other to see them here."
-                        : "No friends yet. Follow someone to see them here."}
-                    </Text>
-                  ) : (
-                    pkFriendRows.map((r: any) => renderPkRow(r))
-                  )}
-                  {pkRecommended.length > 0 && (
-                    <>
-                      <Text style={styles.pkSectionTitle}>Hosts Recommended</Text>
-                      {pkRecommended.map((r: any) => renderPkRow(r))}
-                    </>
-                  )}
-                  {pkRecommended.length === 0 && pkFriendsLive === 0 && !pkLoading && (
-                    <Text style={styles.emptyTxt}>No other host is live right now.</Text>
-                  )}
-                </>
-              )}
-            </ScrollView>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* ================= PK: MATCHING (Random Match) ================= */}
-      <Modal
-        transparent
-        visible={isHost && matching && !matchMini}
-        animationType="slide"
-        onRequestClose={() => setMatchMini(true)}
-      >
-        <View style={styles.matchOverlay} pointerEvents="box-none">
-          <View style={styles.matchSheet}>
-            <TouchableOpacity style={styles.matchChevron} onPress={() => setMatchMini(true)}>
-              <Ionicons name="chevron-down" size={22} color="#fff" />
-            </TouchableOpacity>
-            <View style={styles.matchRow}>
-              <View style={[styles.matchAvaRing, { borderColor: "#1E90FF" }]}>
-                <ExpoImage source={{ uri: hostImg }} style={styles.matchAva} cachePolicy="memory-disk" transition={0} />
-              </View>
-              <View style={{ alignItems: "center" }}>
-                <Text style={styles.matchTitle}>Matching...</Text>
-                <MatchTimer startAt={matchStartRef.current} style={styles.matchTime} />
-              </View>
-              <View style={[styles.matchAvaRing, { borderColor: "#FF3FA4" }]}>
-                <View style={[styles.matchAva, styles.matchUnknown]}>
-                  <Ionicons name="person" size={34} color="#3a2030" />
-                  <Text style={styles.matchQ}>?</Text>
-                </View>
-              </View>
-            </View>
-            <TouchableOpacity style={styles.matchCancel} onPress={cancelMatching}>
-              <Text style={styles.matchCancelTxt}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      {/* ================= PK: INCOMING INVITE (host) ================= */}
-      <Modal transparent visible={!!showInvite} animationType="fade">
-        <View style={styles.overlay}>
-          <View style={styles.exitBox}>
-            <ExpoImage source={{ uri: pkInvite?.fromImg || STABLE_AVATAR }} style={styles.inviteAva} cachePolicy="memory-disk" transition={0} />
-            <Text style={styles.exitTitle}>PK Invite</Text>
-            <Text style={styles.exitSub}>{pkInvite?.fromName || "A host"} wants a {Math.round((Number(pkInvite?.duration) || PK_DURATION_SEC) / 60)} min PK battle with you.</Text>
-            <View style={styles.btnRow}>
-              <TouchableOpacity style={styles.noBtn} onPress={declinePkInvite}>
-                <Text style={styles.btnText}>Decline</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.acceptBtn, pkBusy && { opacity: 0.5 }]} disabled={pkBusy} onPress={acceptPkInvite}>
-                <Text style={styles.btnText}>Accept</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      <PkInviteModal acceptPkInvite={acceptPkInvite} declinePkInvite={declinePkInvite} pkBusy={pkBusy} pkInvite={pkInvite} showInvite={showInvite} />
       {/* Official / Admin: live ke andar hi search + ID/device ban + live band */}
       <OfficialLiveTools roomId={roomId} hostId={hostId} />
 
     </View>
   );
 }
-
-// PERF: live chat ki har row me animated frame (40-80 rows) bahut load deta tha.
-// false = chat me frame static (smooth). Seat/profile/host ke frames animated hi rehte hain.
-const CHAT_FRAME_ANIM = false;
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#000" },
-
-  loadingBg: { justifyContent: "center", alignItems: "center", backgroundColor: "#1B1545" },
-  loadingText: { color: "#AAB6D4", marginTop: 10, fontSize: 12, fontWeight: "600" },
-
-  pausedOverlay: {
-    backgroundColor: "rgba(10,11,20,0.94)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  pausedAvatar: { width: 80, height: 80, borderRadius: 40, borderWidth: 2, borderColor: "#fff" },
-  pausedText: { color: "#fff", marginTop: 10, fontSize: 13, fontWeight: "700" },
-
-  topScrim: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 150,
-  },
-  bottomScrim: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 240,
-  },
-
-  /* HEADER */
-  topHeader: {
-    position: "absolute",
-    top: 38,
-    left: 12,
-    right: 12,
-  },
-  hostBadge: { flexDirection: "row", alignItems: "center", flexShrink: 1 },
-  hostAvatarContainer: { position: "relative", justifyContent: "center", alignItems: "center" },
-  hostAvatarImg: { width: 34, height: 34, borderRadius: 14, borderWidth: 1.5, borderColor: "#fff" },
-  hostLevelFrame: { position: "absolute", width: 52, height: 52, resizeMode: "contain" },
-
-  nameRow: { flexDirection: "row", alignItems: "center", flexShrink: 1 },
-  hostNameText: { color: "#fff", fontSize: 13, fontWeight: "800", maxWidth: 96 },
-  verifiedBadge: { marginLeft: 5, justifyContent: "center", alignItems: "center" },
-  levelBadge: {
-    marginLeft: 6,
-    flexDirection: "row",
-    alignItems: "center",
-    borderWidth: 1,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 20,
-  },
-  levelText: { fontSize: 9, fontWeight: "bold", marginLeft: 2 },
-
-  viewRow: { flexDirection: "row", alignItems: "center", marginTop: 4 },
-  viewsText: { color: "#fff", fontSize: 11, fontWeight: "600", marginLeft: 4, marginRight: 8 },
-  starsText: { color: "#FFE600", fontSize: 11, fontWeight: "700" },
-  liveTag: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#E63946",
-    borderRadius: 6,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  liveDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: "#fff", marginRight: 4 },
-  liveTagText: { color: "#fff", fontSize: 9, fontWeight: "800" },
-
-  viewerCount: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  viewerCountText: { color: "#fff", fontWeight: "bold", fontSize: 13 },
-  viewerStack: {
-    flexDirection: "row",
-    alignItems: "center",
-    height: 34,
-    minWidth: 34,
-    paddingHorizontal: 5,
-    borderRadius: 17,
-    backgroundColor: "rgba(0,0,0,0.45)",
-  },
-  viewerStackAva: { width: 24, height: 24, borderRadius: 12, borderWidth: 1.5, borderColor: "#fff", backgroundColor: "#2a2b38" },
-  viewerStackCount: { color: "#fff", fontWeight: "bold", fontSize: 12, marginLeft: 6, marginRight: 3 },
-  modBar: { flexDirection: "row", marginTop: 4, marginBottom: 6 },
-  modBarBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#374151",
-    borderRadius: 18,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    marginRight: 8,
-  },
-  modBarTxt: { color: "#fff", fontSize: 12, fontWeight: "700", marginLeft: 6 },
-  kickBtn: { backgroundColor: "#DC2626", borderRadius: 14, paddingHorizontal: 12, paddingVertical: 6 },
-  kickBtnTxt: { color: "#fff", fontSize: 12, fontWeight: "800" },
-
-  /* CHAT */
-  chatArea: {
-    position: "absolute",
-    left: 0,
-    right: Math.round(width * 0.2),
-    maxHeight: height * 0.35,
-    paddingHorizontal: 10,
-  },
-  chatRow: { flexDirection: "row", marginBottom: 10, alignItems: "flex-start" },
-  chatAva: { width: 30, height: 30, borderRadius: 15, backgroundColor: "#2a2b38" },
-  chatContent: { flex: 1, marginLeft: 8 },
-  chatUser: { color: "#fff", fontWeight: "bold", fontSize: 11 },
-  bubble: {
-    backgroundColor: "rgba(0,0,0,0.45)",
-    padding: 8,
-    borderRadius: 10,
-    alignSelf: "flex-start",
-    marginTop: 3,
-  },
-  chatMsg: { color: "#fff", fontSize: 12 },
-
-  sysRow: { flexDirection: "row", alignItems: "center", paddingVertical: 5, marginBottom: 4 },
-  sysAva: { width: 22, height: 22, borderRadius: 11, backgroundColor: "#2a2b38" },
-  sysFrame: { position: "absolute", width: 30, height: 30, top: -4, left: -4 },
-  sysText: { color: "#e0e0e0", fontSize: 13, fontWeight: "600" },
-
-  /* RIGHT TOOLS */
-  toolCol: { position: "absolute", right: 10, alignItems: "center" },
-  toolWrap: { alignItems: "center", marginBottom: 10 },
-  toolBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.25)",
-  },
-  toolBtnActive: { backgroundColor: "#F71084", borderColor: "#fff" },
-  toolLabel: { color: "#fff", fontSize: 9, fontWeight: "700", marginTop: 3, maxWidth: 56, textAlign: "center" },
-  toolBadge: {
-    position: "absolute",
-    top: 0,
-    right: 2,
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: "#FF3D3D",
-  },
-  pkBtnTxt: { color: "#fff", fontWeight: "900", fontSize: 13, fontStyle: "italic" },
-
-  /* BOTTOM BAR */
-  bottomNav: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 12,
-    paddingTop: 10,
-  },
-  inputBox: {
-    flex: 1,
-    height: 42,
-    backgroundColor: "rgba(255,255,255,0.15)",
-    borderRadius: 21,
-    justifyContent: "center",
-    paddingHorizontal: 16,
-    marginRight: 10,
-  },
-  inputStyle: { color: "#fff", fontSize: 14 },
-  circleBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "transparent",
-    justifyContent: "center",
-    alignItems: "center",
-    marginLeft: 8,
-  },
-  giftCircle: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    justifyContent: "center",
-    alignItems: "center",
-    marginLeft: 6,
-  },
-
-  /* GIFT BANNER */
-  comboPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingLeft: 6,
-    paddingRight: 14,
-    paddingVertical: 6,
-    borderRadius: 30,
-    backgroundColor: "rgba(34,24,78,0.78)",
-    borderWidth: 1.5,
-    borderColor: "rgba(255,200,60,0.7)",
-    maxWidth: width * 0.62,
-  },
-  comboX: {
-    color: "#FFFFFF",
-    fontSize: 34,
-    fontWeight: "900",
-    fontStyle: "italic",
-    marginLeft: 4,
-    textShadowColor: "rgba(0,0,0,0.6)",
-    textShadowOffset: { width: 1, height: 1 },
-    textShadowRadius: 3,
-  },
-
-  /* ---- Tiki-style PK ---- */
-  pkResultWrapNew: { ...StyleSheet.absoluteFillObject, justifyContent: "center", alignItems: "center", overflow: "hidden" },
-  pkCrown: { fontSize: 44 },
-  pkBigResult: {
-    fontSize: 40,
-    fontWeight: "900",
-    fontStyle: "italic",
-    letterSpacing: 2,
-    textShadowOffset: { width: 0, height: 3 },
-    textShadowRadius: 8,
-  },
-  pkBigWin: { color: "#FFE27A", textShadowColor: "rgba(160,70,0,0.95)" },
-  pkBigLose: { color: "#C9D3E8", textShadowColor: "rgba(0,0,0,0.9)" },
-  pkBigDraw: { color: "#fff", textShadowColor: "rgba(0,0,0,0.9)" },
-  pkVsStage: { position: "absolute", left: width / 2 - 70, top: pkPanelHFixed * 0.5 - 40, width: 140, height: 80, justifyContent: "center", alignItems: "center" },
-  pkVsBolt: { position: "absolute", transform: [{ rotate: "12deg" }], opacity: 0.9 },
-  pkGlove: { position: "absolute", top: 12 },
-  pkVsPlate: {
-    paddingHorizontal: 9,
-    paddingVertical: 2,
-    borderRadius: 8,
-    backgroundColor: "rgba(255,255,255,0.95)",
-    transform: [{ skewX: "-10deg" }],
-  },
-  pkVsPlateTxt: { fontSize: 20, fontWeight: "900", fontStyle: "italic" },
-  pkStarDot: { width: 7, height: 7, borderRadius: 2, borderWidth: 1.5, borderColor: "#1E7BFF" },
-  pkSeatRow: { position: "absolute", left: 0, right: 0, bottom: 8, flexDirection: "row", justifyContent: "center", alignItems: "center" },
-  pkSeatWrap: { width: 32, height: 32, marginHorizontal: 4, alignItems: "center", justifyContent: "center" },
-  pkSeat: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: "rgba(20,16,40,0.6)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  pkSeatEmpty: { borderWidth: 1.5, borderColor: "rgba(214,170,90,0.75)", backgroundColor: "rgba(30,22,40,0.7)" },
-  pkSeatCrown: { position: "absolute", top: -11, left: -3, fontSize: 13, transform: [{ rotate: "-18deg" }] },
-  pkSeatNum: {
-    position: "absolute",
-    bottom: -5,
-    minWidth: 14,
-    height: 14,
-    borderRadius: 7,
-    paddingHorizontal: 3,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  pkSeatNumTxt: { color: "#fff", fontSize: 8, fontWeight: "900" },
-  pkCenterTrophy: { position: "absolute", left: width / 2 - 58, top: pkPanelHFixed * 0.5 - 78, width: 116, alignItems: "center" },
-  pkPanelTrophy: { position: "absolute", bottom: 44, left: 0, right: 0, alignItems: "center" },
-  pkTicker: {
-    position: "absolute",
-    height: 26,
-    borderRadius: 13,
-    overflow: "hidden",
-    backgroundColor: "rgba(255,255,255,0.13)",
-  },
-  pkTickerTxt: { position: "absolute", left: 0, top: 5, color: "rgba(255,255,255,0.92)", fontSize: 12, fontWeight: "500" },
-  pkOppPill: {
-    position: "absolute",
-    top: 6,
-    right: 6,
-    maxWidth: "86%",
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.5)",
-    borderRadius: 13,
-    paddingLeft: 9,
-    paddingRight: 3,
-    height: 24,
-  },
-  pkFriendTag: { flexDirection: "row", alignItems: "center", backgroundColor: "#22C55E", borderRadius: 9, paddingHorizontal: 6, height: 18, marginRight: 1 },
-  pkFollowingTag: { backgroundColor: "rgba(255,255,255,0.28)" },
-  pkFriendTxt: { color: "#fff", fontSize: 9, fontWeight: "800", marginLeft: 3 },
-  pkSideGlow: { position: "absolute", top: 0, borderWidth: 2.5 },
-  pkSideHint: { position: "absolute", bottom: 8, alignItems: "center" },
-  pkSideHintTxt: { color: "#fff", fontSize: 10, fontWeight: "700", backgroundColor: "rgba(0,0,0,0.45)", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, overflow: "hidden" },
-  giftToRow: { flexDirection: "row", alignItems: "center", paddingHorizontal: 6, paddingVertical: 4, marginBottom: 6 },
-  giftToLbl: { color: "#aaa", fontSize: 12, fontWeight: "700", marginRight: 8 },
-  giftToAva: { width: 34, height: 34, borderRadius: 17, borderWidth: 2.5 },
-  giftToName: { color: "#fff", fontSize: 13, fontWeight: "700", marginLeft: 8, flexShrink: 1 },
-  giftSideHint: { marginLeft: "auto", flex: 1, textAlign: "right", color: "rgba(255,255,255,0.6)", fontSize: 10, fontWeight: "600", paddingLeft: 10 },
-  giftSwitchBtn: { marginLeft: "auto", flexDirection: "row", alignItems: "center", backgroundColor: "rgba(255,255,255,0.14)", borderRadius: 14, paddingHorizontal: 10, paddingVertical: 6 },
-  giftSwitchTxt: { color: "#fff", fontSize: 11, fontWeight: "700", marginLeft: 4 },
-  pkOppName: { color: "#fff", fontSize: 11, fontWeight: "700", flexShrink: 1, paddingRight: 4 },
-  pkOppPlus: { width: 18, height: 18, borderRadius: 9, backgroundColor: "#FFE600", justifyContent: "center", alignItems: "center" },
-  pkLogoBtnTxt: { fontSize: 26, fontWeight: "900", fontStyle: "italic", letterSpacing: 1 },
-  pkEndBtn: { backgroundColor: "#DC2626", borderWidth: 1.5, borderColor: "#fff" },
-
-  /* PK STAGE */
-  pkBarWrap: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    height: PK_BAR_H,
-    justifyContent: "center",
-  },
-  pkBar: { flexDirection: "row", height: PK_BAR_H, overflow: "hidden", backgroundColor: "#FF2D75" },
-  pkScoreWrap: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  pkStarBox: {
-    width: 15,
-    height: 15,
-    borderRadius: 4,
-    backgroundColor: "#fff",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  pkSparkGlow: {
-    width: 5,
-    height: PK_BAR_H + 2,
-    borderRadius: 3,
-    backgroundColor: "#fff",
-    shadowColor: "#fff",
-    shadowOpacity: 1,
-    shadowRadius: 6,
-    elevation: 6,
-  },
-  pkScoreTxt: {
-    color: "#fff",
-    fontWeight: "800",
-    fontSize: 14,
-    marginHorizontal: 4,
-    textShadowColor: "rgba(0,0,0,0.6)",
-    textShadowOffset: { width: 1, height: 1 },
-    textShadowRadius: 3,
-  },
-  pkVsWrap: { position: "absolute", left: 0, right: 0, alignItems: "center" },
-  pkVs: {
-    color: "#fff",
-    fontWeight: "900",
-    fontStyle: "italic",
-    fontSize: 15,
-    textShadowColor: "rgba(0,0,0,0.7)",
-    textShadowOffset: { width: 1, height: 1 },
-    textShadowRadius: 3,
-  },
-  pkPanels: { position: "absolute", left: 0, right: 0, flexDirection: "row" },
-  pkWaiting: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#1B1545", overflow: "hidden" },
-  pkWaitAvatar: { width: 64, height: 64, borderRadius: 32, borderWidth: 2, borderColor: "#fff" },
-  pkNamePill: {
-    position: "absolute",
-    left: 6,
-    top: 8,
-    maxWidth: "56%",
-    backgroundColor: "rgba(0,0,0,0.5)",
-    borderRadius: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-  },
-  pkNameTxt: { color: "#fff", fontSize: 11, fontWeight: "700" },
-  pkTimerPill: {
-    position: "absolute",
-    top: 8,
-    left: width / 2 - 36,
-    width: 72,
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "rgba(15,12,40,0.62)",
-    borderRadius: 12,
-    paddingVertical: 3,
-  },
-  pkFinalWrap: { ...StyleSheet.absoluteFillObject, justifyContent: "center", alignItems: "center", zIndex: 30, elevation: 30 },
-  pkFinalNum: {
-    color: "#fff",
-    fontSize: 110,
-    fontWeight: "900",
-    fontStyle: "italic",
-    textShadowColor: "rgba(247,16,132,0.9)",
-    textShadowOffset: { width: 0, height: 3 },
-    textShadowRadius: 12,
-  },
-  pkTimerPk: { fontWeight: "900", fontStyle: "italic", fontSize: 12, marginRight: 5 },
-  pkTimerTxt: { color: "#fff", fontWeight: "800", fontSize: 12 },
-  pkResultWrap: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.35)",
-  },
-  pkResultTxt: {
-    color: "#fff",
-    fontSize: 26,
-    fontWeight: "900",
-    fontStyle: "italic",
-    textShadowColor: "rgba(0,0,0,0.7)",
-    textShadowOffset: { width: 1, height: 2 },
-    textShadowRadius: 4,
-  },
-  pkBadge: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: "#F71084",
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 2,
-    borderColor: "#fff",
-  },
-  pkBadgeTxt: { color: "#fff", fontWeight: "900", fontSize: 24, fontStyle: "italic" },
-  pkWinnerPanel: { borderWidth: 3, borderColor: "#FFD700" },
-  pkWaitPill: {
-    position: "absolute",
-    top: 126,
-    alignSelf: "center",
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.65)",
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-  },
-  retryBtn: { marginTop: 14, backgroundColor: "#F71084", paddingVertical: 9, paddingHorizontal: 26, borderRadius: 18 },
-  retryBtnTxt: { color: "#fff", fontWeight: "800", fontSize: 13 },
-  statusPill: {
-    position: "absolute",
-    top: 126,
-    alignSelf: "center",
-    maxWidth: width * 0.9,
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.65)",
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-  },
-  statusPillTxt: { color: "#fff", fontSize: 12, fontWeight: "600", marginHorizontal: 8, flexShrink: 1 },
-  pkWaitPillTxt: { color: "#fff", fontSize: 12, fontWeight: "600", marginHorizontal: 8 },
-  pkWaitCancel: { color: "#FF6B81", fontSize: 12, fontWeight: "800" },
-
-  /* EXIT / INVITE MODAL */
-  overlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.85)", justifyContent: "center", alignItems: "center" },
-  exitBox: { width: "80%", backgroundColor: "#1C1E2E", padding: 25, borderRadius: 20, alignItems: "center" },
-  exitTitle: { color: "#fff", fontSize: 18, fontWeight: "bold" },
-  exitSub: { color: "#9aa0b4", textAlign: "center", marginTop: 10, fontSize: 12 },
-  btnRow: { flexDirection: "row", marginTop: 22 },
-  noBtn: { backgroundColor: "#34495e", paddingVertical: 10, paddingHorizontal: 22, borderRadius: 10, marginRight: 15 },
-  yesBtn: { backgroundColor: "#e74c3c", paddingVertical: 10, paddingHorizontal: 22, borderRadius: 10 },
-  acceptBtn: { backgroundColor: "#22C55E", paddingVertical: 10, paddingHorizontal: 22, borderRadius: 10 },
-  btnText: { color: "#fff", fontWeight: "bold" },
-  inviteAva: { width: 70, height: 70, borderRadius: 35, borderWidth: 2, borderColor: "#fff", marginBottom: 12 },
-
-  /* GIFT MODAL (Tiki style) */
-  giftOverlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "transparent" },
-  giftSheet: {
-    backgroundColor: "#141414",
-    overflow: "hidden",
-    maxHeight: height * 0.52,
-    borderTopLeftRadius: 14,
-    borderTopRightRadius: 14,
-    paddingTop: 14,
-    paddingHorizontal: 0,
-    paddingBottom: 14,
-  },
-  giftGoldLine: { height: 0 },
-  giftTitle: { color: "#fff", fontSize: 17, fontWeight: "bold", marginBottom: 0 },
-  giftCard: {
-    width: "25%",
-    paddingVertical: 5,
-    marginBottom: 2,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  giftCardSel: { backgroundColor: "rgba(255,255,255,0.12)" },
-  giftName: { color: "#fff", fontSize: 10, marginTop: 3 },
-  giftCoin: { color: "#8E8E93", fontWeight: "600", fontSize: 10, marginLeft: 3 },
-  giftBottomRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 14,
-    paddingTop: 4,
-  },
-  giftBalTxt: { color: "#fff", fontSize: 15, fontWeight: "600", marginLeft: 5 },
-  giftRechargeTxt: { color: "#FFC800", fontSize: 13, fontWeight: "600", marginTop: 4 },
-  comboWrap: { position: "absolute", right: 10, alignItems: "center", zIndex: 70, elevation: 70 },
-  cbPill: {
-    backgroundColor: "rgba(0,0,0,0.6)", borderRadius: 11, paddingHorizontal: 9, paddingVertical: 2,
-    marginBottom: -6, zIndex: 2, borderWidth: 1, borderColor: "rgba(255,212,0,0.8)",
-  },
-  cbPillTxt: { color: "#FFD400", fontSize: 11, fontWeight: "800" },
-  comboBox: { width: 76, height: 76, alignItems: "center", justifyContent: "center" },
-  comboRing: { position: "absolute", width: 70, height: 70, borderRadius: 35, borderWidth: 3, borderColor: "#FFD400" },
-  comboBtn: {
-    width: 70, height: 70, borderRadius: 35, backgroundColor: "#FFD400", alignItems: "center", justifyContent: "center",
-    borderWidth: 2, borderColor: "#fff",
-  },
-  comboNum: { color: "#222", fontSize: 28, fontWeight: "900", fontStyle: "italic", lineHeight: 30 },
-  comboLbl: { color: "#222", fontSize: 12, fontWeight: "800", marginTop: -2 },
-  giftQtyPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#262626",
-    borderRadius: 24,
-    padding: 3,
-  },
-  giftQtyChip: {
-    minWidth: 30,
-    height: 30,
-    paddingHorizontal: 6,
-    borderRadius: 15,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  giftQtyChipSel: { backgroundColor: "#fff" },
-  giftQtyTxt: { color: "#fff", fontSize: 13, fontWeight: "600" },
-  giftQtyTxtSel: { color: "#000", fontWeight: "bold" },
-  giftSendBtn: {
-    backgroundColor: "#FFE100",
-    borderRadius: 22,
-    paddingHorizontal: 24,
-    height: 42,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  giftSendTxt: { color: "#000", fontSize: 16, fontWeight: "bold" },
-
-  /* BOTTOM SHEETS (filter / PK list) */
-  sheetOverlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.4)" },
-  sheet: {
-    backgroundColor: "#111827",
-    borderTopLeftRadius: 26,
-    borderTopRightRadius: 26,
-    paddingTop: 20,
-    paddingHorizontal: 18,
-    paddingBottom: 34,
-  },
-  sheetTitle: { color: "#fff", fontSize: 18, fontWeight: "bold" },
-  sheetSub: { color: "#9aa0b4", fontSize: 12, marginTop: 4, marginBottom: 12 },
-  emptyTxt: { color: "#9aa0b4", textAlign: "center", marginTop: 40, fontSize: 13 },
-
-  filterItem: { alignItems: "center", marginRight: 16, marginTop: 14 },
-  filterCircle: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: "#1C1E2E",
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 2,
-    borderColor: "transparent",
-  },
-  filterCircleActive: { borderColor: "#F71084" },
-  filterLabel: { color: "#fff", fontSize: 11, marginTop: 6, fontWeight: "600" },
-
-  pkRow: { flexDirection: "row", alignItems: "center", paddingVertical: 10 },
-  pkRowAva: { width: 46, height: 46, borderRadius: 23, backgroundColor: "#2a2b38" },
-  pkRowName: { color: "#fff", fontSize: 14, fontWeight: "700" },
-  pkRowSub: { color: "#9aa0b4", fontSize: 11, marginTop: 2 },
-  pkInviteBtn: { backgroundColor: "#F71084", paddingVertical: 8, paddingHorizontal: 18, borderRadius: 16 },
-  pkInviteTxt: { color: "#fff", fontWeight: "800", fontSize: 12 },
-
-  /* ===== PK PRO ===== */
-  pkSpark: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    width: 24,
-    marginLeft: -12,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  pkVsBadge: {
-    position: "absolute",
-    left: width / 2 - 17,
-    top: "50%",
-    marginTop: -17,
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: "#F71084",
-    borderWidth: 2,
-    borderColor: "#fff",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  pkVsBadgeTxt: { color: "#fff", fontWeight: "900", fontStyle: "italic", fontSize: 12 },
-  pkMuteBtn: {
-    position: "absolute",
-    top: 34,
-    right: 6,
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: "rgba(0,0,0,0.55)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  pkWaitTxt: { color: "#E6E0FF", fontSize: 10, marginTop: 6, fontWeight: "600" },
-  pkDim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(10,8,30,0.2)" },
-  pkResultBadge: {
-    position: "absolute",
-    top: 34,
-    left: 6,
-    backgroundColor: "rgba(80,80,90,0.9)",
-    borderRadius: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-  },
-  pkResultBadgeTxt: { color: "#fff", fontSize: 11, fontWeight: "900" },
-
-  /* ===== PREMIUM ADDITIONS ===== */
-  followPill: {
-    marginLeft: 8,
-    backgroundColor: "#F71084",
-    borderRadius: 10,
-    paddingHorizontal: 9,
-    paddingVertical: 2,
-  },
-  followPillOn: { backgroundColor: "rgba(255,255,255,0.25)" },
-  followTxt: { color: "#fff", fontSize: 10, fontWeight: "800" },
-
-  rankRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    height: 34,
-    minWidth: 34,
-    paddingHorizontal: 4,
-    borderRadius: 17,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    justifyContent: "center",
-  },
-  rankAva: { width: 26, height: 26, borderRadius: 13, borderWidth: 1.5, backgroundColor: "#2a2b38" },
-
-  infoWrap: { position: "absolute", top: 126, left: 12, right: 72 },
-  titlePill: {
-    alignSelf: "flex-start",
-    backgroundColor: "rgba(0,0,0,0.45)",
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    marginBottom: 6,
-    maxWidth: "100%",
-  },
-  titleTxt: { color: "#fff", fontSize: 12, fontWeight: "700" },
-  pinPill: {
-    alignSelf: "flex-start",
-    flexDirection: "row",
-    alignItems: "flex-start",
-    backgroundColor: "rgba(255,193,7,0.22)",
-    borderColor: "rgba(255,193,7,0.7)",
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    marginBottom: 6,
-    maxWidth: "100%",
-  },
-  pinTxt: { color: "#FFE9A6", fontSize: 12, fontWeight: "600", marginLeft: 6, flexShrink: 1 },
-  netPill: {
-    alignSelf: "flex-start",
-    backgroundColor: "rgba(220,38,38,0.85)",
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-  },
-  netTxt: { color: "#fff", fontSize: 11, fontWeight: "700" },
-
-  heartsLayer: { position: "absolute", right: 0, width: 90, height: 280 },
-
-  welcomeBox: {
-    backgroundColor: "rgba(24,18,58,0.6)",
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 10,
-    alignSelf: "flex-start",
-    maxWidth: "92%",
-  },
-  welcomeTxt: { color: "#fff", fontSize: 13, fontWeight: "500" },
-
-  roleTag: { borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1, marginLeft: 5 },
-  roleTagTxt: { color: "#fff", fontSize: 8, fontWeight: "800" },
-
-  emojiStrip: {
-    position: "absolute",
-    left: 12,
-    right: 12,
-    flexDirection: "row",
-    justifyContent: "center",
-    flexWrap: "wrap",
-    backgroundColor: "rgba(17,24,39,0.92)",
-    borderRadius: 22,
-    paddingVertical: 6,
-    zIndex: 50,
-    elevation: 50,
-  },
-
-  rechargeBtn: {
-    marginLeft: 10,
-    backgroundColor: "#22C55E",
-    borderRadius: 14,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-  },
-  rechargeTxt: { color: "#fff", fontSize: 11, fontWeight: "800" },
-  qtyRow: { flexDirection: "row", alignItems: "center", marginBottom: 10, paddingHorizontal: 6 },
-  qtyLbl: { color: "#9aa0b4", fontSize: 12, marginRight: 10, fontWeight: "600" },
-  qtyChip: {
-    borderWidth: 1,
-    borderColor: "#4b5563",
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    marginRight: 8,
-  },
-  qtyChipOn: { backgroundColor: "#F71084", borderColor: "#F71084" },
-  qtyChipTxt: { color: "#cbd5e1", fontSize: 12, fontWeight: "700" },
-
-  rankNum: { color: "#9aa0b4", width: 26, fontSize: 16, fontWeight: "800", textAlign: "center" },
-  rankStars: { color: "#FFE600", fontWeight: "800", fontSize: 13 },
-
-  pcOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "flex-end" },
-  pcSheet: { backgroundColor: "#141414", borderTopLeftRadius: 32, borderTopRightRadius: 32, paddingHorizontal: 16, paddingTop: 22, alignItems: "center" },
-  pcAvaWrap: { width: 96, height: 96, justifyContent: "center", alignItems: "center" },
-  pcStats: { flexDirection: "row", width: "100%", marginTop: 16 },
-  pcStat: { flex: 1, alignItems: "center" },
-  pcStatN: { color: "#fff", fontSize: 20, fontWeight: "800" },
-  pcStatL: { color: "#cfcfcf", fontSize: 15, marginTop: 4 },
-  pcCards: { flexDirection: "row", width: "100%", marginTop: 18 },
-  pcCard: { flex: 1, flexDirection: "row", alignItems: "center", backgroundColor: "#2b2b2b", borderRadius: 12, paddingHorizontal: 10, paddingVertical: 10, minHeight: 56 },
-  pcLvPill: { flexDirection: "row", alignItems: "center", borderRadius: 14, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 3 },
-  pcLvTxt: { fontSize: 14, fontWeight: "800", marginLeft: 3 },
-  pcLvMore: { color: "#fff", fontSize: 16, marginLeft: "auto" },
-  pcFamLogo: { width: 40, height: 40, borderRadius: 20, backgroundColor: "#222" },
-  pcFamName: { color: "#fff", fontSize: 15, fontWeight: "800" },
-  pcFamSub: { color: "#ddd", fontSize: 12, fontWeight: "700" },
-  pcMainBtns: { flexDirection: "row", width: "100%", marginTop: 14 },
-  pcProfileBtn: { flex: 1, backgroundColor: "#2b2b2b", borderRadius: 10, paddingVertical: 16, alignItems: "center" },
-  pcProfileTxt: { color: "#fff", fontSize: 18, fontWeight: "800" },
-  pcFollowBtn: { flex: 2, marginLeft: 10, backgroundColor: "#FFE62B", borderRadius: 10, paddingVertical: 16, alignItems: "center" },
-  pcFollowTxt: { color: "#000", fontSize: 18, fontWeight: "800" },
-  pcChips: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", width: "100%", marginTop: 12 },
-  pcChip: { borderRadius: 16, paddingHorizontal: 12, paddingVertical: 7, margin: 4 },
-  pcChipTxt: { color: "#fff", fontWeight: "800", fontSize: 12 },
-  pcBox: {
-    width: "82%",
-    backgroundColor: "#1C1E2E",
-    borderRadius: 22,
-    padding: 22,
-    alignItems: "center",
-  },
-  pcAva: { width: 84, height: 84, borderRadius: 42, borderWidth: 2, borderColor: "#fff", backgroundColor: "#2a2b38" },
-  pcName: { color: "#fff", fontSize: 18, fontWeight: "800", maxWidth: 200 },
-  pcBtns: { width: "100%", marginTop: 16 },
-  pcBtn: { borderRadius: 14, paddingVertical: 11, alignItems: "center", marginBottom: 8 },
-  pcBtnTxt: { color: "#fff", fontWeight: "800", fontSize: 13 },
-
-  reasonRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#374151",
-  },
-  reasonTxt: { color: "#fff", fontSize: 14, fontWeight: "600" },
-
-  fieldLbl: { color: "#9aa0b4", fontSize: 12, marginTop: 14, marginBottom: 6, fontWeight: "600" },
-  fieldLblDark: { color: "#fff", fontSize: 14, fontWeight: "700" },
-  fieldInput: {
-    backgroundColor: "#1C1E2E",
-    color: "#fff",
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    fontSize: 14,
-  },
-  switchRow: { flexDirection: "row", alignItems: "center", marginTop: 16 },
-  saveBtn: { backgroundColor: "#F71084", borderRadius: 16, paddingVertical: 13, alignItems: "center", marginTop: 20 },
-  saveBtnTxt: { color: "#fff", fontWeight: "800", fontSize: 15 },
-
-  summaryBg: { flex: 1, backgroundColor: "#0A0B14", alignItems: "center", paddingTop: 80 },
-  sumTitle: { color: "#fff", fontSize: 26, fontWeight: "800" },
-  sumSub: { color: "#9aa0b4", fontSize: 13, marginTop: 6, textAlign: "center" },
-  sumGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", marginTop: 24, width: "92%" },
-  sumCard: {
-    width: "29%",
-    backgroundColor: "#1C1E2E",
-    borderRadius: 16,
-    paddingVertical: 14,
-    alignItems: "center",
-    margin: "1.8%",
-  },
-  sumVal: { color: "#fff", fontSize: 16, fontWeight: "800", marginTop: 6 },
-  sumKey: { color: "#9aa0b4", fontSize: 10, marginTop: 3, fontWeight: "600" },
-  sumGifter: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#1C1E2E",
-    borderRadius: 14,
-    padding: 10,
-    marginBottom: 8,
-  },
-  sumGifterName: { color: "#fff", flex: 1, marginLeft: 10, fontWeight: "700", fontSize: 13 },
-  sumDone: {
-    backgroundColor: "#F71084",
-    borderRadius: 24,
-    paddingVertical: 13,
-    paddingHorizontal: 60,
-    marginTop: 28,
-  },
-  /* ===== TIKI-STYLE LAYOUT ===== */
-  topRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  hostPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.6)",
-    borderRadius: 22,
-    paddingLeft: 4,
-    paddingRight: 10,
-    paddingVertical: 4,
-    maxWidth: width * 0.56,
-    flexShrink: 1,
-  },
-  followPlus: {
-    marginLeft: 8,
-    width: 34,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: "#FFE600",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  rightGroup: { flexDirection: "row", alignItems: "center" },
-  closeBtn: { width: 34, height: 34, justifyContent: "center", alignItems: "center", marginLeft: 2 },
-  weeklyRow: { flexDirection: "row", alignItems: "center", marginTop: 8 },
-  weeklyTag: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(80,40,110,0.55)",
-    borderRadius: 6,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-  },
-  weeklyTxt: { color: "#fff", fontSize: 11, fontWeight: "700", marginLeft: 5 },
-  minPill: {
-    marginLeft: 8,
-    minWidth: 96,
-    height: 24,
-    borderRadius: 6,
-    backgroundColor: "rgba(80,40,110,0.55)",
-    overflow: "hidden",
-    justifyContent: "center",
-    alignItems: "center",
-    paddingHorizontal: 10,
-  },
-  minFill: { position: "absolute", left: 0, top: 0, bottom: 0, backgroundColor: "rgba(255,200,0,0.55)" },
-  minTxt: { color: "#fff", fontSize: 11, fontWeight: "700" },
-
-  circleBtnOn: { backgroundColor: "#16A34A" },
-  guestBadge: {
-    position: "absolute",
-    top: -4,
-    right: -4,
-    minWidth: 16,
-    height: 16,
-    borderRadius: 8,
-    paddingHorizontal: 3,
-    backgroundColor: "#FF3D3D",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  guestBadgeTxt: { color: "#fff", fontSize: 10, fontWeight: "800" },
-
-  // guest tiles (right side, like a real live room)
-  guestColumn: {
-    position: "absolute",
-    right: 6,
-    // bottom NICHE se start: bottom value render me inset ke hisaab se diya hai (TopKing Event button ke upar)
-    flexDirection: "column-reverse", // pehla guest sabse niche, naye guests upar ki taraf
-    width: GUEST_TILE_W,
-    zIndex: 20,
-    elevation: 20,
-  },
-  guestTile: {
-    width: GUEST_TILE_W,
-    height: GUEST_TILE_H,
-    borderRadius: 10,
-    overflow: "hidden",
-    backgroundColor: "rgba(20,16,32,0.72)",
-    marginBottom: 6,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.18)",
-  },
-  guestAvaWrap: { ...StyleSheet.absoluteFillObject, justifyContent: "center", alignItems: "center" },
-  guestAvaRing: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    borderWidth: 2.5,
-    borderColor: "#FFE600",
-    padding: 2,
-  },
-  guestAva: { width: "100%", height: "100%", borderRadius: 24, backgroundColor: "#2a2b38" },
-  guestMicOff: {
-    position: "absolute",
-    top: 5,
-    right: 5,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: "rgba(220,38,38,0.9)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  guestNameRow: {
-    position: "absolute",
-    left: 5,
-    right: 5,
-    bottom: 5,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  guestNameTxt: {
-    flexShrink: 1,
-    color: "#fff",
-    fontSize: 10.5,
-    fontWeight: "800",
-    textShadowColor: "rgba(0,0,0,0.85)",
-    textShadowRadius: 3,
-    textShadowOffset: { width: 0, height: 1 },
-  },
-  guestPlus: {
-    marginLeft: 4,
-    minWidth: 22,
-    height: 17,
-    borderRadius: 9,
-    backgroundColor: "#FFE600",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  // host sheet
-  guestSecTitle: { color: "#fff", fontSize: 14, fontWeight: "800", marginBottom: 8 },
-  guestEmpty: { color: "#9aa0b4", fontSize: 12, paddingVertical: 8 },
-  guestRow: { flexDirection: "row", alignItems: "center", paddingVertical: 8 },
-  guestRowAva: { width: 42, height: 42, borderRadius: 21, backgroundColor: "#2a2b38" },
-  guestRowName: { flex: 1, color: "#fff", fontSize: 14, fontWeight: "700", marginLeft: 10, marginRight: 8 },
-  guestBtn: { width: 36, height: 36, borderRadius: 18, justifyContent: "center", alignItems: "center" },
-  guestAccept: {
-    marginLeft: 8,
-    backgroundColor: "#FFE600",
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    height: 36,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  guestAcceptTxt: { color: "#111", fontWeight: "800", fontSize: 13 },
-
-  chatPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    height: 40,
-    borderRadius: 20,
-    paddingHorizontal: 8,
-    backgroundColor: "transparent",
-  },
-  chatPillTxt: { color: "#fff", fontSize: 15, fontWeight: "600", marginLeft: 7 },
-  sendBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: "#F71084",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  pkBadgeBtn: {
-    minWidth: 44,
-    height: 38,
-    borderRadius: 10,
-    backgroundColor: "transparent",
-    justifyContent: "center",
-    alignItems: "center",
-    paddingHorizontal: 6,
-  },
-  pkBadgeBtnTxt: { color: "#fff", fontWeight: "900", fontStyle: "italic", fontSize: 14 },
-  pkBadgeDot: {
-    position: "absolute",
-    top: -3,
-    right: -3,
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: "#FF3D3D",
-  },
-  matchMiniPill: {
-    backgroundColor: "rgba(40,30,60,0.8)",
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    alignItems: "center",
-  },
-  matchMiniTxt: { color: "#fff", fontSize: 11, fontWeight: "700" },
-  matchMiniTime: { color: "#cbd5e1", fontSize: 10 },
-
-  toastWrap: { position: "absolute", left: 0, right: 0, alignItems: "center", zIndex: 60, elevation: 60 },
-  toastPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(30,28,36,0.95)",
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    maxWidth: width * 0.92,
-  },
-  toastIcon: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    backgroundColor: "#FFD600",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  toastTxt: { color: "#fff", fontSize: 13, marginLeft: 10, flexShrink: 1 },
-
-  menuGrid: { flexDirection: "row", flexWrap: "wrap", paddingBottom: 6 },
-  menuItem: { width: "25%", alignItems: "center", marginBottom: 18 },
-  menuIcon: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    backgroundColor: "#1C1E2E",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  menuIconOn: { backgroundColor: "#F71084" },
-  menuLbl: { color: "#fff", fontSize: 11, fontWeight: "600", marginTop: 6, maxWidth: 70, textAlign: "center" },
-
-  pkSheetOverlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "transparent" },
-  pkSheet: {
-    height: height * 0.74,
-    backgroundColor: "#17171C",
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    paddingTop: 14,
-    paddingHorizontal: 14,
-  },
-  pkSheetHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 14 },
-  pkHeadIcon: { width: 34, height: 34, justifyContent: "center", alignItems: "center" },
-  pkLogo: { fontSize: 30, fontWeight: "900", fontStyle: "italic", letterSpacing: 1 },
-  pkCardsRow: { flexDirection: "row", marginBottom: 20 },
-  pkCard: { flex: 1, height: 78, borderRadius: 10, flexDirection: "row", alignItems: "center", paddingHorizontal: 10 },
-  pkCardIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.25)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  pkCardTitle: { color: "#fff", fontSize: 15, fontWeight: "800" },
-  pkCardSub: { color: "rgba(255,255,255,0.85)", fontSize: 10, marginTop: 2 },
-  pkSectionTitle: { color: "#fff", fontSize: 15, fontWeight: "800", marginTop: 6, marginBottom: 8 },
-  pkListRow: { flexDirection: "row", alignItems: "center", paddingVertical: 9 },
-  pkListAva: { width: 48, height: 48, borderRadius: 24, backgroundColor: "#2a2b38" },
-  pkListName: { color: "#fff", fontSize: 14, fontWeight: "700" },
-  pkListStat: { color: "#9aa0b4", fontSize: 11, marginLeft: 4 },
-  inviteYellow: {
-    backgroundColor: "#FFE600",
-    borderRadius: 6,
-    width: 70,
-    paddingVertical: 8,
-    alignItems: "center",
-  },
-  inviteYellowTxt: { color: "#111", fontWeight: "800", fontSize: 13 },
-  inviteGrey: { backgroundColor: "#2a2b38" },
-  pkLiveDot: {
-    position: "absolute",
-    right: 0,
-    bottom: 0,
-    width: 13,
-    height: 13,
-    borderRadius: 7,
-    backgroundColor: "#22C55E",
-    borderWidth: 2,
-    borderColor: "#17171C",
-  },
-  pkEmptySmall: { color: "#9aa0b4", fontSize: 12, paddingVertical: 8 },
-
-  matchOverlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "transparent" },
-  matchSheet: {
-    backgroundColor: "#17171C",
-    borderTopLeftRadius: 14,
-    borderTopRightRadius: 14,
-    paddingHorizontal: 18,
-    paddingTop: 12,
-    paddingBottom: 30,
-  },
-  matchChevron: { alignSelf: "flex-end", padding: 4 },
-  matchRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginVertical: 10 },
-  matchAvaRing: { width: 74, height: 74, borderRadius: 37, borderWidth: 3, padding: 3 },
-  matchAva: { width: "100%", height: "100%", borderRadius: 34, backgroundColor: "#2a2b38" },
-  matchUnknown: { justifyContent: "center", alignItems: "center", backgroundColor: "#4a1d33" },
-  matchQ: { position: "absolute", color: "#FF8FBF", fontSize: 18, fontWeight: "900" },
-  matchTitle: { color: "#fff", fontSize: 16, fontWeight: "800" },
-  matchTime: { color: "#9aa0b4", fontSize: 12, marginTop: 4 },
-  matchCancel: { backgroundColor: "#4A4A52", borderRadius: 8, paddingVertical: 12, alignItems: "center", marginTop: 14 },
-  matchCancelTxt: { color: "#fff", fontWeight: "700", fontSize: 14 },
-
-  endBg: { flex: 1, backgroundColor: "#2A0E3D" },
-  endHeader: {
-    marginTop: 44,
-    height: 46,
-    paddingHorizontal: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  endHeaderTxt: { color: "#fff", fontSize: 16, fontWeight: "700" },
-  endCard: {
-    backgroundColor: "rgba(255,255,255,0.07)",
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 14,
-  },
-  endCardTitle: { color: "#D9C9E6", fontSize: 13, fontWeight: "600", marginBottom: 14 },
-  endGrid: { flexDirection: "row", flexWrap: "wrap" },
-  endCell: { width: "50%", alignItems: "center", marginBottom: 16 },
-  endVal: { color: "#fff", fontSize: 18, fontWeight: "800" },
-  endLbl: { color: "#BBA8CC", fontSize: 11, marginTop: 4 },
-  endPct: { position: "absolute", color: "#fff", fontSize: 15, fontWeight: "800" },
-  endProgTitle: { color: "#fff", fontSize: 13, fontWeight: "700" },
-  endProgSub: { color: "#FFE600", fontSize: 12, marginTop: 6 },
-  endCentre: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FFE600",
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    marginTop: 4,
-  },
-  endCentreIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: "#fff",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  endCentreTitle: { color: "#111", fontSize: 14, fontWeight: "800" },
-  endCentreSub: { color: "#333", fontSize: 11, marginTop: 2 },
-
-  startPkBtn: {
-    position: "absolute",
-    width: 226,
-    height: 58,
-    borderRadius: 12,
-    backgroundColor: "#FFD91A",
-    borderWidth: 2,
-    borderColor: "#E8B800",
-    justifyContent: "center",
-    alignItems: "center",
-    zIndex: 60,
-    elevation: 60,
-  },
-  startPkTxt: { color: "#1A1A1A", fontSize: 22, fontWeight: "800" },
-
-  /* ===== TIKI CHAT PILLS ===== */
-  tkReply: { borderLeftWidth: 2, borderLeftColor: "#F71084", paddingLeft: 6, marginTop: 3, marginBottom: 2, maxWidth: "100%" },
-  tkReplyTxt: { color: "rgba(255,255,255,0.7)", fontSize: 12 },
-  replyBar: {
-    position: "absolute",
-    left: 12,
-    right: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(17,24,39,0.94)",
-    borderRadius: 18,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    zIndex: 51,
-    elevation: 51,
-  },
-  replyBarTxt: { flex: 1, color: "#e5e7eb", fontSize: 12, marginHorizontal: 8 },
-  pcManage: { position: "absolute", top: 18, right: 20, zIndex: 5 },
-  pcManageTxt: { color: "#9ca3af", fontSize: 13, fontWeight: "600" },
-  mgOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "flex-end" },
-  mgSheet: { backgroundColor: "#1f1f21", borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingTop: 8 },
-  mgRow: { paddingVertical: 17, alignItems: "center" },
-  mgTxt: { color: "#fff", fontSize: 16, fontWeight: "700" },
-  kdOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center" },
-  kdBox: { width: "80%", backgroundColor: "#fff", borderRadius: 14, overflow: "hidden" },
-  kdTitle: { color: "#111", fontSize: 17, fontWeight: "800", textAlign: "center", paddingHorizontal: 22, paddingTop: 22 },
-  kdChkRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 14 },
-  kdChk: { width: 18, height: 18, borderRadius: 9, borderWidth: 1.5, borderColor: "#c4c4c8", marginRight: 8, justifyContent: "center", alignItems: "center" },
-  kdChkOn: { backgroundColor: "#F71084", borderColor: "#F71084" },
-  kdChkTxt: { color: "#555", fontSize: 14 },
-  kdBtns: { flexDirection: "row", borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: "#d4d4d8" },
-  kdBtn: { flex: 1, paddingVertical: 15, alignItems: "center" },
-  kdBtnTxt: { color: "#111", fontSize: 16, fontWeight: "800" },
-  tkRow: { marginBottom: 6, alignItems: "flex-start" },
-  tkPill: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "center",
-    alignSelf: "flex-start",
-    maxWidth: "100%",
-    backgroundColor: "rgba(24,18,58,0.6)",
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  tkTxt: { color: "#fff", fontSize: 14 },
-  tkName: { color: "#D9D2F5", fontSize: 14, fontWeight: "600" },
-  tkGiftName: { color: "#FFE600", fontSize: 14, fontWeight: "700" },
-
-  /* ===== TIKI TOP-3 CHIPS (header) ===== */
-  topStack: { flexDirection: "row", alignItems: "center" },
-  topChip: { width: 33, height: 44, marginRight: 3, alignItems: "center" },
-  topChipAva: { width: 31, height: 31, borderRadius: 12, borderWidth: 2, backgroundColor: "#2a2b38", marginTop: 4 },
-  topChipCrown: { position: "absolute", top: -4, left: -3, fontSize: 13, transform: [{ rotate: "-20deg" }] },
-  topChipTag: { position: "absolute", bottom: 0, paddingHorizontal: 4, height: 11, borderRadius: 3, justifyContent: "center" },
-  topChipTagTxt: { color: "#fff", fontSize: 7, fontWeight: "900", fontStyle: "italic" },
-  viewerCountCircle: {
-    minWidth: 30,
-    height: 30,
-    borderRadius: 6,
-    paddingHorizontal: 5,
-    backgroundColor: "transparent",
-    justifyContent: "center",
-    alignItems: "center",
-    marginLeft: 2,
-  },
-});

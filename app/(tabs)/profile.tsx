@@ -1,3 +1,5 @@
+import { setVideoListCache } from '../../utils/videoListCache';
+import { sortProfileVideos } from '../../utils/pinnedVideos';
 import LevelBadge from '../../components/LevelBadge';
 import AppBottomNav from '../../components/AppBottomNav';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -162,7 +164,7 @@ const VideoItem = memo(function VideoItem({ item, onPress }) {
     <TouchableOpacity style={styles.videoCard} activeOpacity={0.85} onPress={() => onPress(item)}>
       <FastImage uri={item.thumbnail} fallback={AVATAR_FALLBACK} style={styles.video} />
 
-      {!!(item.pinned || item.isPinned) && (
+      {!!item.pinned && (
         <View style={styles.pinnedBadge}>
           <Text style={styles.pinnedText}>Pinned</Text>
         </View>
@@ -323,7 +325,7 @@ export default function ProfileScreen() {
         return { id: d.id, ...data };
       });
 
-      list.sort((a, b) => getCreatedTime(b.createdAt) - getCreatedTime(a.createdAt));
+      sortProfileVideos(list); // pinned upar, phir newest
       setVideos(list);
       setVideosLoaded(true);
 
@@ -615,17 +617,24 @@ export default function ProfileScreen() {
   );
 
   // JSON pehle se ready (videos badalne par ek baar) => tap par UI nahi atakta
-  const videosJson = useMemo(() => JSON.stringify(videos), [videos]);
-
+  // Poori list memory cache se jaati hai (40+ video scroll honge); params me sirf chhota window
   const onVideoPress = useCallback(
     (item) => {
+      const uid = auth.currentUser?.uid;
       const index = videos.findIndex((v) => v.id === item.id);
+      setVideoListCache(`own:${uid}`, videos);
+      const winStart = Math.max(0, index - 5);
       push({
         pathname: '/videoedite',
-        params: { videos: videosJson, index, userId: auth.currentUser?.uid },
+        params: {
+          videos: JSON.stringify(videos.slice(winStart, winStart + 30)),
+          index: index - winStart,
+          videoId: item.id,
+          userId: uid,
+        },
       });
     },
-    [videos, videosJson, push]
+    [videos, push]
   );
 
   const renderVideoItem = useCallback(

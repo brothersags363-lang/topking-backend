@@ -19,7 +19,20 @@ export const ADMIN_FRAMES = {
   agency_wings: { label: 'Official Agency Wings', img: require('../assets/admin_frames/agency_wings.webp'), still: require('../assets/admin_frames/still/agency_wings.webp') },
   tk_team:      { label: 'TK Team',               img: require('../assets/admin_frames/tk_team.webp'),      still: require('../assets/admin_frames/still/tk_team.webp') },
 };
-export const ADMIN_FRAME_KEYS = Object.keys(ADMIN_FRAMES);
+const ADMIN_ONLY = { ...ADMIN_FRAMES }; // copy: angel frames baad me ADMIN_FRAMES me judte hain, isme nahi
+export const ADMIN_FRAME_KEYS = Object.keys(ADMIN_ONLY); // Admin Panel me sirf yehi diye ja sakte hain
+
+// ---- ANGEL FRAMES (Fresh / Senior Angel) ----
+// Admin nahi deta: user ko apne aap milta hai (Fresh = ID verified, Senior = white tick).
+// Frames & Entries se user chunta hai -> users/{uid}.frameChoice = "ang:<key>".
+// Server (set-frame-prefs + frame map) eligibility check karta hai. Render ADMIN_FRAMES se hi hota hai,
+// isliye feed / chat / comments / profile / live room sab jagah wahi frame dikhta hai.
+export const ANGEL_FRAMES = {
+  fresh_angel:  { label: 'Fresh Angel',  img: require('../assets/pendants/fresh_angel.webp'),  still: require('../assets/pendants/still/fresh_angel.webp') },
+  senior_angel: { label: 'Senior Angel', img: require('../assets/pendants/senior_angel.webp'), still: require('../assets/pendants/still/senior_angel.webp') },
+};
+export const ANGEL_FRAME_KEYS = Object.keys(ANGEL_FRAMES);
+Object.assign(ADMIN_FRAMES, ANGEL_FRAMES); // sirf render / spec ke liye (ADMIN_FRAME_KEYS upar fix hai)
 
 // ---- FRAME MAP: { uid: spec } ----
 // spec = admin frame key | 'lv30' | 'lv40' | 'lv50' (user ne khud chuna) | 'off' (user ne frame band kiya)
@@ -44,7 +57,7 @@ const isValidSpec = (v) => typeof v === 'string' && (!!ADMIN_FRAMES[v] || v === 
 // Admin ne user ko jitne frames diye (list + purana single adminFrame), sirf jo app me maujood hain
 export function ownedAdminFrames(p) {
   const out = [];
-  const add = (k) => { if (k && ADMIN_FRAMES[k] && out.indexOf(k) === -1) out.push(k); };
+  const add = (k) => { if (k && ADMIN_ONLY[k] && out.indexOf(k) === -1) out.push(k); };
   if (p && Array.isArray(p.adminFrames)) p.adminFrames.forEach(add);
   if (p) add(p.adminFrame);
   return out;
@@ -53,7 +66,7 @@ export function ownedAdminFrames(p) {
 function cleanPrefs(p) {
   const owned = ownedAdminFrames(p);
   return {
-    adminFrame: p && p.adminFrame && ADMIN_FRAMES[p.adminFrame] ? p.adminFrame : owned.length ? owned[owned.length - 1] : null,
+    adminFrame: p && p.adminFrame && ADMIN_ONLY[p.adminFrame] ? p.adminFrame : owned.length ? owned[owned.length - 1] : null,
     adminFrames: owned,
     frameChoice: (p && p.frameChoice) || null,
     frameOff: !!(p && p.frameOff === true),
@@ -125,12 +138,15 @@ export function specFromPrefs(p) {
     if (String(c).indexOf('adm:') === 0) {
       const k = String(c).slice(4);
       if (ownedAdminFrames(p).indexOf(k) !== -1) return k;
+    } else if (String(c).indexOf('ang:') === 0) {
+      const k = String(c).slice(4);
+      if (ANGEL_FRAMES[k]) return k; // server pehle hi eligibility check kar chuka hota hai
     } else if (LEVEL_SPEC_RE.test(c)) {
       return c;
     }
   }
   const owned = ownedAdminFrames(p);
-  return p.adminFrame && ADMIN_FRAMES[p.adminFrame] ? p.adminFrame : owned.length ? owned[owned.length - 1] : null;
+  return p.adminFrame && ADMIN_ONLY[p.adminFrame] ? p.adminFrame : owned.length ? owned[owned.length - 1] : null;
 }
 
 // Apni frame prefs (Frames & Entries screen ke liye): { adminFrame, frameChoice, frameOff }

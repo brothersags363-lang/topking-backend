@@ -4,6 +4,7 @@ import { Image as ExpoImage } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import UserTick, { isFaceVerified } from '../UserTick';
 import { AvatarFrame } from '../FramedAvatar';
+import { CommentLike } from './CommentLike';
 import { AVATAR_FALLBACK, height, width } from './feedShared';
 
 // ==========================
@@ -56,6 +57,7 @@ export const CommentRow = memo(function CommentRow({
   replyList,
   expanded,
   currentUid,
+  videoId,
   onProfile,
   onReply,
   onToggleReplies,
@@ -139,6 +141,8 @@ export const CommentRow = memo(function CommentRow({
           </View>
         ) : null}
       </View>
+
+      <CommentLike videoId={videoId} commentId={item.id} count={item.likesCount} />
 
       {currentUid === item.userId ? (
         <TouchableOpacity onPress={() => onDeleteComment(item.id)} style={cs.menu}>

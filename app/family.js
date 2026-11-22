@@ -62,12 +62,14 @@ export default function Family() {
 
   const MyCard = () => {
     if (me?.familyId && latest?.status !== "pending") {
+      // families list live hai -> leader ka naya logo / naam turant (users doc purana ho sakta hai)
+      const myFam = families.find((f) => f.id === me.familyId);
       return (
         <TouchableOpacity style={s.myCard} onPress={() => router.push({ pathname: "/familyDetail", params: { id: me.familyId } })}>
-          <Image source={{ uri: me.familyLogo || DEFAULT_AVATAR }} style={s.myLogo} />
+          <Image source={{ uri: (myFam && myFam.logo) || me.familyLogo || DEFAULT_AVATAR }} style={s.myLogo} />
           <View style={{ flex: 1 }}>
             <Text style={s.myLabel}>MY FAMILY · {me.familyRole === "leader" ? "Leader" : "Member"}</Text>
-            <Text style={s.myName} numberOfLines={1}>{me.familyName}</Text>
+            <Text style={s.myName} numberOfLines={1}>{(myFam && myFam.name) || me.familyName}</Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color="#000" />
         </TouchableOpacity>

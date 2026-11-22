@@ -12,6 +12,7 @@ const Y = "#FFE500";
 export default function FamilyChip({ userId, data }) {
   const router = useRouter();
   const [own, setOwn] = useState(null);
+  const [fam, setFam] = useState(null);
 
   useEffect(() => {
     if (data || !userId) return;
@@ -19,7 +20,17 @@ export default function FamilyChip({ userId, data }) {
   }, [userId, data]);
 
   const u = data || own;
+  const familyId = u && u.familyId;
+
+  // Leader ne logo / naam badla to users doc me purana reh jata hai (har member ka doc alag) -> asli family doc live padho
+  useEffect(() => {
+    if (!familyId) { setFam(null); return; }
+    return onSnapshot(doc(db, "families", familyId), (s) => setFam(s.exists() ? s.data() : null), () => {});
+  }, [familyId]);
+
   if (!u || !u.familyId) return null;
+  const logo = (fam && fam.logo) || u.familyLogo;
+  const famName = (fam && fam.name) || u.familyName;
 
   return (
     <TouchableOpacity
@@ -27,12 +38,12 @@ export default function FamilyChip({ userId, data }) {
       style={s.chip}
       onPress={() => router.push({ pathname: "/familyDetail", params: { id: u.familyId } })}
     >
-      {!!u.familyLogo && <Image source={{ uri: u.familyLogo }} style={s.logo} />}
+      {!!logo && <Image source={{ uri: logo }} style={s.logo} />}
       <View style={{ flexShrink: 1 }}>
         <Text style={s.label}>
           Family{u.familyRole === "leader" ? " · Leader" : ""}
         </Text>
-        <Text style={s.name} numberOfLines={1}>{u.familyName}</Text>
+        <Text style={s.name} numberOfLines={1}>{famName}</Text>
       </View>
       <Ionicons name="chevron-forward" size={14} color={Y} />
     </TouchableOpacity>

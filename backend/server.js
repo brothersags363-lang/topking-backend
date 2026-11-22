@@ -4378,6 +4378,20 @@ app.post("/admin/list-bds", generalLimiter, verifyUser, requireOfficialOrAdmin, 
 // =====================================================
 const ADMIN_FRAME_KEYS = ["gold_heart", "bd_helmet", "agency_ref", "agency_wings", "tk_team"];
 
+// ANGEL FRAMES: admin nahi deta, user ko apne aap milte hain.
+//   fresh_angel  -> ID verified (verified === true ya faceStatus submitted/approved)
+//   senior_angel -> sirf WHITE tick (verified === true aur verifiedColor yellow nahi)
+// User chunta hai: users/{uid}.frameChoice = "ang:<key>"  (set-frame-prefs me check hota hai)
+const ANGEL_FRAME_KEYS = ["fresh_angel", "senior_angel"];
+function angelOwnedOf(d) {
+  const out = [];
+  if (!d) return out;
+  const idOk = d.verified === true || d.faceStatus === "submitted" || d.faceStatus === "approved";
+  if (idOk) out.push("fresh_angel");
+  if (d.verified === true && d.verifiedColor !== "yellow") out.push("senior_angel");
+  return out;
+}
+
 // ---------- FRAME MAP (poore app ke liye EK call, bahut kam Firestore reads) ----------
 // Sirf unhi users ki list jinki frame default (level se auto) nahi hai:
 //   admin ne frame diya / user ne apna frame chuna / user ne frame band kiya.
@@ -4404,6 +4418,9 @@ function frameSpecOf(r) {
     if (c.indexOf("adm:") === 0) {
       const k = c.slice(4);
       if (owned.includes(k)) return k;
+    } else if (c.indexOf("ang:") === 0) {
+      const k = c.slice(4);
+      if (ANGEL_FRAME_KEYS.includes(k) && Array.isArray(r.g) && r.g.includes(k)) return k;
     } else if (/^lv(30|40|50)$/.test(c)) {
       return c;
     }
@@ -4417,6 +4434,7 @@ function frameSpecPut(uid, d) {
     l: adminListOf(d && d.adminFrame, d && d.adminFrames),
     c: (d && d.frameChoice) || null,
     o: !!(d && d.frameOff === true),
+    g: angelOwnedOf(d),
   };
   if (!r.a && !r.l.length && !r.c && !r.o) frameSpecCache.raw.delete(uid);
   else frameSpecCache.raw.set(uid, r);
@@ -4430,7 +4448,7 @@ async function loadFrameSpecs(force) {
     const add = (snap) =>
       snap.docs.forEach((d) => {
         const x = d.data() || {};
-        m.set(d.id, { a: x.adminFrame || null, l: adminListOf(x.adminFrame, x.adminFrames), c: x.frameChoice || null, o: x.frameOff === true });
+        m.set(d.id, { a: x.adminFrame || null, l: adminListOf(x.adminFrame, x.adminFrames), c: x.frameChoice || null, o: x.frameOff === true, g: angelOwnedOf(x) });
       });
     const [s1, s2, s3] = await Promise.all([
       db.collection("users").where("adminFrame", "in", ADMIN_FRAME_KEYS).limit(1000).get(),
@@ -4561,7 +4579,7 @@ app.post("/admin/set-user-frame", generalLimiter, verifyUser, requireAdminDoc, a
       uid,
       frame: primary || null,
       adminFrames: list,
-      spec: frameSpecOf({ a: primary || null, l: list, c: merged.frameChoice || null, o: merged.frameOff === true }),
+      spec: frameSpecOf({ a: primary || null, l: list, c: merged.frameChoice || null, o: merged.frameOff === true, g: angelOwnedOf(merged) }),
     });
   } catch (e) {
     console.error("ADMIN SET FRAME ERROR:", e);
@@ -4908,6 +4926,13 @@ app.post("/user/set-frame-prefs", generalLimiter, verifyUser, async (req, res) =
         const k = c.slice(4);
         if (!owned.adminFrames.includes(k)) {
           return res.status(403).json({ success: false, error: "Ye frame aapko admin se nahi mila" });
+        }
+        update.frameChoice = c;
+        update.frameOff = del;
+      } else if (c.indexOf("ang:") === 0) {
+        const k = c.slice(4);
+        if (!ANGEL_FRAME_KEYS.includes(k) || !angelOwnedOf(d).includes(k)) {
+          return res.status(403).json({ success: false, error: "Ye frame abhi aapke paas nahi hai" });
         }
         update.frameChoice = c;
         update.frameOff = del;
