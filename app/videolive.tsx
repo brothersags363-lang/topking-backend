@@ -2192,6 +2192,7 @@ export default function VideoLive() {
   const [myVerifiedColor, setMyVerifiedColor] = useState("white");
   const [profileReady, setProfileReady] = useState(false);
   const [stars, setStars] = useState(0);
+  const [myLevelStars, setMyLevelStars] = useState<number | undefined>(undefined);
   const [myTotalSpent, setMyTotalSpent] = useState(0);   // gift popup level bar
   const [myWalletLevel, setMyWalletLevel] = useState(0);
 
@@ -2508,6 +2509,7 @@ export default function VideoLive() {
       if (snap.exists()) {
         setStars(snap.data()?.stars || 0);
         setMyTotalSpent(snap.data()?.totalSpent || 0);
+        setMyLevelStars(snap.data()?.levelStars);
         setMyWalletLevel(snap.data()?.level || 0);
         // wallet update ho gaya -> in-flight spend ab stars me included hai
         inflightSpendRef.current = 0;
@@ -5555,21 +5557,24 @@ export default function VideoLive() {
         [`pk.gifters.${currentUid}.img`]: currentAvatar || STABLE_AVATAR,
         [`pk.gifters.${currentUid}.stars`]: increment(price),
       };
-      // PK ka PEHLA gift (poore PK me sirf ek baar) -> PK score me 2x. Upar/wallet/stars me asli price hi jati hai.
-      // Authority room (chhota roomId) par transaction se flag claim hota hai, taaki dono side se ek hi baar mile.
+      // PK ka PEHLA gift HAR SIDE ke liye (dono side ko ek-ek baar) -> us side ke PK score me 2x.
+      // Upar/wallet/stars me asli price hi jati hai. Authority room (chhota roomId) par transaction se
+      // flag claim hota hai (side = receiverId), taaki ek side ko ek hi baar mile, dusri side ko alag.
       let pkScoreAdd = price;
       try {
-        if (curPk.pkId && taps >= 1) {
+        const isPkSide = receiverId === roomDataRef.current?.hostId || receiverId === curPk.opponentHostId;
+        if (curPk.pkId && taps >= 1 && isPkSide && receiverId) {
           const authId = curPk.opponentRoomId && curPk.opponentRoomId < roomId ? curPk.opponentRoomId : roomId;
           const authRef = doc(db, "rooms", authId);
           const got = await runTransaction(db, async (tx: any) => {
             const snap = await tx.get(authRef);
             const apk = snap.exists() ? snap.data()?.pk : null;
-            if (!apk || apk.status !== "active" || apk.firstGiftBonusDone === curPk.pkId) return false;
-            tx.update(authRef, { "pk.firstGiftBonusDone": curPk.pkId });
+            if (!apk || apk.status !== "active") return false;
+            if (apk.firstBonus && apk.firstBonus[receiverId] === curPk.pkId) return false; // is side ko mil chuka
+            tx.update(authRef, { [`pk.firstBonus.${receiverId}`]: curPk.pkId });
             return true;
           });
-          if (got) pkScoreAdd = price + Number(item.price || 0); // sirf pehle gift ka extra (1x), baaki taps normal
+          if (got) pkScoreAdd = price + Number(item.price || 0); // sirf is side ke pehle gift ka extra (1x), baaki taps normal
         }
       } catch (e: any) {
         __DEV__ && console.log("PK FIRST GIFT BONUS SKIP:", e?.code, e?.message);
@@ -6567,6 +6572,7 @@ export default function VideoLive() {
             <LevelBar
               style={{ marginHorizontal: 14 }}
               totalSpent={myTotalSpent}
+              levelStars={myLevelStars}
               walletLevel={myWalletLevel}
               pendingStore={giftPendingStore}
               onUpgrade={goRecharge}

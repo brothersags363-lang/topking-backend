@@ -784,6 +784,7 @@ export default function App() {
   const [showStarPopup, setShowStarPopup] = useState(false);
   const [selectedStar, setSelectedStar] = useState(null);
   const [myStars, setMyStars] = useState(0);
+  const [myLevelStars, setMyLevelStars] = useState(undefined);
   const [myTotalSpent, setMyTotalSpent] = useState(0);   // StarUp popup level bar
   const [myWalletLevel, setMyWalletLevel] = useState(0);
   const [starAnimationVideoId, setStarAnimationVideoId] = useState(null);
@@ -1024,6 +1025,7 @@ export default function App() {
       if (snap.exists()) {
         setMyStars(snap.data().stars || 0);
         setMyTotalSpent(snap.data().totalSpent || 0);
+        setMyLevelStars(snap.data().levelStars);
         setMyWalletLevel(snap.data().level || 0);
       }
     });
@@ -2133,6 +2135,7 @@ export default function App() {
             {/* LEVEL BAR */}
             <LevelBar
               totalSpent={myTotalSpent}
+              levelStars={myLevelStars}
               walletLevel={myWalletLevel}
               onUpgrade={() => { setShowStarPopup(false); try { router.push('/wallet'); } catch (e) {} }}
             />

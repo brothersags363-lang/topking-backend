@@ -671,67 +671,23 @@ const sendGift = async () => {
 
     setSendingGift(true);
 
-    // Username se receiver dhundo
-    const userSnap = await getDocs(
-      query(
-        collection(db, "users"),
-        where("username", "==", uname),
-        limit(1)
-      )
-    );
-
-    if (userSnap.empty) {
-      alert("User nahi mila");
+    // Gift SERVER par hota hai (level sirf recharge/admin wale stars kharch hone par badhta hai)
+    const token = await auth.currentUser?.getIdToken();
+    if (!token) {
+      alert("Please login again");
       return;
     }
-
-    const receiverUid = userSnap.docs[0].id;
-    const receiverData = userSnap.docs[0].data();
-
-    if (receiverUid === uid) {
-      alert("Khud ko gift nahi bhej sakte");
-      return;
-    }
-
-    await runTransaction(db, async (t) => {
-
-      const senderRef = doc(db, "wallets", uid);
-      const receiverRef = doc(db, "wallets", receiverUid);
-
-      const senderSnap = await t.get(senderRef);
-
-      if ((senderSnap.data()?.stars || 0) < amount) {
-        throw new Error("NOT_ENOUGH_STARS");
-      }
-
-      // Sender se Stars kato
-      t.update(senderRef, {
-        stars: increment(-amount),
-        totalSpent: increment(amount),
-      });
-
-      // Receiver ko Gift Stars do (ye TK me withdraw ho sakte hai)
-      t.set(
-        receiverRef,
-        { earnings: increment(amount), receivedStars: increment(amount) },
-        { merge: true }
-      );
-
-      t.set(doc(collection(db, "wallets", uid, "giftHistory")), {
-        type: "sent",
-        toUserId: receiverUid,
-        toUsername: receiverData.username || uname,
-        stars: amount,
-        createdAt: serverTimestamp(),
-      });
-
-      t.set(doc(collection(db, "wallets", receiverUid, "giftHistory")), {
-        type: "received",
-        fromUserId: uid,
-        stars: amount,
-        createdAt: serverTimestamp(),
-      });
+    const res = await fetch(`${BACKEND}/wallet/gift`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ username: uname, stars: amount }),
     });
+    let data = null;
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok || !data || !data.success) {
+      alert((data && data.error) || "Gift fail hua, dobara try karo");
+      return;
+    }
 
     alert(`${amount} Stars ${uname} ko gift ho gaye 🎁`);
     setGiftModal(false);

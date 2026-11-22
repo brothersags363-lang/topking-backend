@@ -4378,6 +4378,87 @@ app.post("/admin/list-bds", generalLimiter, verifyUser, requireOfficialOrAdmin, 
 // =====================================================
 const ADMIN_FRAME_KEYS = ["gold_heart", "bd_helmet", "agency_ref", "agency_wings", "tk_team"];
 
+// ---------- FRAME MAP (poore app ke liye EK call, bahut kam Firestore reads) ----------
+// Sirf unhi users ki list jinki frame default (level se auto) nahi hai:
+//   admin ne frame diya / user ne apna frame chuna / user ne frame band kiya.
+// Server memory me rakhta hai: start par 3 query, phir 30 min me ek baar, baaki sab
+// badlav (admin dena / user chunna) seedha memory me update. Isliye Firestore bill nahi badhta.
+// map value: "<adminKey>" | "lv30" | "lv40" | "lv50" | "off"   (map me nahi = auto: level se)
+const frameSpecCache = { raw: new Map(), at: 0, loading: null };
+const FRAME_SPEC_TTL_MS = 30 * 60 * 1000;
+
+function frameSpecOf(r) {
+  if (!r) return null;
+  if (r.o) return "off";
+  const c = r.c;
+  if (c) {
+    if (c.indexOf("adm:") === 0) {
+      const k = c.slice(4);
+      if (r.a === k && ADMIN_FRAME_KEYS.includes(k)) return k;
+    } else if (/^lv(30|40|50)$/.test(c)) {
+      return c;
+    }
+  }
+  return r.a && ADMIN_FRAME_KEYS.includes(r.a) ? r.a : null;
+}
+
+function frameSpecPut(uid, d) {
+  const r = {
+    a: d && d.adminFrame && ADMIN_FRAME_KEYS.includes(d.adminFrame) ? d.adminFrame : null,
+    c: (d && d.frameChoice) || null,
+    o: !!(d && d.frameOff === true),
+  };
+  if (!r.a && !r.c && !r.o) frameSpecCache.raw.delete(uid);
+  else frameSpecCache.raw.set(uid, r);
+}
+
+async function loadFrameSpecs(force) {
+  if (!force && frameSpecCache.at && Date.now() - frameSpecCache.at < FRAME_SPEC_TTL_MS) return;
+  if (frameSpecCache.loading) return frameSpecCache.loading;
+  frameSpecCache.loading = (async () => {
+    const m = new Map();
+    const add = (snap) =>
+      snap.docs.forEach((d) => {
+        const x = d.data() || {};
+        m.set(d.id, { a: x.adminFrame || null, c: x.frameChoice || null, o: x.frameOff === true });
+      });
+    const [s1, s2, s3] = await Promise.all([
+      db.collection("users").where("adminFrame", "in", ADMIN_FRAME_KEYS).limit(1000).get(),
+      db.collection("users").where("frameChoice", ">", "").limit(2000).get(),
+      db.collection("users").where("frameOff", "==", true).limit(2000).get(),
+    ]);
+    add(s1); add(s2); add(s3);
+    frameSpecCache.raw = m;
+    frameSpecCache.at = Date.now();
+  })().finally(() => { frameSpecCache.loading = null; });
+  return frameSpecCache.loading;
+}
+
+app.post("/frames/admin-map", generalLimiter, verifyUser, async (req, res) => {
+  try {
+    await loadFrameSpecs(false);
+    const map = {};
+    frameSpecCache.raw.forEach((r, uid) => {
+      const sp = frameSpecOf(r);
+      if (sp) map[uid] = sp;
+    });
+    const m = frameSpecCache.raw.get(req.user.uid) || {};
+    res.set("Cache-Control", "no-store");
+    return res.json({
+      success: true,
+      map,
+      mine: {
+        adminFrame: m.a && ADMIN_FRAME_KEYS.includes(m.a) ? m.a : null,
+        frameChoice: m.c || null,
+        frameOff: m.o === true,
+      },
+    });
+  } catch (e) {
+    console.error("FRAME MAP ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
 function userBrief(id, d) {
   return {
     uid: id,
@@ -4424,10 +4505,13 @@ app.post("/admin/set-user-frame", generalLimiter, verifyUser, requireAdminDoc, a
     if (!snap.exists) {
       return res.status(404).json({ success: false, error: "User not found" });
     }
+    const delF = admin.firestore.FieldValue.delete();
+    // admin ne frame diya/hataya -> user ki purani chuni hui choice saaf, taaki naya frame turant dikhe
     await ref.set(
-      { adminFrame: frame === null ? admin.firestore.FieldValue.delete() : frame },
+      { adminFrame: frame === null ? delF : frame, frameChoice: delF, frameOff: delF },
       { merge: true }
     );
+    frameSpecPut(uid, { adminFrame: frame });
     return res.json({ success: true, uid, frame });
   } catch (e) {
     console.error("ADMIN SET FRAME ERROR:", e);
@@ -4713,7 +4797,7 @@ app.post("/admin/grant-live-existing-agency", generalLimiter, verifyUser, requir
 //   entryChoice = "slide" | "wing1".."wing5"  ya null (auto = level ke hisaab se)
 // Server check karta hai ki user ke paas wo frame/entry sach me hai.
 // =====================================================
-const LEVEL_FRAME_TIERS = [10, 20, 30, 35, 40, 45, 50];
+const LEVEL_FRAME_TIERS = [30, 40, 50]; // app me sirf yehi 3 level frames hain
 // Agency / BD ka frame ab apne aap NAHI milta (sirf admin frame de to). Sirf crown / vip1 (admin set kare).
 const SPECIAL_FRAME_TIER = { crown: 40, vip1: 50 };
 const ENTRY_MIN_LEVEL = { slide: 0, wing1: 10, wing2: 20, wing3: 30, wing4: 40, wing5: 50 };
@@ -4799,9 +4883,11 @@ app.post("/user/set-frame-prefs", generalLimiter, verifyUser, async (req, res) =
 
     const out = await ref.get();
     const o = out.data() || {};
+    frameSpecPut(uid, o);
     return res.json({
       success: true,
       prefs: {
+        adminFrame: owned.adminFrame,
         frameOff: o.frameOff === true,
         frameChoice: o.frameChoice || null,
         entryOff: o.entryOff === true,

@@ -11,23 +11,26 @@ import { callApi } from '../utils/api';
 // (feed, comments, chat, profile, live room seat/chat/popup).
 // Nayi frame jodni ho: webp assets/admin_frames/ me daalo, yahan ek line add karo,
 // aur backend server.js me ADMIN_FRAME_KEYS me key add karo.
+// img = animated (profile / popup), still = halka static (lists / feed / chat -> smooth scroll)
 export const ADMIN_FRAMES = {
-  gold_heart:   { label: 'Official Gold Heart',   img: require('../assets/admin_frames/gold_heart.webp') },
-  bd_helmet:    { label: 'BD Purple Helmet',      img: require('../assets/admin_frames/bd_helmet.webp') },
-  agency_ref:   { label: 'Agency Reference',      img: require('../assets/admin_frames/agency_ref.webp') },
-  agency_wings: { label: 'Official Agency Wings', img: require('../assets/admin_frames/agency_wings.webp') },
-  tk_team:      { label: 'TK Team',               img: require('../assets/admin_frames/tk_team.webp') },
+  gold_heart:   { label: 'Official Gold Heart',   img: require('../assets/admin_frames/gold_heart.webp'),   still: require('../assets/admin_frames/still/gold_heart.webp') },
+  bd_helmet:    { label: 'BD Purple Helmet',      img: require('../assets/admin_frames/bd_helmet.webp'),    still: require('../assets/admin_frames/still/bd_helmet.webp') },
+  agency_ref:   { label: 'Agency Reference',      img: require('../assets/admin_frames/agency_ref.webp'),   still: require('../assets/admin_frames/still/agency_ref.webp') },
+  agency_wings: { label: 'Official Agency Wings', img: require('../assets/admin_frames/agency_wings.webp'), still: require('../assets/admin_frames/still/agency_wings.webp') },
+  tk_team:      { label: 'TK Team',               img: require('../assets/admin_frames/tk_team.webp'),      still: require('../assets/admin_frames/still/tk_team.webp') },
 };
 export const ADMIN_FRAME_KEYS = Object.keys(ADMIN_FRAMES);
 
-// ---- ADMIN FRAME MAP: { uid: frameKey } ----
-// Sirf unhi users ki list jinko admin ne frame diya hai (chhoti list).
-// Server se EK hi call me aati hai (/frames/admin-map) -> har user ke liye alag Firestore read NAHI.
-// Phone me save rehti hai (AsyncStorage), isliye app khulte hi frame turant dikhta hai.
-// Live room / chat / list me bas uid do, frame apne aap lag jata hai.
-const MAP_KEY = 'adminFrameMap:v1';
+// ---- FRAME MAP: { uid: spec } ----
+// spec = admin frame key | 'lv30' | 'lv40' | 'lv50' (user ne khud chuna) | 'off' (user ne frame band kiya)
+// Map me na ho => AUTO (level se frame: 30-39 lv30, 40-49 lv40, 50+ lv50).
+// Sirf unhi users ki chhoti list jinki frame default nahi hai. Server se EK hi call (/frames/admin-map),
+// har user ke liye alag Firestore read NAHI. Phone me save rehti hai (AsyncStorage) -> app khulte hi frame turant.
+const MAP_KEY = 'adminFrameMap:v2';
 const MAP_TTL_MS = 10 * 60 * 1000;
+const LEVEL_SPEC_RE = /^lv(30|40|50)$/;
 let adminMap = {};
+let myPrefs = { adminFrame: null, frameChoice: null, frameOff: false };
 let mapLoaded = false;      // true => map ko sach maano (disk ya server se aa chuki)
 let mapFetchedAt = 0;
 let mapFetching = null;
@@ -36,14 +39,21 @@ const mapListeners = new Set();
 
 function notifyMap() { mapListeners.forEach((fn) => { try { fn(); } catch (_) {} }); }
 
+const isValidSpec = (v) => typeof v === 'string' && (!!ADMIN_FRAMES[v] || v === 'off' || LEVEL_SPEC_RE.test(v));
+
+function persistMap() {
+  AsyncStorage.setItem(MAP_KEY, JSON.stringify({ map: adminMap, mine: myPrefs })).catch(() => {});
+}
+
 function loadMapDisk() {
   if (mapDiskPromise) return mapDiskPromise;
   mapDiskPromise = AsyncStorage.getItem(MAP_KEY)
     .then((raw) => {
       if (!raw || mapFetchedAt) return;      // server ka taaza jawab pehle aa gaya to disk ignore
       const obj = JSON.parse(raw);
-      if (obj && typeof obj === 'object') {
-        adminMap = obj;
+      if (obj && obj.map && typeof obj.map === 'object') {
+        adminMap = obj.map;
+        if (obj.mine) myPrefs = { ...myPrefs, ...obj.mine };
         mapLoaded = true;
         notifyMap();
       }
@@ -60,41 +70,91 @@ export function refreshAdminFrameMap(force = false) {
     .then((res) => {
       const m = res && res.map && typeof res.map === 'object' ? res.map : {};
       const clean = {};
-      Object.keys(m).forEach((uid) => { if (ADMIN_FRAMES[m[uid]]) clean[uid] = m[uid]; });
+      Object.keys(m).forEach((uid) => { if (isValidSpec(m[uid])) clean[uid] = m[uid]; });
       adminMap = clean;
+      if (res && res.mine) {
+        myPrefs = {
+          adminFrame: res.mine.adminFrame && ADMIN_FRAMES[res.mine.adminFrame] ? res.mine.adminFrame : null,
+          frameChoice: res.mine.frameChoice || null,
+          frameOff: res.mine.frameOff === true,
+        };
+      }
       mapLoaded = true;
       mapFetchedAt = Date.now();
       notifyMap();
-      AsyncStorage.setItem(MAP_KEY, JSON.stringify(clean)).catch(() => {});
+      persistMap();
     })
     .catch(() => { /* net/login nahi -> purani saved map chalti rahegi */ })
     .finally(() => { mapFetching = null; });
   return mapFetching;
 }
 
-// Admin ne abhi kisi ko frame diya/hataya -> apne phone ki map turant badlo (server ke jawab ke baad call karo)
-export function setAdminFrameLocal(uid, key) {
+// Kisi user ki frame turant badlo (apne phone me, sab screens ko khabar). spec: key | 'lvNN' | 'off' | null (=auto)
+// Admin ne frame diya/hataya ya user ne apna frame chuna -> server ke jawab ke baad call karo.
+export function setAdminFrameLocal(uid, spec) {
   if (!uid) return;
   const next = { ...adminMap };
-  if (key && ADMIN_FRAMES[key]) next[uid] = key; else delete next[uid];
+  if (isValidSpec(spec)) next[uid] = spec; else delete next[uid];
   adminMap = next;
   mapLoaded = true;
   notifyMap();
-  AsyncStorage.setItem(MAP_KEY, JSON.stringify(next)).catch(() => {});
+  persistMap();
 }
 
-// uid -> admin frame key (ya null). fallbackKey: chat/seat data me aaya hua 'special' (map aane se pehle kaam aata hai)
-export function getAdminFrameKey(uid, fallbackKey) {
+// prefs (server ka jawab: adminFrame, frameChoice, frameOff) -> spec. Server ke frameSpecOf jaisa hi.
+export function specFromPrefs(p) {
+  if (!p) return null;
+  if (p.frameOff) return 'off';
+  const c = p.frameChoice;
+  if (c) {
+    if (String(c).indexOf('adm:') === 0) {
+      const k = String(c).slice(4);
+      if (p.adminFrame === k && ADMIN_FRAMES[k]) return k;
+    } else if (LEVEL_SPEC_RE.test(c)) {
+      return c;
+    }
+  }
+  return p.adminFrame && ADMIN_FRAMES[p.adminFrame] ? p.adminFrame : null;
+}
+
+// Apni frame prefs (Frames & Entries screen ke liye): { adminFrame, frameChoice, frameOff }
+export function getMyFramePrefs() { return myPrefs; }
+export function setMyFramePrefsLocal(p) {
+  myPrefs = {
+    adminFrame: p && p.adminFrame && ADMIN_FRAMES[p.adminFrame] ? p.adminFrame : null,
+    frameChoice: (p && p.frameChoice) || null,
+    frameOff: !!(p && p.frameOff),
+  };
+  persistMap();
+}
+
+// uid -> spec ya null (null = AUTO, level se). fallbackKey: chat/seat data me aaya hua admin 'special'
+// (map aane se pehle kaam aata hai).
+export function getFrameSpec(uid, fallbackKey) {
   if (uid && typeof uid === 'string') {
     const k = adminMap[uid];
-    if (k && ADMIN_FRAMES[k]) return k;
-    if (mapLoaded) return null;              // map load ho chuki aur uid usme nahi => frame nahi
+    if (k && isValidSpec(k)) return k;
+    if (mapLoaded) return null;              // map load ho chuki aur uid usme nahi => auto
   }
   return fallbackKey && ADMIN_FRAMES[fallbackKey] ? fallbackKey : null;
 }
 
-// Hook: admin frame key. Re-render tab hota hai jab map load/badle.
-export function useAdminFrame(uid, fallbackKey) {
+// uid -> admin frame key (ya null). Purane callers ke liye.
+export function getAdminFrameKey(uid, fallbackKey) {
+  const sp = getFrameSpec(uid, fallbackKey);
+  return sp && ADMIN_FRAMES[sp] ? sp : null;
+}
+
+// Is user ka frame abhi dikh raha hai? (Live seat par "Host" label ke liye)
+export function hasVisibleFrame(uid, level) {
+  const sp = getFrameSpec(uid);
+  if (sp === 'off') return false;
+  if (sp) return true;
+  return Number(level) >= 30;
+}
+
+// Hook: frame spec. Re-render tab hota hai jab map load/badle.
+export function useFrameSpec(uid, fallbackKey) {
   const [, force] = useState(0);
   useEffect(() => {
     const fn = () => force((n) => n + 1);
@@ -102,7 +162,13 @@ export function useAdminFrame(uid, fallbackKey) {
     loadMapDisk().then(() => refreshAdminFrameMap(false));
     return () => { mapListeners.delete(fn); };
   }, []);
-  return getAdminFrameKey(uid, fallbackKey);
+  return getFrameSpec(uid, fallbackKey);
+}
+
+// Hook: sirf admin frame key (purane callers ke liye)
+export function useAdminFrame(uid, fallbackKey) {
+  const sp = useFrameSpec(uid, fallbackKey);
+  return sp && ADMIN_FRAMES[sp] ? sp : null;
 }
 
 // ---- uid -> frame info lookup (memory cache, har user ka 1 hi read) ----

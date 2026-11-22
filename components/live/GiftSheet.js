@@ -125,7 +125,7 @@ const GiftSheet = memo(
   forwardRef(function GiftSheet(
     {
       stars = 0, giftUsers = [], selectedGiftUser, onSelectUser, onSendGift,
-      hostId, totalSpent = 0, walletLevel, onUpgrade,
+      hostId, totalSpent = 0, levelStars, walletLevel, onUpgrade,
       onRecharge, showAll = true, fallbackAvatar, sendWithQty = false, closeOnSend = false,
     },
     ref
@@ -154,7 +154,13 @@ const GiftSheet = memo(
       Animated.parallel([
         Animated.timing(anim, { toValue: SHEET_OFFSET, duration: 150, easing: Easing.in(Easing.quad), useNativeDriver: true }),
         Animated.timing(fade, { toValue: 0, duration: 150, useNativeDriver: true }),
-      ]).start(() => { closing.current = false; setVisible(false); });
+      ]).start(({ finished }) => {
+        // open() ne beech me animation roki to (finished=false) sheet band NAHI karni
+        // (pehle fast tap par gift box khulte hi band ho jata tha / dikhta hi nahi tha)
+        if (!finished) return;
+        closing.current = false;
+        setVisible(false);
+      });
     }, [anim, fade]);
 
     useImperativeHandle(ref, () => ({ open, close, setPending: pendingStore.set }), [open, close]);
@@ -226,6 +232,7 @@ const GiftSheet = memo(
             {/* ===== level bar (smooth animated, gift spam par turant badhta hai) ===== */}
             <LevelBar
               totalSpent={totalSpent}
+              levelStars={levelStars}
               walletLevel={walletLevel}
               pendingStore={pendingStore}
               onUpgrade={onUpgrade || onRecharge}
@@ -324,6 +331,7 @@ const GiftSheet = memo(
     a.onSendGift === b.onSendGift &&
     a.hostId === b.hostId &&
     a.totalSpent === b.totalSpent &&
+    a.levelStars === b.levelStars &&
     a.walletLevel === b.walletLevel &&
     a.onUpgrade === b.onUpgrade &&
     a.onRecharge === b.onRecharge &&

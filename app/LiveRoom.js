@@ -90,7 +90,7 @@ import { isGifReaction, gifSource } from '../assets/emojiGifs';
 import { Image as ExpoImage } from 'expo-image';
 import FastImage from '../components/FastImage';
 import LevelFrame from '../components/LevelFrame';
-import { getAdminFrameKey } from '../components/adminFrames';
+import { hasVisibleFrame } from '../components/adminFrames';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { LinearGradient } from 'expo-linear-gradient';
 import JoinEntry, { JoinSlot } from '../components/live/JoinEntry';
@@ -502,7 +502,7 @@ const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress, cellW
   const glowOn = !!isSpeaking && !seat.isMuted;
   const occupied = !!seat.userId;
   // Host ka frame laga hai ya nahi (level>=30). Frame ho tabhi "Host" label dikhega
-  const hostHasFrame = isHostSeat && occupied && (seat.level >= 30 || !!getAdminFrameKey(seat.userId));
+  const hostHasFrame = isHostSeat && occupied && hasVisibleFrame(seat.userId, seat.level);
   const emoji = typeof seat.reaction === 'string' ? seat.reaction : seat.reaction?.e;
   return (
     <TouchableOpacity
@@ -1462,7 +1462,7 @@ const [selectedGiftUser, setSelectedGiftUser] = useState(null);
 
 const [stars, setStars] = useState(0);
 const starsRef = useRef(0);   // SMOOTH: balance check ke liye turant wali value (state ka wait nahi)
-const [walletInfo, setWalletInfo] = useState({ level: 1, totalSpent: 0, nextLevelSpent: null, levelStartSpent: 0 });
+const [walletInfo, setWalletInfo] = useState({ level: 1, totalSpent: 0, levelStars: undefined, nextLevelSpent: null, levelStartSpent: 0 });
 
 
 
@@ -1568,10 +1568,13 @@ loadingRef.current = loading;
 // Loading screen ka Back button normal entry me nahi dikhta; sirf tab jab room 8 sec se
 // zyada load na ho (net slow / atak gaya). Hardware back pehle din se kaam karta hai.
 const [showLoadBack, setShowLoadBack] = useState(false);
+// 6 sec tak naam load na ho to bhi room join hone do (fallback naam se) - warna loading par atak jata tha
+const [nameGateOpen, setNameGateOpen] = useState(false);
 useEffect(() => {
   if (!loading) { setShowLoadBack(false); return; }
   const t = setTimeout(() => setShowLoadBack(true), 8000);
-  return () => clearTimeout(t);
+  const g = setTimeout(() => setNameGateOpen(true), 6000);
+  return () => { clearTimeout(t); clearTimeout(g); };
 }, [loading]);
 
 // Host ended the live (or host's app died). Stop audio + mini-live instantly.
@@ -2208,9 +2211,9 @@ const pushWallet = () => {
   const v = _w.stars || 0;
   setStars(v);
   setMyStars(v);
-  setWalletInfo((p) => (p.level === (_w.level || 1) && p.totalSpent === (_w.totalSpent || 0) && p.nextLevelSpent === (_w.nextLevelSpent ?? null))
+  setWalletInfo((p) => (p.level === (_w.level || 1) && p.totalSpent === (_w.totalSpent || 0) && p.levelStars === _w.levelStars && p.nextLevelSpent === (_w.nextLevelSpent ?? null))
     ? p
-    : { level: _w.level || 1, totalSpent: _w.totalSpent || 0, nextLevelSpent: _w.nextLevelSpent ?? null, levelStartSpent: _w.levelStartSpent || 0 });
+    : { level: _w.level || 1, totalSpent: _w.totalSpent || 0, levelStars: _w.levelStars, nextLevelSpent: _w.nextLevelSpent ?? null, levelStartSpent: _w.levelStartSpent || 0 });
 };
 const scheduleWalletPush = () => {
   if (_wFirst) { _wFirst = false; pushWallet(); return; }
@@ -2281,8 +2284,12 @@ useEffect(() => {
 
 useEffect(() => {
 
+let loadAttempt = 0;
+let loadTimer = null;
+let loadDead = false;
 const loadUser = async () => {
 
+if (loadDead) return;
 if (!db || !currentUid) return;
 
 try {
@@ -2348,11 +2355,19 @@ log("Real Name =", data.name);
 
 } catch (e) {
 log(e);
+// net/server slow tha -> naam load nahi hua to room "Entering..." par atak jata tha.
+// Ab 4 baar dobara try (1.5s, 3s, 4.5s, 6s)
+if (!loadDead && loadAttempt < 4) {
+  loadAttempt += 1;
+  loadTimer = setTimeout(loadUser, 1500 * loadAttempt);
+}
 }
 
 };
 
 loadUser();
+
+return () => { loadDead = true; if (loadTimer) clearTimeout(loadTimer); };
 
 }, []);
 
@@ -2939,8 +2954,7 @@ if (
  !db ||
  !roomId ||
  !currentUid ||
- currentName === "User" ||
- currentRealName === "User" ||
+ ((currentName === "User" || currentRealName === "User") && !nameGateOpen) ||
  !currentAvatar
 ){
  return;
@@ -3152,7 +3166,7 @@ log("Audience Added =", audiencePayload);
           const { hostHeartbeat, viewerCount, ...restOfRoom } = data;
           roomSig = JSON.stringify(restOfRoom);
         } catch (_) {}
-        if (roomSig && roomSig === lastRoomSigRef.current) return;
+        if (roomSig && roomSig === lastRoomSigRef.current && !loadingRef.current) return;
         lastRoomSigRef.current = roomSig;
 
 
@@ -3385,7 +3399,11 @@ if (
         // Room doc gone = host ended the live.
         handleRoomEnded();
       }
-    }, (e) => log("Room listener error:", e));
+    }, (e) => {
+      log("Room listener error:", e);
+      // listener fail (permission/net) -> loading par hamesha na atke, Back button turant dikhao
+      try { setShowLoadBack(true); } catch (_) {}
+    });
 
     return () => { unsubscribe(); if (joinRetryTimer) clearTimeout(joinRetryTimer); };
 
@@ -3396,6 +3414,7 @@ if (
   currentRealName,
   currentAvatar,
   hostLevel,
+  nameGateOpen,
 ]);
 
 
@@ -5894,6 +5913,7 @@ user?.seatKey
   fallbackAvatar={STABLE_AVATAR}
   onRecharge={goRecharge}
   totalSpent={walletInfo.totalSpent}
+  levelStars={walletInfo.levelStars}
   walletLevel={walletInfo.level > 1 ? walletInfo.level : undefined}
 />
 

@@ -88,7 +88,7 @@ import { isGifReaction, gifSource } from '../assets/emojiGifs';
 import { Image as ExpoImage } from 'expo-image';
 import FastImage from '../components/FastImage';
 import LevelFrame from '../components/LevelFrame';
-import { getAdminFrameKey } from '../components/adminFrames';
+import { hasVisibleFrame } from '../components/adminFrames';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { LinearGradient } from 'expo-linear-gradient';
 import JoinEntry, { JoinSlot } from '../components/live/JoinEntry';
@@ -497,7 +497,7 @@ const SeatCell = memo(({ seatKey, index, seat, stars, isSpeaking, onPress, cellW
   const glowOn = !!isSpeaking && !seat.isMuted;
   const occupied = !!seat.userId;
   // Host ka frame laga hai ya nahi (level>=30). Frame ho tabhi "Host" label dikhega
-  const hostHasFrame = isHostSeat && occupied && (seat.level >= 30 || !!getAdminFrameKey(seat.userId));
+  const hostHasFrame = isHostSeat && occupied && hasVisibleFrame(seat.userId, seat.level);
   const emoji = typeof seat.reaction === 'string' ? seat.reaction : seat.reaction?.e;
   return (
     <TouchableOpacity
@@ -1444,7 +1444,7 @@ const handleJoinDone = useCallback(() => setJoinBanner(null), []);
 const [selectedGiftUser, setSelectedGiftUser] = useState(null);
 
 const [stars, setStars] = useState(0);
-const [walletInfo, setWalletInfo] = useState({ level: 1, totalSpent: 0, nextLevelSpent: null, levelStartSpent: 0 });
+const [walletInfo, setWalletInfo] = useState({ level: 1, totalSpent: 0, levelStars: undefined, nextLevelSpent: null, levelStartSpent: 0 });
 
 
 
@@ -2190,9 +2190,9 @@ const v = snap.data()?.stars || 0;
 setStars(v);
 {
   const _w = snap.data() || {};
-  setWalletInfo((p) => (p.level === (_w.level || 1) && p.totalSpent === (_w.totalSpent || 0) && p.nextLevelSpent === (_w.nextLevelSpent ?? null))
+  setWalletInfo((p) => (p.level === (_w.level || 1) && p.totalSpent === (_w.totalSpent || 0) && p.levelStars === _w.levelStars && p.nextLevelSpent === (_w.nextLevelSpent ?? null))
     ? p
-    : { level: _w.level || 1, totalSpent: _w.totalSpent || 0, nextLevelSpent: _w.nextLevelSpent ?? null, levelStartSpent: _w.levelStartSpent || 0 });
+    : { level: _w.level || 1, totalSpent: _w.totalSpent || 0, levelStars: _w.levelStars, nextLevelSpent: _w.nextLevelSpent ?? null, levelStartSpent: _w.levelStartSpent || 0 });
 }
 setMyStars(v);
 // wallet server/local se update ho gaya -> in-flight spend ab v me included hai
@@ -5860,6 +5860,7 @@ user?.seatKey
   fallbackAvatar={STABLE_AVATAR}
   onRecharge={goRecharge}
   totalSpent={walletInfo.totalSpent}
+  levelStars={walletInfo.levelStars}
   walletLevel={walletInfo.level > 1 ? walletInfo.level : undefined}
 />
 

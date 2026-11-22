@@ -13,6 +13,7 @@ import {
 import { collection, query, orderBy, onSnapshot, limit } from "firebase/firestore";
 
 import { auth, db } from "./firebaseConfig";
+import { fetchT } from '../utils/api';
 
 const BACKEND = "https://topking-backend.onrender.com";
 const FILTERS = ["Pending", "Approved", "Rejected", "All"];
@@ -22,7 +23,7 @@ const statusColor = (s) =>
 
 async function callAdmin(path, body) {
   const token = await auth.currentUser?.getIdToken();
-  const res = await fetch(`${BACKEND}${path}`, {
+  const res = await fetchT(`${BACKEND}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

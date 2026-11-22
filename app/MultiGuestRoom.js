@@ -714,6 +714,7 @@ export default function MultiGuestRoom() {
   const [myVerifiedColor, setMyVerifiedColor] = useState('white');
   const [profileReady, setProfileReady] = useState(false);
   const [stars, setStars] = useState(0);
+  const [myLevelStars, setMyLevelStars] = useState(undefined);
   const [myTotalSpent, setMyTotalSpent] = useState(0);   // level bar ke liye
   const [myWalletLevel, setMyWalletLevel] = useState(0);
 
@@ -880,6 +881,7 @@ export default function MultiGuestRoom() {
         const w = snap.data() || {};
         setStars(w.stars || 0);
         setMyTotalSpent(w.totalSpent || 0);
+        setMyLevelStars(w.levelStars);
         setMyWalletLevel(w.level || 0);
       }
     });
@@ -2235,6 +2237,7 @@ export default function MultiGuestRoom() {
         fallbackAvatar={DEFAULT_AVATAR}
         onRecharge={goRecharge}
         totalSpent={myTotalSpent}
+        levelStars={myLevelStars}
         walletLevel={myWalletLevel}
       />
 

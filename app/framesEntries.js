@@ -23,8 +23,12 @@ import {
   useFrameInfo,
   patchFrameInfo,
   refreshFrameInfo,
-  useAdminFrame,
+  useFrameSpec,
   refreshAdminFrameMap,
+  getMyFramePrefs,
+  setMyFramePrefsLocal,
+  setAdminFrameLocal,
+  specFromPrefs,
   ADMIN_FRAMES,
 } from "../components/adminFrames";
 import {
@@ -101,8 +105,9 @@ export default function FramesEntries() {
   const router = useRouter();
   const uid = auth.currentUser ? auth.currentUser.uid : null;
   const info = useFrameInfo(uid);
-  // admin ne frame diya ho to wahi sabse upar dikhta hai (har jagah)
-  const adminKey = useAdminFrame(uid);
+  // abhi kaun sa frame laga hai: 'off' | admin key | 'lv30/40/50' | null (auto)
+  const spec = useFrameSpec(uid);
+  const [mine, setMine] = useState(getMyFramePrefs());
 
   const [profileImg, setProfileImg] = useState("");
   const [booting, setBooting] = useState(true);
@@ -130,6 +135,7 @@ export default function FramesEntries() {
           refreshFrameInfo(uid),
           refreshAdminFrameMap(true),
         ]);
+        if (alive) setMine(getMyFramePrefs());
         if (alive && snap.exists()) setProfileImg(snap.data().profileImg || "");
       } catch (e) {}
       if (alive) setBooting(false);
@@ -140,20 +146,40 @@ export default function FramesEntries() {
   }, [uid]);
 
   const myLevel = Number(info.level) || 1;
-  // frame sirf level se: 30-39 -> lv30, 40-49 -> lv40, 50+ -> lv50
+  // level se milne wala frame (30-39 -> lv30, 40-49 -> lv40, 50+ -> lv50)
   const myTier = getTier(myLevel);
-  const currentFrameSource = adminKey
-    ? ADMIN_FRAMES[adminKey].img
-    : myTier ? FRAME_IMAGES.ANIM[myTier] : null;
+  const adminOwned = mine.adminFrame && ADMIN_FRAMES[mine.adminFrame] ? mine.adminFrame : null;
 
-  // server ko bhejo (sirf entry on/off); jawab aate hi poore app me turant badal do
+  // abhi jo frame dikh raha hai (AUTO me: admin ka frame, warna level wala)
+  const current = spec === "off" ? "off"
+    : spec && ADMIN_FRAMES[spec] ? spec
+    : spec && /^lv(30|40|50)$/.test(spec) ? spec
+    : adminOwned ? adminOwned
+    : myTier ? "lv" + myTier : "off";
+
+  const currentFrameSource = current === "off" ? null
+    : ADMIN_FRAMES[current] ? ADMIN_FRAMES[current].img
+    : FRAME_IMAGES.ANIM[Number(current.slice(2))];
+  const currentLabel = current === "off"
+    ? (adminOwned || myTier ? "Frame band hai" : "Abhi koi frame nahi mila")
+    : ADMIN_FRAMES[current] ? ADMIN_FRAMES[current].label
+    : FRAME_TIER_LABEL[Number(current.slice(2))];
+
+  // entry on/off ya frame chunna: server ko bhejo, jawab aate hi poore app me turant badal do
   const save = useCallback(
     async (body) => {
       if (busy || !uid) return;
       setBusy(true);
       try {
         const res = await callApi("/user/set-frame-prefs", body);
-        patchFrameInfo(uid, res.prefs || {});
+        const prefs = res.prefs || {};
+        patchFrameInfo(uid, prefs);
+        if (Object.prototype.hasOwnProperty.call(body, "frameOff") || Object.prototype.hasOwnProperty.call(body, "frameChoice")) {
+          setMyFramePrefsLocal(prefs);
+          setMine(getMyFramePrefs());
+          // feed, chat, comments, profile, live room - sab jagah turant naya frame
+          setAdminFrameLocal(uid, specFromPrefs(prefs));
+        }
       } catch (e) {
         Alert.alert("Error", (e && e.message) || "Save nahi hua, dobara try karo");
       } finally {
@@ -162,6 +188,13 @@ export default function FramesEntries() {
     },
     [busy, uid]
   );
+
+  const pickFrame = (id) => {
+    if (id === current) return;
+    if (id === "off") return save({ frameOff: true });
+    if (ADMIN_FRAMES[id]) return save({ frameChoice: "adm:" + id });
+    return save({ frameChoice: id });
+  };
 
   const lockedAlert = (what, need) =>
     Alert.alert("Abhi locked hai", `${what} Level ${need} par milta hai. Aapka level abhi ${myLevel} hai.`);
@@ -192,9 +225,7 @@ export default function FramesEntries() {
           {/* PREVIEW */}
           <View style={st.previewBox}>
             <AvatarPreview uri={profileImg} frameSource={currentFrameSource} size={120} />
-            <Text style={st.previewText}>
-              {adminKey ? ADMIN_FRAMES[adminKey].label : myTier ? FRAME_TIER_LABEL[myTier] : "Abhi koi frame nahi mila"}
-            </Text>
+            <Text style={st.previewText}>{currentLabel}</Text>
             <Text style={st.previewSub}>Level {myLevel}</Text>
           </View>
 
@@ -203,10 +234,31 @@ export default function FramesEntries() {
             <Text style={st.sectionTitle}>MERE FRAMES</Text>
           </View>
           <Text style={st.hint}>
-            Frame level se apne aap lagta hai: Level 30-39 me Gold Dragon, 40-49 me Purple Crown, 50+ me SVIP. Admin ne special frame diya ho to wo sabse upar dikhta hai.
+            Jo frame aapko mila hai (level se ya admin se) usse tap karke lagao. Jo lagaoge wahi feed, chat, profile aur live room me sabko dikhega.
           </Text>
 
           <View style={st.grid}>
+            <PickCard
+              label="Koi nahi"
+              sub={current === "off" ? "Laga hua" : "Frame hatao"}
+              active={current === "off"}
+              onPress={() => pickFrame("off")}
+            >
+              <AvatarPreview uri={profileImg} frameSource={null} size={84} />
+            </PickCard>
+
+            {adminOwned ? (
+              <PickCard
+                key={adminOwned}
+                label={ADMIN_FRAMES[adminOwned].label}
+                sub="Admin ne diya"
+                active={current === adminOwned}
+                onPress={() => pickFrame(adminOwned)}
+              >
+                <AvatarPreview uri={profileImg} frameSource={ADMIN_FRAMES[adminOwned].still} size={84} />
+              </PickCard>
+            ) : null}
+
             {FRAME_TIERS.map((t) => {
               const owned = t <= myTier;
               return (
@@ -214,9 +266,9 @@ export default function FramesEntries() {
                   key={t}
                   label={FRAME_TIER_LABEL[t]}
                   sub={owned ? `Lv ${t}` : `Lv ${t} par milega`}
-                  active={owned && t === myTier}
+                  active={current === "lv" + t}
                   locked={!owned}
-                  onPress={() => !owned && lockedAlert(FRAME_TIER_LABEL[t] + " frame", t)}
+                  onPress={() => (owned ? pickFrame("lv" + t) : lockedAlert(FRAME_TIER_LABEL[t] + " frame", t))}
                 >
                   <AvatarPreview uri={profileImg} frameSource={FRAME_IMAGES.STATIC[t]} size={84} />
                 </PickCard>

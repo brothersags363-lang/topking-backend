@@ -14,12 +14,13 @@ import { useRouter } from "../utils/safeRouter";
 import { doc, getDoc } from "firebase/firestore";
 
 import { auth, db } from "./firebaseConfig";
+import { fetchT } from '../utils/api';
 
 const BACKEND = "https://topking-backend.onrender.com";
 
 async function adminUpdateWithdrawal({ withdrawId, status }: { withdrawId: string; status: string }) {
   const token = await auth.currentUser?.getIdToken();
-  const res = await fetch(`${BACKEND}/admin/withdrawal-status`, {
+  const res = await fetchT(`${BACKEND}/admin/withdrawal-status`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify({ withdrawId, status }),

@@ -7,6 +7,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   getFirestore,
+  initializeFirestore,
   doc,
   setDoc,
 } from "firebase/firestore";
@@ -54,7 +55,16 @@ try {
 }
 
 export { auth };
-export const db = getFirestore(app);
+// NETWORK FIX: kuch phones / ISP / WiFi par Firestore ka WebChannel (streaming) atak jata hai
+// aur data kabhi load nahi hota ("kuch chal hi nahi raha"). Auto long-polling aise me khud
+// doosre tareeke par chala jata hai. Pehle se initialize ho chuka ho to getFirestore par fallback.
+let _db;
+try {
+  _db = initializeFirestore(app, { experimentalAutoDetectLongPolling: true });
+} catch (e) {
+  _db = getFirestore(app);
+}
+export const db = _db;
 export const storage = getStorage(app);
 
 export const getFCMToken = async () => {

@@ -5,6 +5,7 @@
 //
 // Props:
 //   totalSpent   : wallets/{uid}.totalSpent
+//   levelStars   : wallets/{uid}.levelStars (recharge/admin wale bache stars; optimistic jump isi tak)
 //   walletLevel  : wallets/{uid}.level (optional, admin manualLevel ke liye)
 //   pendingStore : (optional) { v, subs } - jo stars abhi kharch ho rahe hain (gift spam)
 //                  taaki bar balance ki tarah turant aage badhe
@@ -23,7 +24,7 @@ const GREY = '#8D8D92';
 const withCommas = (n) => String(Math.max(0, Math.round(Number(n) || 0))).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
 const LevelBar = memo(function LevelBar({
-  totalSpent = 0, walletLevel, pendingStore, onUpgrade, entryDelay = 250, style,
+  totalSpent = 0, levelStars, walletLevel, pendingStore, onUpgrade, entryDelay = 250, style,
 }) {
   const [pending, setPending] = useState(pendingStore ? pendingStore.v : 0);
 
@@ -34,10 +35,12 @@ const LevelBar = memo(function LevelBar({
     return () => { pendingStore.subs.delete(setPending); };
   }, [pendingStore]);
 
-  const info = useMemo(
-    () => getLevelProgress((Number(totalSpent) || 0) + (Number(pending) || 0), walletLevel),
-    [totalSpent, pending, walletLevel]
-  );
+  // Optimistic jump sirf "level wale" stars (recharge/admin) par; convert wale stars par level nahi badhta
+  const info = useMemo(() => {
+    const p = Math.max(0, Number(pending) || 0);
+    const eff = levelStars === undefined || levelStars === null ? 0 : Math.min(p, Math.max(0, Number(levelStars) || 0));
+    return getLevelProgress((Number(totalSpent) || 0) + eff, walletLevel);
+  }, [totalSpent, pending, walletLevel, levelStars]);
 
   // Bar 0 se shuru hoke smooth bharta hai (popup khulte hi "fill-in" effect)
   const fill = useRef(new Animated.Value(0)).current;
