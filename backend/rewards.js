@@ -6,7 +6,7 @@
 //  isliye app me koi value badal ke fake claim nahi kar sakta.
 //
 //  Reward:
-//    LIVE  : sirf 2 ghanta live (unique viewers ki shart nahi)  -> 300 Stars
+//    LIVE  : sirf 2 ghanta live (unique viewers ki shart nahi)  -> 150 Stars
 //            Private live ya room LOCK ho to time / seat-time kuch count nahi.
 //    GIFT  : 6500 Gift Stars (ek din me received)  -> 180 Stars
 //  Din ka reset: IST (Asia/Kolkata) raat 12 baje.
@@ -25,7 +25,7 @@ const REWARD = {
   LIVE_SECONDS: 2 * 60 * 60, // 2 ghanta
   LIVE_VIEWERS: 0,           // unique viewers ki shart hata di (use nahi hota)
   LIVE_MIN_GIFTS: 0,         // pehle 1000 thi; abhi koi gift shart nahi
-  LIVE_STARS: 300,           // upar wala reward
+  LIVE_STARS: 150,           // upar wala reward
   GIFT_TARGET: 6500,         // 6500 gift stars
   GIFT_STARS: 180,           // niche wala reward
   SHARE_STARS: 5,            // 1 video share = 5 stars
@@ -386,18 +386,38 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
       const vRef = db.collection("all_videos").doc(videoId);
       const uRef = db.collection("users").doc(uid);
 
+      // EK DEVICE = EK ID: share star sirf us ID ko jo us din is phone par pehle star kamayegi.
+      // Dusri ID isi phone par kitna bhi share kare, star nahi. Phone ka total bhi din me 3 share (15 stars).
+      const dh = req.deviceHash || "";
+      if (!dh) {
+        return res.json({ success: true, awarded: false, stars: 0, todayCount: 0, dailyMax: REWARD.SHARE_DAILY_MAX, reason: "NO_DEVICE" });
+      }
+      const dRef = db.collection("shareRewardsDevice").doc(`${dh}_${today}`);
+
       const result = await db.runTransaction(async (tx) => {
-        const [sSnap, wSnap, vSnap, uSnap] = await Promise.all([
+        const [sSnap, wSnap, vSnap, uSnap, dSnap] = await Promise.all([
           tx.get(sRef),
           tx.get(wRef),
           tx.get(vRef),
           tx.get(uRef),
+          tx.get(dRef),
         ]);
 
         if (!uSnap.exists || (uSnap.data() || {}).banned === true) {
           throw httpErr(403, "Account not allowed");
         }
         if (!vSnap.exists) throw httpErr(404, "Video not found");
+
+        // Is phone par aaj kisi aur ID ne share star le liye -> is ID ko nahi
+        const dd = dSnap.exists ? dSnap.data() || {} : null;
+        if (dd && dd.uid && dd.uid !== uid) {
+          return {
+            awarded: false,
+            stars: 0,
+            todayCount: 0,
+            total: wSnap.exists ? num(wSnap.data().stars) : 0,
+          };
+        }
 
         const d = sSnap.exists ? sSnap.data() : { date: today, count: 0, videoIds: [] };
         const count = num(d.count);
@@ -422,6 +442,12 @@ module.exports = function mountRewards({ app, db, admin, verifyUser, rateLimit }
           date: today,
           count: count + 1,
           videoIds: [...videoIds, videoId],
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        tx.set(dRef, {
+          uid,
+          date: today,
+          count: count + 1,
           updatedAt: FieldValue.serverTimestamp(),
         });
 

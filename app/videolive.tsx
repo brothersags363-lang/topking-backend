@@ -97,6 +97,7 @@ import {
   orderBy,
   limit,
   writeBatch,
+  runTransaction,
   serverTimestamp,
 } from "firebase/firestore";
 
@@ -2328,6 +2329,8 @@ export default function VideoLive() {
   // Socket na lage to neeche sab purane Firestore raste par chalta rehta hai.
   const liveSocketRef = useRef<any>(null);
   const socketUpRef = useRef(false);
+  const seenActiveRef = useRef(false);
+  const endedExitRef = useRef(false);
   const sockLikeTimerRef = useRef<any>(null);
   const pendingSockLikesRef = useRef(0);
   const [socketUp, setSocketUp] = useState(false);
@@ -2450,7 +2453,9 @@ export default function VideoLive() {
   );
   const topViewers = React.useMemo(() => audienceSorted.slice(0, 3), [audienceSorted]);
   // socket chal raha ho to server ki sahi ginti (200 ki limit nahi, purane presence docs nahi); warna audience list
-  const viewerCount = socketUp && socketViewers !== null ? socketViewers : audienceArray.length;
+  // FIX: socket ki ginti tab kam aati thi jab kuch viewers ka socket judta nahi (host ko 1 dikhta tha, 8-10 the).
+  // Ab socket aur audience list dono me se jo BADI ho wahi dikhegi -> kam nahi dikhega.
+  const viewerCount = socketUp && socketViewers !== null ? Math.max(socketViewers, audienceArray.length) : audienceArray.length;
   if (viewerCount > peakViewersRef.current) peakViewersRef.current = viewerCount;
 
   // ---------- premium derived values ----------
@@ -2640,8 +2645,14 @@ export default function VideoLive() {
       }
 
       // Room ended (host stopped it) → send the viewer back automatically.
+      // FIX: phone ke purane (cache) snapshot me status "ended" hota hai to viewer "Connecting to live..." par hi
+      // bahar fek diya jata tha. Ab sirf server ka taaza snapshot ya "active dekha phir ended hua" par hi bahar.
+      if (data.status === "active") seenActiveRef.current = true;
       if (!isHost && data.status === "ended") {
-        router.back();
+        const fresh = !snap.metadata.fromCache;
+        if (fresh || seenActiveRef.current) {
+          if (!endedExitRef.current) { endedExitRef.current = true; router.back(); }
+        }
       }
     });
 
@@ -5544,12 +5555,31 @@ export default function VideoLive() {
         [`pk.gifters.${currentUid}.img`]: currentAvatar || STABLE_AVATAR,
         [`pk.gifters.${currentUid}.stars`]: increment(price),
       };
+      // PK ka PEHLA gift (poore PK me sirf ek baar) -> PK score me 2x. Upar/wallet/stars me asli price hi jati hai.
+      // Authority room (chhota roomId) par transaction se flag claim hota hai, taaki dono side se ek hi baar mile.
+      let pkScoreAdd = price;
+      try {
+        if (curPk.pkId && taps >= 1) {
+          const authId = curPk.opponentRoomId && curPk.opponentRoomId < roomId ? curPk.opponentRoomId : roomId;
+          const authRef = doc(db, "rooms", authId);
+          const got = await runTransaction(db, async (tx: any) => {
+            const snap = await tx.get(authRef);
+            const apk = snap.exists() ? snap.data()?.pk : null;
+            if (!apk || apk.status !== "active" || apk.firstGiftBonusDone === curPk.pkId) return false;
+            tx.update(authRef, { "pk.firstGiftBonusDone": curPk.pkId });
+            return true;
+          });
+          if (got) pkScoreAdd = price + Number(item.price || 0); // sirf pehle gift ka extra (1x), baaki taps normal
+        }
+      } catch (e: any) {
+        __DEV__ && console.log("PK FIRST GIFT BONUS SKIP:", e?.code, e?.message);
+      }
       if (receiverId === roomDataRef.current?.hostId) {
-        roomUpdate["pk.score"] = increment(price);
+        roomUpdate["pk.score"] = increment(pkScoreAdd);
         Object.assign(roomUpdate, supporter);
       } else if (receiverId === curPk.opponentHostId && curPk.opponentRoomId) {
         pkJobs.push(
-          updateDoc(doc(db, "rooms", curPk.opponentRoomId), { "pk.score": increment(price), ...supporter })
+          updateDoc(doc(db, "rooms", curPk.opponentRoomId), { "pk.score": increment(pkScoreAdd), ...supporter })
         );
       }
     }

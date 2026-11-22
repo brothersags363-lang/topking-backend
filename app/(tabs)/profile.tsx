@@ -359,10 +359,20 @@ export default function ProfileScreen() {
     if (greyClaimTried.current || !ud) return;
     if (ud.verifiedColor === 'yellow' || ud.verifiedColor === 'blue') return;
     let n = 0;
-    for (const v of videos || []) if (Number(v?.views || 0) >= 3000) n += 1;
-    if (n < 5) return;
-    greyClaimTried.current = true; // ek session me ek hi baar try
-    callApi('/creator/claim-grey', {}).catch(() => {});
+    let n300 = 0;
+    for (const v of videos || []) {
+      const vw = Number(v?.views || 0);
+      if (vw >= 3000) n += 1;
+      if (vw >= 300) n300 += 1;
+    }
+    if (n >= 5) {
+      greyClaimTried.current = true; // ek session me ek hi baar try
+      callApi('/creator/claim-grey', {}).catch(() => {});
+    } else if (n300 >= 5 && ud.verified !== true) {
+      // White tick: 5 videos x 300+ views
+      greyClaimTried.current = true;
+      callApi('/creator/claim-white', {}).catch(() => {});
+    }
   };
 
   // ================== INIT (auth + profile + top gifters, ek hi listener) ==================

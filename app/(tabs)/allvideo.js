@@ -76,8 +76,8 @@ import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useRouter } from '../../utils/safeRouter';
 import LevelBar from '../../components/live/LevelBar';
 
-// ---------- VIEWS: ek hi user ek hi video ko har 5 minute baad dobara dekhe to view +1 ----------
-const VIEW_GAP_MS = 5 * 60 * 1000;
+// ---------- VIEWS: ek hi user ek hi video ko har 20 minute baad dobara dekhe to view +1 ----------
+const VIEW_GAP_MS = 20 * 60 * 1000;
 const viewStampKey = (uid) => `view_ts_v1_${uid || 'guest'}`;
 let viewStampCache = null; // { [videoId]: lastCountedTimestamp }
 let viewStampUid = null;
@@ -91,7 +91,7 @@ const loadViewStamps = async (uid) => {
     const parsed = raw ? JSON.parse(raw) : {};
     const now = Date.now();
     const out = {};
-    // 5 min se purani entry ki zaroorat nahi -> map chhota rehta hai
+    // 20 min se purani entry ki zaroorat nahi -> map chhota rehta hai
     Object.keys(parsed).forEach((id) => {
       if (typeof parsed[id] === 'number' && now - parsed[id] < VIEW_GAP_MS) out[id] = parsed[id];
     });
@@ -102,7 +102,7 @@ const loadViewStamps = async (uid) => {
   return viewStampCache;
 };
 
-// true = view gino (pehli baar ya pichle count se 5 min ho gaye), false = abhi nahi
+// true = view gino (pehli baar ya pichle count se 20 min ho gaye), false = abhi nahi
 const shouldCountView = async (videoId, uid) => {
   if (!videoId) return false;
   const key = uid || 'guest';
@@ -833,7 +833,7 @@ export default function App() {
     }
   });
 
-  // ---------------- VIEWS: video dekhte hi +1 (5 min me ek hi bar) ----------------
+  // ---------------- VIEWS: video dekhte hi +1 (20 min me ek hi bar) ----------------
   const activeVideoId = videoData[activeVideo]?.id;
   useEffect(() => {
     if (!screenFocused || !activeVideoId) return;
