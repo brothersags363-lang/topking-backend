@@ -4404,7 +4404,7 @@ function angelOwnedOf(d) {
 // badlav (admin dena / user chunna) seedha memory me update. Isliye Firestore bill nahi badhta.
 // map value: "<adminKey>" | "lv30" | "lv40" | "lv50" | "off"   (map me nahi = auto: level se)
 const frameSpecCache = { raw: new Map(), at: 0, loading: null };
-const FRAME_SPEC_TTL_MS = 30 * 60 * 1000;
+const FRAME_SPEC_TTL_MS = 6 * 60 * 60 * 1000; // COST: 30 min -> 6 ghante (frameSpecPut se changes turant cache me aate hain)
 
 // User ko admin se mile saare frames (adminFrames list + purana adminFrame). Sirf valid keys.
 function adminListOf(a, l) {
