@@ -3407,7 +3407,8 @@ app.post(
 //   Key:  logos/{kind}/{uid}/{timestamp}_{uuid}.{jpg|png|webp}
 //   Har upload ka naya key -> cache me purani photo nahi atakti.
 // =====================================================
-const LOGO_KINDS = new Set(["agency", "family"]);
+const LOGO_KINDS = new Set(["agency", "family", "payment", "announcement"]);
+const ADMIN_ONLY_KINDS = new Set(["payment", "announcement"]); // sirf admin upload kar sakta hai
 
 app.post(
   "/upload-logo",
@@ -3429,6 +3430,10 @@ app.post(
       const folder = String((req.query && req.query.kind) || "");
       if (!LOGO_KINDS.has(folder)) {
         return res.status(400).json({ success: false, error: "Invalid kind" });
+      }
+
+      if (ADMIN_ONLY_KINDS.has(folder) && !(await isAdminUser(req.user))) {
+        return res.status(403).json({ success: false, error: "Admin access required" });
       }
 
       const uid = req.user.uid;
@@ -6547,6 +6552,8 @@ app.post("/admin/withdrawal-status", generalLimiter, verifyUser, requireAdminDoc
 // NOTE: ye routes 404 handler se PEHLE register hone chahiye (warna /live/list aur /live/gift 404 dete the)
 // Live list: server ek baar rooms sunta hai, phones ko cache se list milti hai (Firestore reads bachte hain)
 require("./liveList")(app, { admin, db });
+// Admin: payment proof (user ko screenshot + push) aur announcement (sabko push)
+require("./adminBroadcast")({ app, db, admin, verifyUser, requireAdminDoc, limiter: generalLimiter });
 // Live gift: stars ka hisaab server transaction me (phone seedha wallet nahi kaat-ta)
 require("./liveGift")(app, { admin, db, verifyUser });
 
