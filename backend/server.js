@@ -5001,6 +5001,43 @@ app.post("/bd/my-agencies", generalLimiter, verifyUser, requireBD, async (req, r
   }
 });
 
+// ---------- BD: apni agencies ke withdrawals (SIRF DEKHNE KE LIYE) ----------
+// Payout details (UPI / bank / mobile) BD ko NAHI bheje jate - sirf kaun, kitna, status.
+app.post("/bd/withdrawals", generalLimiter, verifyUser, requireBD, async (req, res) => {
+  try {
+    const agSnap = await db.collection("agencies").where("bdUserId", "==", req.user.uid).get();
+    const agencyIds = agSnap.docs.map((d) => d.id);
+    const agencyNames = {};
+    agSnap.docs.forEach((d) => { agencyNames[d.id] = d.data().agencyName || ""; });
+
+    const rows = [];
+    for (let i = 0; i < agencyIds.length; i += 30) {
+      const chunk = agencyIds.slice(i, i + 30);
+      const wSnap = await db.collection("withdrawals").where("agencyId", "in", chunk).get();
+      wSnap.forEach((d) => {
+        const w = d.data() || {};
+        rows.push({
+          id: d.id,
+          agencyId: w.agencyId || "",
+          agencyName: agencyNames[w.agencyId] || w.agencyName || "",
+          userName: w.name || w.username || "",
+          tk: Number(w.tk || 0),
+          amount: Number(w.amount || 0),
+          status: w.status || "Pending",
+          createdAt: w.createdAt && w.createdAt.toMillis ? w.createdAt.toMillis() : 0,
+        });
+      });
+    }
+    rows.sort((a, b) => b.createdAt - a.createdAt);
+    const withdrawals = rows.slice(0, 200);
+    const pendingCount = rows.filter((r) => r.status === "Pending").length;
+    return res.json({ success: true, withdrawals, pendingCount });
+  } catch (e) {
+    console.error("BD WITHDRAWALS ERROR:", e);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+});
+
 // body: { agencyName, ownerName, ownerUsername, logo(https url, optional) }
 app.post("/bd/create-agency", generalLimiter, verifyUser, requireBD, async (req, res) => {
   try {
@@ -6399,6 +6436,33 @@ app.post("/withdraw/request", generalLimiter, verifyUser, async (req, res) => {
     const wdRef = db.collection("withdrawals").doc();
     const histRef = walletRef.collection("withdrawHistory").doc(wdRef.id); // same id (client status map isi se chalta hai)
 
+    // Admin ko dikhane ke liye: user ki agency ka naam + us agency ke BD ka naam
+    let agencyNameFull = "";
+    let bdUserId = "";
+    let bdName = "";
+    try {
+      const uPre = await userRef.get();
+      const agId = uPre.exists ? String(uPre.data().agencyId || "") : "";
+      if (!agId && uPre.exists && uPre.data().isBD === true) {
+        // user khud BD hai (agency nahi) -> BD me uska apna naam
+        bdUserId = uid;
+        bdName = uPre.data().username || uPre.data().name || "";
+      }
+      if (agId) {
+        const agSnap = await db.collection("agencies").doc(agId).get();
+        if (agSnap.exists) {
+          const ag = agSnap.data() || {};
+          agencyNameFull = ag.agencyName || "";
+          bdUserId = ag.bdUserId || "";
+          bdName = ag.bdUsername || "";
+          if (bdUserId && !bdName) {
+            const bdUser = await db.collection("users").doc(bdUserId).get();
+            if (bdUser.exists) bdName = bdUser.data().username || bdUser.data().name || "";
+          }
+        }
+      }
+    } catch (e) { console.error("WD AGENCY/BD LOOKUP ERROR:", e && e.message); }
+
     await db.runTransaction(async (tx) => {
       const wSnap = await tx.get(walletRef);
       const uSnap = await tx.get(userRef);
@@ -6432,7 +6496,9 @@ app.post("/withdraw/request", generalLimiter, verifyUser, async (req, res) => {
         username: u.username || "",
         name: u.username || u.name || "",
         agencyId: u.agencyId || "",
-        agencyName: u.agencyName || "",
+        agencyName: u.agencyName || agencyNameFull || "",
+        bdUserId,
+        bdName,
         tk,
         amount: tk,              // Admin "Amount to Pay" (1 TK = Rs 1 maana hai)
         stars: needStars,

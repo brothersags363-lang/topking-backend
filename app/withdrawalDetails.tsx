@@ -55,7 +55,25 @@ export default function WithdrawalDetails() {
     (async () => {
       try {
         const snap = await getDoc(doc(db, "withdrawals", id as string));
-        if (snap.exists()) setData({ id: snap.id, ...snap.data() });
+        if (snap.exists()) {
+          const w: any = { id: snap.id, ...snap.data() };
+          // purani withdrawals me bdName nahi hota -> agency se nikal lo
+          if (!w.bdName && w.agencyId) {
+            try {
+              const ag = await getDoc(doc(db, "agencies", w.agencyId));
+              if (ag.exists()) {
+                const a: any = ag.data();
+                w.bdName = a.bdUsername || "";
+                if (!w.agencyName) w.agencyName = a.agencyName || "";
+                if (!w.bdName && a.bdUserId) {
+                  const bu = await getDoc(doc(db, "users", a.bdUserId));
+                  if (bu.exists()) w.bdName = (bu.data() as any).username || (bu.data() as any).name || "";
+                }
+              }
+            } catch (e) {}
+          }
+          setData(w);
+        }
       } catch (e) {
         console.log(e);
       }
@@ -137,6 +155,7 @@ export default function WithdrawalDetails() {
       <View style={styles.card}>
         <Row label="User Name" value={data.name || data.username} />
         <Row label="Agency" value={data.agencyName || "No Agency"} />
+        <Row label="BD" value={data.bdName || (data.agencyId ? "—" : "No BD")} />
         <Row label="Method" value={data.method === "BANK" ? "Bank Account" : "UPI"} />
         <Row label="Account Holder" value={data.accountName} />
         <Row label="Mobile" value={data.mobileNumber || data.mobile} />

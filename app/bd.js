@@ -39,6 +39,11 @@ export default function BDPage() {
   const [ownerUsername, setOwnerUsername] = useState("");
   const [logo, setLogo] = useState(""); // https url ya naya local file://
 
+  // agencies ke withdrawals (sirf dekhne ke liye)
+  const [withdrawals, setWithdrawals] = useState([]);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [showW, setShowW] = useState(false);
+
   // view popup
   const [viewing, setViewing] = useState(null);
   const [hosts, setHosts] = useState([]);
@@ -50,6 +55,10 @@ export default function BDPage() {
         setShowForm(false);
         return true;
       }
+      if (showW) {
+        setShowW(false);
+        return true;
+      }
       if (viewing) {
         setViewing(null);
         return true;
@@ -58,13 +67,20 @@ export default function BDPage() {
       return true;
     });
     return () => sub.remove();
-  }, [router, showForm, viewing]);
+  }, [router, showForm, viewing, showW]);
 
   const load = useCallback(async () => {
     try {
       const res = await callApi("/bd/my-agencies", {});
       setAgencies(res.agencies || []);
       setDenied(false);
+      // withdrawals alag se (fail ho to agencies list na ruke)
+      callApi("/bd/withdrawals", {})
+        .then((w) => {
+          setWithdrawals(w.withdrawals || []);
+          setPendingCount(w.pendingCount || 0);
+        })
+        .catch(() => {});
     } catch (e) {
       const msg = String(e?.message || "");
       if (/BD access|403|Forbidden/i.test(msg)) setDenied(true);
@@ -231,6 +247,12 @@ export default function BDPage() {
         <Text style={styles.createText}>+ Create Agency</Text>
       </TouchableOpacity>
 
+      <TouchableOpacity style={styles.wBtn} onPress={() => setShowW(true)}>
+        <Text style={styles.wBtnText}>
+          💸 Agency Withdrawals{pendingCount > 0 ? `  (${pendingCount} pending)` : ""}
+        </Text>
+      </TouchableOpacity>
+
       <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
         data={filtered}
         keyExtractor={(i) => i.id}
@@ -247,6 +269,11 @@ export default function BDPage() {
               <Text style={{ color: item.status === "blocked" ? "red" : "#00ff66", marginTop: 4 }}>
                 {item.status === "blocked" ? "🔴 Blocked" : "🟢 Active"}
               </Text>
+              {withdrawals.some((w) => w.agencyId === item.id && w.status === "Pending") && (
+                <Text style={{ color: "#FFD700", marginTop: 4, fontWeight: "bold" }}>
+                  💸 Withdrawal request pending
+                </Text>
+              )}
             </View>
 
             <View style={styles.actionBox}>
@@ -323,6 +350,51 @@ export default function BDPage() {
         </View>
       </Modal>
 
+      {/* WITHDRAWALS (sirf dekhne ke liye) */}
+      <Modal visible={showW} transparent animationType="fade" onRequestClose={() => setShowW(false)}>
+        <View style={styles.modalBg}>
+          <View style={[styles.popup, { maxHeight: "85%" }]}>
+            <Text style={styles.popupTitle}>Agency Withdrawals</Text>
+
+            <FlatList
+              initialNumToRender={8}
+              maxToRenderPerBatch={8}
+              windowSize={7}
+              data={withdrawals}
+              keyExtractor={(w) => w.id}
+              ListEmptyComponent={<Text style={styles.empty}>Abhi kisi agency ne withdrawal nahi kiya</Text>}
+              renderItem={({ item }) => (
+                <View style={styles.wRow}>
+                  <Text style={styles.name}>🏢 {item.agencyName || "Agency"}</Text>
+                  <Text style={styles.info}>👤 {item.userName || "User"}</Text>
+                  <Text style={styles.info}>
+                    {item.tk} TK  •  ₹ {item.amount}
+                  </Text>
+                  <View style={styles.wBottom}>
+                    <Text
+                      style={{
+                        fontWeight: "bold",
+                        color:
+                          item.status === "Success" ? "#00ff66" : item.status === "Failed" ? "#ff3b30" : "#FFD700",
+                      }}
+                    >
+                      {item.status}
+                    </Text>
+                    {!!item.createdAt && (
+                      <Text style={styles.wDate}>{new Date(item.createdAt).toLocaleDateString()}</Text>
+                    )}
+                  </View>
+                </View>
+              )}
+            />
+
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowW(false)}>
+              <Text style={styles.btnText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* VIEW */}
       <Modal visible={!!viewing} transparent animationType="fade" onRequestClose={() => setViewing(null)}>
         <View style={styles.modalBg}>
@@ -373,6 +445,11 @@ const styles = StyleSheet.create({
   search: { backgroundColor: "#222", color: "#fff", padding: 12, borderRadius: 10, marginBottom: 15 },
   createBtn: { backgroundColor: "#FFD700", padding: 14, borderRadius: 10, alignItems: "center", marginBottom: 15 },
   createText: { fontWeight: "bold", fontSize: 17, color: "#000" },
+  wBtn: { backgroundColor: "#1d1d1d", borderColor: "#FFD700", borderWidth: 1, padding: 14, borderRadius: 10, alignItems: "center", marginBottom: 15 },
+  wBtnText: { fontWeight: "bold", fontSize: 16, color: "#FFD700" },
+  wRow: { backgroundColor: "#2b2b2b", padding: 12, borderRadius: 12, marginBottom: 10 },
+  wBottom: { flexDirection: "row", justifyContent: "space-between", marginTop: 6 },
+  wDate: { color: "#999" },
   empty: { color: "#888", textAlign: "center", marginTop: 40 },
   card: {
     backgroundColor: "#1d1d1d",

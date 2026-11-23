@@ -1,7 +1,8 @@
 import { Stack, usePathname, useGlobalSearchParams } from 'expo-router';
 import { useRouter } from '../utils/safeRouter';
 import { useEffect, useRef } from 'react';
-import { Alert, AppState, BackHandler, Platform, View, Text, TouchableOpacity } from 'react-native';
+import { Alert, AppState, BackHandler, Linking, Platform, View, Text, TouchableOpacity } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { getApp } from '@react-native-firebase/app';
 import {
@@ -118,6 +119,47 @@ export default function RootLayout() {
   }, []);
 
 
+  // APP KHULTE HI notification permission maango (Android 13+ / iOS).
+  // - Pehli baar: system ka "Allow notifications?" dialog aata hai.
+  // - Agar user ne pehle "Don't allow" kar diya (dobara system dialog nahi aata):
+  //   ek chhota "Turn on" popup -> seedha Settings kholta hai (din me sirf 1 baar).
+  // permReady: jab tak ye dialog khula hai tab tak FCM token wala code ruka rahe (double dialog na aaye)
+  const permReady = useRef<Promise<void>>(Promise.resolve());
+  useEffect(() => {
+    let cancelled = false;
+
+    permReady.current = (async () => {
+      try {
+        let perm = await Notifications.getPermissionsAsync();
+        if (cancelled || perm.granted) return;
+
+        if (perm.canAskAgain) {
+          await Notifications.requestPermissionsAsync();
+          return;
+        }
+
+        // canAskAgain = false -> sirf Settings se on ho sakta hai
+        const KEY = 'notifSettingsPromptAt';
+        const last = Number((await AsyncStorage.getItem(KEY)) || 0);
+        if (Date.now() - last < 24 * 60 * 60 * 1000) return; // din me ek baar
+        await AsyncStorage.setItem(KEY, String(Date.now()));
+        if (cancelled) return;
+
+        Alert.alert(
+          'Turn on notifications',
+          'Messages, live aur payment ke alerts paane ke liye notifications ON karo.',
+          [
+            { text: 'Not now', style: 'cancel' },
+            { text: 'Open Settings', onPress: () => { Linking.openSettings().catch(() => {}); } },
+          ]
+        );
+      } catch (e) {}
+    })();
+
+    return () => { cancelled = true; };
+  }, []);
+
+
   // SAFETY NET: kisi bhi screen par back dabane se app band na ho.
   // History hai to normal back (return false), history nahi hai to Home par jao.
   // Screen ka apna handler (wallet jaisa) pehle chalta hai; ye sabse last me.
@@ -160,6 +202,12 @@ export default function RootLayout() {
           router.push({ pathname: '/openLive', params: { id: String(data.roomId) } } as any);
         } else if (data.type === 'follow' && data.senderUid) {
           router.push({ pathname: '/userProfile', params: { userId: String(data.senderUid) } } as any);
+        } else if (data.type === 'payment') {
+          // admin ne payment bheji -> payment details + screenshot
+          router.push({ pathname: '/paymentProofs', params: { id: String(data.proofId || '') } } as any);
+        } else if (data.type === 'announcement') {
+          // admin ki ghoshna
+          router.push({ pathname: '/announcements', params: { id: String(data.announcementId || '') } } as any);
         }
       } catch (e) {}
     }, 400);
@@ -174,7 +222,7 @@ export default function RootLayout() {
     const unsubForeground = onMessage(messaging, async (remoteMessage: any) => {
 
       const data = remoteMessage?.data || {};
-      if (!['chat', 'live', 'video_like', 'follow', 'comment', 'video_share', 'live_share'].includes(data.type)) return;
+      if (!['chat', 'live', 'video_like', 'follow', 'comment', 'video_share', 'live_share', 'payment', 'announcement'].includes(data.type)) return;
 
       const cur = currentRef.current;
       // jis chat/live me pehle se ho uska banner nahi
@@ -251,6 +299,7 @@ export default function RootLayout() {
       registerDevice().catch(() => {});
 
       try {
+        await permReady.current; // permission dialog khatam hone do, phir token lo
         const token = await getFCMToken();
         if (token) {
           await setDoc(doc(db, 'users', user.uid), { fcmToken: token }, { merge: true });

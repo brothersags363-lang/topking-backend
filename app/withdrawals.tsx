@@ -98,6 +98,9 @@ export default function Withdrawals() {
               <Text style={styles.badge}>{item.method === "BANK" ? "Bank" : "UPI"}</Text>
             </View>
 
+            <Text style={styles.meta}>🏢 Agency: {item.agencyName || "No Agency"}</Text>
+            <Text style={styles.meta}>👤 BD: {item.bdName || (item.agencyId ? "—" : "No BD")}</Text>
+
             <Text style={styles.amount}>₹ {item.amount}</Text>
             <Text style={styles.upi}>{item.payoutMasked}</Text>
 
@@ -155,6 +158,7 @@ const styles = StyleSheet.create({
   badge: { color: "#FFD700", fontWeight: "bold", fontSize: 12 },
   amount: { color: "#FFD700", fontSize: 22, fontWeight: "bold", marginTop: 8 },
   upi: { color: "#aaa", marginTop: 8, fontSize: 15 },
+  meta: { color: "#ccc", marginTop: 6, fontSize: 14 },
   flag: { color: "#ff9500", marginTop: 8, fontSize: 13 },
   bottomRow: {
     marginTop: 15,

@@ -125,11 +125,34 @@ module.exports = function mountWithdraw({ app, db, admin, verifyUser, rateLimit 
       const same = await db.collection("withdrawals").where("payoutKey", "==", payoutKey).limit(10).get();
       if (same.docs.some((d) => d.data().userId !== uid)) flags.push("PAYOUT_SHARED_WITH_OTHER_USER");
 
+      // agency ka naam + us agency ke BD ka naam (admin screen ke liye)
+      let agencyNameFull = "", bdUserId = "", bdName = "";
+      try {
+        if (u.agencyId) {
+          const agSnap = await db.collection("agencies").doc(String(u.agencyId)).get();
+          if (agSnap.exists) {
+            const ag = agSnap.data() || {};
+            agencyNameFull = ag.agencyName || "";
+            bdUserId = ag.bdUserId || "";
+            bdName = ag.bdUsername || "";
+            if (bdUserId && !bdName) {
+              const bu = await db.collection("users").doc(bdUserId).get();
+              if (bu.exists) bdName = bu.data().username || bu.data().name || "";
+            }
+          }
+        } else if (u.isBD === true) {
+          bdUserId = uid;
+          bdName = u.username || u.name || "";
+        }
+      } catch (_) {}
+
       const ref = db.collection("withdrawals").doc();
       const base = {
         userId: uid,
         agencyId: u.agencyId || "",
-        agencyName: u.agencyName || "",
+        agencyName: u.agencyName || agencyNameFull || "",
+        bdUserId,
+        bdName,
         accountName,
         mobileNumber: mobile,
         mobile,
