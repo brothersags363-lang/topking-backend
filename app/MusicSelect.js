@@ -1,1001 +1,563 @@
-import useBackStep from '../utils/useBackStep';
-import React, {
-  useState,
-  useEffect,
-  useRef,
-} from "react";
-
+// =====================================================================
+// SELECT MUSIC (screenshot jaisa)
+// ---------------------------------------------------------------------
+//  X  |  Select Music  |  Local Music
+//  [ Search Music ]
+//  Hot   Favorites   Recently
+//  rows: cover (play) / title / artist / 00:30 / ☆ / ≡
+//  row tap -> preview chalta hai + kainchi (song cut) + yellow
+//  "Apply and start shooting" button
+//
+// SMOOTH: memo rows, fixed row height (getItemLayout), ek hi audio
+// player (naya gaana = purana release), progress bar UI thread par.
+// =====================================================================
+import useBackStep from "../utils/useBackStep";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   TouchableOpacity,
   TextInput,
   FlatList,
   Image,
-  Dimensions,
-    Animated,
-      Alert,
+  Alert,
+  ActivityIndicator,
+  Modal,
+  Keyboard,
 } from "react-native";
-
-import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "../utils/safeRouter";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
-
-import { Audio } from "../utils/audio";
 import { useIsFocused } from "@react-navigation/native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as DocumentPicker from "expo-document-picker";
 
-import { db } from "./firebaseConfig";
+import { useRouter } from "../utils/safeRouter";
+import { Audio } from "../utils/audio";
+import { db, auth } from "./firebaseConfig";
+import { collection, getDocs, query, orderBy, limit } from "firebase/firestore";
+import FxSlider from "../components/camera/FxSlider";
+import { uploadLocalAudio } from "../services/upload/reelUploadService";
 
-import {
-  collection,
-  getDocs,
-  query,
-  orderBy,
-  limit,
-} from "firebase/firestore";
+const YELLOW = "#FFD60A";
+const ROW_H = 67;
+const APPLY_H = 56;
+const FAV_KEY = "music_favorites_v1";
+const RECENT_KEY = "music_recent_v1";
+const TABS = ["Hot", "Favorites", "Recently"];
 
-const { width } = Dimensions.get("window");
+const first = (v) => (Array.isArray(v) ? v[0] : v);
 
-export default function MusicSelect() {
-
-  const router = useRouter();
-  useBackStep('/');
-
-const params = useLocalSearchParams();
-
-useEffect(() => {
-  console.log("All Params =>", params);
-}, []);
-
-const firstParam = (value) =>
-  Array.isArray(value) ? value[0] : value;
-
-const videoUri = firstParam(params.videoUri) || "";
-const returnTo = firstParam(params.returnTo) || "";
-
-  const [search, setSearch] = useState("");
-  const searchInputRef = useRef(null);
-
-  const [activeTab, setActiveTab] = useState("Trending");
-
-const [selectedMusic, setSelectedMusic] = useState(null);
-
-const [sound, setSound] = useState(null);
-const isFocused = useIsFocused();
-
-useEffect(() => {
-  return () => {
-    const stopSound = async () => {
-      if (sound) {
-        try {
-          await sound.stopAsync();
-          await sound.unloadAsync();
-        } catch (e) {
-          console.log(e);
-        }
-      }
-    };
-
-    stopSound();
-  };
-}, [sound]);
-
-const [isPlaying, setIsPlaying] = useState(false);
-const [position, setPosition] = useState(0);
-
-const [duration, setDuration] = useState(0);
-
-const rotateAnim = useRef(
-  new Animated.Value(0)
-).current;
-
-useEffect(() => {
-
-  if (!selectedMusic) return;
-
-  // loop ko screen chhodne / gaana badalne par rok do (pehle hamesha chalta rehta tha)
-  rotateAnim.setValue(0);
-  const loop = Animated.loop(
-    Animated.timing(rotateAnim, {
-      toValue: 1,
-      duration: 5000,
-      useNativeDriver: true,
-    })
-  );
-  loop.start();
-
-  return () => loop.stop();
-
-}, [selectedMusic]);
-
-
-
-useEffect(() => {
-
-  Audio.setAudioModeAsync({
-    playsInSilentModeIOS: true,
-    staysActiveInBackground: false,
-  });
-
-}, []);
-
-useEffect(() => {
-  if (!isFocused && sound) {
-    sound.stopAsync().catch(() => {});
-    sound.unloadAsync().catch(() => {});
-  }
-}, [isFocused, sound]);
-
-
-
-useEffect(() => {
-
-  loadSongs();
-
-}, []);
-
-
- const [musicList, setMusicList] = useState([]);
-
-
-
-
-
-
-const loadSongs = async () => {
-
-  try {
-
-    const q = query(
-      collection(db, "songs"),
-      orderBy("createdAt", "desc"), limit(300)
-    );
-
-    const snapshot = await getDocs(q);
-
-    const list = [];
-
-    snapshot.forEach((doc) => {
-
-      list.push({
-
-        id: doc.id,
-
-        ...doc.data(),
-
-      });
-
-    });
-
-    setMusicList(list);
-
-    console.log("Songs =", list);
-
-  } catch (e) {
-
-    console.log("Load Songs Error =", e);
-
-  }
-
+const fmt = (sec) => {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 };
 
+// Song doc me duration kisi bhi naam se ho sakti hai
+const songDuration = (item) => {
+  const d = Number(item.duration ?? item.durationSec ?? item.length ?? 0);
+  if (!d) return 0;
+  return d > 1000 ? d / 1000 : d;
+};
 
-const playMusic = async (item) => {
-
- console.log("SELECTED SONG =", item);
-
-  console.log("AUDIO URL =", item.audioUrl);
-  console.log("Video URL =", item.videoUrl);
-
-if (!item.audioUrl) {
-
-  Alert.alert(
-    "Audio Missing",
-    "Music file not found"
-  );
-
-  return;
+async function readIds(key) {
+  try {
+    const raw = await AsyncStorage.getItem(key);
+    const v = raw ? JSON.parse(raw) : [];
+    return Array.isArray(v) ? v : [];
+  } catch (_) {
+    return [];
+  }
 }
 
+// ---------------------------------------------------------------------
+// ROW
+// ---------------------------------------------------------------------
+const MusicRow = memo(function MusicRow({
+  item, selected, playing, fav, knownDuration, onPress, onFav, onMore, onCut, onApply, applying,
+}) {
+  const dur = songDuration(item) || knownDuration || 0;
+  return (
+    <View>
+      <TouchableOpacity style={styles.row} activeOpacity={0.7} onPress={() => onPress(item)}>
+        <View style={styles.cover}>
+          {item.image ? (
+            <Image source={{ uri: item.image }} style={StyleSheet.absoluteFill} />
+          ) : (
+            <View style={[StyleSheet.absoluteFill, styles.coverEmpty]}>
+              <Ionicons name="musical-notes" size={20} color="#777" />
+            </View>
+          )}
+          <View style={styles.coverPlay}>
+            <Ionicons name={selected && playing ? "pause" : "play"} size={18} color="#fff" />
+          </View>
+        </View>
 
+        <View style={styles.info}>
+          <Text style={[styles.title, selected && { color: YELLOW }]} numberOfLines={1}>
+            {item.title || "Original Audio"}
+          </Text>
+          <Text style={styles.artist} numberOfLines={1}>{item.artist || " "}</Text>
+          <Text style={styles.dur}>{dur ? fmt(dur) : "--:--"}</Text>
+        </View>
 
+        {selected && (
+          <TouchableOpacity onPress={onCut} hitSlop={8} style={styles.iconBtn}>
+            <MaterialCommunityIcons name="content-cut" size={22} color="#fff" />
+          </TouchableOpacity>
+        )}
+        {!item.local && (
+          <TouchableOpacity onPress={() => onFav(item.id)} hitSlop={8} style={styles.iconBtn}>
+            <Ionicons name={fav ? "star" : "star-outline"} size={21} color={fav ? YELLOW : "#bbb"} />
+          </TouchableOpacity>
+        )}
+        {!item.local && (
+          <TouchableOpacity onPress={() => onMore(item)} hitSlop={8} style={styles.iconBtn}>
+            <Ionicons name="reorder-three-outline" size={24} color="#bbb" />
+          </TouchableOpacity>
+        )}
+      </TouchableOpacity>
 
-
-  try {
-
-    if (sound) {
-
-      await sound.stopAsync();
-
-      await sound.unloadAsync();
-
-    }
-
-const { sound: newSound } =
-await Audio.Sound.createAsync(
-  {
-    uri: item.audioUrl,
-  },
-  {
-    shouldPlay: true,
-    isLooping: true,
-    volume: 1.0,
-  }
-);
-
-    setSound(newSound);
-
-    setSelectedMusic(item);
-
-    setIsPlaying(true);
-
-   
-
-newSound.setOnPlaybackStatusUpdate((status)=>{
-
-if(!status.isLoaded)return;
-
-setPosition(status.positionMillis);
-
-setDuration(status.durationMillis || 0);
-
-setIsPlaying(status.isPlaying);
-
+      {selected && (
+        <TouchableOpacity style={styles.applyBtn} activeOpacity={0.85} onPress={onApply} disabled={applying}>
+          {applying ? (
+            <ActivityIndicator color="#000" />
+          ) : (
+            <Text style={styles.applyText}>Apply and start shooting</Text>
+          )}
+        </TouchableOpacity>
+      )}
+    </View>
+  );
 });
 
+// ---------------------------------------------------------------------
+// SCREEN
+// ---------------------------------------------------------------------
+export default function MusicSelect() {
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams();
+  const isFocused = useIsFocused();
 
-await newSound.playAsync();
-const status = await newSound.getStatusAsync();
+  const videoUri = first(params.videoUri) || "";
+  const returnTo = first(params.returnTo) || "";
 
-console.log("STATUS =", status);
+  const [tab, setTab] = useState("Hot");
+  const [search, setSearch] = useState("");
+  const [songs, setSongs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [favIds, setFavIds] = useState([]);
+  const [recentIds, setRecentIds] = useState([]);
+  const [localSongs, setLocalSongs] = useState([]);
 
-  } catch (e) {
+  const [selected, setSelected] = useState(null);
+  const [playing, setPlaying] = useState(false);
+  const [durations, setDurations] = useState({}); // id -> seconds (jab tak doc me na ho)
+  const [cutOpen, setCutOpen] = useState(false);
+  const [startSec, setStartSec] = useState(0);
+  const [applying, setApplying] = useState(false);
 
-    console.log(e);
+  const soundRef = useRef(null);
+  const selectedRef = useRef(null);
+  selectedRef.current = selected;
 
-  }
+  // ---------------- player (sirf ek) ----------------
+  const releaseSound = useCallback(async () => {
+    const s = soundRef.current;
+    soundRef.current = null;
+    setPlaying(false);
+    if (s) {
+      try { await s.stopAsync(); } catch (_) {}
+      try { await s.unloadAsync(); } catch (_) {}
+    }
+  }, []);
 
-};
+  useBackStep("/", () => {
+    if (cutOpen) {
+      setCutOpen(false);
+      return true;
+    }
+    releaseSound();
+    return false;
+  });
 
+  useEffect(() => {
+    Audio.setAudioModeAsync({ playsInSilentModeIOS: true, staysActiveInBackground: false }).catch(() => {});
+    return () => { releaseSound(); };
+  }, [releaseSound]);
 
+  // Screen chhodte hi gaana band (camera / EditView me OOM se bachav)
+  useEffect(() => {
+    if (!isFocused) releaseSound();
+  }, [isFocused, releaseSound]);
 
-const formatTime = (millis) => {
+  // ---------------- data ----------------
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const snap = await getDocs(query(collection(db, "songs"), orderBy("createdAt", "desc"), limit(300)));
+        const list = [];
+        snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
+        if (alive) setSongs(list.filter((x) => x.audioUrl));
+      } catch (e) {
+        console.log("Load Songs Error =", e);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    readIds(FAV_KEY).then((v) => alive && setFavIds(v));
+    readIds(RECENT_KEY).then((v) => alive && setRecentIds(v));
+    return () => { alive = false; };
+  }, []);
 
-  const totalSeconds = Math.floor(millis / 1000);
+  const byId = useMemo(() => {
+    const m = new Map();
+    songs.forEach((s) => m.set(s.id, s));
+    return m;
+  }, [songs]);
 
-  const minutes = Math.floor(totalSeconds / 60);
+  const favSet = useMemo(() => new Set(favIds), [favIds]);
 
-  const seconds = totalSeconds % 60;
+  const data = useMemo(() => {
+    let list;
+    if (tab === "Favorites") list = favIds.map((id) => byId.get(id)).filter(Boolean);
+    else if (tab === "Recently") list = [...localSongs, ...recentIds.map((id) => byId.get(id)).filter(Boolean)];
+    else list = [...songs].sort((a, b) => (Number(b.uses) || 0) - (Number(a.uses) || 0));
 
-  return `${minutes}:${seconds < 10 ? "0" : ""}${seconds}`;
+    const q = search.trim().toLowerCase();
+    if (q) list = list.filter((s) => `${s.title || ""} ${s.artist || ""}`.toLowerCase().includes(q));
+    return list;
+  }, [tab, songs, favIds, recentIds, byId, search, localSongs]);
 
-};
+  // ---------------- actions ----------------
+  const playFrom = useCallback(async (item, fromSec = 0) => {
+    await releaseSound();
+    try {
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: item.audioUrl },
+        { shouldPlay: false, isLooping: true, volume: 1, progressUpdateIntervalMillis: 500 }
+      );
+      if (selectedRef.current?.id !== item.id) {
+        sound.unloadAsync().catch(() => {});
+        return;
+      }
+      soundRef.current = sound;
+      sound.setOnPlaybackStatusUpdate((st) => {
+        if (!st.isLoaded) return;
+        if (st.durationMillis > 0) {
+          setDurations((d) => (d[item.id] ? d : { ...d, [item.id]: st.durationMillis / 1000 }));
+        }
+        setPlaying(!!st.isPlaying);
+      });
+      if (fromSec > 0) await sound.setPositionAsync(fromSec * 1000).catch(() => {});
+      await sound.playAsync();
+      setPlaying(true);
+    } catch (e) {
+      console.log("preview error", e);
+    }
+  }, [releaseSound]);
 
+  const onRowPress = useCallback(async (item) => {
+    Keyboard.dismiss();
+    if (!item.audioUrl) {
+      Alert.alert("Audio Missing", "Music file not found");
+      return;
+    }
+    // same row = play / pause
+    if (selectedRef.current?.id === item.id && soundRef.current) {
+      const st = await soundRef.current.getStatusAsync();
+      if (st.isPlaying) await soundRef.current.pauseAsync();
+      else await soundRef.current.playAsync();
+      setPlaying(!st.isPlaying);
+      return;
+    }
+    setSelected(item);
+    selectedRef.current = item;
+    setStartSec(0);
+    playFrom(item, 0);
+  }, [playFrom]);
 
-const toggleMusic = async () => {
+  const toggleFav = useCallback((id) => {
+    setFavIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [id, ...prev];
+      AsyncStorage.setItem(FAV_KEY, JSON.stringify(next.slice(0, 200))).catch(() => {});
+      return next;
+    });
+  }, []);
 
-  if (!sound) return;
+  const openDetails = useCallback((item) => {
+    releaseSound();
+    router.push({
+      pathname: "/musicDetails",
+      params: {
+        musicId: item.id,
+        audioUrl: item.audioUrl,
+        musicName: item.title || "Original Music",
+        username: item.artist || "",
+        profile: item.image || "",
+        musicArtist: item.artist || "",
+        musicImage: item.image || "",
+      },
+    });
+  }, [router, releaseSound]);
 
-  const status = await sound.getStatusAsync();
+  const pickLocal = useCallback(async () => {
+    try {
+      const res = await DocumentPicker.getDocumentAsync({ type: "audio/*", copyToCacheDirectory: true });
+      if (res.canceled || !res.assets?.[0]) return;
+      const a = res.assets[0];
+      if (a.size && a.size > 20 * 1024 * 1024) {
+        Alert.alert("Local Music", "20 MB se chhota gaana chuniye.");
+        return;
+      }
+      const item = {
+        id: `local-${Date.now()}`,
+        local: true,
+        title: (a.name || "My music").replace(/\.[^.]+$/, ""),
+        artist: "Local Music",
+        audioUrl: a.uri,
+        mimeType: a.mimeType || "audio/mpeg",
+      };
+      setLocalSongs((l) => [item, ...l]);
+      setTab("Recently");
+      setSelected(item);
+      selectedRef.current = item;
+      setStartSec(0);
+      playFrom(item, 0);
+    } catch (e) {
+      Alert.alert("Local Music", "Gaana select nahi ho saka.");
+    }
+  }, [playFrom]);
 
-  if (status.isPlaying) {
+  const applyCut = useCallback((sec) => {
+    setStartSec(sec);
+    const item = selectedRef.current;
+    if (item) playFrom(item, sec);
+  }, [playFrom]);
 
-    await sound.pauseAsync();
+  const apply = useCallback(async () => {
+    const item = selectedRef.current;
+    if (!item || applying) return;
+    setApplying(true);
+    try {
+      let audioUrl = item.audioUrl;
+      if (item.local) {
+        const user = auth.currentUser;
+        if (!user) throw new Error("Pehle login karein");
+        const token = await user.getIdToken();
+        audioUrl = await uploadLocalAudio(item.audioUrl, item.mimeType, token);
+      } else {
+        setRecentIds((prev) => {
+          const next = [item.id, ...prev.filter((x) => x !== item.id)].slice(0, 30);
+          AsyncStorage.setItem(RECENT_KEY, JSON.stringify(next)).catch(() => {});
+          return next;
+        });
+      }
 
-    setIsPlaying(false);
+      await releaseSound();
 
-  } else {
+      const musicParams = {
+        musicId: item.local ? "" : item.id,
+        musicName: item.title || "Original Audio",
+        musicTitle: item.title || "Original Audio",
+        musicArtist: item.artist || "",
+        musicImage: item.image || "",
+        audioUrl,
+        musicStart: String(startSec || 0),
+      };
 
-    await sound.playAsync();
+      // Camera se aaye (video abhi bani nahi) -> camera par wapas
+      if (returnTo === "/camera" || !videoUri) {
+        if (!videoUri && returnTo !== "/camera") {
+          router.push({ pathname: "/camera", params: musicParams });
+        } else {
+          router.replace({ pathname: "/camera", params: musicParams });
+        }
+        return;
+      }
 
-    setIsPlaying(true);
+      const editParams = { videoUri, videoDuration: first(params.videoDuration) || "", ...musicParams };
+      // EditView se aaye ho to usi EditView par wapas (trim/text/voice safe)
+      if (returnTo === "/EditView") router.navigate({ pathname: "/EditView", params: editParams });
+      else router.push({ pathname: "/EditView", params: editParams });
+    } catch (e) {
+      Alert.alert("Music", e?.message || "Gaana lagaya nahi ja saka.");
+    } finally {
+      setApplying(false);
+    }
+  }, [applying, releaseSound, startSec, returnTo, videoUri, router, params.videoDuration]);
 
-  }
+  const close = useCallback(() => {
+    releaseSound();
+    if (router.canGoBack()) router.back();
+    else router.replace("/");
+  }, [router, releaseSound]);
 
-};
+  // ---------------- list ----------------
+  const selectedId = selected?.id;
+  const selectedIndex = useMemo(() => data.findIndex((d) => d.id === selectedId), [data, selectedId]);
 
+  const renderItem = useCallback(
+    ({ item }) => (
+      <MusicRow
+        item={item}
+        selected={item.id === selectedId}
+        playing={item.id === selectedId && playing}
+        fav={favSet.has(item.id)}
+        knownDuration={durations[item.id]}
+        onPress={onRowPress}
+        onFav={toggleFav}
+        onMore={openDetails}
+        onCut={() => setCutOpen(true)}
+        onApply={apply}
+        applying={applying}
+      />
+    ),
+    [selectedId, playing, favSet, durations, onRowPress, toggleFav, openDetails, apply, applying]
+  );
+
+  const getItemLayout = useCallback(
+    (_, index) => {
+      const extra = selectedIndex >= 0 && index > selectedIndex ? APPLY_H : 0;
+      const len = ROW_H + (index === selectedIndex ? APPLY_H : 0);
+      return { length: len, offset: ROW_H * index + extra, index };
+    },
+    [selectedIndex]
+  );
+
+  const selDuration = selected ? songDuration(selected) || durations[selected.id] || 0 : 0;
 
   return (
-
-    <SafeAreaView style={styles.container}>
-
+    <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* HEADER */}
-
       <View style={styles.header}>
-
-        <TouchableOpacity
-          
-
-onPress={async () => {
-  if (sound) {
-    try {
-      await sound.stopAsync();
-      await sound.unloadAsync();
-    } catch (e) {}
-  }
-
-  router.back();
-}}
-
-        >
-          <Ionicons
-            name="arrow-back"
-            size={26}
-            color="#fff"
-          />
+        <TouchableOpacity onPress={close} hitSlop={10} style={styles.headerSide}>
+          <Ionicons name="close" size={26} color="#fff" />
         </TouchableOpacity>
-
-        <Text style={styles.headerTitle}>
-          Select Music
-        </Text>
-
-        <TouchableOpacity
-          onPress={() =>
-            searchInputRef.current?.focus()
-          }
-        >
-
-          <Ionicons
-            name="search"
-            size={24}
-            color="#fff"
-          />
-
+        <Text style={styles.headerTitle}>Select Music</Text>
+        <TouchableOpacity onPress={pickLocal} hitSlop={10} style={[styles.headerSide, { alignItems: "flex-end" }]}>
+          <Text style={styles.localText}>Local Music</Text>
         </TouchableOpacity>
-
       </View>
 
       {/* SEARCH */}
-
       <View style={styles.searchBox}>
-
-        <Ionicons
-          name="search"
-          size={20}
-          color="#888"
-        />
-
+        <Ionicons name="search" size={18} color="#999" />
         <TextInput
-          ref={searchInputRef}
-          placeholder="Search music..."
-          placeholderTextColor="#666"
+          placeholder="Search Music"
+          placeholderTextColor="#888"
           value={search}
           onChangeText={setSearch}
           style={styles.searchInput}
+          returnKeyType="search"
         />
-
+        {!!search && (
+          <TouchableOpacity onPress={() => setSearch("")} hitSlop={8}>
+            <Ionicons name="close-circle" size={18} color="#888" />
+          </TouchableOpacity>
+        )}
       </View>
 
-      {/* CATEGORY */}
-
-      <View style={styles.tabRow}>
-
-        <TouchableOpacity
-          onPress={() => setActiveTab("Trending")}
-        >
-
-          <Text
-            style={[
-              styles.tabText,
-              activeTab == "Trending" &&
-                styles.activeTab,
-            ]}
-          >
-            Trending
-          </Text>
-
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={() => setActiveTab("Recommended")}
-        >
-
-          <Text
-            style={[
-              styles.tabText,
-              activeTab == "Recommended" &&
-                styles.activeTab,
-            ]}
-          >
-            Recommended
-          </Text>
-
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={() => setActiveTab("New")}
-        >
-
-          <Text
-            style={[
-              styles.tabText,
-              activeTab == "New" &&
-                styles.activeTab,
-            ]}
-          >
-            New
-          </Text>
-
-        </TouchableOpacity>
-
+      {/* TABS */}
+      <View style={styles.tabs}>
+        {TABS.map((t) => (
+          <TouchableOpacity key={t} onPress={() => setTab(t)} style={styles.tabBtn}>
+            <Text style={[styles.tabText, tab === t && styles.tabTextOn]}>{t}</Text>
+            {tab === t && <View style={styles.tabLine} />}
+          </TouchableOpacity>
+        ))}
       </View>
 
-
-
-
-{
-selectedMusic && (
-
-<View style={styles.nowPlayingCard}>
-
-
-<Animated.Image
-source={{
-uri:selectedMusic.image,
-}}
-style={[
-styles.nowPlayingImage,
-{
-transform:[
-{
-rotate:
-rotateAnim.interpolate({
-
-inputRange:[0,1],
-
-outputRange:[
-"0deg",
-"360deg",
-],
-
-}),
-},
-],
-},
-]}
-/>
-
-<View style={{flex:1}}>
-
-<Text style={styles.nowPlayingLabel}>
-🎵 Now Playing
-</Text>
-
-<Text style={styles.nowPlayingTitle}>
-{selectedMusic.title}
-</Text>
-
-<Text style={styles.nowPlayingArtist}>
-{selectedMusic.artist}
-</Text>
-
-<View style={styles.progressBar}>
-
-<View
-  style={[
-    styles.progressFill,
-    {
-      width:
-        duration > 0
-          ? `${(position / duration) * 100}%`
-          : "0%",
-    },
-  ]}
-/>
-
-</View>
-
-<Text style={styles.timeText}>
-  {formatTime(position)} / {formatTime(duration)}
-</Text>
-
-</View>
-
-<TouchableOpacity
-  style={styles.pauseBtn}
-  onPress={toggleMusic}
->
-<Ionicons
-  name={isPlaying ? "pause" : "play"}
-  size={24}
-  color="#fff"
-/>
-
-
-</TouchableOpacity>
-
-</View>
-
-)
-}
-
-<View style={styles.sectionHeader}>
-
-  <Text style={styles.sectionTitle}>
-    🔥 Trending Music
-  </Text>
-
-  <TouchableOpacity>
-
-    <Text style={styles.seeAll}>
-      See All
-    </Text>
-
-  </TouchableOpacity>
-
-</View>
-
-
-
-      <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
-  data={
-    search.trim()
-      ? musicList.filter((item) =>
-          `${item.title || ""} ${item.artist || ""}`
-            .toLowerCase()
-            .includes(search.trim().toLowerCase())
-        )
-      : musicList
-  }
-  keyExtractor={(item) => item.id}
-  showsVerticalScrollIndicator={false}
-  contentContainerStyle={{
-    paddingHorizontal: 15,
-    paddingTop: 15,
-    paddingBottom: 120,
-  }}
-  renderItem={({ item }) => (
-
-<TouchableOpacity
-  style={styles.musicCard}
-  activeOpacity={0.65}
-onPress={() => playMusic(item)}
-
-  
->
-
-    <View style={styles.imageContainer}>
-
-  <Image
-    source={{ uri: item.image }}
-    style={styles.musicImage}
-  />
-
-  <View style={styles.imagePlay}>
-
-    <Ionicons
-      name="play"
-      size={16}
-      color="#fff"
-    />
-
-  </View>
-
-</View>
-
-      <View style={styles.musicInfo}>
-
-        <Text style={styles.musicTitle}>
-          {item.title}
-        </Text>
-
-        <Text style={styles.artist}>
-          {item.artist}
-        </Text>
-
-
-<View style={styles.infoRow}>
-
-  <Ionicons
-    name="musical-notes"
-    size={13}
-    color="#FF3B5C"
-  />
-
-  <Text style={styles.originalText}>
-    Original Sound
-  </Text>
-
-  <View style={styles.dot} />
-
-  <Text style={styles.duration}>
-    0:30
-  </Text>
-
-</View>
-
-
-        <Text style={styles.uses}>
-          {item.uses}
-        </Text>
-
-      </View>
-
-      <TouchableOpacity style={styles.playBtn}>
-
-  <Ionicons
-    name="play"
-    size={16}
-    color="#fff"
-  />
-
-  
-
-</TouchableOpacity>
-
-    </TouchableOpacity>
-
-  )}
-/>
-
-
-
-
-
-
-
-{
-selectedMusic && (
-
-<View style={styles.bottomBar}>
-
-<TouchableOpacity
-style={styles.useSoundBtn}
-
-
-onPress={async () => {
-  console.log("Sending Audio =", selectedMusic.audioUrl);
-
-  // Release the picker preview before the camera starts recording. This
-  // prevents Android from retaining the old audio player in the background.
-  if (sound) {
-    try {
-      await sound.stopAsync();
-      await sound.unloadAsync();
-    } catch (_) {}
-    setSound(null);
-    setIsPlaying(false);
-  }
-
-  const musicParams = {
-    musicId: selectedMusic.id,
-    musicName: selectedMusic.title || "Original Audio",
-    musicTitle: selectedMusic.title || "Original Audio",
-    musicArtist: selectedMusic.artist || "",
-    musicImage: selectedMusic.image || "",
-    audioUrl: selectedMusic.audioUrl,
-  };
-
-  // A camera-initiated song selection happens before a video exists, so
-  // return to the camera rather than opening EditView with an empty URI.
-  if (returnTo === "/camera") {
-    router.replace({
-      pathname: "/camera",
-      params: musicParams,
-    });
-    return;
-  }
-
-  if (!videoUri) {
-    Alert.alert("Video Missing", "Pehle video record ya select karein.");
-    return;
-  }
-
-  const editParams = {
-    videoUri,
-    videoDuration: firstParam(params.videoDuration) || "",
-    ...musicParams,
-  };
-
-  // EditView se aaye ho to usi EditView par wapas jao (naya stack mat
-  // banao) - isse trim, text, voice sab safe rehta hai aur sirf gaana
-  // badalta hai, Instagram jaisa.
-  if (returnTo === "/EditView") {
-    router.navigate({
-      pathname: "/EditView",
-      params: editParams,
-    });
-    return;
-  }
-
-  router.push({
-    pathname: "/EditView",
-    params: editParams,
-  });
-}}
-
->
-
-<Text style={styles.useSoundText}>
-
-Use this sound
-</Text>
-
-</TouchableOpacity>
-
-</View>
-
-)
-}
-
-
-
-
-
-
-    </SafeAreaView>
-
+      {loading && songs.length === 0 ? (
+        <ActivityIndicator color={YELLOW} style={{ marginTop: 40 }} />
+      ) : (
+        <FlatList
+          data={data}
+          keyExtractor={(i) => i.id}
+          renderItem={renderItem}
+          getItemLayout={getItemLayout}
+          extraData={selectedIndex}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={9}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ paddingBottom: insets.bottom + 30 }}
+          ListEmptyComponent={
+            <Text style={styles.empty}>
+              {tab === "Favorites" ? "☆ dabakar gaane favorite karein" : tab === "Recently" ? "Abhi koi gaana use nahi hua" : "Koi gaana nahi mila"}
+            </Text>
+          }
+        />
+      )}
+
+      {/* SONG CUT (kainchi): gaana kahan se shuru ho */}
+      <Modal visible={cutOpen} transparent animationType="slide" onRequestClose={() => setCutOpen(false)}>
+        <TouchableOpacity style={styles.cutBackdrop} activeOpacity={1} onPress={() => setCutOpen(false)}>
+          <TouchableOpacity activeOpacity={1} style={[styles.cutSheet, { paddingBottom: insets.bottom + 18 }]}>
+            <Text style={styles.cutTitle}>Gaana kahan se shuru ho?</Text>
+            <Text style={styles.cutSub}>
+              Start: {fmt(startSec)} {selDuration ? `/ ${fmt(selDuration)}` : ""}
+            </Text>
+            <FxSlider
+              min={0}
+              max={Math.max(1, Math.floor((selDuration || 60) - 5))}
+              value={startSec}
+              color={YELLOW}
+              onEnd={applyCut}
+            />
+            <TouchableOpacity style={styles.cutDone} onPress={() => setCutOpen(false)}>
+              <Text style={styles.applyText}>Done</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+    </View>
   );
-
 }
 
 const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: "#151515" },
+  header: { height: 50, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 14 },
+  headerSide: { width: 90 },
+  headerTitle: { color: "#fff", fontSize: 16, fontWeight: "700" },
+  localText: { color: YELLOW, fontSize: 13, fontWeight: "600" },
+  searchBox: {
+    flexDirection: "row", alignItems: "center", marginHorizontal: 14, marginTop: 4, height: 38,
+    borderRadius: 19, backgroundColor: "#3a3a3a", paddingHorizontal: 12, gap: 8,
+  },
+  searchInput: { flex: 1, color: "#fff", fontSize: 14, paddingVertical: 0 },
+  tabs: {
+    flexDirection: "row", justifyContent: "center", gap: 12, marginTop: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#2c2c2c",
+  },
+  tabBtn: { paddingHorizontal: 12, paddingVertical: 10, alignItems: "center" },
+  tabText: { color: "#999", fontSize: 14 },
+  tabTextOn: { color: "#fff", fontWeight: "700" },
+  tabLine: { position: "absolute", bottom: 4, width: 12, height: 2, borderRadius: 1, backgroundColor: "#fff" },
 
-container:{
-flex:1,
-backgroundColor:"#000",
-},
+  row: { height: ROW_H, flexDirection: "row", alignItems: "center", paddingHorizontal: 14 },
+  cover: { width: 50, height: 50, borderRadius: 3, overflow: "hidden", backgroundColor: "#2a2a2a" },
+  coverEmpty: { alignItems: "center", justifyContent: "center" },
+  coverPlay: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.25)" },
+  info: { flex: 1, marginLeft: 8 },
+  title: { color: "#fff", fontSize: 14, fontWeight: "500" },
+  artist: { color: "#aaa", fontSize: 11, marginTop: 2 },
+  dur: { color: "#aaa", fontSize: 11, marginTop: 3 },
+  iconBtn: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
 
-header:{
-flexDirection:"row",
-justifyContent:"space-between",
-alignItems:"center",
-paddingHorizontal:15,
-paddingVertical:15,
-},
+  applyBtn: {
+    height: APPLY_H - 16, marginHorizontal: 10, marginVertical: 8, borderRadius: 4, backgroundColor: YELLOW,
+    alignItems: "center", justifyContent: "center",
+  },
+  applyText: { color: "#000", fontSize: 14, fontWeight: "700" },
+  empty: { color: "#777", textAlign: "center", marginTop: 50 },
 
-headerTitle:{
-color:"#fff",
-fontSize:22,
-fontWeight:"bold",
-},
-
-searchBox:{
-marginHorizontal:15,
-marginTop:10,
-height:48,
-backgroundColor:"#151515",
-borderRadius:15,
-paddingHorizontal:15,
-flexDirection:"row",
-alignItems:"center",
-},
-
-searchInput:{
-flex:1,
-color:"#fff",
-marginLeft:10,
-fontSize:16,
-},
-
-tabRow:{
-flexDirection:"row",
-justifyContent:"space-around",
-marginTop:20,
-borderBottomWidth:0.5,
-borderBottomColor:"#222",
-paddingBottom:12,
-},
-
-tabText:{
-color:"#777",
-fontSize:16,
-fontWeight:"600",
-},
-
-activeTab:{
-color:"#fff",
-fontSize:18,
-},
-
-
-musicCard:{
-flexDirection:"row",
-alignItems:"center",
-backgroundColor:"#111",
-padding:12,
-borderRadius:16,
-marginBottom:12,
-},
-
-musicImage:{
-width:65,
-height:65,
-borderRadius:14,
-},
-
-musicInfo:{
-flex:1,
-marginLeft:15,
-},
-
-musicTitle:{
-color:"#fff",
-fontSize:17,
-fontWeight:"bold",
-},
-
-artist:{
-color:"#999",
-marginTop:3,
-fontSize:14,
-},
-
-uses:{
-color:"#FFD700",
-marginTop:5,
-fontSize:13,
-},
-
-playBtn:{
-width:45,
-height:45,
-borderRadius:30,
-backgroundColor:"#FF3B5C",
-justifyContent:"center",
-alignItems:"center",
-},
-
-sectionHeader:{
-flexDirection:"row",
-justifyContent:"space-between",
-alignItems:"center",
-paddingHorizontal:18,
-marginTop:18,
-marginBottom:12,
-},
-
-sectionTitle:{
-color:"#fff",
-fontSize:20,
-fontWeight:"bold",
-},
-
-seeAll:{
-color:"#FF3B5C",
-fontSize:15,
-fontWeight:"700",
-},
-
-
-infoRow:{
-flexDirection:"row",
-alignItems:"center",
-marginTop:4,
-},
-
-originalText:{
-color:"#bbb",
-fontSize:12,
-marginLeft:4,
-},
-
-dot:{
-width:4,
-height:4,
-borderRadius:2,
-backgroundColor:"#666",
-marginHorizontal:6,
-},
-
-duration:{
-color:"#888",
-fontSize:12,
-},
-
-imageContainer:{
-position:"relative",
-},
-
-imagePlay:{
-position:"absolute",
-right:4,
-bottom:4,
-width:24,
-height:24,
-borderRadius:12,
-backgroundColor:"rgba(0,0,0,0.7)",
-justifyContent:"center",
-alignItems:"center",
-},
-
-previewText:{
-color:"#fff",
-fontSize:11,
-fontWeight:"700",
-marginTop:2,
-},
-
-nowPlayingCard:{
-backgroundColor:"#161616",
-marginHorizontal:15,
-marginTop:18,
-padding:18,
-borderRadius:18,
-flexDirection:"row",
-alignItems:"center",
-},
-
-nowPlayingLabel:{
-color:"#FF3B5C",
-fontWeight:"700",
-fontSize:13,
-},
-
-nowPlayingTitle:{
-color:"#fff",
-fontSize:18,
-fontWeight:"bold",
-marginTop:5,
-},
-
-nowPlayingArtist:{
-color:"#999",
-marginTop:3,
-},
-
-progressBar:{
-height:4,
-backgroundColor:"#333",
-borderRadius:4,
-marginTop:12,
-overflow:"hidden",
-},
-
-progressFill:{
-width:"45%",
-height:4,
-backgroundColor:"#FF3B5C",
-},
-
-timeText:{
-color:"#777",
-marginTop:6,
-fontSize:12,
-},
-
-pauseBtn:{
-width:52,
-height:52,
-borderRadius:26,
-backgroundColor:"#FF3B5C",
-justifyContent:"center",
-alignItems:"center",
-marginLeft:15,
-},
-
-nowPlayingImage:{
-width:70,
-height:70,
-borderRadius:16,
-marginRight:15,
-},
-
-bottomBar:{
-position:"absolute",
-bottom:49,
-left:20,
-right:20,
-},
-
-useSoundBtn:{
-backgroundColor:"#FF3B5C",
-height:50,
-borderRadius:28,
-justifyContent:"center",
-alignItems:"center",
-},
-
-useSoundText:{
-color:"#fff",
-fontSize:18,
-fontWeight:"bold",
-},
-
-
-
-
-
+  cutBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "flex-end" },
+  cutSheet: { backgroundColor: "#1e1e1e", borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 18 },
+  cutTitle: { color: "#fff", fontSize: 16, fontWeight: "700" },
+  cutSub: { color: "#aaa", fontSize: 13, marginTop: 4, marginBottom: 6 },
+  cutDone: { height: 44, borderRadius: 6, backgroundColor: YELLOW, alignItems: "center", justifyContent: "center", marginTop: 16 },
 });

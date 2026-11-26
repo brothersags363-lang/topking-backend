@@ -6,11 +6,22 @@ import { View, StyleSheet } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 
 const { get, toOverlay } = require("../constants/filterLibrary");
+const { composeFilter } = require("../constants/videoFx");
 
-const FilterOverlay = ({ filterId }) => {
-  const f = filterId && filterId !== "none" ? get(filterId) : null;
+// fx (optional): { intensity, beauty } from the camera Beauty sheet. When
+// given, the preview uses the same filter+intensity+beauty mix the server
+// renders, so preview and final video match.
+const FilterOverlay = ({ filterId, fx }) => {
+  const fxKey = fx ? JSON.stringify({ i: fx.intensity, b: fx.beauty }) : "";
+  const f = React.useMemo(
+    () => (fx ? composeFilter(filterId, fx) : filterId && filterId !== "none" ? get(filterId) : null),
+    [filterId, fxKey] // eslint-disable-line react-hooks/exhaustive-deps
+  );
   const o = React.useMemo(() => (f ? toOverlay(f) : null), [f]);
   if (!o) return null;
+  // Skin softening can't blur a live camera here, so it shows as a soft
+  // bright haze; the real smoothing is rendered on the final video.
+  const soft = f && f.smooth ? Math.min(0.12, f.smooth * 0.1) : 0;
 
   return (
     <View pointerEvents="none" style={StyleSheet.absoluteFill}>
@@ -39,6 +50,11 @@ const FilterOverlay = ({ filterId }) => {
             StyleSheet.absoluteFill,
             { backgroundColor: "#fff", opacity: o.glow, mixBlendMode: "soft-light" },
           ]}
+        />
+      )}
+      {soft > 0 && (
+        <View
+          style={[StyleSheet.absoluteFill, { backgroundColor: "#ffe9dc", opacity: soft, mixBlendMode: "screen" }]}
         />
       )}
       {o.dim > 0 && (

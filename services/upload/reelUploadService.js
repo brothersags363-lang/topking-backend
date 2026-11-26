@@ -26,6 +26,8 @@ import {
 } from "firebase/firestore";
 
 import { db } from "@/app/firebaseConfig";
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const VIDEO_FX = require("../../constants/videoFx");
 import { setUploadState, resetUpload, getUploadState } from "./uploadManager";
 
 const API = "https://topking-backend.onrender.com";
@@ -366,6 +368,9 @@ export async function startReelUpload(payload) {
     musicArtist,
     musicImage,
     videoEffect,
+    videoFx,
+    allowComments,
+    allowDownload,
     subtitleText,
     subtitleColor,
     subtitleX,
@@ -394,7 +399,11 @@ export async function startReelUpload(payload) {
     const hasSubtitle = typeof subtitleText === "string" && subtitleText.trim() !== "";
     const hasEffect = typeof videoEffect === "string" && videoEffect !== "none";
 
-    const needsProcessing = hasMusic || hasVoice || hasSubtitle || hasEffect;
+    // Speed / beauty / motion effect / song cut from camera + edit screens.
+    const fxString = typeof videoFx === "string" ? VIDEO_FX.stringifyFx(videoFx) : "";
+    const hasFx = fxString !== "";
+
+    const needsProcessing = hasMusic || hasVoice || hasSubtitle || hasEffect || hasFx;
 
     if (needsProcessing) {
       setUploadState({ progress: 5 });
@@ -412,6 +421,7 @@ export async function startReelUpload(payload) {
       processForm.append("videoDuration", String(videoDuration || "0"));
 
       if (hasEffect) processForm.append("videoEffect", videoEffect);
+      if (hasFx) processForm.append("videoFx", fxString);
       if (hasMusic) processForm.append("audioUrl", audioUrl);
 
       if (hasVoice) {
@@ -586,6 +596,9 @@ export async function startReelUpload(payload) {
         hasVoice,
         hasSubtitle,
         videoEffect: videoEffect || "none",
+        ...(hasFx ? { videoFx: fxString } : {}),
+        allowComments: allowComments !== false,
+        allowDownload: allowDownload !== false,
         subtitleText: hasSubtitle ? subtitleText : "",
         subtitleColor: hasSubtitle ? subtitleColor : "",
         subtitleX: hasSubtitle ? subtitleX : "",
@@ -640,4 +653,22 @@ export async function startReelUpload(payload) {
       resetUpload();
     }, 3500);
   }
+}
+
+
+// ---------------------------------------------------------------------
+// LOCAL MUSIC: phone ka gaana R2 par -> https audioUrl (Select Music)
+// ---------------------------------------------------------------------
+export async function uploadLocalAudio(localUri, contentType, token) {
+  const res = await axios.post(
+    `${API}/upload-audio-url`,
+    { contentType },
+    { headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, timeout: 60 * 1000 }
+  );
+  if (!res.data?.success || !res.data.uploadUrl || !res.data.audioUrl) {
+    throw new Error(res.data?.error || "Audio upload url missing");
+  }
+  const fileUri = await ensureFileUri(localUri);
+  await putFileWithRetry(res.data.uploadUrl, fileUri, res.data.contentType || contentType, null, 3);
+  return res.data.audioUrl;
 }

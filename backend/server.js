@@ -1274,6 +1274,19 @@ function safeSizeRatio(value) {
 // Extra filters (Glossy, Sunset, Clarendon, ...) live in one shared file
 // that the app also uses, so names can never get out of sync.
 const FILTER_LIBRARY = require("./constants/filterLibrary");
+// Speed / intensity / beauty / motion effects from the camera + edit screens.
+const VIDEO_FX = require("./constants/videoFx");
+
+// Does the file have an audio track? (ffmpeg -i stderr, no ffprobe needed)
+function hasAudioStream(filePath) {
+  return new Promise((resolve) => {
+    const probe = spawn(ffmpegPath, ["-i", filePath]);
+    let stderr = "";
+    probe.stderr.on("data", (c) => { stderr += c.toString(); });
+    probe.on("close", () => resolve(/Stream #\d+:\d+.*Audio:/.test(stderr)));
+    probe.on("error", () => resolve(false));
+  });
+}
 
 function safeVideoEffect(value) {
   const allowed = [
@@ -1459,6 +1472,8 @@ app.post(
     let outputPath = null;
     let subtitlePath = null;
     let thumbnailPath = null;
+    let graffitiPath = null;
+    let preMagicPath = null;
 
     try {
 
@@ -1493,13 +1508,28 @@ app.post(
       // Client sends the exact recorded video duration so the final mix
       // can never keep music running beyond the video.
       const rawRequestedDuration = Number(req.body.videoDuration);
+
+      // Camera/Edit FX (speed, filter intensity, beauty, motion effect,
+      // song start). parseFx clamps + whitelists everything.
+      const videoFx = VIDEO_FX.parseFx(req.body.videoFx);
+      const fxSpeed = videoFx.speed;
+
+      // videoDuration = RAW clip length. After speed change the final
+      // reel is raw / speed long (2x -> half, 0.5x -> double).
       // Reel max 60 sec. Thoda tolerance (61s) taaki 60.04s jaise
       // clips skip na ho; output hamesha 60s par clamp hota hai.
+      // Segment recording: sirf rakhe gaye hisse (deleted parts hat jaate hain)
+      const hasKeep = videoFx.keep.length > 0;
+      const keptRaw = hasKeep
+        ? Math.min(rawRequestedDuration || Infinity, VIDEO_FX.keptSeconds(videoFx.keep, rawRequestedDuration))
+        : rawRequestedDuration;
+      const outputRequestedDuration = keptRaw / fxSpeed;
       const hasRequestedVideoDuration =
         Number.isFinite(rawRequestedDuration) &&
         rawRequestedDuration > 0 &&
-        rawRequestedDuration <= 61;
-      const requestedVideoDuration = Math.min(rawRequestedDuration, 60);
+        rawRequestedDuration <= 200 &&
+        outputRequestedDuration <= 61;
+      const requestedVideoDuration = Math.min(outputRequestedDuration, 60);
 
       const hasVoice =
         Boolean(voicePath);
@@ -1560,11 +1590,24 @@ app.post(
       const hasEffect =
         videoEffect !== "none";
 
+      const hasBeauty = Object.keys(videoFx.beauty).length > 0;
+      const hasMotion = videoFx.motion !== "none";
+      const hasSpeed = fxSpeed !== 1;
+      // Any of these needs the video to be re-encoded.
+      const hasRanges = videoFx.ranges.length > 0;
+      const hasSticker = videoFx.sticker !== "none";
+      const hasGraffiti = videoFx.graffiti.length > 0;
+      const hasMagic = !!videoFx.magic;
+      const hasVisualFx =
+        hasSpeed || hasBeauty || hasMotion || hasKeep || hasRanges || hasSticker || hasGraffiti;
+      const musicStart = videoFx.musicStart;
+
       if (
         !hasMusic &&
         !hasVoice &&
         !hasSubtitle &&
-        !hasEffect
+        !hasEffect &&
+        !hasVisualFx
       ) {
         return res.status(400).json({
           success: false,
@@ -1718,19 +1761,58 @@ app.post(
       // Visual processing is always applied to the video stream.
       // Subtitle uses libass/subtitles because Render's FFmpeg has
       // libass enabled but does not provide drawtext.
-      if (hasEffect || hasSubtitle) {
+      if (hasEffect || hasSubtitle || hasVisualFx) {
         const visualFilters = [];
 
+        // 0) Deleted segments out (segment recording)
+        if (hasKeep) {
+          visualFilters.push(VIDEO_FX.keepVideoFilter(videoFx.keep));
+        }
+
+        // 1) Speed (0.3x .. 3x). Timestamps only, no frame blending.
+        if (hasSpeed) {
+          visualFilters.push(`setpts=PTS/${fxSpeed}`);
+        }
+
+        // 2) Colour filter (with intensity) + beauty, in ONE chain.
         if (videoEffect === "vivid") {
           visualFilters.push("eq=saturation=1.35:contrast=1.08");
         } else if (videoEffect === "soft") {
           visualFilters.push("eq=saturation=0.85:contrast=0.95:brightness=0.03");
         } else if (videoEffect === "bw") {
           visualFilters.push("hue=s=0");
-        } else if (FILTER_LIBRARY.get(videoEffect)) {
-          visualFilters.push(
-            ...FILTER_LIBRARY.toFfmpegChain(FILTER_LIBRARY.get(videoEffect))
-          );
+        }
+        const composed = VIDEO_FX.composeFilter(
+          FILTER_LIBRARY.get(videoEffect) ? videoEffect : "none",
+          videoFx
+        );
+        if (composed) {
+          visualFilters.push(...FILTER_LIBRARY.toFfmpegChain(composed));
+        }
+
+        // 3) Motion / split-screen effect, timed effects, sticker,
+        //    graffiti (all need the real frame size).
+        if (hasMotion || hasRanges || hasSticker || hasGraffiti) {
+          const dims = await getVideoDimensions(videoPath);
+          const W = Math.floor(dims.width / 2) * 2;
+          const H = Math.floor(dims.height / 2) * 2;
+          if (hasMotion) {
+            const motion = VIDEO_FX.motionFilter(videoFx.motion, W, H);
+            if (motion) visualFilters.push(motion, "format=yuv420p");
+          }
+          if (hasRanges) {
+            visualFilters.push(...VIDEO_FX.rangeFilters(videoFx.ranges, W, H), "format=yuv420p");
+          }
+          if (hasSticker) {
+            const st = VIDEO_FX.stickerFilter(videoFx.sticker, W, H);
+            if (st) visualFilters.push(st);
+          }
+          if (hasGraffiti) {
+            graffitiPath = path.join(__dirname, "temp", `${crypto.randomUUID()}-g.ass`);
+            await fsp.mkdir(path.dirname(graffitiPath), { recursive: true });
+            await fsp.writeFile(graffitiPath, VIDEO_FX.graffitiToAss(videoFx.graffiti, W, H), "utf8");
+            visualFilters.push(`subtitles=${escapeFilterPath(graffitiPath)}`);
+          }
         }
 
         if (hasSubtitle && subtitlePath) {
@@ -1767,11 +1849,27 @@ app.post(
           value: `[1:a:0]apad[aout]`,
         });
         audioMap = "[aout]";
+      } else if ((hasSpeed || hasKeep) && (await hasAudioStream(videoPath))) {
+        // No song / voice: keep the clip's own sound, cut / sped up /
+        // slowed down together with the video.
+        const aChain = [
+          hasKeep ? VIDEO_FX.keepAudioFilter(videoFx.keep) : "",
+          hasSpeed ? VIDEO_FX.atempoChain(fxSpeed) : "",
+        ].filter(Boolean).join(",");
+        filterParts.push({
+          type: "complex",
+          value: `[0:a:0]${aChain}[aout]`,
+        });
+        audioMap = "[aout]";
       }
 
       const ffmpegArgs = ["-y", "-i", videoPath];
 
       if (hasMusic) {
+        // Song cut (scissors in Select Music): start the song from here.
+        if (musicStart > 0) {
+          ffmpegArgs.push("-ss", musicStart.toFixed(3));
+        }
         ffmpegArgs.push("-i", musicPath);
       }
 
@@ -1814,7 +1912,7 @@ app.post(
         ffmpegArgs.push("-t", requestedVideoDuration.toFixed(3));
       }
 
-      if (hasSubtitle || hasEffect) {
+      if (hasSubtitle || hasEffect || hasVisualFx) {
         // Visual edits require video re-encoding. Use ultrafast on Render
         // to minimize CPU time; CRF keeps quality reasonable.
         ffmpegArgs.push(
@@ -1840,6 +1938,7 @@ app.post(
         music: hasMusic,
         voice: hasVoice,
         effect: videoEffect,
+        fx: videoFx,
         output: outputPath,
       });
       console.log("FFMPEG ARGS:", ffmpegArgs);
@@ -1889,6 +1988,42 @@ app.post(
         throw new Error(
           "Processed video was not created"
         );
+      }
+
+      // TIME MAGIC (repeat / slow-mo 1 sec): 2nd pass on the finished
+      // video. Same file opened per piece -> no big frame buffers in RAM.
+      if (hasMagic) {
+        const outDur = await getVideoDuration(outputPath);
+        const pieces = VIDEO_FX.magicPieces(videoFx.magic, outDur);
+        if (pieces && pieces.length > 1) {
+          const withAudio = await hasAudioStream(outputPath);
+          const magicPath = path.join(tempDir, `${crypto.randomUUID()}-magic.mp4`);
+          const margs = ["-y"];
+          pieces.forEach((pc) => {
+            margs.push("-ss", pc.ss.toFixed(3), "-to", pc.to.toFixed(3), "-i", outputPath);
+          });
+          const fc = pieces.map((pc, i) =>
+            `[${i}:v:0]${pc.slow ? "setpts=2*(PTS-STARTPTS)" : "setpts=PTS-STARTPTS"}[mv${i}]` +
+            (withAudio ? `;[${i}:a:0]${pc.slow ? "atempo=0.5," : ""}asetpts=PTS-STARTPTS[ma${i}]` : "")
+          ).join(";") + ";" +
+            pieces.map((_, i) => `[mv${i}]` + (withAudio ? `[ma${i}]` : "")).join("") +
+            `concat=n=${pieces.length}:v=1:a=${withAudio ? 1 : 0}[mv]` + (withAudio ? "[ma]" : "");
+          margs.push("-filter_complex", fc, "-map", "[mv]");
+          if (withAudio) margs.push("-map", "[ma]", "-c:a", "aac", "-b:a", "128k");
+          margs.push(
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart", magicPath
+          );
+          await new Promise((resolve, reject) => {
+            const mc = spawn(ffmpegPath, margs, { stdio: ["ignore", "ignore", "pipe"] });
+            let err = "";
+            mc.stderr.on("data", (c) => { err += c.toString(); if (err.length > 8000) err = err.slice(-8000); });
+            mc.on("error", reject);
+            mc.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`time magic failed (${code}): ${err}`))));
+          });
+          preMagicPath = outputPath;
+          outputPath = magicPath;
+        }
       }
 
       // Final output 100MB se bada ho to ~75MB tak compress karo
@@ -2024,6 +2159,9 @@ app.post(
         subtitlePath
       );
 
+      await cleanupFile(graffitiPath);
+      await cleanupFile(preMagicPath);
+
     }
 
   }
@@ -2124,6 +2262,54 @@ app.post("/upload-url", uploadLimiter, verifyUser, async (req, res) => {
   } catch (e) {
     console.error("UPLOAD-URL ERROR:", e.message);
     return res.status(500).json({ success: false, error: "Upload url nahi ban paya" });
+  }
+});
+
+// =====================================================
+// LOCAL MUSIC UPLOAD URL (Select Music -> "Local Music")
+//   POST /upload-audio-url { contentType } -> { uploadUrl, audioUrl }
+//   Phone ka gaana seedha R2 par PUT hota hai, phir wahi https URL
+//   /merge me audioUrl ki tarah jata hai.
+// =====================================================
+const AUDIO_TYPES = {
+  "audio/mpeg": "mp3",
+  "audio/mp3": "mp3",
+  "audio/mp4": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/m4a": "m4a",
+  "audio/aac": "aac",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/ogg": "ogg",
+};
+
+app.post("/upload-audio-url", uploadLimiter, verifyUser, async (req, res) => {
+  try {
+    const presign = getPresigner();
+    if (!presign) {
+      return res.status(501).json({ success: false, error: "Direct upload not enabled" });
+    }
+    const contentType = String((req.body && req.body.contentType) || "audio/mpeg").toLowerCase();
+    const ext = AUDIO_TYPES[contentType];
+    if (!ext) {
+      return res.status(400).json({ success: false, error: "Ye audio format support nahi hai" });
+    }
+    const base = String(process.env.R2_PUBLIC_URL || "").replace(/\/+$/, "");
+    const key = `music/${crypto.randomUUID()}.${ext}`;
+    const uploadUrl = await presign(
+      r2,
+      new PutObjectCommand({
+        Bucket: process.env.R2_BUCKET,
+        Key: key,
+        ContentType: contentType,
+        CacheControl: "public, max-age=31536000, immutable",
+      }),
+      { expiresIn: 60 * 60 }
+    );
+    return res.json({ success: true, uploadUrl, audioUrl: `${base}/${key}`, contentType });
+  } catch (e) {
+    console.error("UPLOAD-AUDIO-URL ERROR:", e.message);
+    return res.status(500).json({ success: false, error: "Audio upload url nahi ban paya" });
   }
 });
 

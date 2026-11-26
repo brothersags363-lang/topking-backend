@@ -4,6 +4,7 @@ import React, {
   useEffect,
   useRef,
   useCallback,
+  useMemo,
 } from "react";
 
 import {
@@ -44,6 +45,12 @@ import { Audio } from "../utils/audio";
 import { LinearGradient } from "expo-linear-gradient";
 import FilterOverlay from "../components/FilterOverlay";
 import { FILTERS as FILTER_LIBRARY_LIST } from "../constants/filterLibrary";
+import EffectEditor from "../components/edit/EffectEditor";
+import GraffitiEditor from "../components/edit/GraffitiEditor";
+import TimeMagicSheet from "../components/edit/TimeMagicSheet";
+import { TimedMotion, GraffitiLayer, fitContain } from "../components/edit/editHelpers";
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const VIDEO_FX = require("../constants/videoFx");
 
 /*
  * =========================================================
@@ -309,6 +316,44 @@ export default function EditView() {
 
   const [selectedEffect, setSelectedEffect] =
     useState(textParam(params.videoEffect) || "none");
+
+  // Camera se aaya FX: speed, filter strength, beauty, motion effect,
+  // song start. Post -> server ko as-is jata hai.
+  const [fx, setFx] = useState(() => VIDEO_FX.parseFx(textParam(params.videoFx)));
+  const [effectTab, setEffectTab] = useState("Filter");
+
+  const routeFxKey = textParam(params.videoFx);
+  const lastRouteFxKeyRef = useRef(routeFxKey);
+  useEffect(() => {
+    if (routeFxKey && routeFxKey !== lastRouteFxKeyRef.current) {
+      lastRouteFxKeyRef.current = routeFxKey;
+      setFx(VIDEO_FX.parseFx(routeFxKey));
+    }
+  }, [routeFxKey]);
+
+  // Select Music ki kainchi se naya start point
+  const routeMusicStart = textParam(params.musicStart);
+  useEffect(() => {
+    if (routeMusicStart === "") return;
+    const v = Math.max(0, Number(routeMusicStart) || 0);
+    setFx((f) => (f.musicStart === v ? f : { ...f, musicStart: v }));
+  }, [routeMusicStart]);
+
+  const musicStartMsRef = useRef(0);
+  musicStartMsRef.current = (fx.musicStart || 0) * 1000;
+  const fxKeepRef = useRef(fx.keep);
+  fxKeepRef.current = fx.keep;
+
+  // Effect / Graffiti / Time Magic editors
+  const [showFxEditor, setShowFxEditor] = useState(false);
+  const [showGraffiti, setShowGraffiti] = useState(false);
+  const [showMagic, setShowMagic] = useState(false);
+  const [videoSize, setVideoSize] = useState({ width: 720, height: 1280 });
+  const [videoBox, setVideoBox] = useState({ w: 0, h: 0 });
+  const videoRect = useMemo(
+    () => fitContain(videoBox.w, videoBox.h, videoSize.width, videoSize.height),
+    [videoBox, videoSize]
+  );
 
   // =====================================================
   // SUBTITLE COLORS
@@ -576,6 +621,14 @@ export default function EditView() {
     );
 
 
+  // Speed preview (2x camera take -> 2x yahan bhi). Final reel server
+  // par isi speed se banti hai.
+  useEffect(() => {
+    try {
+      player.playbackRate = fx.speed || 1;
+    } catch (_) {}
+  }, [player, fx.speed]);
+
   // =====================================================
   // VIDEO + MUSIC SYNC
   // =====================================================
@@ -589,7 +642,7 @@ export default function EditView() {
 
           if (sound && !isRecording) {
             await sound.stopAsync().catch(() => {});
-            await sound.setPositionAsync(0);
+            await sound.setPositionAsync(musicStartMsRef.current);
             await sound.playAsync();
           }
         } else {
@@ -624,7 +677,7 @@ export default function EditView() {
     const restartMusic = () => {
       if (!sound || isRecording) return;
       sound
-        .setPositionAsync(0)
+        .setPositionAsync(musicStartMsRef.current)
         .then(() => sound.playAsync())
         .catch(() => {});
     };
@@ -635,6 +688,16 @@ export default function EditView() {
       subs.push(
         player.addListener("sourceLoad", (event) => {
           const loaded = Number(event?.duration ?? player.duration ?? 0);
+
+          // asli video size (graffiti ko sahi jagah rakhne ke liye)
+          try {
+            const sz =
+              event?.availableVideoTracks?.[0]?.size ||
+              player.videoTrack?.size;
+            if (sz && sz.width > 0 && sz.height > 0) {
+              setVideoSize({ width: sz.width, height: sz.height });
+            }
+          } catch (_) {}
 
           if (loaded > 0 && !videoDurationRef.current.isReady) {
             updateVideoDuration(videoUriRef.current, loaded);
@@ -652,6 +715,18 @@ export default function EditView() {
       subs.push(
         player.addListener("timeUpdate", (event) => {
           const current = Number(event?.currentTime ?? 0);
+
+          // Camera me delete kiye segments preview me skip karo
+          const keep = fxKeepRef.current;
+          if (keep && keep.length) {
+            const inside = keep.some(([a, b]) => current >= a - 0.05 && current <= b);
+            if (!inside) {
+              const next = keep.find(([a]) => a > current);
+              try {
+                player.currentTime = next ? next[0] : keep[0][0];
+              } catch (_) {}
+            }
+          }
 
           // Video loop hua (time peeche aaya) -> gaana bhi shuru se
           if (current + 0.3 < lastTime) {
@@ -1626,6 +1701,30 @@ export default function EditView() {
   // BOTTOM MENU
   // =====================================================
 
+  // Editor kholte waqt gaana roko, band hote hi shuru se
+  const pauseForEditor = () => {
+    if (sound) sound.pauseAsync().catch(() => {});
+  };
+  const resumeAfterEditor = () => {
+    try {
+      const keep = fxKeepRef.current;
+      player.currentTime = keep && keep.length ? keep[0][0] : 0;
+      player.play();
+    } catch (_) {}
+    if (sound && !isRecording) {
+      sound
+        .setPositionAsync(musicStartMsRef.current)
+        .then(() => sound.playAsync())
+        .catch(() => {});
+    }
+  };
+
+  const outDuration = VIDEO_FX.rawToOut(
+    Number(videoDuration || player.duration || 0),
+    fx.keep,
+    fx.speed
+  );
+
   const bottomMenu = [
 
     {
@@ -1683,12 +1782,27 @@ export default function EditView() {
 
 
     {
-      icon: "layers",
+      icon: "zap",
 
       label: "Effect",
 
-      action: () =>
-        setShowEffectModal(true),
+      action: () => {
+        pauseForEditor();
+        setShowFxEditor(true);
+      },
+
+    },
+
+
+    {
+      icon: "edit-2",
+
+      label: "Graffiti",
+
+      action: () => {
+        pauseForEditor();
+        setShowGraffiti(true);
+      },
 
     },
 
@@ -1703,6 +1817,29 @@ export default function EditView() {
 
       action:
         handleRecordPress,
+
+    },
+
+
+    {
+      icon: "clock",
+
+      label: "Time Magic",
+
+      action: () => setShowMagic(true),
+
+    },
+
+
+    {
+      icon: "aperture",
+
+      label: "Filter",
+
+      action: () => {
+        setEffectTab("Filter");
+        setShowEffectModal(true);
+      },
 
     },
 
@@ -1800,6 +1937,9 @@ export default function EditView() {
 
             videoEffect:
               selectedEffect || "none",
+
+            videoFx:
+              VIDEO_FX.stringifyFx(fx),
 
 
             voiceUri:
@@ -1908,20 +2048,31 @@ export default function EditView() {
         style={
           styles.videoContainer
         }
+        onLayout={(e) =>
+          setVideoBox({
+            w: e.nativeEvent.layout.width,
+            h: e.nativeEvent.layout.height,
+          })
+        }
       >
 
         {videoUri ? (
 
           <>
-            <VideoView
-              player={player}
-              style={
-                styles.fullVideo
-              }
-              contentFit="contain"
-              nativeControls={false}
-            />
-            <FilterOverlay filterId={selectedEffect} />
+            {!(showFxEditor || showGraffiti) && (
+              <TimedMotion player={player} fx={fx}>
+                <VideoView
+                  player={player}
+                  style={
+                    styles.fullVideo
+                  }
+                  contentFit="contain"
+                  nativeControls={false}
+                />
+              </TimedMotion>
+            )}
+            <FilterOverlay filterId={selectedEffect} fx={fx} />
+            <GraffitiLayer strokes={fx.graffiti || []} rect={videoRect} />
           </>
 
         ) : (
@@ -2305,6 +2456,52 @@ export default function EditView() {
 
 
       {/* =================================================
+          EFFECT EDITOR (timeline) / GRAFFITI / TIME MAGIC
+      ================================================= */}
+      <EffectEditor
+        visible={showFxEditor}
+        player={player}
+        fx={fx}
+        filterId={selectedEffect}
+        onSave={(d) => {
+          setFx((f) => ({ ...f, motion: d.motion, ranges: d.ranges || [] }));
+          setShowFxEditor(false);
+          resumeAfterEditor();
+        }}
+        onClose={() => {
+          setShowFxEditor(false);
+          resumeAfterEditor();
+        }}
+      />
+
+      <GraffitiEditor
+        visible={showGraffiti}
+        player={player}
+        videoSize={videoSize}
+        strokes={fx.graffiti || []}
+        onSave={(list) => {
+          setFx((f) => ({ ...f, graffiti: list }));
+          setShowGraffiti(false);
+          resumeAfterEditor();
+        }}
+        onClose={() => {
+          setShowGraffiti(false);
+          resumeAfterEditor();
+        }}
+      />
+
+      <TimeMagicSheet
+        visible={showMagic}
+        magic={fx.magic}
+        duration={outDuration}
+        onSave={(m) => {
+          setFx((f) => ({ ...f, magic: m }));
+          setShowMagic(false);
+        }}
+        onClose={() => setShowMagic(false)}
+      />
+
+      {/* =================================================
           EFFECT MODAL
       ================================================= */}
       <Modal
@@ -2355,90 +2552,120 @@ export default function EditView() {
               </TouchableOpacity>
             </View>
 
+
+            {effectTab === "Filter" ? (
             <ScrollView
-              style={{ maxHeight: height * 0.5 }}
-              contentContainerStyle={styles.effectGrid}
-              showsVerticalScrollIndicator={false}
-            >
-              {[
-                {
-                  id: "none",
-                  title: "Original",
-                  icon: "videocam-outline",
-                },
-                {
-                  id: "vivid",
-                  title: "Vivid",
-                  icon: "sunny-outline",
-                },
-                {
-                  id: "soft",
-                  title: "Soft",
-                  icon: "cloud-outline",
-                },
-                {
-                  id: "bw",
-                  title: "B&W",
-                  icon: "contrast-outline",
-                },
-              ].concat(
-                FILTER_LIBRARY_LIST.map((f) => ({
-                  id: f.id,
-                  title: f.label,
-                  icon: f.icon,
-                }))
-              ).map((effect) => (
-                <TouchableOpacity
-                  key={effect.id}
-                  style={[
-                    styles.effectCard,
-                    selectedEffect ===
-                      effect.id &&
-                      styles.effectCardSelected,
-                  ]}
-                  onPress={() => {
-                    setSelectedEffect(
-                      effect.id
-                    );
-                    setShowEffectModal(false);
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <View
+                style={{ maxHeight: height * 0.5 }}
+                contentContainerStyle={styles.effectGrid}
+                showsVerticalScrollIndicator={false}
+              >
+                {[
+                  {
+                    id: "none",
+                    title: "Original",
+                    icon: "videocam-outline",
+                  },
+                  {
+                    id: "vivid",
+                    title: "Vivid",
+                    icon: "sunny-outline",
+                  },
+                  {
+                    id: "soft",
+                    title: "Soft",
+                    icon: "cloud-outline",
+                  },
+                  {
+                    id: "bw",
+                    title: "B&W",
+                    icon: "contrast-outline",
+                  },
+                ].concat(
+                  FILTER_LIBRARY_LIST.map((f) => ({
+                    id: f.id,
+                    title: f.label,
+                    icon: f.icon,
+                  }))
+                ).map((effect) => (
+                  <TouchableOpacity
+                    key={effect.id}
                     style={[
-                      styles.effectIcon,
+                      styles.effectCard,
                       selectedEffect ===
                         effect.id &&
-                        styles.effectIconSelected,
+                        styles.effectCardSelected,
                     ]}
+                    onPress={() => {
+                      setSelectedEffect(
+                        effect.id
+                      );
+                      setShowEffectModal(false);
+                    }}
+                    activeOpacity={0.8}
                   >
-                    <Ionicons
-                      name={effect.icon}
-                      size={24}
-                      color="#fff"
-                    />
-                  </View>
-
-                  <Text
-                    style={styles.effectTitle}
-                  >
-                    {effect.title}
-                  </Text>
-
-                  {selectedEffect ===
-                    effect.id && (
-                    <Ionicons
-                      name="checkmark-circle"
-                      size={18}
-                      color="#FF2D55"
-                      style={
-                        styles.effectCheck
-                      }
-                    />
-                  )}
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
+                    <View
+                      style={[
+                        styles.effectIcon,
+                        selectedEffect ===
+                          effect.id &&
+                          styles.effectIconSelected,
+                      ]}
+                    >
+                      <Ionicons
+                        name={effect.icon}
+                        size={24}
+                        color="#fff"
+                      />
+                    </View>
+  
+                    <Text
+                      style={styles.effectTitle}
+                    >
+                      {effect.title}
+                    </Text>
+  
+                    {selectedEffect ===
+                      effect.id && (
+                      <Ionicons
+                        name="checkmark-circle"
+                        size={18}
+                        color="#FF2D55"
+                        style={
+                          styles.effectCheck
+                        }
+                      />
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            ) : (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.fxRow}
+              >
+                {[{ id: "none", label: "Erase", icon: "close-circle-outline" }]
+                  .concat(VIDEO_FX.EFFECTS.filter((e) => e.tab === effectTab))
+                  .map((e) => {
+                    const on = (fx.motion || "none") === e.id;
+                    return (
+                      <TouchableOpacity
+                        key={e.id}
+                        style={styles.fxItem}
+                        activeOpacity={0.8}
+                        onPress={() => setFx((f) => ({ ...f, motion: e.id }))}
+                      >
+                        <View style={[styles.fxCircle, on && styles.fxCircleOn]}>
+                          <Ionicons name={e.icon} size={24} color="#fff" />
+                        </View>
+                        <Text style={[styles.fxLabel, on && styles.fxLabelOn]} numberOfLines={1}>
+                          {e.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+              </ScrollView>
+            )}
           </Pressable>
         </Pressable>
       </Modal>
@@ -3565,6 +3792,27 @@ const styles =
       fontSize: 12,
       marginTop: 4,
     },
+
+    fxTabs: {
+      flexDirection: "row",
+      justifyContent: "space-around",
+      marginBottom: 14,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: "#333",
+    },
+    fxTabBtn: { paddingVertical: 10, paddingHorizontal: 6, alignItems: "center" },
+    fxTabText: { color: "#8a8a8a", fontSize: 14, fontWeight: "600" },
+    fxTabTextOn: { color: "#fff", fontWeight: "800" },
+    fxTabLine: { position: "absolute", bottom: 0, width: 16, height: 2, borderRadius: 1, backgroundColor: "#fff" },
+    fxRow: { paddingHorizontal: 4, paddingBottom: 18, gap: 14 },
+    fxItem: { width: 62, alignItems: "center" },
+    fxCircle: {
+      width: 54, height: 54, borderRadius: 27, backgroundColor: "#2b2b2b",
+      alignItems: "center", justifyContent: "center", borderWidth: 2, borderColor: "transparent",
+    },
+    fxCircleOn: { borderColor: "#FFD60A" },
+    fxLabel: { color: "#cfcfcf", fontSize: 11, marginTop: 6 },
+    fxLabelOn: { color: "#FFD60A", fontWeight: "700" },
 
     effectGrid: {
       flexDirection: "row",

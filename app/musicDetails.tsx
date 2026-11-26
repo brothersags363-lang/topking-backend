@@ -1,7 +1,9 @@
 import React, {
   useEffect,
+  useMemo,
   useState,
 } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import {
   View,
@@ -14,6 +16,7 @@ import {
   Dimensions,
   Animated,
    BackHandler,
+  Share,
 } from "react-native";
 import { scopedBackHandler } from "../utils/scopedBack";
 import { Ionicons } from "@expo/vector-icons";
@@ -239,339 +242,199 @@ useEffect(() => {
 
 
 
-  return (
+  // ---------- favorite (same list as Select Music) ----------
+  const FAV_KEY = "music_favorites_v1";
+  const [fav, setFav] = useState(false);
+  useEffect(() => {
+    if (!selectedMusicId) return;
+    AsyncStorage.getItem(FAV_KEY)
+      .then((raw) => setFav((raw ? JSON.parse(raw) : []).includes(selectedMusicId)))
+      .catch(() => {});
+  }, [selectedMusicId]);
+  const toggleFav = async () => {
+    if (!selectedMusicId) return;
+    try {
+      const raw = await AsyncStorage.getItem(FAV_KEY);
+      const list: string[] = raw ? JSON.parse(raw) : [];
+      const next = list.includes(selectedMusicId)
+        ? list.filter((x) => x !== selectedMusicId)
+        : [selectedMusicId, ...list];
+      await AsyncStorage.setItem(FAV_KEY, JSON.stringify(next.slice(0, 200)));
+      setFav(next.includes(selectedMusicId));
+    } catch (_) {}
+  };
 
-    <SafeAreaView style={styles.container}>
+  const shareMusic = () => {
+    Share.share({
+      message: `🎵 ${firstParam(musicName) || "Original Music"} - TopKing par is gaane par video banao!`,
+    }).catch(() => {});
+  };
 
+  // Pioneer (pehli video) + baaki views ke hisaab se No.1, No.2 ...
+  const ranked = useMemo(() => {
+    if (!videos.length) return [];
+    const ts = (v: any) => v.createdAt?.seconds ?? v.createdAt?._seconds ?? 0;
+    const pioneer = videos.reduce((p: any, v: any) => (ts(v) && ts(v) < ts(p) ? v : p), videos[0]);
+    const rest = videos
+      .filter((v: any) => v.id !== pioneer.id)
+      .sort((x: any, y: any) => (Number(y.views) || 0) - (Number(x.views) || 0));
+    return [{ ...pioneer, _badge: "Pioneer" }, ...rest.map((v: any, i: number) => ({ ...v, _rank: i + 1 }))];
+  }, [videos]);
+
+  const usedBy = useMemo(() => new Set(videos.map((v: any) => v.userId).filter(Boolean)).size, [videos]);
+
+  const applyMusic = async () => {
+    try {
+      if (selectedMusicId) await updateDoc(doc(db, "songs", selectedMusicId), { uses: increment(1) });
+    } catch (e) { console.log("Song use counter:", e); }
+    // Sirf preview band. Camera record dabane par gaana chalata hai.
+    if (sound) {
+      try {
+        await sound.stopAsync();
+        await sound.unloadAsync();
+      } catch (_) {}
+      setPlaying(false);
+      setSound(null);
+    }
+    router.push({
+      pathname: "/camera",
+      params: {
+        audioUrl,
+        musicName,
+        profile,
+        username,
+        musicId: selectedMusicId,
+        musicArtist: selectedMusicArtist,
+        musicImage: selectedMusicImage,
+      },
+    });
+  };
+
+  const openVideo = (item: any) => {
+    const selectedIndex = videos.findIndex((v: any) => v.id === item.id);
+    router.push({
+      pathname: "/allvideo",
+      params: {
+        videos: JSON.stringify(videos),
+        index: selectedIndex,
+        userId: item.userId,
+        from: "userProfile",
+      },
+    });
+  };
+
+  const header = (
+    <View>
       <View style={styles.header}>
-
         <TouchableOpacity
-  onPress={async () => {
-
-    await stopMusic();
-
-    router.back();
-
-  }}
->
-          <Ionicons
-            name="arrow-back"
-            size={26}
-            color="#fff"
-          />
+          hitSlop={10}
+          onPress={async () => {
+            await stopMusic();
+            router.back();
+          }}
+        >
+          <Ionicons name="chevron-back" size={28} color="#fff" />
         </TouchableOpacity>
 
-        <Text style={styles.headerTitle}>
-          Original Music
-        </Text>
+        <TouchableOpacity
+          style={styles.cover}
+          activeOpacity={0.85}
+          onPress={async () => {
+            if (!sound) return;
+            if (playing) {
+              await sound.pauseAsync();
+              setPlaying(false);
+            } else {
+              await sound.playAsync();
+              setPlaying(true);
+            }
+          }}
+        >
+          <Image
+            source={{ uri: (selectedMusicImage || profile || "https://cdn-icons-png.flaticon.com/512/3135/3135715.png") as string }}
+            style={styles.coverImg}
+          />
+          <View style={styles.coverPlay}>
+            <Ionicons name={playing ? "pause" : "play"} size={20} color="#fff" />
+          </View>
+        </TouchableOpacity>
 
-        <View style={{ width: 26 }} />
-
+        <View style={styles.headerRight}>
+          <TouchableOpacity onPress={toggleFav} hitSlop={8}>
+            <Ionicons name={fav ? "star" : "star-outline"} size={24} color={fav ? "#FFD60A" : "#fff"} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={shareMusic} hitSlop={8} style={{ marginLeft: 16 }}>
+            <Ionicons name="arrow-redo-outline" size={24} color="#fff" />
+          </TouchableOpacity>
+        </View>
       </View>
 
-      
-
-
-
-<TouchableOpacity
-  style={styles.discContainer}
-  onPress={async () => {
-
-    if (!sound) return;
-
-    if (playing) {
-      await sound.pauseAsync();
-      setPlaying(false);
-    } else {
-      await sound.playAsync();
-      setPlaying(true);
-    }
-
-  }}
->
-
-  <Image
-    source={{
-      uri:
-        profile ||
-        "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
-    }}
-    style={styles.disc}
-  />
-
-  <View style={styles.playButton}>
-
-    <Ionicons
-      name={playing ? "pause" : "play"}
-      size={28}
-      color="#fff"
-    />
-
-  </View>
-
-</TouchableOpacity>
-
-
-
-
-
-      <Text style={styles.musicTitle}>
-        🎵 {musicName}
-      </Text>
-
-      <Text style={styles.userName}>
-        {username}
-      </Text>
-
-     <Text style={styles.totalVideos}>
-  {videos.length} Videos
-</Text>
-
-      
-
-      <TouchableOpacity
-
-style={styles.useBtn}
-
-
-
-onPress={async () => {
-
-  try {
-    const songId = Array.isArray(params?.musicId) ? params.musicId[0] : params?.musicId;
-    if (songId) await updateDoc(doc(db, "songs", songId), { uses: increment(1) });
-  } catch (e) { console.log("Song use counter:", e); }
-
-  // Stop only the preview. Camera will start the selected song
-  // when the user presses the record button.
-  if (sound) {
-    await sound.stopAsync();
-    await sound.unloadAsync();
-    setPlaying(false);
-    setSound(null);
-  }
-
-  router.push({
-    pathname: "/camera",
-    params: {
-      audioUrl,
-      musicName,
-      profile,
-      username,
-      musicId: selectedMusicId,
-      musicArtist: selectedMusicArtist,
-      musicImage: selectedMusicImage,
-    },
-  });
-
-}}
-
->
-
-
-        <Text style={styles.useText}>
-          Use this Music
+      <Text style={styles.musicTitle} numberOfLines={1}>{firstParam(musicName) || "Original Music"}</Text>
+      {!!(selectedMusicArtist || username) && (
+        <Text style={styles.userName} numberOfLines={1}>
+          @{String(selectedMusicArtist || firstParam(username) || "").replace(/^@/, "")}
         </Text>
-      </TouchableOpacity>
-
- 
-
-<FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
-  data={videos}
-  keyExtractor={(item) => item.id}
-  numColumns={3}
-  renderItem={({ item }) => (
-
-    <TouchableOpacity
-      style={styles.videoCard}
-
-onPress={() => {
-
-  const selectedIndex = videos.findIndex(
-    (v) => v.id === item.id
+      )}
+      <Text style={styles.totalVideos}>Used by {usedBy || videos.length} people</Text>
+    </View>
   );
 
-
-router.push({
-  pathname: "/allvideo",
-  params: {
-    videos: JSON.stringify(videos),
-    index: selectedIndex,
-    userId: item.userId,
-
-    from: "userProfile",
-  },
-});
-
-
-}}
-
-    >
-
-      <Image
-
-        source={{
-
-          uri: item.thumbnail,
-
-        }}
-
-        style={{
-
-          width: "100%",
-
-          height: "100%",
-
-          borderRadius: 12,
-
-        }}
-
+  return (
+    <SafeAreaView style={styles.container}>
+      <FlatList
+        data={ranked}
+        keyExtractor={(item: any) => item.id}
+        numColumns={3}
+        ListHeaderComponent={header}
+        initialNumToRender={9}
+        maxToRenderPerBatch={9}
+        windowSize={7}
+        contentContainerStyle={{ paddingBottom: 110 }}
+        renderItem={({ item }: any) => (
+          <TouchableOpacity style={styles.videoCard} activeOpacity={0.85} onPress={() => openVideo(item)}>
+            <Image source={{ uri: item.thumbnail }} style={StyleSheet.absoluteFill} />
+            {item._badge ? (
+              <View style={styles.pioneer}>
+                <Text style={styles.pioneerText}>{item._badge}</Text>
+              </View>
+            ) : null}
+            {item._rank && item._rank <= 3 ? <Text style={styles.rank}>No.{item._rank}</Text> : null}
+          </TouchableOpacity>
+        )}
       />
 
-
-<View style={styles.viewBox}>
-
-  <Ionicons
-    name="eye"
-    size={14}
-    color="#fff"
-  />
-
-  <Text style={styles.viewText}>
-    {item.views || 0}
-  </Text>
-
-</View>
-
-
-    </TouchableOpacity>
-
-  )}
-/>
-
-
-
+      <TouchableOpacity style={styles.applyBtn} activeOpacity={0.85} onPress={applyMusic}>
+        <Ionicons name="videocam" size={18} color="#000" />
+        <Text style={styles.applyText}>Apply Music</Text>
+      </TouchableOpacity>
     </SafeAreaView>
-
   );
-
 }
 
 const styles = StyleSheet.create({
-
-container:{
-flex:1,
-backgroundColor:"#000",
-},
-
-header:{
-flexDirection:"row",
-justifyContent:"space-between",
-alignItems:"center",
-padding:22,
-},
-
-headerTitle:{
-color:"#fff",
-fontSize:17,
-fontWeight:"bold",
-},
-
-disc:{
-width:110,
-height:110,
-borderRadius:55,
-alignSelf:"center",
-marginTop:-5,
-borderWidth:3,
-borderColor:"#FFD700",
-},
-
-musicTitle:{
-color:"#fff",
-fontSize:20,
-fontWeight:"bold",
-textAlign:"center",
-marginTop:20,
-},
-
-userName:{
-color:"#999",
-fontSize:15,
-textAlign:"center",
-marginTop:6,
-},
-
-totalVideos:{
-color:"#FFD700",
-fontWeight:"bold",
-textAlign:"center",
-marginTop:10,
-},
-
-useBtn:{
-marginHorizontal:25,
-marginVertical:25,
-backgroundColor:"#FFD700",
-height:50,
-borderRadius:30,
-justifyContent:"center",
-alignItems:"center",
-},
-
-useText:{
-fontWeight:"bold",
-fontSize:17,
-color:"#000",
-},
-
-videoCard:{
-width:(width-40)/3,
-height:170,
-backgroundColor:"#111",
-margin:5,
-borderRadius:12,
-justifyContent:"center",
-alignItems:"center",
-},
-
-discContainer: {
-  alignSelf: "center",
-  marginTop: 20,
-},
-
-playButton: {
-  position: "absolute",
-  top: "50%",
-  left: "50%",
-  marginLeft: -25,
-  marginTop: -25,
-  width: 50,
-  height: 50,
-  borderRadius: 25,
-  backgroundColor: "rgba(0,0,0,0.55)",
-  justifyContent: "center",
-  alignItems: "center",
-},
-
-viewBox: {
-  position: "absolute",
-  top: 8,
-  left: 8,
-  flexDirection: "row",
-  alignItems: "center",
-  backgroundColor: "rgba(0,0,0,0.6)",
-  paddingHorizontal: 6,
-  paddingVertical: 3,
-  borderRadius: 20,
-},
-
-viewText: {
-  color: "#fff",
-  fontSize: 12,
-  marginLeft: 4,
-  fontWeight: "600",
-},
-
-
+  container: { flex: 1, backgroundColor: "#111" },
+  header: {
+    flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between",
+    paddingHorizontal: 14, paddingTop: 14,
+  },
+  headerRight: { flexDirection: "row", alignItems: "center", width: 64, justifyContent: "flex-end", marginTop: 4 },
+  cover: { width: 70, height: 70, borderRadius: 6, overflow: "hidden", marginLeft: 36, backgroundColor: "#222" },
+  coverImg: { width: "100%", height: "100%" },
+  coverPlay: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.25)" },
+  musicTitle: { color: "#fff", fontSize: 17, fontWeight: "700", textAlign: "center", marginTop: 14, paddingHorizontal: 30 },
+  userName: { color: "#FFD60A", fontSize: 13, textAlign: "center", marginTop: 6 },
+  totalVideos: { color: "#ddd", fontSize: 12, textAlign: "center", marginTop: 6, marginBottom: 18 },
+  videoCard: { width: width / 3 - 2, height: (width / 3) * 1.33, margin: 1, backgroundColor: "#222", overflow: "hidden" },
+  pioneer: { position: "absolute", top: 0, left: 0, backgroundColor: "#7c4dff", paddingHorizontal: 5, paddingVertical: 1, borderBottomRightRadius: 4 },
+  pioneerText: { color: "#fff", fontSize: 10, fontWeight: "700" },
+  rank: {
+    position: "absolute", right: 6, bottom: 4, color: "#fff", fontSize: 13, fontWeight: "700",
+    textShadowColor: "rgba(0,0,0,0.7)", textShadowRadius: 3, textShadowOffset: { width: 0, height: 1 },
+  },
+  applyBtn: {
+    position: "absolute", bottom: 28, alignSelf: "center", flexDirection: "row", alignItems: "center", gap: 8,
+    backgroundColor: "#FFD60A", paddingHorizontal: 30, height: 46, borderRadius: 6,
+    shadowColor: "#000", shadowOpacity: 0.4, shadowRadius: 8, elevation: 6,
+  },
+  applyText: { color: "#000", fontSize: 15, fontWeight: "700" },
 });

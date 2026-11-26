@@ -17,7 +17,7 @@ import {
   Image,
 } from 'react-native';
 
-import { Ionicons, Feather, MaterialIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { useLocalSearchParams } from 'expo-router';
 import { useRouter } from '../utils/safeRouter';
@@ -39,6 +39,28 @@ import { db, auth } from './firebaseConfig'; // 'auth' import kiya
 // '@/...' alias (tsconfig.json me set) se import kar rahe hain.
 import { startReelUpload } from '@/services/upload/reelUploadService';
 import { useUploadState } from '@/services/upload/uploadManager';
+import { blockIfProfane } from '../utils/guardText';
+import {
+  saveDraft,
+  deleteDraft,
+  getSaveFolder,
+  pickSaveFolder,
+  saveVideoToDevice,
+} from '../utils/reelDrafts';
+
+// Screenshot jaisi "Video Language" chips. value = jo Firestore me jata hai.
+const LANG_CHIPS = [
+  { label: 'English', value: 'English' },
+  { label: 'हिंदी', value: 'Hindi' },
+  { label: 'বাংলা', value: 'Bengali' },
+  { label: 'اردو', value: 'Urdu' },
+  { label: 'ગુજરાતી', value: 'Gujarati' },
+  { label: 'മലയാളം', value: 'Malayalam' },
+  { label: 'भोजपुरी', value: 'Bhojpuri' },
+  { label: 'ਪੰਜਾਬੀ', value: 'Punjabi' },
+  { label: 'मराठी', value: 'Marathi' },
+];
+const YELLOW = '#FFD60A';
 
 // Share button dabate hi is route par navigate karke feed dikha dete hain.
 // Apne project ke actual reels/home route se match kar lena agar alag ho.
@@ -180,6 +202,18 @@ const videoDuration =
     ? params.videoDuration[0]
     : params.videoDuration || "0";
 
+// Speed / filter strength / beauty / motion effect / song cut (JSON string)
+const videoFx =
+  Array.isArray(params.videoFx)
+    ? params.videoFx[0]
+    : params.videoFx || "";
+
+// Draft se khula ho to purana caption + draft id
+const draftId =
+  Array.isArray(params.draftId) ? params.draftId[0] : params.draftId || "";
+const draftCaption =
+  Array.isArray(params.draftCaption) ? params.draftCaption[0] : params.draftCaption || "";
+
 
 
 
@@ -237,7 +271,60 @@ useEffect(() => {
   };
 }, []);
   // STATES
-  const [caption, setCaption] = useState('');
+  const [caption, setCaption] = useState(draftCaption);
+  const captionRef = useRef<TextInput>(null);
+  const [whoSheet, setWhoSheet] = useState(false);
+  const [permSheet, setPermSheet] = useState(false);
+  const [allowComments, setAllowComments] = useState(true);
+  const [allowDownload, setAllowDownload] = useState(true);
+  const [saveOnDevice, setSaveOnDevice] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
+
+  // "Save on device" yaad rehta hai (folder ek baar chuna to hamesha ON)
+  useEffect(() => {
+    getSaveFolder().then((d) => setSaveOnDevice(!!d)).catch(() => {});
+  }, []);
+
+  const toggleSaveOnDevice = useCallback(async () => {
+    if (saveOnDevice) {
+      setSaveOnDevice(false);
+      return;
+    }
+    if (Platform.OS !== 'android') {
+      Alert.alert('Save on device', 'Ye option abhi sirf Android par hai.');
+      return;
+    }
+    const dir = (await getSaveFolder()) || (await pickSaveFolder());
+    setSaveOnDevice(!!dir);
+  }, [saveOnDevice]);
+
+  const insertFriendTag = useCallback(() => {
+    setCaption((prev) => `${prev}${prev.length === 0 || /\s$/.test(prev) ? '' : ' '}@`);
+    setTimeout(() => captionRef.current?.focus(), 50);
+  }, []);
+
+  const allParams = useMemo(() => ({
+    videoUri: videoUri || '', audioUrl: audioUrl || '', musicName: musicName || '',
+    musicArtist: musicArtist || '', musicImage: musicImage || '', musicId: musicId || '',
+    videoEffect, videoFx, subtitleText, subtitleColor, subtitleSize, subtitleX, subtitleY,
+    subtitleXRatio, subtitleYRatio, subtitleSizeRatio, voiceUri, voiceDuration, videoDuration,
+  }), [videoUri]);
+
+  const handleSaveDraft = useCallback(async () => {
+    if (savingDraft) return;
+    setSavingDraft(true);
+    try {
+      if (draftId) await deleteDraft(draftId);
+      await saveDraft(allParams, caption);
+      Alert.alert('Drafts', 'Draft save ho gaya. Camera par "Drafts" se dobara khol sakte ho.');
+      try { if (router.canDismiss()) router.dismissAll(); } catch (_) {}
+      router.replace(REELS_HOME_ROUTE);
+    } catch (e: any) {
+      Alert.alert('Drafts', e?.message || 'Draft save nahi hua.');
+    } finally {
+      setSavingDraft(false);
+    }
+  }, [savingDraft, allParams, caption, router]);
   const [hashtagModal, setHashtagModal] = useState(false);
   const [hashtagQuery, setHashtagQuery] = useState('');
   const [hashtags, setHashtags] = useState<Hashtag[]>([]);
@@ -245,10 +332,8 @@ useEffect(() => {
   const [visibility, setVisibility] = useState('public');
 
   const [selectedLanguage, setSelectedLanguage] = useState('English');
-  const [isModalVisible, setIsModalVisible] = useState(false);
   const [userData, setUserData] = useState(null); // User info store karne ke liye
 
-  const languages = ['English', 'Hindi', 'Bhojpuri', 'Urdu', 'Punjabi', 'Bengali', 'Marathi', 'Gujarati'];
 
   // FETCH LOGGED IN USER DATA
   useEffect(() => {
@@ -355,6 +440,9 @@ useEffect(() => {
       return;
     }
 
+    // Caption / hashtag / video par likha subtitle me gali nahi chalegi
+    if (blockIfProfane(caption) || blockIfProfane(subtitleText)) return;
+
     try {
       const token = await auth.currentUser.getIdToken();
 
@@ -372,6 +460,9 @@ useEffect(() => {
         musicArtist,
         musicImage,
         videoEffect,
+        videoFx,
+        allowComments,
+        allowDownload,
         subtitleText,
         subtitleColor,
         subtitleX,
@@ -386,6 +477,11 @@ useEffect(() => {
         selectedLanguage,
         userData,
       });
+
+      // Phone me copy (original recording; effects server par lagte hain)
+      if (saveOnDevice) saveVideoToDevice(videoUri).catch(() => {});
+      // Draft se post hua -> draft hata do (video file upload ke baad tak rakho)
+      if (draftId) deleteDraft(draftId, { keepFiles: true }).catch(() => {});
 
       // Turant reels/feed screen par bhej do — user wahin reels dekh
       // sakta hai jab tak upload chalta rehta hai.
@@ -405,191 +501,144 @@ useEffect(() => {
     }
   };
 
+  const goBack = () => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      router.replace("/profile");
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar backgroundColor="#0F0F0F" barStyle="light-content" />
+      <StatusBar backgroundColor="#151515" barStyle="light-content" />
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-        
-        {/* HEADER AREA */}
+
+        {/* HEADER: < Post */}
         <View style={styles.header}>
-<TouchableOpacity
-  style={styles.iconBtn}
-  
-onPress={() => {
-
-   if (navigation.canGoBack()) {
-      navigation.goBack();
-   } else {
-      router.replace("/profile");
-   }
-
-}}
-
->
-
-
-
-            <Ionicons name="arrow-back" size={22} color="#fff" />
+          <TouchableOpacity style={styles.iconBtn} onPress={goBack} hitSlop={10}>
+            <Ionicons name="chevron-back" size={26} color="#fff" />
           </TouchableOpacity>
-
-          <Text style={styles.headerTitle}>New Reel</Text>
-
-          <TouchableOpacity style={styles.shareBtn} onPress={handlePostNow} disabled={uploadState.uploading}>
-            {uploadState.uploading ? (
-              <ActivityIndicator color="#fff" size="small" />
-            ) : (
-              <Text style={styles.shareText}>Share</Text>
-            )}
-          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Post</Text>
+          <View style={styles.iconBtn} />
         </View>
 
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollBody}>
-          
-          {/* CONTENT CARD */}
-          <View style={styles.previewCard}>
-            <View style={styles.topRow}>
-              <View style={styles.videoWrapper}>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.scrollBody}
+          keyboardShouldPersistTaps="handled"
+        >
+
+          {/* COVER + DESCRIPTION */}
+          <View style={styles.topRow}>
+            <View style={styles.videoWrapper}>
               <VideoView
-  player={player}
-  style={styles.video}
-  contentFit="contain"
-  nativeControls={false}
-/>
+                player={player}
+                style={styles.video}
+                contentFit="cover"
+                nativeControls={false}
+              />
+              <View style={styles.coverLabel}>
+                <Text style={styles.coverLabelText}>Title | Cover</Text>
               </View>
+            </View>
 
-              <View style={styles.rightContent}>
-                <View style={styles.userRow}>
-                  <Image
-                    source={{ uri: userData?.profileImg || 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png' }}
-                    style={styles.profile}
-                  />
-                  <View>
-                    <Text style={styles.name}>{userData?.bioTitle || 'User'}</Text>
-                    <Text style={styles.username}>{userData?.username ? `@${userData.username}` : '@user'}</Text>
-                  </View>
-                </View>
+            <View style={styles.rightContent}>
+              <TextInput
+                ref={captionRef}
+                placeholder="Want more Likes? Write a description and use a suitable hashtag!"
+                placeholderTextColor="#777"
+                multiline
+                value={caption}
+                onChangeText={setCaption}
+                style={styles.captionInput}
+                maxLength={2200}
+              />
 
-                <TextInput
-                  placeholder="Write a caption..."
-                  placeholderTextColor="#777"
-                  multiline
-                  value={caption}
-                  onChangeText={setCaption}
-                  style={styles.captionInput}
-                />
-
-
-
-<View style={styles.hashContainer}>
-  <TouchableOpacity
-    style={styles.hashBtn}
-    onPress={() => setHashtagModal(true)}
-  >
-    <Ionicons
-      name="pricetag"
-      size={18}
-      color="#FF5E00"
-    />
-    <Text style={styles.hashText}>
-      Hashtag
-    </Text>
-  </TouchableOpacity>
-
-  {usedHashtags.length > 0 && (
-    <View style={styles.chipsRow}>
-      {usedHashtags.map((tag) => {
-        const uses = tagUses.get(tag);
-        return (
-          <View key={tag} style={styles.chip}>
-            <Text style={styles.chipText}>#{tag}</Text>
-            {uses === undefined ? (
-              <Text style={styles.chipNew}>New</Text>
-            ) : (
-              <Text style={styles.chipCount}>{formatCount(uses)}</Text>
-            )}
-          </View>
-        );
-      })}
-    </View>
-  )}
-</View>
-
-
-
+              <View style={styles.tagBtnRow}>
+                <TouchableOpacity style={styles.tagBtn} onPress={() => setHashtagModal(true)}>
+                  <Text style={styles.tagBtnText}># Hashtags</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.tagBtn} onPress={insertFriendTag}>
+                  <Text style={styles.tagBtnText}>@ Friends</Text>
+                </TouchableOpacity>
               </View>
             </View>
           </View>
 
-          <Modal
-            visible={hashtagModal}
-            transparent
-            animationType="slide"
-            onRequestClose={() => setHashtagModal(false)}
+          {usedHashtags.length > 0 && (
+            <View style={styles.chipsRow}>
+              {usedHashtags.map((tag) => {
+                const uses = tagUses.get(tag);
+                return (
+                  <View key={tag} style={styles.chip}>
+                    <Text style={styles.chipText}>#{tag}</Text>
+                    {uses === undefined ? (
+                      <Text style={styles.chipNew}>New</Text>
+                    ) : (
+                      <Text style={styles.chipCount}>{formatCount(uses)}</Text>
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+          )}
+
+          <View style={styles.divider} />
+
+          {/* VIDEO LANGUAGE */}
+          <View style={styles.langHeader}>
+            <Text style={styles.sectionLabel}>Video Language</Text>
+            <Ionicons name="help-circle-outline" size={15} color="#999" style={{ marginLeft: 4 }} />
+          </View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.langRow}
           >
-            <View style={styles.hashModalBackdrop}>
-              <View style={styles.hashModal}>
-                <View style={styles.hashModalHeader}>
-                  <View>
-                    <Text style={styles.hashModalTitle}>Hashtags</Text>
-                    <Text style={styles.hashModalSub}>{hashtags.length} hashtags in app</Text>
-                  </View>
-                  <TouchableOpacity onPress={() => setHashtagModal(false)}>
-                    <Ionicons name="close" size={26} color="#fff" />
-                  </TouchableOpacity>
-                </View>
+            {LANG_CHIPS.map((l) => {
+              const on = selectedLanguage === l.value;
+              return (
+                <TouchableOpacity
+                  key={l.value}
+                  onPress={() => setSelectedLanguage(l.value)}
+                  style={[styles.langChip, on && styles.langChipOn]}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.langChipText, on && styles.langChipTextOn]}>{l.label}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
 
-                <TextInput
-                  value={hashtagQuery}
-                  onChangeText={setHashtagQuery}
-                  placeholder="Search or create hashtag..."
-                  placeholderTextColor="#888"
-                  style={styles.hashSearch}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  returnKeyType="done"
-                  onSubmitEditing={() => canCreate && selectHashtag(searchTag)}
-                />
+          {/* WHO CAN SEE */}
+          <TouchableOpacity style={styles.rowItem} onPress={() => setWhoSheet(true)} activeOpacity={0.7}>
+            <Ionicons name="lock-closed-outline" size={18} color="#ddd" />
+            <Text style={styles.rowText}>Who can see</Text>
+            <Text style={styles.rowValue}>{visibility === 'private' ? 'Only me' : 'Public'}</Text>
+            <Ionicons name="chevron-forward" size={18} color="#999" />
+          </TouchableOpacity>
 
-                {/* Naya hashtag banao: search me jo likha wo list me na ho to dikhta hai */}
-                {canCreate && (
-                  <TouchableOpacity style={styles.createRow} onPress={() => selectHashtag(searchTag)}>
-                    <Ionicons name="add-circle" size={22} color="#FF5E00" />
-                    <Text style={styles.createText} numberOfLines={1}>
-                      Create <Text style={{ color: '#FF5E00' }}>#{searchTag}</Text>
-                    </Text>
-                    <Text style={styles.hashUses}>New</Text>
-                  </TouchableOpacity>
-                )}
+          {/* PERMISSIONS */}
+          <TouchableOpacity style={styles.rowItem} onPress={() => setPermSheet(true)} activeOpacity={0.7}>
+            <Ionicons name="shield-checkmark-outline" size={18} color="#ddd" />
+            <Text style={styles.rowText}>Permissions</Text>
+            <View style={{ flex: 1 }} />
+            <Ionicons name="chevron-forward" size={18} color="#999" />
+          </TouchableOpacity>
 
-                {hashtagsLoading && hashtags.length === 0 ? (
-                  <ActivityIndicator color="#FF5E00" style={{ marginTop: 20 }} />
-                ) : (
-                  <FlatList
-                    data={filteredHashtags}
-                    keyExtractor={(item) => item.id}
-                    renderItem={renderHashtagRow}
-                    keyboardShouldPersistTaps="handled"
-                    getItemLayout={(_, index) => ({
-                      length: HASH_ROW_HEIGHT,
-                      offset: HASH_ROW_HEIGHT * index,
-                      index,
-                    })}
-                    initialNumToRender={14}
-                    maxToRenderPerBatch={14}
-                    windowSize={7}
-                    removeClippedSubviews={false}
-                    ListEmptyComponent={
-                      !canCreate ? <Text style={styles.emptyHash}>No hashtags yet.</Text> : null
-                    }
-                  />
-                )}
-              </View>
-            </View>
-          </Modal>
+          {/* SAVE ON DEVICE */}
+          <TouchableOpacity style={styles.saveRow} onPress={toggleSaveOnDevice} activeOpacity={0.7}>
+            <Ionicons
+              name={saveOnDevice ? 'checkmark-circle' : 'ellipse-outline'}
+              size={16}
+              color={saveOnDevice ? YELLOW : '#888'}
+            />
+            <Text style={styles.saveText}>Save on device</Text>
+          </TouchableOpacity>
 
-          {/* UPLOAD PROGRESS (is screen se turant navigate ho jaate hain,
-              isliye ye normally sirf ek split-second ke liye dikhega) */}
+          {/* UPLOAD PROGRESS */}
           {uploadState.uploading && (
             <View style={styles.progressContainer}>
               <View style={styles.progressTop}>
@@ -601,72 +650,149 @@ onPress={() => {
               </View>
             </View>
           )}
-
-          {/* REEL SETTINGS */}
-          <View style={styles.settingsCard}>
-            <Text style={styles.settingTitle}>Reel Settings</Text>
-
-            <TouchableOpacity style={styles.settingItem} onPress={() => setIsModalVisible(true)}>
-              <View style={styles.settingLeft}>
-                <MaterialIcons name="language" size={22} color="#FF5E00" />
-                <Text style={styles.settingText}>Audio Language</Text>
-              </View>
-              <View style={styles.settingRight}>
-                <Text style={styles.settingValue}>{selectedLanguage}</Text>
-                <Ionicons name="chevron-forward" size={18} color="#777" />
-              </View>
-            </TouchableOpacity>
-
-            <View style={styles.settingItem}>
-              <View style={styles.settingLeft}>
-                <Feather name="eye" size={20} color="#00B2FF" />
-                <Text style={styles.settingText}>Visibility</Text>
-              </View>
-              <View style={styles.toggleGroup}>
-                <TouchableOpacity
-                  style={[styles.toggleBtn, visibility === 'public' && styles.activeBtn]}
-                  onPress={() => setVisibility('public')}
-                >
-                  <Text style={[styles.toggleText, visibility === 'public' && { color: '#fff' }]}>Public</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.toggleBtn, visibility === 'private' && styles.activeBtn]}
-                  onPress={() => setVisibility('private')}
-                >
-                  <Text style={[styles.toggleText, visibility === 'private' && { color: '#fff' }]}>Private</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
         </ScrollView>
 
-        {/* MODAL */}
-        <Modal visible={isModalVisible} transparent animationType="slide">
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Choose Language</Text>
-                <TouchableOpacity onPress={() => setIsModalVisible(false)}>
-                  <Ionicons name="close" size={24} color="#fff" />
+        {/* BOTTOM: Drafts | Post Now */}
+        <View style={styles.bottomBar}>
+          <TouchableOpacity
+            style={styles.draftBtn}
+            onPress={handleSaveDraft}
+            disabled={savingDraft || uploadState.uploading}
+            activeOpacity={0.8}
+          >
+            {savingDraft ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Text style={styles.draftText}>Drafts</Text>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.postBtn}
+            onPress={handlePostNow}
+            disabled={uploadState.uploading}
+            activeOpacity={0.85}
+          >
+            {uploadState.uploading ? (
+              <ActivityIndicator color="#000" size="small" />
+            ) : (
+              <Text style={styles.postText}>Post Now</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* HASHTAG MODAL */}
+        <Modal
+          visible={hashtagModal}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setHashtagModal(false)}
+        >
+          <View style={styles.hashModalBackdrop}>
+            <View style={styles.hashModal}>
+              <View style={styles.hashModalHeader}>
+                <View>
+                  <Text style={styles.hashModalTitle}>Hashtags</Text>
+                  <Text style={styles.hashModalSub}>{hashtags.length} hashtags in app</Text>
+                </View>
+                <TouchableOpacity onPress={() => setHashtagModal(false)}>
+                  <Ionicons name="close" size={26} color="#fff" />
                 </TouchableOpacity>
               </View>
-              <FlatList initialNumToRender={8} maxToRenderPerBatch={8} windowSize={7}
-                data={languages}
-                keyExtractor={(item) => item}
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={styles.langItem}
-                    onPress={() => {
-                      setSelectedLanguage(item);
-                      setIsModalVisible(false);
-                    }}
-                  >
-                    <Text style={[styles.langText, selectedLanguage === item && { color: '#FF5E00' }]}>{item}</Text>
-                  </TouchableOpacity>
-                )}
+
+              <TextInput
+                value={hashtagQuery}
+                onChangeText={setHashtagQuery}
+                placeholder="Search or create hashtag..."
+                placeholderTextColor="#888"
+                style={styles.hashSearch}
+                autoCapitalize="none"
+                autoCorrect={false}
+                returnKeyType="done"
+                onSubmitEditing={() => canCreate && selectHashtag(searchTag)}
               />
+
+              {canCreate && (
+                <TouchableOpacity style={styles.createRow} onPress={() => selectHashtag(searchTag)}>
+                  <Ionicons name="add-circle" size={22} color={YELLOW} />
+                  <Text style={styles.createText} numberOfLines={1}>
+                    Create <Text style={{ color: YELLOW }}>#{searchTag}</Text>
+                  </Text>
+                  <Text style={styles.hashUses}>New</Text>
+                </TouchableOpacity>
+              )}
+
+              {hashtagsLoading && hashtags.length === 0 ? (
+                <ActivityIndicator color={YELLOW} style={{ marginTop: 20 }} />
+              ) : (
+                <FlatList
+                  data={filteredHashtags}
+                  keyExtractor={(item) => item.id}
+                  renderItem={renderHashtagRow}
+                  keyboardShouldPersistTaps="handled"
+                  getItemLayout={(_, index) => ({
+                    length: HASH_ROW_HEIGHT,
+                    offset: HASH_ROW_HEIGHT * index,
+                    index,
+                  })}
+                  initialNumToRender={14}
+                  maxToRenderPerBatch={14}
+                  windowSize={7}
+                  ListEmptyComponent={
+                    !canCreate ? <Text style={styles.emptyHash}>No hashtags yet.</Text> : null
+                  }
+                />
+              )}
             </View>
           </View>
+        </Modal>
+
+        {/* WHO CAN SEE SHEET */}
+        <Modal visible={whoSheet} transparent animationType="slide" onRequestClose={() => setWhoSheet(false)}>
+          <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setWhoSheet(false)}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Who can see this video</Text>
+              {[
+                { v: 'public', t: 'Public', d: 'Sab log dekh sakte hain', i: 'earth-outline' },
+                { v: 'private', t: 'Only me', d: 'Sirf aap dekh sakte ho', i: 'lock-closed-outline' },
+              ].map((o) => (
+                <TouchableOpacity
+                  key={o.v}
+                  style={styles.sheetRow}
+                  onPress={() => {
+                    setVisibility(o.v);
+                    setWhoSheet(false);
+                  }}
+                >
+                  <Ionicons name={o.i as any} size={22} color="#fff" />
+                  <View style={{ flex: 1, marginLeft: 12 }}>
+                    <Text style={styles.sheetTitle}>{o.t}</Text>
+                    <Text style={styles.sheetSub}>{o.d}</Text>
+                  </View>
+                  {visibility === o.v && <Ionicons name="checkmark-circle" size={22} color={YELLOW} />}
+                </TouchableOpacity>
+              ))}
+            </View>
+          </TouchableOpacity>
+        </Modal>
+
+        {/* PERMISSIONS SHEET */}
+        <Modal visible={permSheet} transparent animationType="slide" onRequestClose={() => setPermSheet(false)}>
+          <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setPermSheet(false)}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Permissions</Text>
+              {[
+                { t: 'Allow comments', v: allowComments, set: setAllowComments },
+                { t: 'Allow download', v: allowDownload, set: setAllowDownload },
+              ].map((o) => (
+                <TouchableOpacity key={o.t} style={styles.sheetRow} onPress={() => o.set(!o.v)}>
+                  <Text style={[styles.sheetTitle, { flex: 1 }]}>{o.t}</Text>
+                  <View style={[styles.switchTrack, o.v && styles.switchTrackOn]}>
+                    <View style={[styles.switchKnob, o.v && styles.switchKnobOn]} />
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </TouchableOpacity>
         </Modal>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -674,157 +800,97 @@ onPress={() => {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0F0F0F' },
-  header: { height: 100, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 15 },
-  iconBtn: { width: 42, height: 42, borderRadius: 50, backgroundColor: '#1F1F1F', justifyContent: 'center', alignItems: 'center', marginBottom: 5 },
-  headerTitle: { color: '#fff', fontSize: 19, fontWeight: '700', marginBottom: 12 },
-  shareBtn: { backgroundColor: '#FF5E00', paddingHorizontal: 20, height: 38, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginTop: 25 },
-  shareText: { color: '#fff', fontWeight: 'bold', fontSize: 14 },
-  scrollBody: { padding: 16, paddingBottom: 50 },
-  previewCard: { backgroundColor: '#181818', borderRadius: 22, padding: 14, marginBottom: 20 },
+  container: { flex: 1, backgroundColor: '#151515' },
+  header: {
+    height: 56, marginTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) : 0,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 8,
+  },
+  iconBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
+  headerTitle: { color: '#fff', fontSize: 17, fontWeight: '700' },
+  scrollBody: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 30 },
+
   topRow: { flexDirection: 'row' },
-  videoWrapper: { width: 110, height: 160, borderRadius: 15, overflow: 'hidden', backgroundColor: '#000' },
+  videoWrapper: { width: 106, height: 130, borderRadius: 6, overflow: 'hidden', backgroundColor: '#000' },
   video: { width: '100%', height: '100%' },
-  rightContent: { flex: 1, marginLeft: 14 },
-  profile: { width: 40, height: 40, borderRadius: 20, marginRight: 10 },
-  userRow: { flexDirection: 'row', alignItems: 'center' },
-  name: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  username: { color: '#777', fontSize: 12 },
-  captionInput: { color: '#fff', fontSize: 15, marginTop: 12, minHeight: 100, textAlignVertical: 'top' },
-  progressContainer: { backgroundColor: '#181818', borderRadius: 15, padding: 15, marginBottom: 20 },
+  coverLabel: {
+    position: 'absolute', left: 0, right: 0, bottom: 0, paddingVertical: 4,
+    backgroundColor: 'rgba(0,0,0,0.45)', alignItems: 'center',
+  },
+  coverLabelText: { color: '#fff', fontSize: 11 },
+  rightContent: { flex: 1, marginLeft: 10, justifyContent: 'space-between' },
+  captionInput: { color: '#fff', fontSize: 13, minHeight: 84, textAlignVertical: 'top', padding: 0 },
+  tagBtnRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
+  tagBtn: { backgroundColor: '#2A2A2A', borderRadius: 4, paddingHorizontal: 9, paddingVertical: 5 },
+  tagBtnText: { color: '#fff', fontSize: 12, fontWeight: '600' },
+
+  divider: { height: StyleSheet.hairlineWidth, backgroundColor: '#333', marginVertical: 14 },
+  langHeader: { flexDirection: 'row', alignItems: 'center' },
+  sectionLabel: { color: '#fff', fontSize: 13 },
+  langRow: { paddingVertical: 10, gap: 8 },
+  langChip: { borderWidth: 1, borderColor: '#3A3A3A', borderRadius: 4, paddingHorizontal: 10, paddingVertical: 5 },
+  langChipOn: { borderColor: YELLOW, backgroundColor: 'rgba(255,214,10,0.12)' },
+  langChipText: { color: '#aaa', fontSize: 12 },
+  langChipTextOn: { color: YELLOW, fontWeight: '700' },
+
+  rowItem: {
+    flexDirection: 'row', alignItems: 'center', height: 52,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#2E2E2E',
+  },
+  rowText: { color: '#fff', fontSize: 14, marginLeft: 10, flex: 1 },
+  rowValue: { color: '#999', fontSize: 13, marginRight: 4 },
+  saveRow: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 16, gap: 5 },
+  saveText: { color: '#ddd', fontSize: 12 },
+
+  bottomBar: { flexDirection: 'row', paddingHorizontal: 16, paddingTop: 8, paddingBottom: 14, gap: 10 },
+  draftBtn: { flex: 1, height: 44, borderRadius: 6, backgroundColor: '#3A3A3A', alignItems: 'center', justifyContent: 'center' },
+  draftText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  postBtn: { flex: 1.8, height: 44, borderRadius: 6, backgroundColor: YELLOW, alignItems: 'center', justifyContent: 'center' },
+  postText: { color: '#000', fontSize: 15, fontWeight: '700' },
+
+  progressContainer: { backgroundColor: '#1E1E1E', borderRadius: 10, padding: 14, marginTop: 18 },
   progressTop: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
   progressTitle: { color: '#fff', fontWeight: '600' },
-  progressPercent: { color: '#FF5E00', fontWeight: 'bold' },
+  progressPercent: { color: YELLOW, fontWeight: 'bold' },
   progressBarBg: { height: 6, backgroundColor: '#333', borderRadius: 10 },
-  progressBarFill: { height: '100%', backgroundColor: '#FF5E00', borderRadius: 10 },
-  settingsCard: { backgroundColor: '#181818', borderRadius: 20, padding: 16 },
-  settingTitle: { color: '#fff', fontSize: 17, fontWeight: '700', marginBottom: 15 },
-  settingItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 },
-  settingLeft: { flexDirection: 'row', alignItems: 'center' },
-  settingText: { color: '#fff', marginLeft: 12, fontSize: 14 },
-  settingRight: { flexDirection: 'row', alignItems: 'center' },
-  settingValue: { color: '#999', marginRight: 5, fontSize: 13 },
-  toggleGroup: { flexDirection: 'row', backgroundColor: '#262626', borderRadius: 10, padding: 3 },
-  toggleBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
-  activeBtn: { backgroundColor: '#FF5E00' },
-  toggleText: { color: '#999', fontSize: 12, fontWeight: '600' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#181818', borderTopLeftRadius: 25, borderTopRightRadius: 25, padding: 20, maxHeight: '50%' },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15 },
-  modalTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
-  langItem: { paddingVertical: 15, borderBottomWidth: 0.5, borderBottomColor: '#333' },
-  langText: { color: '#fff', fontSize: 16 },
+  progressBarFill: { height: '100%', backgroundColor: YELLOW, borderRadius: 10 },
 
-hashContainer: {
-  marginTop: 12,
-},
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  modalContent: { backgroundColor: '#1E1E1E', borderTopLeftRadius: 18, borderTopRightRadius: 18, padding: 20, paddingBottom: 30 },
+  modalTitle: { color: '#fff', fontSize: 16, fontWeight: '700', marginBottom: 8 },
+  sheetRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14 },
+  sheetTitle: { color: '#fff', fontSize: 15 },
+  sheetSub: { color: '#888', fontSize: 12, marginTop: 2 },
+  switchTrack: { width: 44, height: 26, borderRadius: 13, backgroundColor: '#444', padding: 3 },
+  switchTrackOn: { backgroundColor: YELLOW },
+  switchKnob: { width: 20, height: 20, borderRadius: 10, backgroundColor: '#fff' },
+  switchKnobOn: { transform: [{ translateX: 18 }] },
 
-hashBtn: {
-  flexDirection: "row",
-  alignItems: "center",
-  alignSelf: "flex-start",
-  backgroundColor: "#252525",
-  paddingHorizontal: 14,
-  paddingVertical: 8,
-  borderRadius: 20,
-},
-
-hashText: {
-  color: "#fff",
-  marginLeft: 8,
-  fontWeight: "600",
-},
-
-hashModalBackdrop: {
-  flex: 1,
-  backgroundColor: 'rgba(0,0,0,0.65)',
-  justifyContent: 'flex-end',
-},
-
-hashModal: {
-  backgroundColor: '#181818',
-  borderTopLeftRadius: 25,
-  borderTopRightRadius: 25,
-  padding: 20,
-  height: '50%',
-},
-
-hashModalHeader: {
-  flexDirection: 'row',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  marginBottom: 15,
-},
-
-hashModalTitle: {
-  color: '#fff',
-  fontSize: 18,
-  fontWeight: '700',
-},
-
-hashSearch: {
-  backgroundColor: '#252525',
-  color: '#fff',
-  borderRadius: 12,
-  paddingHorizontal: 14,
-  paddingVertical: 12,
-  marginBottom: 12,
-},
-
-hashRow: {
-  flexDirection: 'row',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  height: HASH_ROW_HEIGHT,
-  borderBottomWidth: 0.5,
-  borderBottomColor: '#333',
-},
-
-hashName: {
-  color: '#fff',
-  fontSize: 15,
-  fontWeight: '600',
-},
-
-hashUses: {
-  color: '#888',
-  fontSize: 12,
-},
-
-emptyHash: {
-  color: '#777',
-  textAlign: 'center',
-  paddingVertical: 20,
-},
-
-hashModalSub: { color: '#777', fontSize: 12, marginTop: 2 },
-hashRank: { color: '#555', fontSize: 12, fontWeight: '700', width: 34 },
-hashLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
-createRow: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  backgroundColor: '#2A1A10',
-  borderRadius: 12,
-  paddingHorizontal: 12,
-  height: 48,
-  marginBottom: 10,
-},
-createText: { color: '#fff', fontSize: 14, fontWeight: '600', marginLeft: 8, flex: 1 },
-chipsRow: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 10 },
-chip: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  backgroundColor: '#222',
-  borderRadius: 14,
-  paddingHorizontal: 10,
-  paddingVertical: 5,
-  marginRight: 6,
-  marginBottom: 6,
-},
-chipText: { color: '#fff', fontSize: 12, fontWeight: '600' },
-chipCount: { color: '#888', fontSize: 11, marginLeft: 6 },
-chipNew: { color: '#FF5E00', fontSize: 11, marginLeft: 6, fontWeight: '700' },
-
-
-
+  hashModalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'flex-end' },
+  hashModal: { backgroundColor: '#1E1E1E', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, height: '55%' },
+  hashModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
+  hashModalTitle: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  hashModalSub: { color: '#777', fontSize: 12, marginTop: 2 },
+  hashSearch: { backgroundColor: '#2A2A2A', color: '#fff', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 12 },
+  hashRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    height: HASH_ROW_HEIGHT, borderBottomWidth: 0.5, borderBottomColor: '#333',
+  },
+  hashLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  hashRank: { color: '#555', fontSize: 12, fontWeight: '700', width: 34 },
+  hashName: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  hashUses: { color: '#888', fontSize: 12 },
+  emptyHash: { color: '#777', textAlign: 'center', paddingVertical: 20 },
+  createRow: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: '#2A2610',
+    borderRadius: 10, paddingHorizontal: 12, height: 48, marginBottom: 10,
+  },
+  createText: { color: '#fff', fontSize: 14, fontWeight: '600', marginLeft: 8, flex: 1 },
+  chipsRow: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 10 },
+  chip: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: '#262626',
+    borderRadius: 14, paddingHorizontal: 10, paddingVertical: 5, marginRight: 6, marginBottom: 6,
+  },
+  chipText: { color: '#fff', fontSize: 12, fontWeight: '600' },
+  chipCount: { color: '#888', fontSize: 11, marginLeft: 6 },
+  chipNew: { color: YELLOW, fontSize: 11, marginLeft: 6, fontWeight: '700' },
 });
