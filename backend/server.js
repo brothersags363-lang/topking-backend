@@ -4427,14 +4427,22 @@ function frameSpecOf(r) {
       const k = c.slice(4);
       if (ANGEL_FRAME_KEYS.includes(k) && Array.isArray(r.g) && r.g.includes(k)) return k;
     } else if (/^lv(30|40|50)$/.test(c)) {
-      return c;
+      // FIX: chuna hua level frame ASLI level (wallet) se bada nahi ho sakta.
+      // Pehle users doc ka purana level dekha jata tha -> 30 level wale ko 50 ka frame dikhta tha.
+      if (r.v === undefined || r.v === null) return c;
+      const t = Math.min(Number(c.slice(2)), levelTierOf(r.v));
+      if (t) return "lv" + t;
+      // level frame nahi bacha -> admin frame ho to wo, warna auto (map me nahi)
     }
   }
   return r.a && ADMIN_FRAME_KEYS.includes(r.a) ? r.a : owned.length ? owned[owned.length - 1] : null;
 }
 
-function frameSpecPut(uid, d) {
+// level: wallets/{uid}.level (asli level). Na diya to purana yaad rakha hua level hi rehta hai.
+function frameSpecPut(uid, d, level) {
+  const prev = frameSpecCache.raw.get(uid);
   const r = {
+    v: level !== undefined && level !== null ? Number(level) || 0 : prev ? prev.v : undefined,
     a: d && d.adminFrame && ADMIN_FRAME_KEYS.includes(d.adminFrame) ? d.adminFrame : null,
     l: adminListOf(d && d.adminFrame, d && d.adminFrames),
     c: (d && d.frameChoice) || null,
@@ -4461,6 +4469,19 @@ async function loadFrameSpecs(force) {
       db.collection("users").where("frameOff", "==", true).limit(2000).get(),
     ]);
     add(s1); add(s2); add(s3);
+    // Jinhone level frame (lv30/40/50) chuna hai unka ASLI level wallets se (chhoti list, 1 read each / 6 ghante)
+    const lvUids = [];
+    m.forEach((r, uid) => { if (r.c && /^lv\d+$/.test(r.c)) lvUids.push(uid); });
+    for (let i = 0; i < lvUids.length; i += 300) {
+      const part = lvUids.slice(i, i + 300);
+      try {
+        const ws = await db.getAll(...part.map((u) => db.collection("wallets").doc(u)));
+        ws.forEach((w, j) => {
+          const r = m.get(part[j]);
+          if (r) r.v = w.exists ? Number((w.data() || {}).level) || 0 : 0;
+        });
+      } catch (e) { console.error("FRAME MAP WALLET LEVEL ERROR:", e && e.message); }
+    }
     frameSpecCache.raw = m;
     frameSpecCache.at = Date.now();
   })().finally(() => { frameSpecCache.loading = null; });
@@ -4902,9 +4923,13 @@ app.post("/user/set-frame-prefs", generalLimiter, verifyUser, async (req, res) =
     const ref = db.collection("users").doc(uid);
     const snap = await ref.get();
     if (!snap.exists) return res.status(404).json({ success: false, error: "User not found" });
-    const d = snap.data();
+    // FIX: ASLI level wallets/{uid}.level me hai (users doc ka level purana / khali rehta hai).
+    // Isi wajah se 33 level wale ko "Ye frame abhi aapke paas nahi hai" aata tha.
+    const wSnap = await db.collection("wallets").doc(uid).get();
+    const wLevel = wSnap.exists ? Number((wSnap.data() || {}).level) || 0 : Number(snap.data().level) || 0;
+    const d = { ...snap.data(), level: wLevel };
     const owned = ownedFrameInfo(d);
-    const lvl = Number(d.level) || 0;
+    const lvl = wLevel;
 
     const update = {};
     const del = admin.firestore.FieldValue.delete();
@@ -4968,7 +4993,7 @@ app.post("/user/set-frame-prefs", generalLimiter, verifyUser, async (req, res) =
 
     const out = await ref.get();
     const o = out.data() || {};
-    frameSpecPut(uid, o);
+    frameSpecPut(uid, o, wLevel);
     return res.json({
       success: true,
       prefs: {
@@ -4978,6 +5003,7 @@ app.post("/user/set-frame-prefs", generalLimiter, verifyUser, async (req, res) =
         frameChoice: o.frameChoice || null,
         entryOff: o.entryOff === true,
         entryChoice: o.entryChoice || null,
+        level: wLevel, // app ka frame cache turant asli level se theek ho jaye
       },
     });
   } catch (e) {
