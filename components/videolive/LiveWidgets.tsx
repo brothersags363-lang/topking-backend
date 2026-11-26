@@ -7,6 +7,7 @@ import { STABLE_AVATAR, WEEKLY_TARGET_MIN, GIFT_GOLD, width, height } from './co
 import { fmtClock } from './helpers';
 import { styles } from './styles';
 import { timer } from './tickScheduler';
+import CarGiftRide, { isRideGift } from '../live/CarGiftRide';
 
 // Gift button animation (HEAT FIX): pehle loop me 24/7 chalta tha (30 min = lagatar GPU/CPU).
 // Ab 1 baar chalta hai, phir 4 sec rukta hai -> duty cycle ~80% kam.
@@ -165,7 +166,7 @@ export const ComboRow = memo(({ data, leaving }: any) => {
             style={{ width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.9)", backgroundColor: "#2a2b38" }}
           />
           {(!!data.senderId || Number(data.level) >= 10) && (
-            <LevelFrame level={Number(data.level) || 1} uid={data.senderId} lookup={false} animated={false}
+            <LevelFrame level={Number(data.level) || 1} uid={data.senderId} lookup={false} animated={false} photo={32}
               style={{ position: "absolute", width: 54, height: 54, top: -11, left: -11, zIndex: 10 }} />
           )}
         </View>
@@ -192,9 +193,10 @@ export const ComboRow = memo(({ data, leaving }: any) => {
   );
 });
 
-export const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBottom }: any, ref: any) {
+export const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBottom, rideTop }: any, ref: any) {
   const [combos, setCombos] = useState<any[]>([]); // max 2 row, har sender ki apni row
   const timersRef = useRef<any>({});
+  const rideRef = useRef<any>(null); // car gift -> chalti firti gaadi
   const leaveRef = useRef<any>({});
 
   useImperativeHandle(ref, () => ({
@@ -202,6 +204,7 @@ export const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBot
     play() {},
     playDeferred() {},
     showCombo(data: any, onEnd?: () => void, ms = 2200) {
+      if (isRideGift(data && data.giftId) && rideRef.current) rideRef.current.push(data); // Sports Car gift
       const key = String((data && data.senderName) || "user") + "_" + String((data && data.giftId) || "g"); // har gift ki apni row
       const entry = { key, data };
       setCombos((prev: any[]) => {
@@ -227,14 +230,18 @@ export const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBot
     Object.values(leaveRef.current).forEach((t: any) => clearTimeout(t));
   }, []);
 
-  if (!combos.length) return null;
   return (
+    <>
+    <CarGiftRide ref={rideRef} top={rideTop} />
+    {combos.length ? (
     <View
       pointerEvents="none"
       style={[{ position: "absolute", left: 10, zIndex: 99998, elevation: 99998 }, comboBottom != null ? { bottom: comboBottom } : { top: comboTop != null ? comboTop : height * 0.25 }]}
     >
       {combos.map((c: any) => <ComboRow key={c.key} data={c.data} leaving={!!c.leaving} />)}
     </View>
+    ) : null}
+    </>
   );
 }));
 

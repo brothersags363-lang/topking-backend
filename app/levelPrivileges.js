@@ -26,7 +26,7 @@ const COLLAPSED_TIERS = 3; // "Fold" me itne tiers dikhte hain
 // ---------- right side ke chhote visuals ----------
 // Avatar pendant: level ka asli frame (animated) dikhta hai. Frame na ho to simple ring.
 const PendantIcon = ({ color, frame }) => {
-  const src = frame ? FRAME_IMAGES.ANIM[frame] || FRAME_IMAGES.STATIC[frame] : null;
+  const src = frame ? FRAME_IMAGES.STATIC[frame] : null;
   if (src) {
     return (
       <View style={s.frameBox}>

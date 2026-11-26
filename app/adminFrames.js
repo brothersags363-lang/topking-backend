@@ -38,9 +38,9 @@ const AvatarWithFrame = ({ uri, frame, size = 50 }) => (
     />
     {frame && ADMIN_FRAMES[frame] ? (
       <ExpoImage
-        source={ADMIN_FRAMES[frame].img}
+        source={ADMIN_FRAMES[frame].still || ADMIN_FRAMES[frame].img}
         contentFit="contain"
-        autoplay
+        autoplay={false}
         style={{ position: "absolute", width: size, height: size }}
       />
     ) : null}

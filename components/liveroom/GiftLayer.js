@@ -3,6 +3,7 @@ import { Image, Text, View } from 'react-native';
 import { gifts } from '../../assets/giftsData';
 import { GuardedFrame } from './SharedUI';
 import { STABLE_AVATAR, height } from './constants';
+import CarGiftRide, { isRideGift } from '../live/CarGiftRide';
 
 // ============================================================
 // GIFT (NO ANIMATION): gift bhejne ke baad Tiki jaisa chhota PNG row left side me dikhta hai
@@ -29,7 +30,7 @@ export const ComboHead = memo(({ senderImg, senderId, level, senderName }) => (
         style={{ width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.9)", backgroundColor: "#2a2b38" }}
       />
       {(Number(level) >= 30 || !!senderId) && (
-        <GuardedFrame level={level} uid={senderId} animated={false}
+        <GuardedFrame level={level} uid={senderId} animated={false} photo={32}
           style={{ position: "absolute", width: 54, height: 54, top: -11, left: -11, zIndex: 10 }} />
       )}
     </View>
@@ -69,15 +70,17 @@ export const ComboRow = memo(({ data }) => {
   p.data.senderName === n.data.senderName && p.data.senderImg === n.data.senderImg && p.data.level === n.data.level
 );
 
-export const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBottom }, ref) {
+export const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBottom, rideTop }, ref) {
   const [combos, setCombos] = useState([]); // max 2 row, har sender ki apni row
   const timersRef = useRef({});
+  const rideRef = useRef(null); // car gift -> chalti firti gaadi
 
   useImperativeHandle(ref, () => ({
     // animation band: play / playDeferred ab kuch nahi karte (purane call sites safe rehte hain)
     play() {},
     playDeferred() {},
     showCombo(data, onEnd, ms = 2200) {
+      if (isRideGift(data && data.giftId) && rideRef.current) rideRef.current.push(data); // Sports Car gift
       const key = String((data && data.senderName) || "user") + "_" + String((data && data.giftId) || "g"); // har gift ki apni row
       const entry = { key, data };
       setCombos((prev) => {
@@ -98,13 +101,17 @@ export const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBot
     Object.values(timersRef.current).forEach((t) => clearTimeout(t));
   }, []);
 
-  if (!combos.length) return null;
   return (
+    <>
+    <CarGiftRide ref={rideRef} top={rideTop} />
+    {combos.length ? (
     <View
       pointerEvents="none"
       style={[{ position: "absolute", left: 10, zIndex: 99998, elevation: 99998 }, comboBottom != null ? { bottom: comboBottom } : { top: comboTop != null ? comboTop : height * 0.25 }]}
     >
       {combos.map((c) => <ComboRow key={c.key} data={c.data} />)}
     </View>
+    ) : null}
+    </>
   );
 }));

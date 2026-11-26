@@ -66,7 +66,7 @@ function AvatarPreview({ uri, frameSource, size = 84 }) {
         <ExpoImage
           source={frameSource}
           contentFit="contain"
-          autoplay
+          autoplay={false}
           style={{ position: "absolute", width: size, height: size }}
         />
       ) : null}
@@ -158,6 +158,8 @@ export default function FramesEntries() {
   const angelNeed = { fresh_angel: "Account verify (ID verified) hone par milta hai.", senior_angel: "White tick milne par milta hai." };
   const choiceOf = (id) => (ANGEL_FRAMES[id] ? "ang:" + id : ADMIN_FRAMES[id] ? "adm:" + id : id);
 
+  // ASLI level = wallets/{uid}.level (useFrameInfo ab wahi laata hai). Pehle users doc ka purana level
+  // aata tha -> 33 level wale ko frame lock dikhta tha.
   const myLevel = Number(info.level) || 1;
   // level se milne wala frame (30-39 -> lv30, 40-49 -> lv40, 50+ -> lv50)
   const myTier = getTier(myLevel);
@@ -168,13 +170,13 @@ export default function FramesEntries() {
   // abhi jo frame dikh raha hai (AUTO me: admin ka frame, warna level wala)
   const current = spec === "off" ? "off"
     : spec && ADMIN_FRAMES[spec] ? spec
-    : spec && /^lv(30|40|50)$/.test(spec) ? spec
+    : spec && /^lv(30|40|50)$/.test(spec) ? (Number(spec.slice(2)) <= myTier ? spec : myTier ? "lv" + myTier : "off")
     : adminOwned ? adminOwned
     : myTier ? "lv" + myTier : "off";
 
   const currentFrameSource = current === "off" ? null
-    : ADMIN_FRAMES[current] ? ADMIN_FRAMES[current].img
-    : FRAME_IMAGES.ANIM[Number(current.slice(2))];
+    : ADMIN_FRAMES[current] ? ADMIN_FRAMES[current].still || ADMIN_FRAMES[current].img
+    : FRAME_IMAGES.STATIC[Number(current.slice(2))];
   const currentLabel = current === "off"
     ? (adminOwned || myTier ? "Frame band hai" : "Abhi koi frame nahi mila")
     : ADMIN_FRAMES[current] ? ADMIN_FRAMES[current].label

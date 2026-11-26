@@ -1,3 +1,4 @@
+import { withDeferredMount } from '../components/DeferredScreen';
 import LevelBadge from '../components/LevelBadge';
 import { reportVoiceAbuse } from "../utils/voiceReport";
 import OfficialLiveTools from "../components/live/OfficialLiveTools";
@@ -71,6 +72,7 @@ serverTimestamp,
   writeBatch,
   runTransaction,
 } from 'firebase/firestore';
+import { fetchUserVideoTotals } from '../utils/userVideos';
 
 import {
   createAgoraRtcEngine,
@@ -87,7 +89,7 @@ import GiftSheet from "../components/live/GiftSheet";
 import { isGifReaction, gifSource } from '../assets/emojiGifs';
 import { Image as ExpoImage } from 'expo-image';
 import FastImage from '../components/FastImage';
-import LevelFrame from '../components/LevelFrame';
+import LevelFrame, { framePhoto } from '../components/LevelFrame';
 import { hasVisibleFrame } from '../components/adminFrames';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -109,6 +111,7 @@ import { useLiveBanGuard } from '../utils/liveBan';
 import { useBlockedIds } from '../utils/useBlockedIds';
 import UserTick from '../components/UserTick';
 import ProfileSheet, { SheetChip } from '../components/live/ProfileSheet';
+import CarGiftRide, { isRideGift } from '../components/live/CarGiftRide';
 
 // import LottieView from "lottie-react-native";
 // import { gifts } from "../assets/giftsData";
@@ -265,7 +268,7 @@ const getLevelTheme = (level = 1) => {
 // Admin ka diya frame uid se aata hai (map se, koi Firestore read nahi) aur level frame ko override karta hai.
 // lookup={false} => koi Firestore read nahi (fast).
 const GuardedFrame = memo((props) => (
-  <LevelFrame level={props.level} uid={props.uid} special={props.special} animated={props.animated} style={props.style} lookup={false} />
+  <LevelFrame level={props.level} uid={props.uid} special={props.special} animated={props.animated} style={props.style} photo={props.photo} lookup={false} />
 ));
 
 // ============================================================
@@ -334,12 +337,12 @@ const SEAT_FRAME_OFFSET = -(SEAT_FRAME_SIZE - SEAT_SIZE) / 2;
 // Frame bada/chhota karna ho to sirf SEAT_FRAME_SCALE badlo, sab jagah ek saath badlega.
 // Seat frame ka style EK baar bana kar rakha: bolne (speaking) par seat re-render hota hai,
 // naya style object banta to frame bhi re-render hota. Ab frame bina chhede chalta rehta hai.
-const SEAT_FRAME_STYLE = { position: 'absolute', width: SEAT_FRAME_SIZE, height: SEAT_FRAME_SIZE, top: SEAT_FRAME_OFFSET, left: SEAT_FRAME_OFFSET, zIndex: 10 };
+const SEAT_FRAME_STYLE = framePhoto({ position: 'absolute', width: SEAT_FRAME_SIZE, height: SEAT_FRAME_SIZE, top: SEAT_FRAME_OFFSET, left: SEAT_FRAME_OFFSET, zIndex: 10 }, SEAT_SIZE);
 const FRAME_SCALE = SEAT_FRAME_SCALE;
 const frameBox = (photoSize, container = photoSize) => {
   const size = Math.round(photoSize * FRAME_SCALE);
   const off = (container - size) / 2;
-  return { position: 'absolute', width: size, height: size, top: off, left: off, zIndex: 10 };
+  return framePhoto({ position: 'absolute', width: size, height: size, top: off, left: off, zIndex: 10 }, photoSize);
 };
 const FRAME_CHAT22 = frameBox(22);
 const FRAME_CHAT36 = frameBox(36, 42);
@@ -655,7 +658,7 @@ const ComboRow = memo(({ data }) => {
             style={{ width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.9)", backgroundColor: "#2a2b38" }}
           />
           {(Number(data.level) >= 30 || !!data.senderId) && (
-            <GuardedFrame level={data.level} uid={data.senderId} animated={false}
+            <GuardedFrame level={data.level} uid={data.senderId} animated={false} photo={32}
               style={{ position: "absolute", width: 54, height: 54, top: -11, left: -11, zIndex: 10 }} />
           )}
         </View>
@@ -681,15 +684,17 @@ const ComboRow = memo(({ data }) => {
   );
 });
 
-const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBottom }, ref) {
+const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBottom, rideTop }, ref) {
   const [combos, setCombos] = useState([]); // max 2 row, har sender ki apni row
   const timersRef = useRef({});
+  const rideRef = useRef(null); // car gift -> chalti firti gaadi
 
   useImperativeHandle(ref, () => ({
     // animation band: play / playDeferred ab kuch nahi karte (purane call sites safe rehte hain)
     play() {},
     playDeferred() {},
     showCombo(data, onEnd, ms = 2200) {
+      if (isRideGift(data && data.giftId) && rideRef.current) rideRef.current.push(data); // Sports Car gift
       const key = String((data && data.senderName) || "user") + "_" + String((data && data.giftId) || "g"); // har gift ki apni row
       const entry = { key, data };
       setCombos((prev) => {
@@ -710,14 +715,18 @@ const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBottom }, 
     Object.values(timersRef.current).forEach((t) => clearTimeout(t));
   }, []);
 
-  if (!combos.length) return null;
   return (
+    <>
+    <CarGiftRide ref={rideRef} top={rideTop} />
+    {combos.length ? (
     <View
       pointerEvents="none"
       style={[{ position: "absolute", left: 10, zIndex: 99998, elevation: 99998 }, comboBottom != null ? { bottom: comboBottom } : { top: comboTop != null ? comboTop : height * 0.25 }]}
     >
       {combos.map((c) => <ComboRow key={c.key} data={c.data} />)}
     </View>
+    ) : null}
+    </>
   );
 }));
 
@@ -1208,6 +1217,7 @@ const ProfileFrame = memo(({ level = 1, avatarSize = 100, frameSize, uid, contai
           level={lv}
           uid={uid}
           animated={animated}
+          photo={avatarSize}
           style={{ width: outer, height: outer, resizeMode: "contain" }}
         />
       </View>
@@ -1286,7 +1296,7 @@ const TimeBackground = React.memo(function TimeBackground() {
   );
 });
 
-export default function LiveRoom() {
+function LiveRoom() {
 const insets = useSafeAreaInsets();
 const navGap = 0;
 
@@ -2550,14 +2560,13 @@ const fetchProfilePreview = async (targetUserId) => {
       const followingQuery = query(collection(db, "follows"), where("followerId", "==", targetUserId));
       const videosQuery = query(collection(db, "all_videos"), where("userId", "==", targetUserId));
 
-      const [followersSnap, followingSnap, videosSnap] = await Promise.all([
+      const [followersSnap, followingSnap, vTotals] = await Promise.all([
         getCountFromServer(followersQuery),
         getCountFromServer(followingQuery),
-        getDocs(videosQuery),
+        fetchUserVideoTotals(targetUserId),
       ]);
 
-      let likesCount = 0;
-      videosSnap.forEach((v) => { likesCount += Number(v.data()?.likes || 0); });
+      const likesCount = vTotals ? vTotals.likes : 0;
       const followers = followersSnap.data().count;
       const following = followingSnap.data().count;
       patchCache({ followers, following, likes: likesCount });
@@ -5427,7 +5436,7 @@ return (
                 style={styles.viewerAvatar}
               />
               {(user.level >= 30 || !!user.uid) && (
-                <GuardedFrame level={user.level} uid={user.uid} animated pointerEvents="none"
+                <GuardedFrame level={user.level} uid={user.uid} animated pointerEvents="none" photo={30}
                   style={{ position: 'absolute', width: 40, height: 40, top: -5, left: -5 }} />
               )}
             </View>
@@ -5543,7 +5552,7 @@ return (
 
 
 
-<GiftLayer ref={giftLayerRef} comboBottom={Math.round(height * 0.42)} />
+<GiftLayer ref={giftLayerRef} comboBottom={Math.round(height * 0.42)} rideTop={chatTopY != null ? chatTopY + 4 : undefined} />
 
 {/* ================= JOIN ENTRY ANIMATION ================= */}
 {joinBanner && (
@@ -6145,7 +6154,7 @@ style={styles.friendImg}
 {
 (item.level >= 30 || !!item.id) && (
 
-<GuardedFrame level={item.level} uid={item.id} animated
+<GuardedFrame level={item.level} uid={item.id} animated photo={55}
 style={{
 position:"absolute",
 width:90,
@@ -6971,4 +6980,7 @@ alignItems:"center"
 
 
 
-});         
+});
+
+// SPEED: tap karte hi page khulta dikhe, bhaari hissa 2 frame baad (components/DeferredScreen.tsx)
+export default withDeferredMount(LiveRoom);

@@ -1,6 +1,8 @@
+import { withDeferredMount } from '../components/DeferredScreen';
 import LevelBadge from '../components/LevelBadge';
 import { reportVoiceAbuse } from "../utils/voiceReport";
 import OfficialLiveTools from "../components/live/OfficialLiveTools";
+import LiveSwipeShell from '../components/live/LiveSwipeShell';
 import { blockIfProfane } from "../utils/guardText";
   import React, { useEffect, useState, useRef, useCallback, useMemo, memo, forwardRef, useImperativeHandle } from 'react';
 
@@ -144,7 +146,7 @@ try {
 }
 
 
-export default function LiveRoom() {
+function LiveRoom() {
 const insets = useSafeAreaInsets();
 const navGap = 0;
 
@@ -668,7 +670,7 @@ const stableEmojiPick = useCallback((e) => { if (onPickEmojiRef.current) onPickE
 // ===== HOST TOOLS: chat lock / clear chat / invite to seat / kick =====
 const isHost = currentUserRole === 'host';
 // ↕ Swipe up/down = dusre live me jao (sirf listener)
-const liveSwipe = useLiveSwipe({ db, roomId, router, blockedRef, enabled: currentUserRole === 'listener' });
+const liveSwipe = useLiveSwipe({ db, roomId, router, blockedRef, mode: 'audio', enabled: currentUserRole === 'listener' });
 // ===== ADMIN: host jise admin banaye use host jaisi (moderation) power =====
 // room doc me `admins: { [uid]: true }`. Admin = seat/mute/remove, kick, chat lock,
 // clear chat, room lock, requests approve, listener ko seat par bulana, lock chat me bolna.
@@ -4255,6 +4257,7 @@ const bottomBarTotal = BOTTOM_BAR_H + bottomGap;
 const moreGo = (fn) => { setMoreVisible(false); setTimeout(fn, 260); };
 
 return (
+  <LiveSwipeShell swipe={liveSwipe}>
   <View
     style={styles.mainContainer}
     onTouchStartCapture={() => {
@@ -4326,7 +4329,7 @@ return (
                 style={styles.viewerAvatar}
               />
               {(user.level >= 30 || !!user.uid) && (
-                <GuardedFrame level={user.level} uid={user.uid} animated={false} pointerEvents="none"
+                <GuardedFrame level={user.level} uid={user.uid} animated={false} pointerEvents="none" photo={32}
                   style={{ position: 'absolute', width: 42, height: 42, top: -5, left: -5 }} />
               )}
             </View>
@@ -4437,7 +4440,7 @@ return (
 
 
 
-<GiftLayer ref={giftLayerRef} comboBottom={Math.round(height * 0.45)} />
+<GiftLayer ref={giftLayerRef} comboBottom={Math.round(height * 0.45)} rideTop={chatTopY != null ? chatTopY + 4 : undefined} />
 
 {/* ================= JOIN ENTRY ANIMATION ================= */}
 {joinBanner && (
@@ -5061,7 +5064,7 @@ style={styles.friendImg}
 {
 (item.level >= 30 || !!item.id) && (
 
-<GuardedFrame level={item.level} uid={item.id} animated={false}
+<GuardedFrame level={item.level} uid={item.id} animated={false} photo={55}
 style={{
 position:"absolute",
 width:90,
@@ -5309,6 +5312,10 @@ onPress={sendInvite}
     </SafeModal>
 
   </View>
+  </LiveSwipeShell>
 );
   
 }
+
+// SPEED: tap karte hi page khulta dikhe, bhaari hissa 2 frame baad (components/DeferredScreen.tsx)
+export default withDeferredMount(LiveRoom);

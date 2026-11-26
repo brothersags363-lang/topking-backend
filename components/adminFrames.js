@@ -11,13 +11,13 @@ import { callApi } from '../utils/api';
 // (feed, comments, chat, profile, live room seat/chat/popup).
 // Nayi frame jodni ho: webp assets/admin_frames/ me daalo, yahan ek line add karo,
 // aur backend server.js me ADMIN_FRAME_KEYS me key add karo.
-// img = animated (profile / popup), still = halka static (lists / feed / chat -> smooth scroll)
+// ANIMATED FRAMES HATA DIYE: img aur still dono static WEBP (smooth, halka). Naya frame bhi sirf static webp daalo.
 export const ADMIN_FRAMES = {
-  gold_heart:   { label: 'Official Gold Heart',   img: require('../assets/admin_frames/gold_heart.webp'),   still: require('../assets/admin_frames/still/gold_heart.webp') },
-  bd_helmet:    { label: 'BD Purple Helmet',      img: require('../assets/admin_frames/bd_helmet.webp'),    still: require('../assets/admin_frames/still/bd_helmet.webp') },
-  agency_ref:   { label: 'Agency Reference',      img: require('../assets/admin_frames/agency_ref.webp'),   still: require('../assets/admin_frames/still/agency_ref.webp') },
-  agency_wings: { label: 'Official Agency Wings', img: require('../assets/admin_frames/agency_wings.webp'), still: require('../assets/admin_frames/still/agency_wings.webp') },
-  tk_team:      { label: 'TK Team',               img: require('../assets/admin_frames/tk_team.webp'),      still: require('../assets/admin_frames/still/tk_team.webp') },
+  gold_heart:   { label: 'Official Gold Heart',   img: require('../assets/admin_frames/still/gold_heart.webp'),   still: require('../assets/admin_frames/still/gold_heart.webp') },
+  bd_helmet:    { label: 'BD Purple Helmet',      img: require('../assets/admin_frames/still/bd_helmet.webp'),    still: require('../assets/admin_frames/still/bd_helmet.webp') },
+  agency_ref:   { label: 'Agency Reference',      img: require('../assets/admin_frames/still/agency_ref.webp'),   still: require('../assets/admin_frames/still/agency_ref.webp') },
+  agency_wings: { label: 'Official Agency Wings', img: require('../assets/admin_frames/still/agency_wings.webp'), still: require('../assets/admin_frames/still/agency_wings.webp') },
+  tk_team:      { label: 'TK Team',               img: require('../assets/admin_frames/still/tk_team.webp'),      still: require('../assets/admin_frames/still/tk_team.webp') },
 };
 const ADMIN_ONLY = { ...ADMIN_FRAMES }; // copy: angel frames baad me ADMIN_FRAMES me judte hain, isme nahi
 export const ADMIN_FRAME_KEYS = Object.keys(ADMIN_ONLY); // Admin Panel me sirf yehi diye ja sakte hain
@@ -25,11 +25,13 @@ export const ADMIN_FRAME_KEYS = Object.keys(ADMIN_ONLY); // Admin Panel me sirf 
 // ---- ANGEL FRAMES (Fresh / Senior Angel) ----
 // Admin nahi deta: user ko apne aap milta hai (Fresh = ID verified, Senior = white tick).
 // Frames & Entries se user chunta hai -> users/{uid}.frameChoice = "ang:<key>".
+// fit = andar ke gol hole ka center (cx, cy) aur size (d), poori image ka fraction. Image ka hole canvas ke center par
+// nahi hai, isliye LevelFrame / preview isse photo ke bilkul beech me fit karte hain.
 // Server (set-frame-prefs + frame map) eligibility check karta hai. Render ADMIN_FRAMES se hi hota hai,
 // isliye feed / chat / comments / profile / live room sab jagah wahi frame dikhta hai.
 export const ANGEL_FRAMES = {
-  fresh_angel:  { label: 'Fresh Angel',  img: require('../assets/pendants/fresh_angel.webp'),  still: require('../assets/pendants/still/fresh_angel.webp') },
-  senior_angel: { label: 'Senior Angel', img: require('../assets/pendants/senior_angel.webp'), still: require('../assets/pendants/still/senior_angel.webp') },
+  fresh_angel:  { label: 'Fresh Angel',  img: require('../assets/pendants/fresh_angel.webp'),  still: require('../assets/pendants/still/fresh_angel.webp'), fit: { cx: 0.549, cy: 0.516, d: 0.668 } },
+  senior_angel: { label: 'Senior Angel', img: require('../assets/pendants/senior_angel.webp'), still: require('../assets/pendants/still/senior_angel.webp'), fit: { cx: 0.526, cy: 0.501, d: 0.587 } },
 };
 export const ANGEL_FRAME_KEYS = Object.keys(ANGEL_FRAMES);
 Object.assign(ADMIN_FRAMES, ANGEL_FRAMES); // sirf render / spec ke liye (ADMIN_FRAME_KEYS upar fix hai)
@@ -39,7 +41,7 @@ Object.assign(ADMIN_FRAMES, ANGEL_FRAMES); // sirf render / spec ke liye (ADMIN_
 // Map me na ho => AUTO (level se frame: 30-39 lv30, 40-49 lv40, 50+ lv50).
 // Sirf unhi users ki chhoti list jinki frame default nahi hai. Server se EK hi call (/frames/admin-map),
 // har user ke liye alag Firestore read NAHI. Phone me save rehti hai (AsyncStorage) -> app khulte hi frame turant.
-const MAP_KEY = 'adminFrameMap:v2';
+const MAP_KEY = 'adminFrameMap:v3'; // v3: purani galat (bade level wali) saved map chhod do
 const MAP_TTL_MS = 10 * 60 * 1000;
 const LEVEL_SPEC_RE = /^lv(30|40|50)$/;
 let adminMap = {};
@@ -201,7 +203,7 @@ export function useAdminFrame(uid, fallbackKey) {
 
 // ---- uid -> frame info lookup (memory cache, har user ka 1 hi read) ----
 // Ek hi read me user ka level aur entry ki pasand (entryOff / entryChoice) aa jati hai.
-// Frame ab sirf level se lagta hai (LevelFrame.js): 30-39 -> lv30, 40-49 -> lv40, 50+ -> lv50.
+// Frame level se lagta hai (LevelFrame.js): 30-39 -> lv30, 40-49 -> lv40, 50+ -> lv50. Level = wallets/{uid}.level
 const TTL_MS = 5 * 60 * 1000;
 const cache = new Map();      // uid -> { info, t }
 const inflight = new Map();   // uid -> Promise
@@ -216,11 +218,16 @@ const EMPTY_INFO = Object.freeze({
 
 const LOADED_EMPTY = Object.freeze({ ...EMPTY_INFO, loaded: true });
 
-function toInfo(data) {
-  if (!data) return LOADED_EMPTY;
+// data = users doc, wallet = wallets doc. ASLI level wallets/{uid}.level hai (functions/syncWalletLevel
+// wahi update karta hai). users/{uid}.level purana / khali rehta hai -> usse frame galat lagta tha.
+function toInfo(data, wallet) {
+  if (!data && !wallet) return LOADED_EMPTY;
+  const wl = wallet && wallet.level !== undefined && wallet.level !== null ? Number(wallet.level) : NaN;
+  const level = Number.isFinite(wl) ? wl : data ? Number(data.level) || null : null;
+  data = data || {};
   return {
     loaded: true,
-    level: Number(data.level) || null,
+    level: level || null,
     entryOff: data.entryOff === true,
     entryChoice: data.entryChoice || null,
   };
@@ -239,7 +246,7 @@ function notify(uid, info) {
 // (4) fail hone par purani saved info dikhti rehti hai, khali nahi hoti.
 const MAX_RETRY = 6;
 const MAX_PARALLEL = 4;
-const STORE_KEY = 'frameInfoCache:v2';
+const STORE_KEY = 'frameInfoCache:v3'; // v3: level ab wallet se (purana galat level wala cache chhod do)
 const STORE_MAX = 300;
 
 const queue = [];
@@ -298,9 +305,14 @@ function fetchInfo(uid, attempt = 0) {
   if (inflight.has(uid)) return inflight.get(uid);
   const p = new Promise((resolve) => {
     queue.push(() =>
-      getDoc(doc(db, 'users', uid))
-        .then((snap) => {
-          const info = snap.exists() ? toInfo(snap.data()) : LOADED_EMPTY;
+      Promise.all([
+        getDoc(doc(db, 'users', uid)),
+        // wallet na padh sake (rules / net) to users doc se kaam chalao, frame gayab mat karo
+        getDoc(doc(db, 'wallets', uid)).catch(() => null),
+      ])
+        .then(([snap, wSnap]) => {
+          const w = wSnap && wSnap.exists() ? wSnap.data() : null;
+          const info = snap.exists() || w ? toInfo(snap.exists() ? snap.data() : null, w) : LOADED_EMPTY;
           cache.set(uid, { info, t: Date.now() });
           notify(uid, info);
           saveDiskSoon();
