@@ -13,11 +13,12 @@ import { callApi } from '../utils/api';
 // aur backend server.js me ADMIN_FRAME_KEYS me key add karo.
 // ANIMATED FRAMES HATA DIYE: img aur still dono static WEBP (smooth, halka). Naya frame bhi sirf static webp daalo.
 export const ADMIN_FRAMES = {
-  gold_heart:   { label: 'Official Gold Heart',   img: require('../assets/admin_frames/still/gold_heart.webp'),   still: require('../assets/admin_frames/still/gold_heart.webp') },
-  bd_helmet:    { label: 'BD Purple Helmet',      img: require('../assets/admin_frames/still/bd_helmet.webp'),    still: require('../assets/admin_frames/still/bd_helmet.webp') },
-  agency_ref:   { label: 'Agency Reference',      img: require('../assets/admin_frames/still/agency_ref.webp'),   still: require('../assets/admin_frames/still/agency_ref.webp') },
-  agency_wings: { label: 'Official Agency Wings', img: require('../assets/admin_frames/still/agency_wings.webp'), still: require('../assets/admin_frames/still/agency_wings.webp') },
-  tk_team:      { label: 'TK Team',               img: require('../assets/admin_frames/still/tk_team.webp'),      still: require('../assets/admin_frames/still/tk_team.webp') },
+  // fit = DP ke liye andar ka hole (image se naapa hua) -> DP har jagah frame ke beech me sahi size me
+  gold_heart:   { label: 'Official Gold Heart',   img: require('../assets/admin_frames/still/gold_heart.webp'),   still: require('../assets/admin_frames/still/gold_heart.webp'),   fit: { cx: 0.498, cy: 0.470, d: 0.46 } },
+  bd_helmet:    { label: 'BD Purple Helmet',      img: require('../assets/admin_frames/still/bd_helmet.webp'),    still: require('../assets/admin_frames/still/bd_helmet.webp'),    fit: { cx: 0.498, cy: 0.470, d: 0.48 } },
+  agency_ref:   { label: 'Agency Reference',      img: require('../assets/admin_frames/still/agency_ref.webp'),   still: require('../assets/admin_frames/still/agency_ref.webp'),   fit: { cx: 0.500, cy: 0.470, d: 0.50 } },
+  agency_wings: { label: 'Official Agency Wings', img: require('../assets/admin_frames/still/agency_wings.webp'), still: require('../assets/admin_frames/still/agency_wings.webp'), fit: { cx: 0.490, cy: 0.460, d: 0.44 } },
+  tk_team:      { label: 'TK Team',               img: require('../assets/admin_frames/still/tk_team.webp'),      still: require('../assets/admin_frames/still/tk_team.webp'),      fit: { cx: 0.490, cy: 0.480, d: 0.42 } },
 };
 const ADMIN_ONLY = { ...ADMIN_FRAMES }; // copy: angel frames baad me ADMIN_FRAMES me judte hain, isme nahi
 export const ADMIN_FRAME_KEYS = Object.keys(ADMIN_ONLY); // Admin Panel me sirf yehi diye ja sakte hain
@@ -30,8 +31,8 @@ export const ADMIN_FRAME_KEYS = Object.keys(ADMIN_ONLY); // Admin Panel me sirf 
 // Server (set-frame-prefs + frame map) eligibility check karta hai. Render ADMIN_FRAMES se hi hota hai,
 // isliye feed / chat / comments / profile / live room sab jagah wahi frame dikhta hai.
 export const ANGEL_FRAMES = {
-  fresh_angel:  { label: 'Fresh Angel',  img: require('../assets/pendants/fresh_angel.webp'),  still: require('../assets/pendants/still/fresh_angel.webp'), fit: { cx: 0.549, cy: 0.516, d: 0.668 } },
-  senior_angel: { label: 'Senior Angel', img: require('../assets/pendants/senior_angel.webp'), still: require('../assets/pendants/still/senior_angel.webp'), fit: { cx: 0.526, cy: 0.501, d: 0.587 } },
+  fresh_angel:  { label: 'Fresh Angel',  img: require('../assets/pendants/fresh_angel.webp'),  still: require('../assets/pendants/still/fresh_angel.webp'), fit: { cx: 0.549, cy: 0.516, d: 0.668 }, overlap: 1.03 },
+  senior_angel: { label: 'Senior Angel', img: require('../assets/pendants/senior_angel.webp'), still: require('../assets/pendants/still/senior_angel.webp'), fit: { cx: 0.526, cy: 0.501, d: 0.587 }, overlap: 1.03 },
 };
 export const ANGEL_FRAME_KEYS = Object.keys(ANGEL_FRAMES);
 Object.assign(ADMIN_FRAMES, ANGEL_FRAMES); // sirf render / spec ke liye (ADMIN_FRAME_KEYS upar fix hai)

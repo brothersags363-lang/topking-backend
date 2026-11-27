@@ -12,8 +12,16 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import LevelFrame, { getTier } from '../LevelFrame';
 import { bannerFor } from '../../utils/levelTheme';
+import { LevelPrefix } from './UserLabel';
 import { useFrameInfo } from '../adminFrames';
 import UserTick from '../UserTick';
+import HorseEntry from './HorseEntry';
+import FoxEntry from './FoxEntry';
+import { svipForLevel } from '../../utils/svip';
+
+// HORSE ENTRY (Agni Ghoda + awaaz) kis level se: Lv 50+. Lv 30-49 = purana rang wala banner.
+// Badalna ho to sirf ye number badlo (band karna ho to 999).
+export const HORSE_MIN_LEVEL = 50;
 
 const { width, height } = Dimensions.get('window');
 const FALLBACK_AVATAR = 'https://avatar.iran.liara.run/public/65';
@@ -162,11 +170,10 @@ export const PlainJoinPill = ({ data, onDone }) => {
 
   return (
     <Animated.View style={[styles.plainPill, { opacity: op }]}>
-      <Text numberOfLines={1} style={styles.plainTxt}>{data.senderName}</Text>
+      {/* Tiki jaisa: [Level badge] naam ✓ has joined (level na ho to sirf naam ✓) */}
+      <LevelPrefix level={data.level} size={8} svipHeight={17} style={{ marginRight: 5 }} />
+      <Text numberOfLines={1} style={[styles.plainTxt, { flexShrink: 1 }]}>{data.senderName}</Text>
       <Verified data={data} size={14} />
-      <View style={styles.plainLv}>
-        <Text style={styles.plainLvTxt}>LV {data.level}</Text>
-      </View>
       <Text style={styles.plainTxt}> has joined</Text>
     </Animated.View>
   );
@@ -290,24 +297,12 @@ export const FrameBanner = ({ data, onDone, tier }) => {
           >
             <View style={{ flexShrink: 1 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                {/* Tiki jaisa: [Level/SVIP badge] naam ✓ */}
+                <LevelPrefix level={lv} size={9} svipHeight={18} style={{ marginRight: 6 }} />
                 <Text numberOfLines={1} style={{ color: '#fff', fontSize: 15, fontWeight: '800', flexShrink: 1 }}>
                   {data.senderName}
                 </Text>
                 <Verified data={data} size={16} />
-                {/* LEVEL chip */}
-                <View
-                  style={{
-                    marginLeft: 6,
-                    paddingHorizontal: 7,
-                    paddingVertical: 1,
-                    borderRadius: 9,
-                    backgroundColor: 'rgba(0,0,0,0.35)',
-                    borderWidth: 1,
-                    borderColor: 'rgba(255,255,255,0.6)',
-                  }}
-                >
-                  <Text style={{ color: '#FFE08A', fontSize: 11, fontWeight: '900' }}>LV {lv}</Text>
-                </View>
               </View>
               <Text style={{ color: 'rgba(255,255,255,0.92)', fontSize: 12, fontWeight: '600', marginTop: 1 }}>
                 has joined
@@ -337,6 +332,7 @@ export const FrameBanner = ({ data, onDone, tier }) => {
             uid={data.senderId || data.uid}
             lookup={false}
             animated={false}
+            photo={AV - 14}
             style={{ position: 'absolute', width: AV, height: AV, resizeMode: 'contain' }}
           />
         </View>
@@ -371,6 +367,8 @@ export const JoinSlot = ({ data, onDone }) => {
   if (!data) return null;
   if (low) return <PlainJoinPill key={key} data={{ ...data, level: lvl }} onDone={onDone} />;
   if (!ready || hidden) return null;
+  // Lv 50+: ghoda poori screen par JoinEntry dikhata hai, yahan (chat ke paas) kuch nahi
+  if (lvl >= HORSE_MIN_LEVEL) return null;
   return <FrameBanner key={key} data={data} onDone={onDone} tier={getTier(lvl) || 30} />;
 };
 
@@ -378,7 +376,8 @@ export const JoinSlot = ({ data, onDone }) => {
 // PUBLIC COMPONENT
 // ============================================================
 // pillBottom: (optional) Lv<30 ki plain pill ko screen ke neeche se itni unchai par rakho (chat ke theek upar)
-const JoinEntry = ({ data, variant = 'auto', onDone, pillBottom, pillTop, hideLow }) => {
+// rideTop: ghoda kahan dikhe (room me seats ke theek neeche wala y). Na do to screen ka 36%.
+const JoinEntry = ({ data, variant = 'auto', onDone, pillBottom, pillTop, hideLow, rideTop }) => {
   // User ki Settings wali pasand (entry hatani / doosri entry chuni) yahan lagti hai.
   const uid = data ? data.senderId : undefined;
   const info = useFrameInfo(uid);
@@ -404,8 +403,9 @@ const JoinEntry = ({ data, variant = 'auto', onDone, pillBottom, pillTop, hideLo
   const belowMin = !!data && ready && lvl < 30;
 
   if (!data || !ready || hidden) return null;
-  // hideLow: room khud JoinSlot (chat ke paas) dikha raha hai -> yahan kuch nahi
-  if (hideLow) return null;
+  // hideLow: room khud JoinSlot (chat ke paas) dikha raha hai -> Lv 50 se niche yahan kuch nahi.
+  // Lv 50+ ka ghoda hamesha yahin (poori screen) dikhta hai.
+  if (hideLow && lvl < HORSE_MIN_LEVEL) return null;
 
   // Lv 30 se niche: sirf chhoti plain pill ("naam has joined") 3.5 sec ke liye, phir chat me niche
   // hideLow: room khud chat ke andar (neeche) pill dikha raha hai -> yahan kuch nahi
@@ -429,6 +429,15 @@ const JoinEntry = ({ data, variant = 'auto', onDone, pillBottom, pillTop, hideLo
 
   // Purani animated entries hata di gayi. Frame ke rang ka tier nikalo -> banner wahi rang.
   const tier = getTier(lvl) || 30;
+
+  // SVIP2+ (Lv 60+): Agni Ghoda udta aata hai, hinhinata hai, naam ka banner, phir ud jata hai
+  // SVIP1 (Lv 50-59): Safed Lomdi right se aati hai, beech me rukti (poonchh/kaan hilate), ghoomti, phir left gayab
+  if (lvl >= HORSE_MIN_LEVEL && svipForLevel(lvl) === 1) {
+    return <FoxEntry key={key} data={{ ...data, level: lvl }} onDone={onDone} top={rideTop} />;
+  }
+  if (lvl >= HORSE_MIN_LEVEL) {
+    return <HorseEntry key={key} data={{ ...data, level: lvl }} tier={tier} onDone={onDone} top={rideTop} />;
+  }
 
   return (
     <View

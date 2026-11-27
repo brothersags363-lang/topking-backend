@@ -9,7 +9,6 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   TouchableOpacity,
   Image,
   FlatList,
@@ -20,6 +19,7 @@ import {
 } from "react-native";
 import { scopedBackHandler } from "../utils/scopedBack";
 import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Audio } from "../utils/audio";
 import {
   collection,
@@ -41,6 +41,7 @@ const { width } = Dimensions.get("window");
 export default function MusicDetails() {
 
   const router = useRouter();
+  const insets = useSafeAreaInsets();
 const params = useLocalSearchParams();
 
 const {
@@ -380,7 +381,7 @@ useEffect(() => {
   );
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top }]}>
       <FlatList
         data={ranked}
         keyExtractor={(item: any) => item.id}
@@ -389,7 +390,7 @@ useEffect(() => {
         initialNumToRender={9}
         maxToRenderPerBatch={9}
         windowSize={7}
-        contentContainerStyle={{ paddingBottom: 110 }}
+        contentContainerStyle={{ paddingBottom: 110 + insets.bottom }}
         renderItem={({ item }: any) => (
           <TouchableOpacity style={styles.videoCard} activeOpacity={0.85} onPress={() => openVideo(item)}>
             <Image source={{ uri: item.thumbnail }} style={StyleSheet.absoluteFill} />
@@ -403,11 +404,11 @@ useEffect(() => {
         )}
       />
 
-      <TouchableOpacity style={styles.applyBtn} activeOpacity={0.85} onPress={applyMusic}>
+      <TouchableOpacity style={[styles.applyBtn, { bottom: 16 + insets.bottom }]} activeOpacity={0.85} onPress={applyMusic}>
         <Ionicons name="videocam" size={18} color="#000" />
         <Text style={styles.applyText}>Apply Music</Text>
       </TouchableOpacity>
-    </SafeAreaView>
+    </View>
   );
 }
 

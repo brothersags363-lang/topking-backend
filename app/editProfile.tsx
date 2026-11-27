@@ -47,6 +47,7 @@ import {
   sanitizeName,
   sanitizeUsername,
   toMillis,
+  validateBio,
   validateName,
   validateUsername,
 } from '../utils/profileHelpers';
@@ -191,6 +192,9 @@ export default function EditProfileScreen() {
     const usernameError =
       !mustSetUsername && username === orig.username ? null : validateUsername(cleanUsername);
     if (usernameError) return Alert.alert('Username Error', usernameError);
+
+    const bioError = validateBio(bio);
+    if (bioError) return Alert.alert('Bio Error', bioError);
 
     setSaving(true);
     try {

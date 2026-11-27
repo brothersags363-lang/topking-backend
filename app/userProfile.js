@@ -1,5 +1,7 @@
 import { setVideoListCache } from "../utils/videoListCache";
 import LevelBadge from '../components/LevelBadge';
+import { SvipTag } from '../components/SvipBadge';
+import { svipForLevel } from '../utils/svip';
 import { notifyNewFollower } from "../utils/pushNotify";
 import React, {
   useEffect,
@@ -64,6 +66,9 @@ import AppBottomNav from "../components/AppBottomNav";
 import FamilyCell from "../components/FamilyCell";
 import { AvatarFrame } from "../components/FramedAvatar";
 import { useLiveHost, openLiveRoom } from "../components/liveHosts";
+import { fetchUserVideos, fetchUserVideoTotals, createVideoPager } from "../utils/userVideos";
+import { getProfileSeed, readProfileSeed, mergeProfileSeed, cleanUser, slimVideos } from "../utils/profilePrefetch";
+import { SkeletonGrid } from "../components/Skeleton";
 
 /* ------------------------------------------------------------------ */
 /* Constants & pure helpers (outside the component => created once)    */
@@ -540,18 +545,22 @@ export default function UserProfile() {
   const router = useRouter();
   const { userId } = useLocalSearchParams();
 
-  const [videos, setVideos] = useState([]);
+  // INSTANT (Instagram jaisa): feed / pichli baar / pehle se load hua data PEHLE FRAME me.
+  // Net se naya aate hi chupchap badal jaata hai.
+  const seed0 = getProfileSeed(userId);
+
+  const [videos, setVideos] = useState(() => (Array.isArray(seed0?.videos) ? seed0.videos : []));
   const [likedCount, setLikedCount] = useState(0);
   const [activeTab, setActiveTab] = useState("Videos");
 
-  const [userData, setUserData] = useState(null);
-  const [userLevel, setUserLevel] = useState(0);
-  const [userRank, setUserRank] = useState(null);
-  const [isVerified, setIsVerified] = useState(false);
+  const [userData, setUserData] = useState(() => seed0?.userData || null);
+  const [userLevel, setUserLevel] = useState(() => seed0?.userLevel || 0);
+  const [userRank, setUserRank] = useState(() => seed0?.userRank ?? null);
+  const [isVerified, setIsVerified] = useState(() => seed0?.userData?.verified === true);
 
-  const [totalLikes, setTotalLikes] = useState(0);
-  const [followersCount, setFollowersCount] = useState(0);
-  const [followingCount, setFollowingCount] = useState(0);
+  const [totalLikes, setTotalLikes] = useState(() => seed0?.totalLikes || 0);
+  const [followersCount, setFollowersCount] = useState(() => seed0?.followersCount || 0);
+  const [followingCount, setFollowingCount] = useState(() => seed0?.followingCount || 0);
 
   const [currentUserId, setCurrentUserId] = useState(
     auth.currentUser?.uid || ""
@@ -563,11 +572,38 @@ export default function UserProfile() {
 
 
   const [topGifters, setTopGifters] = useState([]);
-  const [hasStars, setHasStars] = useState(false);
+  const [hasStars, setHasStars] = useState(() => seed0?.hasStars === true);
   const [familyShown, setFamilyShown] = useState(false);
 
   const [isBlocked, setIsBlocked] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Memory me seed nahi mila -> phone (disk) se pichli baar ki profile (agar net se pehle aa jaaye)
+  const liveDataRef = useRef({ user: false, videos: false });
+  // videos pehli baar aane tak grid ki jagah dhancha (khaali / "no videos" flash nahi)
+  const [videosFetched, setVideosFetched] = useState(false);
+  useEffect(() => {
+    if (!userId || getProfileSeed(userId)) return;
+    let alive = true;
+    readProfileSeed(userId)
+      .then((c) => {
+        if (!alive || !c) return;
+        if (!liveDataRef.current.user && c.userData) {
+          setUserData((prev) => prev || c.userData);
+          if (c.userData.verified === true) setIsVerified(true);
+        }
+        if (!liveDataRef.current.videos && Array.isArray(c.videos) && c.videos.length) {
+          setVideos((prev) => (prev.length ? prev : c.videos));
+          if (c.totalLikes) setTotalLikes((p) => p || c.totalLikes);
+        }
+        if (c.followersCount) setFollowersCount((p) => p || c.followersCount);
+        if (c.followingCount) setFollowingCount((p) => p || c.followingCount);
+        if (c.userLevel) setUserLevel((p) => p || c.userLevel);
+        if (c.hasStars) setHasStars(true);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [userId]);
 
   // "already loaded once" flags => reopening the modal / Likes tab is instant
   const followBusyRef = useRef(false);
@@ -613,6 +649,7 @@ export default function UserProfile() {
         const data = snap.data();
         const gifters = normalizeGifters(data.topGifters);
 
+        liveDataRef.current.user = true;
         setUserData(data);
         setIsVerified(data.verified === true);
         const top = gifters.slice(0, ANGEL_SHOW);
@@ -726,30 +763,51 @@ export default function UserProfile() {
     }
   }, [userId, router, loadUserRank]);
 
+  // 60 ki limit hatayi: pehle 30, phir neeche scroll par agli 30 (1000+ videos bhi dikhengi)
+  const pagerRef = useRef(null);
+  const [loadingMoreVideos, setLoadingMoreVideos] = useState(false);
+
   const fetchVideos = useCallback(async () => {
     if (!userId) return;
 
     try {
-      const snap = await getDocs(
-        query(collection(db, "all_videos"), where("userId", "==", userId))
-      );
-
+      pagerRef.current = createVideoPager(userId, 30);
+      const [list, totals] = await Promise.all([
+        pagerRef.current.first(),
+        fetchUserVideoTotals(userId),
+      ]);
       let likesCount = 0;
-
-      const list = snap.docs.map((d) => {
-        const data = d.data();
-        likesCount += Number(data.likes || 0);
-        return { id: d.id, ...data };
-      });
+      if (totals) likesCount = totals.likes;
+      else list.forEach((data) => { likesCount += Number(data.likes || 0); });
 
       sortNewest(list); // newest video first
 
+      liveDataRef.current.videos = true;
       setVideos(list);
       setTotalLikes(likesCount);
     } catch (error) {
       if (__DEV__) console.log("FETCH VIDEOS ERROR =", error);
+    } finally {
+      setVideosFetched(true);
     }
   }, [userId]);
+
+  const loadMoreVideos = useCallback(async () => {
+    const p = pagerRef.current;
+    if (!p || p.done || loadingMoreVideos) return;
+    setLoadingMoreVideos(true);
+    try {
+      const list = await p.next();
+      if (list) {
+        sortNewest(list);
+        setVideos(list);
+      }
+    } catch (e) {
+      if (__DEV__) console.log("MORE VIDEOS ERROR =", e);
+    } finally {
+      setLoadingMoreVideos(false);
+    }
+  }, [loadingMoreVideos]);
 
   // Cheap count only (no document downloads) for the "Like (n)" tab label
   const fetchLikedCount = useCallback(async () => {
@@ -812,6 +870,25 @@ export default function UserProfile() {
       setFollowingCount(Math.max(0, Number(ud.followingCount) || 0));
     }
   }, [userId]);
+
+  // INSTANT: jo dikh raha hai wo save (agli baar / app restart par turant).
+  // Doosre user ka phone / email / birthday / token save nahi hota (cleanUser).
+  useEffect(() => {
+    if (!userId || !userData || !liveDataRef.current.user) return;
+    const patch = {
+      userData: cleanUser(userData),
+      followersCount,
+      followingCount,
+      userLevel,
+      userRank,
+      hasStars,
+    };
+    if (liveDataRef.current.videos) {
+      patch.videos = slimVideos(videos);
+      patch.totalLikes = totalLikes;
+    }
+    mergeProfileSeed(userId, patch);
+  }, [userId, userData, videos, followersCount, followingCount, userLevel, userRank, hasStars, totalLikes]);
 
   /* ---------------- Focus + refresh ---------------- */
 
@@ -1142,6 +1219,7 @@ export default function UserProfile() {
             activeOpacity={liveRoom ? 0.8 : 1}
             disabled={!liveRoom}
             onPress={() => openLive(liveRoom)}
+            style={{ marginLeft: 12, marginRight: 14 }} // frame ke liye side me jagah
           >
             <FastImage
               uri={profileImg}
@@ -1149,7 +1227,7 @@ export default function UserProfile() {
               style={[styles.profileImage, liveRoom && styles.profileImageLive]}
             />
             {/* FRAME: is user ka frame (level / agency / admin / uski apni choice) */}
-            <AvatarFrame uid={userId} level={userLevel} size={80} ratio={1.3} animated />
+            <AvatarFrame uid={userId} level={userLevel} size={80} animated />
             {liveRoom && (
               <View style={styles.liveTagProfile} pointerEvents="none">
                 <Text style={styles.liveTagProfileText}>LIVE</Text>
@@ -1392,7 +1470,12 @@ export default function UserProfile() {
             <UserTick verified={isVerified} verifiedColor={verifiedColor} faceVerified={faceVerified} size={18} style={{ marginLeft: 0 }} />
           </View>
 
-          <LevelBadge level={userLevel || 1} size={10} style={{ marginLeft: 6 }} />
+          {/* Lv 50+ -> sirf SVIP badge, usse kam -> level badge */}
+          {svipForLevel(userLevel) > 0 ? (
+            <SvipTag level={userLevel} height={18} style={{ marginLeft: 6 }} />
+          ) : (
+            <LevelBadge level={userLevel || 1} size={10} style={{ marginLeft: 6 }} />
+          )}
         </View>
 
         {/* 3-line menu icon (share icon ki jagah) */}
@@ -1410,6 +1493,12 @@ export default function UserProfile() {
         renderItem={renderVideoItem}
         numColumns={3}
         ListHeaderComponent={listHeader}
+        ListEmptyComponent={videosFetched ? null : <SkeletonGrid count={9} />}
+        onEndReached={loadMoreVideos}
+        onEndReachedThreshold={0.8}
+        ListFooterComponent={
+          loadingMoreVideos ? <ActivityIndicator color="#FFD700" style={{ marginVertical: 18 }} /> : null
+        }
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -1746,7 +1835,7 @@ const styles = StyleSheet.create({
   profileImage: {
     width: 80,
     height: 80,
-    borderRadius: 30, // profile.tsx jaisa rounded-square (gol nahi)
+    borderRadius: 40, // gol: frame ka hole gol hai, DP usme bilkul fit
     backgroundColor: "#222",
   },
 

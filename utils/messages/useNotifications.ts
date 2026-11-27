@@ -11,6 +11,8 @@ import {
 } from 'firebase/firestore';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MessageRow, NOTIF_ROWS, timeAgo, toMillis } from '../../components/messages/data';
+// @ts-ignore (JS file)
+import { peekScreenCache, readScreenCache, writeScreenCache } from '../screenCache';
 
 export function useNotifications(uid: string | undefined) {
   const [notifications, setNotifications] = useState<any[]>([]);
@@ -22,6 +24,18 @@ export function useNotifications(uid: string | undefined) {
       setNotifications([]);
       return;
     }
+    // INSTANT: pichli notifications turant (live data aate hi badal jaati hain)
+    const cacheKey = 'notifs_' + uid;
+    let gotLive = false;
+    const show = (c: any) => {
+      if (gotLive || !Array.isArray(c) || !c.length) return;
+      ref.current = c;
+      setNotifications(c);
+    };
+    const peek = peekScreenCache(cacheKey);
+    if (peek) show(peek);
+    else readScreenCache(cacheKey).then(show).catch(() => {});
+
     const q = query(
       collection(getFirestore(), 'users', uid, 'notifications'),
       orderBy('createdAt', 'desc'),
@@ -30,9 +44,11 @@ export function useNotifications(uid: string | undefined) {
     return onSnapshot(
       q,
       (snap) => {
+        gotLive = true;
         const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
         ref.current = list;
         setNotifications(list);
+        try { writeScreenCache(cacheKey, list.slice(0, 50)); } catch (e) {}
       },
       (err) => console.log('Notifications error:', err)
     );

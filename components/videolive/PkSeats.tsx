@@ -48,10 +48,12 @@ export const PkSeats = memo(({ gifters, mirror }: any) => {
 // Panel shown while a video is not there yet: blurred avatar (no flat black) + spinner.
 export const PkWaiting = memo(({ img, loading }: any) => (
   <View style={styles.pkWaiting}>
-    <Image
+    <ExpoImage
       source={{ uri: img || STABLE_AVATAR }}
       style={StyleSheet.absoluteFill}
-      blurRadius={Platform.OS === "android" ? 14 : 24}
+      blurRadius={Platform.OS === "android" ? 10 : 24}
+      cachePolicy="memory-disk"
+      transition={0}
     />
     <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(28,20,70,0.55)" }]} />
     <ExpoImage source={{ uri: img || STABLE_AVATAR }} style={styles.pkWaitAvatar} cachePolicy="memory-disk" transition={0} />

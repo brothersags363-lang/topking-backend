@@ -45,6 +45,10 @@ try {
 }
 
 import { doc, getDoc } from 'firebase/firestore';
+import { peekScreenCache, readScreenCache, writeScreenCache } from '../utils/screenCache';
+import { SkeletonGrid } from '../components/Skeleton';
+const LIVE_CACHE_KEY = 'all_live';
+const LIVE_CACHE_AGE = 10 * 60 * 1000;
 
 const { width } = Dimensions.get('window');
 
@@ -573,8 +577,19 @@ export default function AllLive() {
   });
 
   const [activeTab, setActiveTab] = useState('audio');
-  const [liveStreams, setLiveStreams] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // INSTANT: pichli live list (10 min tak) turant dikhao, Firestore se naya aate hi badal jaati hai
+  const [liveStreams, setLiveStreams] = useState(() => peekScreenCache(LIVE_CACHE_KEY, LIVE_CACHE_AGE) || []);
+  const [loading, setLoading] = useState(() => !peekScreenCache(LIVE_CACHE_KEY, LIVE_CACHE_AGE));
+  useEffect(() => {
+    if (peekScreenCache(LIVE_CACHE_KEY, LIVE_CACHE_AGE)) return;
+    readScreenCache(LIVE_CACHE_KEY, LIVE_CACHE_AGE)
+      .then((c) => {
+        if (!Array.isArray(c) || !c.length) return;
+        setLiveStreams((prev) => (prev.length ? prev : c));
+        setLoading(false);
+      })
+      .catch(() => {});
+  }, []);
   const [openingId, setOpeningId] = useState(null);
 
   // Rooms React state me nahi, map me: snapshot aate hi sirf badle hue room update.
@@ -695,6 +710,7 @@ export default function AllLive() {
     streamMapRef.current.forEach((v) => arr.push(v.stream));
     arr.sort(compareStreams);
     setLiveStreams((prev) => (sameList(prev, arr) ? prev : arr));
+    try { writeScreenCache(LIVE_CACHE_KEY, arr.slice(0, 40)); } catch (e) {}
   }, []);
 
   const scheduleFlush = useCallback(() => {
@@ -897,12 +913,8 @@ export default function AllLive() {
 
   const emptyComponent = useMemo(() => {
     if (loading) {
-      return (
-        <View style={styles.centerBox}>
-          <ActivityIndicator size="small" color="#ebd500" />
-          <Text style={styles.emptyText}>Loading live rooms...</Text>
-        </View>
-      );
+      // Spinner ki jagah live cards ka dhancha
+      return <SkeletonGrid count={6} columns={2} gap={8} ratio={1.25} />;
     }
     return (
       <View style={styles.centerBox}>

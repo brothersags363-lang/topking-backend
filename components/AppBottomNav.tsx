@@ -11,6 +11,8 @@ import { Platform, StyleSheet, Text, TouchableOpacity, View, type LayoutChangeEv
 import { Ionicons } from '@expo/vector-icons';
 import { getAuth } from 'firebase/auth';
 import { useRouter } from '../utils/safeRouter';
+// @ts-ignore (JS file)
+import { requireLogin } from '../utils/requireLogin';
 import { useInboxBadge } from '../utils/messages/useInboxBadge';
 
 // Nav bar niche se kitna upar rahe (system bar ke upar).
@@ -48,19 +50,19 @@ const AppBottomNav = memo(function AppBottomNav({ onLayout, children }: Props) {
         </TouchableOpacity>
 
         {/* SEARCH */}
-        <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/explore' as any)}>
+        <TouchableOpacity style={styles.navItem} onPress={() => { if (requireLogin(router)) router.replace('/explore' as any); }}>
           <Ionicons name="search" size={28} color="#fff" />
         </TouchableOpacity>
 
         {/* PLUS */}
-        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/camera' as any)}>
+        <TouchableOpacity style={styles.navItem} onPress={() => { if (requireLogin(router)) router.push('/camera' as any); }}>
           <View style={styles.plusBtn}>
             <Text style={styles.plusText}>+</Text>
           </View>
         </TouchableOpacity>
 
         {/* MESSAGES */}
-        <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/messages' as any)}>
+        <TouchableOpacity style={styles.navItem} onPress={() => { if (requireLogin(router)) router.replace('/messages' as any); }}>
           <View>
             <Ionicons name="mail-outline" size={26} color="#fff" />
             {inboxCount > 0 && (

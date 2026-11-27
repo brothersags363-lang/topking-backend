@@ -1,5 +1,6 @@
 // @ts-nocheck
 import LevelBadge from '../../components/LevelBadge';
+import { LiveChatItem } from '../../components/live/ChatLine';
 import React, { useEffect, useRef, useState, useCallback, memo, forwardRef, useImperativeHandle } from 'react';
 import { View, Text, TouchableOpacity, Image, Animated, Easing } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -156,91 +157,21 @@ export const HeartsLayer = memo(
 );
 
 // One chat row: join / gift / normal message (same three types as LiveRoom.js) — Tiki pill style.
+// Tiki jaisa: [Level/SVIP badge] naam ✓ : message  (join / gift / message) - sab live rooms me same
 export const ChatItem = memo(({ chat, onUser, onMenu }: any) => {
-  const joinWait = useJoinDelay(chat);
-  const theme = getLevelTheme(chat.level || 1);
-  const openUser = () =>
+  const openUser = (c: any) =>
     onUser &&
-    (chat.senderId || chat.uid) &&
+    (c.senderId || c.uid) &&
     onUser({
-      uid: chat.senderId || chat.uid,
-      name: chat.senderName,
-      username: chat.username,
-      img: chat.userImg,
-      level: chat.level,
-      verified: chat.verified,
-      verifiedColor: chat.verifiedColor,
+      uid: c.senderId || c.uid,
+      name: c.senderName,
+      username: c.username,
+      img: c.userImg,
+      level: c.level,
+      verified: c.verified,
+      verifiedColor: c.verifiedColor,
     });
-
-  const openMenu = () => onMenu && onMenu(chat);
-
-  if (chat.type === "join") {
-    if (joinWait) return null;
-    return (
-      <View style={styles.tkRow}>
-        <TouchableOpacity activeOpacity={0.8} onPress={openUser} style={styles.tkPill}>
-          <Text style={styles.tkTxt}>{chat.senderName}</Text>
-          <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={15} />
-          <Text style={styles.tkTxt}> has joined</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  if (chat.type === "gift") {
-    const gd = gifts.find((g: any) => String(g.id) === String(chat.giftId));
-    return (
-      <View style={styles.tkRow}>
-        <TouchableOpacity activeOpacity={0.8} onPress={openUser} style={styles.tkPill}>
-          <Ionicons name="megaphone" size={14} color="#fff" style={{ marginRight: 6 }} />
-          <Text style={styles.tkTxt}>{chat.senderName}</Text>
-          <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={15} />
-          <Text style={styles.tkTxt}> sent {chat.qty || 1} </Text>
-          {gd?.icon ? (
-            <Image source={gd.icon} style={{ width: 22, height: 22, resizeMode: "contain" }} />
-          ) : (
-            <Text style={styles.tkGiftName}>{chat.giftName}</Text>
-          )}
-          <Text style={styles.tkTxt}> to {chat.receiverName ? chat.receiverName : "the host"}</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.tkRow}>
-      <TouchableOpacity activeOpacity={0.85} onPress={openMenu} onLongPress={openMenu} delayLongPress={250} style={[styles.tkPill, { flexWrap: "nowrap", alignItems: "flex-start" }]}>
-        <View style={{ flexShrink: 1 }}>
-          {/* line 1: [HOST/MOD]  name  tick  level  (name par tap = profile) */}
-          <TouchableOpacity activeOpacity={0.8} onPress={openUser} onLongPress={openMenu} style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap" }}>
-            {chat.role === "host" && (
-              <View style={[styles.roleTag, { backgroundColor: "#F71084", marginLeft: 0, marginRight: 5 }]}>
-                <Text style={styles.roleTagTxt}>HOST</Text>
-              </View>
-            )}
-            {chat.role === "mod" && (
-              <View style={[styles.roleTag, { backgroundColor: "#2D9CFF", marginLeft: 0, marginRight: 5 }]}>
-                <Text style={styles.roleTagTxt}>MOD</Text>
-              </View>
-            )}
-            <Text style={styles.tkName}>{chat.senderName}</Text>
-            <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={14} />
-            <LevelBadge level={chat.level || 1} size={8} style={{ marginLeft: 6 }} />
-          </TouchableOpacity>
-          {/* reply quote (Tiki jaisa) */}
-          {!!chat.replyTo && (
-            <View style={styles.tkReply}>
-              <Text numberOfLines={1} style={styles.tkReplyTxt}>
-                {"\u21A9 "}{chat.replyTo.name}: {chat.replyTo.text}
-              </Text>
-            </View>
-          )}
-          {/* line 2: message (tap = Reply / Delete menu) */}
-          <Text style={styles.tkTxt}>{chat.message}</Text>
-        </View>
-      </TouchableOpacity>
-    </View>
-  );
+  return <LiveChatItem chat={chat} onUser={openUser} onMenu={onMenu} />;
 }, (prev: any, next: any) => prev.chat.id === next.chat.id && prev.onUser === next.onUser && prev.onMenu === next.onMenu);
 // SMOOTH: chat message kabhi edit nahi hota -> sirf id compare, purani rows re-render nahi.
 

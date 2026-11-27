@@ -8,7 +8,7 @@ import { navBarGap } from './helpers';
 // Admin ka diya frame uid se aata hai (map se, koi Firestore read nahi) aur level frame ko override karta hai.
 // lookup={false} => koi Firestore read nahi (fast).
 export const GuardedFrame = memo((props) => (
-  <LevelFrame level={props.level} uid={props.uid} special={props.special} animated={props.animated} style={props.style} lookup={false} />
+  <LevelFrame level={props.level} uid={props.uid} special={props.special} animated={props.animated} style={props.style} photo={props.photo} lookup={false} />
 ));
 // ============================================================
 // PERF: small memoized components that live OUTSIDE LiveRoom so a

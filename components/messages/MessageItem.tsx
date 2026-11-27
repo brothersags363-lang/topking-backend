@@ -24,6 +24,8 @@ const ICONS: Record<RowType, { bg: string; render: () => React.ReactNode }> = {
   assistant: { bg: '#F7A823', render: () => <SmileHouse /> },
   official: { bg: '#FFE600', render: () => <Ionicons name="play" size={24} color="#000" /> },
   system: { bg: '#2B2B2D', render: () => <Ionicons name="volume-medium" size={26} color="#fff" /> },
+  payment: { bg: '#16C784', render: () => <Ionicons name="wallet" size={26} color="#fff" /> },
+  announcement: { bg: '#8B5CF6', render: () => <Ionicons name="megaphone" size={26} color="#fff" /> },
 };
 
 type Props = { item: MessageRow; onPress: (item: MessageRow) => void };

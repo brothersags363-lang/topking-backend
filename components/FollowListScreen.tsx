@@ -14,6 +14,11 @@ import {
   where,
 } from 'firebase/firestore';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+// @ts-ignore (JS file)
+import { peekScreenCache, readScreenCache, writeScreenCache } from '../utils/screenCache';
+// @ts-ignore (JS file)
+import { cleanUser, seedProfile } from '../utils/profilePrefetch';
+import { SkeletonRows } from './Skeleton';
 import {
   ActivityIndicator,
   Alert,
@@ -60,8 +65,21 @@ export default function FollowListScreen({ mode }) {
   const queryField = isFollowers ? 'followingId' : 'followerId'; // jis par filter
   const otherField = isFollowers ? 'followerId' : 'followingId'; // list me jo dikhana hai
 
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // INSTANT: pichli baar ki pehli list turant (net se nayi aate hi badal jaati hai)
+  const cacheKey = `follow_${mode}_${targetId}_${myId || 'x'}`;
+  const [items, setItems] = useState(() => peekScreenCache(cacheKey) || []);
+  const [loading, setLoading] = useState(() => !peekScreenCache(cacheKey));
+  useEffect(() => {
+    if (peekScreenCache(cacheKey)) return;
+    readScreenCache(cacheKey)
+      .then((c) => {
+        if (!Array.isArray(c) || !c.length) return;
+        setItems((prev) => (prev.length ? prev : c));
+        setLoading(false);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheKey]);
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -130,6 +148,10 @@ export default function FollowListScreen({ mode }) {
         }
 
         setItems((prev) => (reset ? rows : [...prev, ...rows]));
+        // pehla page save (doosre ka phone / email / birthday nahi)
+        if (reset) {
+          try { writeScreenCache(cacheKey, rows.map((r) => cleanUser(r))); } catch (e) {}
+        }
       } catch (e) {
         if (__DEV__) console.log('FOLLOW PAGE ERROR =', e);
       } finally {
@@ -138,7 +160,7 @@ export default function FollowListScreen({ mode }) {
         setLoadingMore(false);
       }
     },
-    [targetId, myId, queryField, otherField, isMine, isFollowers]
+    [targetId, myId, queryField, otherField, isMine, isFollowers, cacheKey]
   );
 
   useEffect(() => {
@@ -195,7 +217,14 @@ export default function FollowListScreen({ mode }) {
   );
 
   const openProfile = useCallback(
-    (userId) => router.push({ pathname: '/userProfile', params: { userId } }),
+    (userId) => {
+      // INSTANT: row ka naam / photo profile page ko pehle se de do
+      try {
+        const r = itemsRef.current.find((x) => x.id === userId);
+        if (r) seedProfile(userId, { name: r.name, username: r.username, profileImg: r.profileImg });
+      } catch (e) {}
+      router.push({ pathname: '/userProfile', params: { userId } });
+    },
     [router]
   );
 
@@ -234,9 +263,7 @@ export default function FollowListScreen({ mode }) {
       </View>
 
       {loading ? (
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color="#FFD700" />
-        </View>
+        <SkeletonRows count={10} />
       ) : (
         <FlatList
           data={items}

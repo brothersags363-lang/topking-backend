@@ -17,9 +17,11 @@
 //  • Filters   → Agora beauty + colour-enhance presets (viewers see it too).
 //  • Mute      → host mic mute, viewer sound mute.
 
+import { withDeferredMount } from '../components/DeferredScreen';
 import { createLiveSocket } from '../utils/liveSocket';
 import { reportVoiceAbuse } from '../utils/voiceReport';
 import OfficialLiveTools from '../components/live/OfficialLiveTools';
+import LiveSwipeShell from '../components/live/LiveSwipeShell';
 import { blockIfProfane } from '../utils/guardText';
 import { notifyNewFollower } from '../utils/pushNotify';
 import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
@@ -57,7 +59,7 @@ import { BackgroundStage, PkPills, GuestTiles, TopHeader, BottomControls } from 
 import { ExitModal, GiftModal, ViewerListModal, RankModal, ProfileCardModal, ChatMenuModal, ReportModal, SettingsModal, SummaryModal, GuestsMenuModals, FilterModal } from '../components/videolive/LiveModals';
 import { PkSheetModal, PkMatchingModal, PkInviteModal } from '../components/videolive/PkModals';
 
-export default function VideoLive() {
+function VideoLive() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const params = useLocalSearchParams();
@@ -2975,7 +2977,7 @@ export default function VideoLive() {
 
   // ↕ Swipe up/down = dusre live me jao (sirf normal viewer)
   const liveSwipe = useLiveSwipe({
-    db, roomId, router, blockedRef,
+    db, roomId, router, blockedRef, mode: 'video',
     enabled: !isHost && !amGuest,
     onBeforeSwitch: () => {
       try { flushGiftBatchRef.current?.(); } catch (_) {}
@@ -3868,6 +3870,7 @@ export default function VideoLive() {
   );
 
   return (
+    <LiveSwipeShell swipe={liveSwipe}>
     <View style={styles.container}>
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
 
@@ -4121,5 +4124,9 @@ export default function VideoLive() {
       <OfficialLiveTools roomId={roomId} hostId={hostId} />
 
     </View>
+    </LiveSwipeShell>
   );
 }
+
+// SPEED: tap karte hi page khulta dikhe, bhaari hissa 2 frame baad (components/DeferredScreen.tsx)
+export default withDeferredMount(VideoLive);

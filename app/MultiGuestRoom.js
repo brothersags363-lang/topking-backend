@@ -1,4 +1,6 @@
 import LevelBadge from '../components/LevelBadge';
+import { LiveChatItem } from '../components/live/ChatLine';
+import { UserLabel } from '../components/live/UserLabel';
 import { reportVoiceAbuse } from "../utils/voiceReport";
 import OfficialLiveTools from "../components/live/OfficialLiveTools";
 import { blockIfProfane } from "../utils/guardText";
@@ -51,6 +53,7 @@ import JoinEntry from '../components/live/JoinEntry';
 import { useJoinDelay } from '../components/live/useJoinDelay';
 import UserTick from '../components/UserTick';
 import useLiveSwipe from '../utils/useLiveSwipe';
+import LiveSwipeShell from '../components/live/LiveSwipeShell';
 import ProfileSheet, { SheetChip } from '../components/live/ProfileSheet';
 import { Image as ExpoImage } from 'expo-image';
 
@@ -523,79 +526,14 @@ const HeartsLayer = memo(forwardRef(({ bottom }, ref) => {
   );
 }));
 
+// Tiki jaisa: [Level/SVIP badge] naam ✓ : message  (join / gift / message) - sab live rooms me same
 const ChatItem = memo(({ chat, onUser }) => {
-  const joinWait = useJoinDelay(chat);
-  const theme = getLevelTheme(chat.level || 1);
-  const openUser = () =>
-    onUser && chat.senderId && onUser({
-      uid: chat.senderId, name: chat.senderName, username: chat.username, img: chat.userImg,
-      level: chat.level, verified: chat.verified, verifiedColor: chat.verifiedColor,
+  const openUser = (c) =>
+    onUser && c.senderId && onUser({
+      uid: c.senderId, name: c.senderName, username: c.username, img: c.userImg,
+      level: c.level, verified: c.verified, verifiedColor: c.verifiedColor,
     });
-  const tick = (size) => <UserTick uid={chat.senderId || chat.uid} verified={!!(chat.verified)} verifiedColor={chat?.verifiedColor} size={size} />;
-
-  if (chat.type === 'join') {
-  if (joinWait) return null;
-    return (
-      <View style={styles.sysRow}>
-        <TouchableOpacity activeOpacity={0.8} onPress={openUser}>
-          <ExpoImage source={{ uri: chat.userImg || DEFAULT_AVATAR }} style={styles.sysAva} cachePolicy="memory-disk" transition={0} />
-          {(chat.level >= 30 || !!chat.senderId) && (
-            <LevelFrame level={chat.level} uid={chat.senderId} lookup={false} animated={CHAT_FRAME_ANIM} style={styles.sysFrame} />
-          )}
-        </TouchableOpacity>
-        <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginLeft: 6 }}>
-          <Text style={styles.sysText}>{chat.senderName}</Text>
-          {tick(15)}
-          <LevelBadge level={chat.level || 1} size={8} style={{ marginLeft: 5 }} />
-          <Text style={[styles.sysText, { marginLeft: 5 }]}>joined</Text>
-        </View>
-      </View>
-    );
-  }
-
-  if (chat.type === 'gift') {
-    const gd = gifts.find((g) => String(g.id) === String(chat.giftId));
-    return (
-      <View style={[styles.sysRow, { flexWrap: 'wrap' }]}>
-        <TouchableOpacity activeOpacity={0.8} onPress={openUser}>
-          <ExpoImage source={{ uri: chat.userImg || DEFAULT_AVATAR }} style={styles.sysAva} cachePolicy="memory-disk" transition={0} />
-        </TouchableOpacity>
-        <Text style={[styles.sysText, { marginLeft: 6 }]}>{chat.senderName}</Text>
-        {tick(15)}
-        <Text style={[styles.sysText, { marginLeft: 5 }]}>sent</Text>
-        {gd?.icon ? (
-          <Image source={gd.icon} style={{ width: 24, height: 24, resizeMode: 'contain', marginHorizontal: 4 }} />
-        ) : (
-          <Text style={{ color: '#00FFFF', fontWeight: 'bold', marginHorizontal: 4 }}>{chat.giftName}</Text>
-        )}
-        {chat.qty > 1 && <Text style={{ color: '#FFE600', fontWeight: 'bold', marginRight: 4 }}>x{chat.qty}</Text>}
-        <Text style={styles.sysText}>to </Text>
-        <Text style={{ color: '#FFE600', fontSize: 13, fontWeight: 'bold' }}>@{chat.receiverName}</Text>
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.chatRow}>
-      <TouchableOpacity activeOpacity={0.8} onPress={openUser} style={{ width: 38, height: 38, justifyContent: 'center', alignItems: 'center' }}>
-        <ExpoImage source={{ uri: chat.userImg || DEFAULT_AVATAR }} style={styles.chatAva} cachePolicy="memory-disk" transition={0} />
-        {(chat.level >= 30 || !!chat.senderId) && (
-          <LevelFrame level={chat.level} uid={chat.senderId} lookup={false} animated={CHAT_FRAME_ANIM} style={styles.chatFrame} />
-        )}
-      </TouchableOpacity>
-      <View style={styles.chatContent}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
-          <Text style={styles.chatUser}>{chat.senderName}</Text>
-          {tick(14)}
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}><LevelBadge level={chat.level || 1} size={9} />
-            {chat.role === 'host' && <View style={[styles.roleTag, { backgroundColor: '#F71084' }]}><Text style={styles.roleTagTxt}>HOST</Text></View>}
-            {chat.role === 'mod' && <View style={[styles.roleTag, { backgroundColor: '#2D9CFF' }]}><Text style={styles.roleTagTxt}>MOD</Text></View>}
-          </View>
-        </View>
-        <View style={styles.bubble}><Text style={styles.chatMsg}>{chat.message}</Text></View>
-      </View>
-    </View>
-  );
+  return <LiveChatItem chat={chat} onUser={openUser} />;
 }, (prev, next) => prev.chat.id === next.chat.id && prev.onUser === next.onUser);
 
 const chatKeyExtractor = (item, index) => item.id || String(index);
@@ -828,7 +766,7 @@ export default function MultiGuestRoom() {
 
   // ↕ Swipe up/down = dusre live me jao (sirf bina seat wala viewer)
   const liveSwipe = useLiveSwipe({
-    db, roomId, router, blockedRef,
+    db, roomId, router, blockedRef, mode: 'audio',
     enabled: !isHost && !mySeatKey,
   });
 
@@ -1848,6 +1786,7 @@ export default function MultiGuestRoom() {
   ];
 
   return (
+    <LiveSwipeShell swipe={liveSwipe}>
     <View style={styles.container}>
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
       <LinearGradient colors={['#1a0b2e', '#2a0f3d', '#4a1747', '#6b2438']} style={StyleSheet.absoluteFill} />
@@ -1879,7 +1818,11 @@ export default function MultiGuestRoom() {
 
             <TouchableOpacity style={styles.viewerStrip} activeOpacity={0.8} onPress={() => setViewerListVisible(true)}>
               {topViewers.map((v) => (
-                <Image key={v.uid} source={{ uri: v.img || DEFAULT_AVATAR }} style={styles.viewerImg} />
+                <View key={v.uid} style={styles.viewerChip}>
+                  <Image source={{ uri: v.img || DEFAULT_AVATAR }} style={styles.viewerImg} />
+                  {/* FRAME: listener ka frame (level / SVIP / admin) */}
+                  <LevelFrame uid={v.uid} level={v.level} photo={28} style={styles.viewerFrame} />
+                </View>
               ))}
             </TouchableOpacity>
 
@@ -2203,8 +2146,7 @@ export default function MultiGuestRoom() {
                       <ExpoImage source={{ uri: item.img || DEFAULT_AVATAR }} style={styles.pkRowAva} cachePolicy="memory-disk" transition={0} />
                       <View style={{ flex: 1, marginLeft: 12 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                          <Text style={styles.pkRowName} numberOfLines={1}>{item.name || item.username || 'User'}</Text>
-                          <LevelBadge level={item.level || 1} size={9} style={{ marginLeft: 6 }} />
+                          <UserLabel level={item.level} name={item.name || item.username || 'User'} uid={item.uid} verified={item.verified} verifiedColor={item.verifiedColor} nameStyle={styles.pkRowName} tickSize={14} />
                         </View>
                       </View>
                       <TouchableOpacity style={[styles.kickBtn, { backgroundColor: '#374151', marginRight: 8 }]} onPress={() => rejectRequest(item)}>
@@ -2281,9 +2223,7 @@ export default function MultiGuestRoom() {
                       <ExpoImage source={{ uri: item.img || DEFAULT_AVATAR }} style={styles.pkRowAva} cachePolicy="memory-disk" transition={0} />
                       <View style={{ flex: 1, marginLeft: 12 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                          <Text style={styles.pkRowName} numberOfLines={1}>{item.name || item.username || 'User'}</Text>
-                          <UserTick uid={item.uid || item.userId || item.senderId || item.id} verified={!!(!!item.verified)} verifiedColor={item.verifiedColor} size={14} />
-                          <LevelBadge level={item.level || 1} size={9} style={{ marginLeft: 6 }} />
+                          <UserLabel level={item.level} name={item.name || item.username || 'User'} uid={item.uid || item.userId || item.senderId || item.id} verified={item.verified} verifiedColor={item.verifiedColor} nameStyle={styles.pkRowName} tickSize={14} />
                         </View>
                         {(mods[item.uid] || mutedUsers[item.uid]) && (
                           <Text style={styles.pkRowSub}>
@@ -2512,6 +2452,7 @@ export default function MultiGuestRoom() {
       <OfficialLiveTools roomId={roomId} hostId={hostId} />
 
     </View>
+    </LiveSwipeShell>
   );
 }
 
@@ -2535,7 +2476,9 @@ const styles = StyleSheet.create({
   coinDotSm: { width: 9, height: 9, borderRadius: 5, backgroundColor: '#ffc107', marginRight: 4 },
   coinText: { color: 'rgba(255,255,255,0.85)', fontSize: 10, fontWeight: '700' },
   viewerStrip: { flex: 1, flexDirection: 'row', justifyContent: 'flex-end', marginRight: 6 },
-  viewerImg: { width: 28, height: 28, borderRadius: 14, marginLeft: 5, borderWidth: 1, borderColor: 'rgba(255,255,255,0.5)' },
+  viewerChip: { width: 28, height: 28, marginLeft: 10 },
+  viewerImg: { width: 28, height: 28, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.5)' },
+  viewerFrame: { position: 'absolute', width: 38, height: 38, top: -5, left: -5 },
   countPill: { minWidth: 28, height: 28, borderRadius: 14, paddingHorizontal: 7, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center', marginRight: 8 },
   countText: { color: '#fff', fontSize: 12, fontWeight: '800' },
 

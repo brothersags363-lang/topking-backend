@@ -1,5 +1,6 @@
 import { withDeferredMount } from '../components/DeferredScreen';
 import LevelBadge from '../components/LevelBadge';
+import { LevelPrefix } from '../components/live/UserLabel';
 import { reportVoiceAbuse } from "../utils/voiceReport";
 import OfficialLiveTools from "../components/live/OfficialLiveTools";
 import LiveSwipeShell from '../components/live/LiveSwipeShell';
@@ -4440,7 +4441,7 @@ return (
 
 
 
-<GiftLayer ref={giftLayerRef} comboBottom={Math.round(height * 0.45)} rideTop={chatTopY != null ? chatTopY + 4 : undefined} />
+<GiftLayer ref={giftLayerRef} comboBottom={Math.round(height * 0.45)} />
 
 {/* ================= JOIN ENTRY ANIMATION ================= */}
 {joinBanner && (
@@ -4449,6 +4450,7 @@ return (
     variant={JOIN_ANIM_VARIANT}
     onDone={handleJoinDone}
     hideLow
+    rideTop={chatTopY != null ? chatTopY + 4 : undefined}
   />
 )}
 
@@ -5089,15 +5091,15 @@ left:-17
     }}
   >
 
+    {/* Tiki jaisa: [Level/SVIP badge] naam ✓ */}
+    <LevelPrefix level={item.level} size={10} style={{ marginRight: 6 }} />
+
     <Text style={styles.friendName}>
       @{item.username}
     </Text>
 
     {/* Verified Tick - Sirf Verified User ko */}
     <UserTick uid={item.uid || item.userId || item.senderId || item.id} verified={!!(isVerified(item.verified))} verifiedColor={item.verifiedColor} size={17} />
-
-    {/* Level Badge */}
-    <LevelBadge level={item.level || 1} size={10} style={{ marginLeft: 8 }} />
 
   </View>
 

@@ -1,5 +1,7 @@
 import { withDeferredMount } from '../components/DeferredScreen';
 import LevelBadge from '../components/LevelBadge';
+import { LiveChatItem } from '../components/live/ChatLine';
+import { UserLabel, LevelPrefix } from '../components/live/UserLabel';
 import { reportVoiceAbuse } from "../utils/voiceReport";
 import OfficialLiveTools from "../components/live/OfficialLiveTools";
 import { blockIfProfane } from "../utils/guardText";
@@ -111,7 +113,7 @@ import { useLiveBanGuard } from '../utils/liveBan';
 import { useBlockedIds } from '../utils/useBlockedIds';
 import UserTick from '../components/UserTick';
 import ProfileSheet, { SheetChip } from '../components/live/ProfileSheet';
-import CarGiftRide, { isRideGift } from '../components/live/CarGiftRide';
+import CarGiftRide, { isRideGift, rideTopBelowPopup } from '../components/live/CarGiftRide';
 
 // import LottieView from "lottie-react-native";
 // import { gifts } from "../assets/giftsData";
@@ -717,7 +719,7 @@ const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBottom, ri
 
   return (
     <>
-    <CarGiftRide ref={rideRef} top={rideTop} />
+    <CarGiftRide ref={rideRef} top={rideTop != null ? rideTop : rideTopBelowPopup(comboTop, comboBottom)} />
     {combos.length ? (
     <View
       pointerEvents="none"
@@ -738,223 +740,10 @@ const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBottom, ri
 const chatUserPressRef = { current: null };
 const pressChatUser = (chat) => { if (chatUserPressRef.current) chatUserPressRef.current(chat); };
 
-const ChatItem = memo(({ chat }) => {
-  const joinWait = useJoinDelay(chat);
-
-        if (chat.type === "join") {
-  if (joinWait) return null;
-
-            return (
-                <TouchableOpacity activeOpacity={0.7} onPress={() => pressChatUser(chat)}
-                    style={{
-                        flexDirection: "row",
-                        backgroundColor: "rgba(0,0,0,0.35)",
-                        borderRadius: 16,
-                        alignSelf: "flex-start",
-                        marginVertical: 2,
-                        alignItems: "center",
-                        paddingHorizontal: 10,
-                        paddingVertical: 6,
-                    }}
-                >
-
-                    <View>
-
-                        <ExpoImage cachePolicy="memory-disk" transition={0}
-                            source={{
-                                uri:chat.userImg || STABLE_AVATAR
-                            }}
-                            style={{
-                                width:22,
-                                height:22,
-                                borderRadius:11,
-                                backgroundColor:'#2a2b38'
-                            }}
-                        />
-
-                        {
-                            (chat.level >= 30 || !!chat.senderId) && (
-
-                                <GuardedFrame level={chat.level} uid={chat.senderId} animated={CHAT_FRAME_ANIM}
-                                    style={FRAME_CHAT22}
-                                />
-
-                            )
-                        }
-
-                    </View>
-
-                    <View
-                        style={{
-                            flexDirection: "row",
-                            alignItems: "center",
-                            flexWrap: "wrap",
-                        }}
-                    >
-
-                        <Text
-                            style={{
-                                color: "#d0d0d0",
-                                fontSize: 13,
-                                fontWeight: "600",
-                            }}
-                        >
-                            {chat.senderName}
-                        </Text>
-
-                        <UserTick uid={chat.senderId || chat.uid} verified={!!(isVerified(chat.verified))} verifiedColor={chat?.verifiedColor} size={17} />
-
-                        <LevelBadge level={chat.level || 1} size={8} style={{ marginLeft: 5 }} />
-
-                        <Text
-                            style={{
-                                color: "#d0d0d0",
-                                fontSize: 13,
-                                fontWeight: "600",
-                                marginLeft: 5,
-                            }}
-                        >
-                            joined
-                        </Text>
-
-                    </View>
-
-                </TouchableOpacity>
-            );
-        }
-
-        if (chat.type === "gift") {
-            const gd = gifts.find(g => String(g.id) === String(chat.giftId));
-            return (
-                <TouchableOpacity activeOpacity={0.7} onPress={() => pressChatUser(chat)}
-                    style={{
-                        flexDirection: "row",
-                        backgroundColor: "rgba(0,0,0,0.35)",
-                        borderRadius: 16,
-                        alignSelf: "flex-start",
-                        marginVertical: 2,
-                        alignItems: "center",
-                        flexWrap: "wrap",
-                        paddingHorizontal: 10,
-                        paddingVertical: 6,
-                    }}
-                >
-                    <View>
-                        <ExpoImage cachePolicy="memory-disk" transition={0}
-                            source={{ uri: chat.userImg || STABLE_AVATAR }}
-                            style={{ width:22, height:22, borderRadius:11, backgroundColor:'#2a2b38' }}
-                        />
-                        {(chat.level >= 30 || !!chat.senderId) && (
-                            <GuardedFrame level={chat.level} uid={chat.senderId} animated={CHAT_FRAME_ANIM}
-                                style={FRAME_CHAT22} />
-                        )}
-                    </View>
-                    <Text style={{ color:"#d0d0d0", fontSize:13, fontWeight:"600", marginLeft:6 }}>
-                        {chat.senderName}
-                    </Text>
-                    <UserTick uid={chat.senderId || chat.uid} verified={!!(isVerified(chat.verified))} verifiedColor={chat?.verifiedColor} size={17} />
-                    <Text style={{ color:"#d0d0d0", fontSize:13, marginLeft:5 }}>
-                        sent
-                    </Text>
-                    {gd?.icon ? (
-                        <Image
-                            source={gd.icon}
-                            style={{ width:24, height:24, resizeMode:"contain", marginHorizontal:4 }}
-                        />
-                    ) : (
-                        <Text style={{ color:"#00FFFF", fontWeight:"bold", marginHorizontal:4 }}>
-                            {chat.giftName}
-                        </Text>
-                    )}
-                    <Text style={{ color:"#d0d0d0", fontSize:13 }}>to </Text>
-                    <Text style={{ color:"#FFE600", fontSize:13, fontWeight:"bold" }}>
-                        @{chat.receiverName}
-                    </Text>
-                    {chat.comboCount > 1 && (
-                        <Text style={{ color:"#FF69B4", fontSize:13, fontWeight:"900", marginLeft:5 }}>
-                            x{chat.comboCount}
-                        </Text>
-                    )}
-                </TouchableOpacity>
-            );
-        }
-
-        return (
-
-            <View style={styles.chatRow}>
-
-                <TouchableOpacity activeOpacity={0.7} onPress={() => pressChatUser(chat)}
-                    style={{
-                        width:42,
-                        height:42,
-                        justifyContent:"center",
-                        alignItems:"center"
-                    }}
-                >
-
-                    <ExpoImage cachePolicy="memory-disk" transition={0}
-                        source={{
-                            uri:chat.userImg || STABLE_AVATAR
-                        }}
-                        style={styles.chatAva}
-                    />
-
-                    {
-                        (chat.level >= 30 || !!chat.senderId) && (
-
-                            <GuardedFrame level={chat.level} uid={chat.senderId} animated={CHAT_FRAME_ANIM}
-                                style={FRAME_CHAT36}
-                            />
-
-                        )
-                    }
-
-                </TouchableOpacity>
-
-                <View style={styles.chatContent}>
-
-                    <View
-                        style={{
-                            flexDirection: "row",
-                            alignItems: "center",
-                            flexWrap: "wrap",
-                        }}
-                    >
-
-                        <Text style={styles.chatUser} onPress={() => pressChatUser(chat)}>
-                            {chat.senderName}
-                        </Text>
-
-                        <UserTick uid={chat.senderId || chat.uid} verified={!!(isVerified(chat.verified))} verifiedColor={chat?.verifiedColor} size={15} />
-
-                        <LevelBadge level={chat.level || 1} size={9} style={{ marginLeft: 6 }} />
-
-                    </View>
-
-                    <Text
-                        style={{
-                            color:"#e3e3f0",
-                            fontSize:11,
-                            marginTop:2,
-                            textShadowColor:'rgba(0,0,0,0.9)',
-                            textShadowOffset:{width:0,height:1},
-                            textShadowRadius:3,
-                        }}
-                    >
-                        @{chat.username}
-                    </Text>
-
-                    <View style={styles.bubble}>
-                        <Text style={styles.chatMsg}>
-                            {chat.message}
-                        </Text>
-                    </View>
-
-                </View>
-
-            </View>
-        );
-}, (prev, next) => prev.chat.id === next.chat.id);
+// Tiki jaisa: [Level/SVIP badge] naam ✓ : message  (join / gift / message) - sab live rooms me same
+const ChatItem = memo(({ chat }) => (
+  <LiveChatItem chat={chat} onUser={pressChatUser} />
+), (prev, next) => prev.chat.id === next.chat.id);
 // SPEED FIX: chat snapshot har baar naye objects banata hai, isliye pehle har
 // message row dobara render hoti thi. Message kabhi edit nahi hota -> sirf id
 // compare karo, purani rows bilkul re-render nahi hongi.
@@ -1035,9 +824,7 @@ const HostRow = memo(({ user, invited, onInvite, onKick, onUserPress }) => (
       )}
     </View>
     <View style={{ flex: 1, marginLeft: 14 }}>
-      <Text numberOfLines={1} style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>
-        {user.name || user.username || 'User'}
-      </Text>
+      <UserLabel level={user.level} name={user.name || user.username || 'User'} uid={user.uid} verified={user.verified} verifiedColor={user.verifiedColor} nameStyle={{ color: '#fff', fontWeight: '700', fontSize: 14 }} />
       <Text numberOfLines={1} style={{ color: '#888', fontSize: 11 }}>
         @{user.username || 'user'}  •  LV {user.level || 1}
       </Text>
@@ -5552,7 +5339,7 @@ return (
 
 
 
-<GiftLayer ref={giftLayerRef} comboBottom={Math.round(height * 0.42)} rideTop={chatTopY != null ? chatTopY + 4 : undefined} />
+<GiftLayer ref={giftLayerRef} comboBottom={Math.round(height * 0.42)} />
 
 {/* ================= JOIN ENTRY ANIMATION ================= */}
 {joinBanner && (
@@ -5561,6 +5348,7 @@ return (
     variant={JOIN_ANIM_VARIANT}
     onDone={handleJoinDone}
     hideLow
+    rideTop={chatTopY != null ? chatTopY + 4 : undefined}
   />
 )}
 
@@ -6179,15 +5967,15 @@ left:-17
     }}
   >
 
+    {/* Tiki jaisa: [Level/SVIP badge] naam ✓ */}
+    <LevelPrefix level={item.level} size={10} style={{ marginRight: 6 }} />
+
     <Text style={styles.friendName}>
       @{item.username}
     </Text>
 
     {/* Verified Tick - Sirf Verified User ko */}
     <UserTick uid={item.uid || item.userId || item.senderId || item.id} verified={!!(isVerified(item.verified))} verifiedColor={item.verifiedColor} size={17} />
-
-    {/* Level Badge */}
-    <LevelBadge level={item.level || 1} size={10} style={{ marginLeft: 8 }} />
 
   </View>
 

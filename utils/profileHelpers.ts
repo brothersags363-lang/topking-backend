@@ -1,5 +1,7 @@
 import { collection, doc, documentId, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../app/firebaseConfig';
+// @ts-ignore (CommonJS file)
+import { isClean, PROFANITY_MESSAGE } from './profanity';
 
 export const AVATAR_FALLBACK = 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png';
 
@@ -59,10 +61,20 @@ export const sanitizeName = (text) =>
     .replace(/^\s+/, '')
     .slice(0, NAME_MAX);
 
+// Gali check: normal + beech ke dot/underscore/dash hata kar ("madar.chod" bhi pakde).
+// Space nahi hatate: warna "who really" -> "whoreally" jaisi normal line galat kat jaati.
+export const isCleanLoose = (text) => {
+  const t = String(text || '');
+  return isClean(t) && isClean(t.replace(/[._\-]+/g, ''));
+};
+
+export const validateBio = (b) => (isCleanLoose(b) ? null : 'Bio me galat shabd (gali) allowed nahi hai.');
+
 export const validateName = (n) => {
   const t = (n || '').trim();
   if (t.length < 2) return 'Name kam se kam 2 characters ka hona chahiye.';
   if (!/[\p{L}\p{N}]/u.test(t)) return 'Name me kam se kam ek letter ya number hona chahiye.';
+  if (!isCleanLoose(t)) return 'Name me galat shabd (gali) allowed nahi hai.';
   return null;
 };
 
@@ -70,6 +82,7 @@ export const validateUsername = (u) => {
   if (u.length < 3) return 'Username kam se kam 3 characters ka hona chahiye.';
   if (u.startsWith('.') || u.endsWith('.')) return 'Username . se start ya end nahi ho sakta.';
   if (u.includes('..')) return 'Username me lagatar do . nahi ho sakte.';
+  if (!isCleanLoose(u)) return 'Username me galat shabd (gali) allowed nahi hai.';
   return null;
 };
 

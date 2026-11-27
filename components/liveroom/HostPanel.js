@@ -1,4 +1,5 @@
 import React, { memo, useCallback } from 'react';
+import { UserLabel } from '../live/UserLabel';
 import { FlatList, Text, TouchableOpacity, View } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { GuardedFrame, SafeModal } from './SharedUI';
@@ -22,9 +23,7 @@ export const HostRow = memo(({ user, invited, onInvite, onKick, onUserPress }) =
       )}
     </View>
     <View style={{ flex: 1, marginLeft: 14 }}>
-      <Text numberOfLines={1} style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>
-        {user.name || user.username || 'User'}
-      </Text>
+      <UserLabel level={user.level} name={user.name || user.username || 'User'} uid={user.uid} verified={user.verified} verifiedColor={user.verifiedColor} nameStyle={{ color: '#fff', fontWeight: '700', fontSize: 14 }} />
       <Text numberOfLines={1} style={{ color: '#888', fontSize: 11 }}>
         @{user.username || 'user'}  •  LV {user.level || 1}
       </Text>

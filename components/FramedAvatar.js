@@ -30,6 +30,7 @@ export const AvatarFrame = memo(({ uid, level, special, size = 48, animated = fa
         level={level}
         special={special}
         animated={animated}
+        photo={size}
         style={{ width: outer, height: outer }}
       />
     </View>

@@ -48,6 +48,7 @@ export const ProfileFrame = memo(({ level = 1, avatarSize = 100, frameSize, uid,
           level={lv}
           uid={uid}
           animated={animated}
+          photo={avatarSize}
           style={{ width: outer, height: outer, resizeMode: "contain" }}
         />
       </View>

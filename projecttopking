@@ -1,0 +1,26 @@
+[33mcommit 68d6e553a34abb8c295cbaa34876545b4412add1[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m
+Author: mdgufran <brothersags363@gmail.com>
+Date:   Mon Nov 23 00:40:28 2026 +0530
+
+    Initial commit: backend server
+
+ backend/server.js | 29 [32m+++++++++++++++++++++++++++[m[31m--[m
+ 1 file changed, 27 insertions(+), 2 deletions(-)
+
+[33mcommit 5d874194aed4ad1b970a70c0aace64ef4c488729[m
+Author: mdgufran <brothersags363@gmail.com>
+Date:   Sun Nov 22 17:27:09 2026 +0530
+
+    Frames: multiple admin frames, instant user frame switch
+
+ backend/server.js | 86 [32m+++++++++++++++++++++++++++++++++++++++++++++[m[31m----------[m
+ 1 file changed, 71 insertions(+), 15 deletions(-)
+
+[33mcommit bec0eb8ab4be4f64a22b4abb8401eef8b88700ee[m
+Author: mdgufran <brothersags363@gmail.com>
+Date:   Sun Nov 22 16:36:48 2026 +0530
+
+    Frames: user choice + admin map endpoint; PK first gift 2x per side
+
+ backend/server.js | 90 [32m+++++++++++++++++++++++++++++++++++++++++++++++++++++[m[31m--[m
+ 1 file changed, 88 insertions(+), 2 deletions(-)

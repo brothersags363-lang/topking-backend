@@ -16,8 +16,41 @@ import { useFrameInfo, useFrameSpec, ADMIN_FRAMES } from './adminFrames';
 const STATIC = {
   30: require('../assets/frames/lv30.webp'),
   40: require('../assets/frames/lv40.webp'),
-  50: require('../assets/frames/lv50.webp'),
+  50: require('../assets/frames/lv50.webp'),   // SVIP 1
+  // SVIP 2 / 3 / 4 ke frames (privileges + SVIP page me dikhte hain)
+  60: require('../assets/frames/svip2.webp'),
+  65: require('../assets/frames/svip3.webp'),
+  70: require('../assets/frames/svip4.webp'),
 };
+
+// FIT: har frame image ke andar ke gol hole ka center (cx, cy) aur size (d) - poori image ka fraction.
+// Image se naap kar nikala hai. Isse DP har jagah frame ke hole me bilkul beech me aur sahi size me baithti hai
+// (pehle frame = DP * 1.3 / 1.7 alag-alag tha, isliye kahin ring chehra dhak leti thi, kahin DP bahar nikalti thi).
+export const LEVEL_FIT = {
+  30: { cx: 0.500, cy: 0.512, d: 0.54 },
+  40: { cx: 0.497, cy: 0.468, d: 0.56 },
+  50: { cx: 0.500, cy: 0.497, d: 0.53 },
+  60: { cx: 0.498, cy: 0.498, d: 0.53 },
+  65: { cx: 0.500, cy: 0.498, d: 0.53 },
+  70: { cx: 0.498, cy: 0.498, d: 0.53 },
+};
+// ring DP ke kinare ko thoda sa (4%) dhake - kinara saaf dikhe, chehra na chhupe
+const RING_OVERLAP = 0.92;
+
+// frame image + DP size -> frame ko kahan aur kitna bada rakhna hai (box ke center = DP ka center)
+export const fitRect = (fit, photo, box, overlap = RING_OVERLAP) => {
+  const side = (photo / fit.d) * overlap;
+  return { position: 'absolute', width: side, height: side, left: box / 2 - fit.cx * side, top: box / 2 - fit.cy * side };
+};
+
+// source (require id) -> fit. Frames & Entries jaise preview bhi isi se DP fit karte hain.
+const SRC_FIT = new Map();
+Object.keys(STATIC).forEach((k) => SRC_FIT.set(STATIC[k], LEVEL_FIT[k]));
+Object.keys(ADMIN_FRAMES).forEach((k) => {
+  const f = ADMIN_FRAMES[k];
+  if (f.fit) { SRC_FIT.set(f.still, f.fit); SRC_FIT.set(f.img, f.fit); }
+});
+export const fitForSource = (src) => (src != null ? SRC_FIT.get(src) || null : null);
 // ANIMATED FRAMES HATA DIYE: ab har jagah sirf halka static WEBP (smooth scroll, kam RAM, koi flicker nahi).
 // ANIM purane callers ke liye STATIC ka hi naam hai.
 const ANIM = STATIC;
@@ -86,7 +119,6 @@ const LevelFrame = ({ level = 0, size, style, animated = false, uid, special, lo
     // Photo = box / FIT_AVATAR_RATIO maana gaya (FramedAvatar 1.35, profile 1.3). Hole thoda chhota => ring photo ke kinare par baithti hai.
     if (def.fit) {
       const P = Number(photo) || (style && typeof style === 'object' && PHOTO_OF.get(style)) || S / FIT_AVATAR_RATIO;
-      const side = (P / def.fit.d) * 1.03;
       return (
         <View pointerEvents="none" style={box}>
           <ExpoImage
@@ -96,7 +128,7 @@ const LevelFrame = ({ level = 0, size, style, animated = false, uid, special, lo
             autoplay={false}
             cachePolicy="memory-disk"
             transition={0}
-            style={{ position: 'absolute', width: side, height: side, left: S / 2 - def.fit.cx * side, top: S / 2 - def.fit.cy * side }}
+            style={fitRect(def.fit, P, S, def.overlap || RING_OVERLAP)}
           />
         </View>
       );
@@ -116,20 +148,58 @@ const LevelFrame = ({ level = 0, size, style, animated = false, uid, special, lo
     );
   }
 
+  // DP ke size se frame (har jagah ek jaisa: DP hole me, ring kinare par)
+  const P = Number(photo) || (style && typeof style === 'object' && PHOTO_OF.get(style)) || S / FIT_AVATAR_RATIO;
   return (
     <View pointerEvents="none" style={box}>
       <ExpoImage
         // key: tier badalne par image naye sire se load ho (purana frame atka na rahe)
         key={`frame-${tier}`}
         source={STATIC[tier]}
-        contentFit="contain"
+        contentFit="fill"
         autoplay={false}
         cachePolicy="memory-disk"
         transition={0}
-        style={{ width: '100%', height: '100%' }}
+        style={fitRect(LEVEL_FIT[tier], P, S)}
       />
     </View>
   );
 };
+
+// PREVIEW (Frames & Entries, admin page, privileges page): frame poore box me, DP uske hole ke size ki.
+// Frame box se bahar nahi jata, isliye card / list me safe.
+//   <FramePreview uri={dp} source={FRAME_IMAGES.STATIC[50]} size={84} />
+export const FramePreview = memo(function FramePreview({ uri, source, size = 84, fallback, fit, overlap }) {
+  const f = fit || fitForSource(source);
+  const ov = overlap || RING_OVERLAP;
+  // fit na mile (anjaan frame) to purana tarika: DP 72%, frame contain
+  const P = f ? (size * f.d) / ov : size * 0.72;
+  const left = f ? f.cx * size - P / 2 : (size - P) / 2;
+  const top = f ? f.cy * size - P / 2 : (size - P) / 2;
+  const img = uri ? { uri } : fallback;
+  return (
+    <View style={{ width: size, height: size }}>
+      {img ? (
+        <ExpoImage
+          source={img}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          transition={0}
+          style={{ position: 'absolute', left, top, width: P, height: P, borderRadius: P / 2, backgroundColor: '#333' }}
+        />
+      ) : null}
+      {source ? (
+        <ExpoImage
+          source={source}
+          contentFit="fill"
+          autoplay={false}
+          cachePolicy="memory-disk"
+          transition={0}
+          style={{ position: 'absolute', left: 0, top: 0, width: size, height: size }}
+        />
+      ) : null}
+    </View>
+  );
+});
 
 export default memo(LevelFrame);

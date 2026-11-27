@@ -2,6 +2,7 @@ import { memo } from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from '../../utils/safeRouter';
+import { requireLogin } from '../../utils/requireLogin';
 import { auth } from './feedShared';
 import { VideoSeekBar } from './VideoSeekBar';
 import { styles } from './feedStyles';
@@ -26,19 +27,19 @@ export const BottomBar = memo(function BottomBar({ pathname, onLayout }) {
           </TouchableOpacity>
 
           {/* SEARCH */}
-          <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/explore')}>
+          <TouchableOpacity style={styles.navItem} onPress={() => { if (requireLogin(router)) router.replace('/explore'); }}>
             <Ionicons name="search" size={28} color="#fff" />
           </TouchableOpacity>
 
           {/* CENTER PLUS BUTTON */}
           <View style={styles.navItem}>
-            <TouchableOpacity style={styles.plusBtn} onPress={() => router.push('/camera')}>
+            <TouchableOpacity style={styles.plusBtn} onPress={() => { if (requireLogin(router)) router.push('/camera'); }}>
               <Text style={styles.plusText}>+</Text>
             </TouchableOpacity>
           </View>
 
           {/* MESSAGES */}
-          <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/messages')}>
+          <TouchableOpacity style={styles.navItem} onPress={() => { if (requireLogin(router)) router.replace('/messages'); }}>
             <Ionicons name="mail-outline" size={26} color="#fff" />
           </TouchableOpacity>
 

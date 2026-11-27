@@ -6,6 +6,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import LevelFrame from '../LevelFrame';
 import UserTick from '../UserTick';
 import { bannerFor } from '../../utils/levelTheme';
+import { LevelPrefix } from './UserLabel';
 
 // ============================================================
 // RIDE (chalti firti gaadi) - live room me koi SPORTS CAR gift bheje to (CarGiftRide.js se chalta hai):
@@ -23,7 +24,7 @@ const RIDES = {
   40: require('../../assets/gifts/car.webp'),
   50: require('../../assets/gifts/car.webp'),
 };
-const RIDE_LABEL = { 30: 'Gold Ride', 40: 'Purple Ride', 50: 'SVIP Ride' };
+const RIDE_LABEL = { 30: 'Gold Ride', 40: 'Purple Ride', 50: 'SVIP Ride', 60: 'SVIP 2 Ride', 65: 'SVIP 3 Ride' };
 
 const { width, height } = Dimensions.get('window');
 const FALLBACK_AVATAR = 'https://avatar.iran.liara.run/public/65';
@@ -37,6 +38,7 @@ export const RIDE_TOTAL_MS = DRIVE_IN_MS + HOLD_MS + DRIVE_OUT_MS;
 const CAR = Math.min(width * 0.58, 250); // gaadi ka size
 const STOP_X = (width - CAR) / 2; // beech me kahan ruke
 const LAYER_H = CAR + 30; // banner + gaadi
+export const RIDE_LAYER_H = LAYER_H;
 
 const hexA = (c, a) => {
   const m = /^#([0-9a-f]{6})$/i.exec(String(c || ''));
@@ -71,7 +73,14 @@ const STARS = [
 // mode: 'gift' (car gift) | 'entry' (join entry). source: gaadi ki image (na do to tier wali RIDES).
 // subText: banner ki niche wali line (na do to "Gold Ride se aaye").
 // top: screen par kahan se shuru ho (live room me seats ke theek niche). Na do to screen ka 36%.
-const RideEntry = ({ data, tier = 30, onDone, mode = 'entry', source, subText, top }) => {
+// standSource: rukne par ye image (jaise khada ghoda), chalte waqt `source` (daudta ghoda animated webp).
+// stop: 'brake' (gaadi aage jhukti) | 'rear' (ghoda aage ke pair utha kar rukta). lights: headlight chamak.
+// icon: banner ki niche wali line ka icon.
+// fly: udne wali sawari (pankh wala ghoda): upar se tirchha utarti, dheere upar-neeche tairti, jaate waqt upar udti.
+//   stop='land' => zameen par utarne ka halka jhatka. dustColor: pairon se udti chingari/dhool ka rang.
+const RideEntry = ({ data, tier = 30, onDone, mode = 'entry', source, subText, top, standSource, stop = 'brake', lights = true, icon = 'car-sports', fly = false, dustColor }) => {
+  const isRear = stop === 'rear';
+  const isLand = stop === 'land';
   const isGift = mode === 'gift';
   const B = bannerFor(tier);
   const glow = B.edge || '#FFE08A';
@@ -89,8 +98,8 @@ const RideEntry = ({ data, tier = 30, onDone, mode = 'entry', source, subText, t
 
     const bobLoop = Animated.loop(
       Animated.sequence([
-        Animated.timing(bob, { toValue: 1, duration: 110, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
-        Animated.timing(bob, { toValue: 0, duration: 110, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(bob, { toValue: 1, duration: fly ? 420 : 110, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(bob, { toValue: 0, duration: fly ? 420 : 110, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
       ])
     );
     const dustLoop = Animated.loop(
@@ -118,8 +127,9 @@ const RideEntry = ({ data, tier = 30, onDone, mode = 'entry', source, subText, t
       // 2) brake jhatka + banner khule
       Animated.parallel([
         Animated.sequence([
-          Animated.timing(brake, { toValue: 1, duration: 140, easing: Easing.out(Easing.quad), useNativeDriver: true }),
-          Animated.spring(brake, { toValue: 0, friction: 4, tension: 120, useNativeDriver: true }),
+          Animated.timing(brake, { toValue: 1, duration: isRear ? 320 : 140, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+          isRear ? Animated.delay(260) : Animated.delay(0),
+          Animated.spring(brake, { toValue: 0, friction: isRear ? 5 : 4, tension: isRear ? 60 : 120, useNativeDriver: true }),
         ]),
         Animated.spring(card, { toValue: 1, friction: 6, tension: 90, useNativeDriver: true }),
       ]),
@@ -144,15 +154,23 @@ const RideEntry = ({ data, tier = 30, onDone, mode = 'entry', source, subText, t
 
   // ---- derived animations ----
   const carX = drive.interpolate({ inputRange: [0, 1, 2], outputRange: [width + 20, STOP_X, -CAR - 60] });
-  const carY = bob.interpolate({ inputRange: [0, 1], outputRange: [0, -2.5] });
+  const carY = Animated.add(
+    bob.interpolate({ inputRange: [0, 1], outputRange: [0, fly ? -9 : -2.5] }),
+    // fly: upar se tirchha utarna, jaate waqt upar udna
+    drive.interpolate({ inputRange: [0, 1, 2], outputRange: fly ? [-70, 0, -90] : [0, 0, 0] })
+  );
   // brake: aage (left) jhukna; nikalte waqt peeche (right) uthna
   const carRot = Animated.add(
-    brake.interpolate({ inputRange: [0, 1], outputRange: [0, -5] }),
+    brake.interpolate({ inputRange: [0, 1], outputRange: [0, isRear ? 16 : isLand ? 0 : -5] }), // rear: aage ke pair upar
     drive.interpolate({ inputRange: [0, 1, 1.15, 2], outputRange: [0, 0, 4, 2], extrapolate: 'clamp' })
   ).interpolate({ inputRange: [-10, 10], outputRange: ['-10deg', '10deg'] });
   // chalte waqt lakeerein + dhool, rukne par gayab
   const moving = drive.interpolate({ inputRange: [0, 0.75, 1, 1.05, 2], outputRange: [1, 1, 0, 1, 1], extrapolate: 'clamp' });
   const lightFlash = brake.interpolate({ inputRange: [0, 1], outputRange: [0.35, 1] });
+  const rearLift = brake.interpolate({ inputRange: [0, 1], outputRange: [0, isRear ? -14 : isLand ? 10 : 0] }); // land: neeche dabna
+  // chalte waqt daudti image, rukne par khadi image (dono ek saath load, sirf opacity badalti hai => jhatka nahi)
+  const runOp = standSource ? drive.interpolate({ inputRange: [0, 0.96, 1, 1.02, 2], outputRange: [1, 1, 0, 1, 1], extrapolate: 'clamp' }) : 1;
+  const standOp = standSource ? drive.interpolate({ inputRange: [0, 0.96, 1, 1.02, 2], outputRange: [0, 0, 1, 0, 0], extrapolate: 'clamp' }) : 0;
 
   const cardOp = Animated.multiply(
     card.interpolate({ inputRange: [0, 0.4], outputRange: [0, 1], extrapolate: 'clamp' }),
@@ -197,6 +215,8 @@ const RideEntry = ({ data, tier = 30, onDone, mode = 'entry', source, subText, t
             </View>
             <View style={{ flex: 1, marginLeft: 8 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                {/* Tiki jaisa: [SVIP / Level badge] naam ✓ */}
+                <LevelPrefix level={lv} size={9} svipHeight={18} style={{ marginRight: 6 }} />
                 <Text numberOfLines={1} style={styles.name}>{data && data.senderName}</Text>
                 <UserTick
                   uid={uid}
@@ -205,14 +225,10 @@ const RideEntry = ({ data, tier = 30, onDone, mode = 'entry', source, subText, t
                   size={15}
                   style={{ marginLeft: 3 }}
                 />
-                {!isGift ? (
-                  <View style={[styles.lvChip, { borderColor: glow }]}>
-                    <Text style={styles.lvTxt}>LV {lv}</Text>
-                  </View>
-                ) : null}
+
               </View>
               <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
-                <MaterialCommunityIcons name="car-sports" size={13} color={glow} />
+                <MaterialCommunityIcons name={icon} size={13} color={glow} />
                 <Text numberOfLines={1} style={[styles.sub, { color: glow, flexShrink: 1 }]}> {subText || `${RIDE_LABEL[tier] || 'Ride'} se aaye`}</Text>
               </View>
             </View>
@@ -257,10 +273,11 @@ const RideEntry = ({ data, tier = 30, onDone, mode = 'entry', source, subText, t
       </Animated.View>
 
       {/* ===== GAADI ===== */}
-      <Animated.View style={[styles.carWrap, { transform: [{ translateX: carX }] }]}>
+      {/* fly (lamba pankhon wala ghoda): banner ke neeche, taaki sir / pankh na dhake */}
+      <Animated.View style={[styles.carWrap, fly && { top: 66 }, { transform: [{ translateX: carX }] }]}>
         {/* zameen par rang ki roshni + parchhai */}
-        <View style={[styles.shadow, { backgroundColor: 'rgba(0,0,0,0.45)' }]} />
-        <View style={[styles.underGlow, { backgroundColor: hexA(glow, 0.35), shadowColor: glow }]} />
+        <View style={[styles.shadow, { backgroundColor: 'rgba(0,0,0,0.45)' }, fly && { top: CAR * 0.93 }]} />
+        <View style={[styles.underGlow, { backgroundColor: hexA(fly ? '#FF9A2E' : glow, 0.35), shadowColor: fly ? '#FF9A2E' : glow }, fly && { top: CAR * 0.89 }]} />
 
         {/* hawa ki lakeerein (gaadi ke peeche = right) */}
         {SPEED_LINES.map((l, i) => (
@@ -294,12 +311,12 @@ const RideEntry = ({ data, tier = 30, onDone, mode = 'entry', source, subText, t
               key={'d' + i}
               style={{
                 position: 'absolute',
-                left: CAR * 0.74,
-                top: CAR * 0.7,
+                left: fly ? CAR * 0.5 : CAR * 0.74,
+                top: fly ? CAR * 0.86 : CAR * 0.7,
                 width: 12,
                 height: 12,
                 borderRadius: 6,
-                backgroundColor: 'rgba(230,220,200,0.55)',
+                backgroundColor: dustColor || 'rgba(230,220,200,0.55)',
                 opacity: Animated.multiply(moving, dust.interpolate({ inputRange: [0, p.d, d2, 1], outputRange: [0, 0, 0.9, 0] })),
                 transform: [
                   { translateX: dust.interpolate({ inputRange: [0, p.d, 1], outputRange: [0, 0, p.dx] }) },
@@ -312,16 +329,24 @@ const RideEntry = ({ data, tier = 30, onDone, mode = 'entry', source, subText, t
         })}
 
         {/* gaadi + thartharahat + brake jhukav */}
-        <Animated.View style={{ width: CAR, height: CAR, transform: [{ translateY: carY }, { rotate: carRot }] }}>
-          <ExpoImage
-            source={source || RIDES[tier] || RIDES[30]}
-            style={{ width: CAR, height: CAR }}
-            contentFit="contain"
-            cachePolicy="memory-disk"
-            transition={0}
-          />
+        <Animated.View style={{ width: CAR, height: CAR, transform: [{ translateY: Animated.add(carY, rearLift) }, { rotate: carRot }] }}>
+          <Animated.View style={{ position: 'absolute', width: CAR, height: CAR, opacity: runOp }}>
+            <ExpoImage
+              source={source || RIDES[tier] || RIDES[30]}
+              style={{ width: CAR, height: CAR }}
+              contentFit="contain"
+              autoplay
+              cachePolicy="memory-disk"
+              transition={0}
+            />
+          </Animated.View>
+          {standSource ? (
+            <Animated.View style={{ position: 'absolute', width: CAR, height: CAR, opacity: standOp }}>
+              <ExpoImage source={standSource} style={{ width: CAR, height: CAR }} contentFit="contain" cachePolicy="memory-disk" transition={0} />
+            </Animated.View>
+          ) : null}
           {/* headlight chamak (brake par tez) */}
-          {[[0.1, 0.47], [0.56, 0.5]].map(([x, y], i) => (
+          {lights && [[0.1, 0.47], [0.56, 0.5]].map(([x, y], i) => (
             <Animated.View
               key={'h' + i}
               style={[

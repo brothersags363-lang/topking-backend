@@ -13,6 +13,8 @@ import {
 } from 'firebase/firestore';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isFaceVerified } from '../../components/UserTick';
+// @ts-ignore (JS file)
+import { peekScreenCache, readScreenCache, writeScreenCache } from '../screenCache';
 
 const PAGE = 10;
 const ENRICH_TTL = 5 * 60 * 1000;
@@ -136,9 +138,19 @@ export function useFriends(uid: string | undefined) {
     pagesRef.current = 0;
     loadingRef.current = false;
     pendingRef.current = new Map();
-    setFriends([]);
     setHasMore(true);
-    if (!uid) return;
+    if (!uid) { setFriends([]); return; }
+
+    // INSTANT: pichli baar ki chat list turant (net ka wait nahi). Firestore se aate hi badal jaati hai.
+    const cacheKey = 'friends_' + uid;
+    let gotLive = false;
+    const peek = peekScreenCache(cacheKey);
+    setFriends(Array.isArray(peek) ? peek : []);
+    if (!peek) {
+      readScreenCache(cacheKey)
+        .then((c: any) => { if (!gotLive && Array.isArray(c) && c.length) setFriends(c); })
+        .catch(() => {});
+    }
 
     const q = query(
       collection(getFirestore(), 'userChats', uid, 'friends'),
@@ -148,8 +160,19 @@ export function useFriends(uid: string | undefined) {
     const unsub = onSnapshot(
       q,
       (snap) => {
+        gotLive = true;
         applyDocs(snap.docs, false);
         if (pagesRef.current === 0) pagesRef.current = 1;
+        try {
+          writeScreenCache(
+            cacheKey,
+            snap.docs.map((d) => {
+              const it: any = { id: d.id, ...d.data() };
+              const c = enrichCache.get(it.userId);
+              return { ...it, ...(c ? pickBadges(c) : DEFAULT_BADGES) };
+            })
+          );
+        } catch (e) {}
       },
       (err) => console.log('Friends listener error:', err)
     );

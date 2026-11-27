@@ -3,7 +3,7 @@ import { Image, Text, View } from 'react-native';
 import { gifts } from '../../assets/giftsData';
 import { GuardedFrame } from './SharedUI';
 import { STABLE_AVATAR, height } from './constants';
-import CarGiftRide, { isRideGift } from '../live/CarGiftRide';
+import CarGiftRide, { isRideGift, rideTopBelowPopup } from '../live/CarGiftRide';
 
 // ============================================================
 // GIFT (NO ANIMATION): gift bhejne ke baad Tiki jaisa chhota PNG row left side me dikhta hai
@@ -103,7 +103,7 @@ export const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBot
 
   return (
     <>
-    <CarGiftRide ref={rideRef} top={rideTop} />
+    <CarGiftRide ref={rideRef} top={rideTop != null ? rideTop : rideTopBelowPopup(comboTop, comboBottom)} />
     {combos.length ? (
     <View
       pointerEvents="none"

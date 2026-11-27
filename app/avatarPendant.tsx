@@ -20,6 +20,7 @@ import { useRouter } from '../utils/safeRouter';
 import { auth, db } from './firebaseConfig';
 import { callApi } from '../utils/api';
 import {
+  ANGEL_FRAMES,
   getMyFramePrefs,
   refreshAdminFrameMap,
   setAdminFrameLocal,
@@ -31,9 +32,10 @@ const AV = 96; // preview avatar size
 const YELLOW = '#FFE11A';
 
 // Avatar + uske upar pendant (frame bahar ki taraf failta hai)
-const AvatarWithPendant = ({ img, size, uri }: { img?: any; size: number; uri?: string }) => {
-  const outer = Math.round(size * 1.5);
-  const off = -(outer - size) / 2;
+const AvatarWithPendant = ({ img, size, uri, fit }: { img?: any; size: number; uri?: string; fit?: { cx: number; cy: number; d: number } }) => {
+  // hole ko photo ke bilkul beech me rakho (image ka hole canvas center par nahi hota)
+  const f = fit || { cx: 0.5, cy: 0.5, d: 0.667 };
+  const side = (size / f.d) * 1.03;
   return (
     <View style={{ width: size, height: size }}>
       <ExpoImage
@@ -45,8 +47,8 @@ const AvatarWithPendant = ({ img, size, uri }: { img?: any; size: number; uri?: 
         <ExpoImage
           source={img}
           pointerEvents="none"
-          contentFit="contain"
-          style={{ position: 'absolute', width: outer, height: outer, top: off, left: off }}
+          contentFit="fill"
+          style={{ position: 'absolute', width: side, height: side, left: size / 2 - f.cx * side, top: size / 2 - f.cy * side }}
         />
       ) : null}
     </View>
@@ -146,7 +148,7 @@ export default function AvatarPendantScreen() {
           <>
             <View style={s.previewWrap}>
               <View style={{ height: AV * 1.5, justifyContent: 'center' }}>
-                <AvatarWithPendant img={current?.img} size={AV} uri={photo} />
+                <AvatarWithPendant img={current?.img} size={AV} uri={photo} fit={(ANGEL_FRAMES as any)[selected]?.fit} />
               </View>
               <Text style={s.trying}>{open && saved === selected ? 'Using' : 'Trying'}: {current?.label}</Text>
               <Text style={s.valid}>{open ? 'Unlocked for you' : 'Valid for 7 days'}</Text>

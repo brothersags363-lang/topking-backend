@@ -30,6 +30,7 @@ import { scopedBackHandler } from "../utils/scopedBack";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { auth, db } from "./firebaseConfig";
+import { fetchUserVideos } from "../utils/userVideos";
 
 const { width } = Dimensions.get("window");
 
@@ -292,7 +293,7 @@ export default function VideoRank() {
       setError("");
 
       const [vSnap, fersSnap, fingSnap, statsSnap] = await Promise.all([
-        getDocs(query(collection(db, "all_videos"), where("userId", "==", uid))),
+        fetchUserVideos(uid, 300).then((l) => ({ docs: l.map((v) => ({ id: v.id, data: () => v })) })),
         getDocs(query(collection(db, "follows"), where("followingId", "==", uid))),
         getDocs(query(collection(db, "follows"), where("followerId", "==", uid))),
         getDocs(collection(db, "users", uid, "videoRank")).catch(() => null),

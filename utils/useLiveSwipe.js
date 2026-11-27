@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useCallback } from 'react';
-import { PanResponder } from 'react-native';
+import { PanResponder, Animated, Easing, Dimensions } from 'react-native';
 import { listenRecentRooms } from './recentRooms';
 
 const HEARTBEAT_TIMEOUT = 10 * 60 * 1000;
 const STALE_MS = 45 * 1000;      // itni purani list ho to background me refresh
-const SWITCH_LOCK_MS = 1200;     // double swipe guard
-const SWIPE_DIST = 70;
-const SWIPE_VEL = 0.6;
+const SWITCH_LOCK_MS = 700;      // double swipe guard (pehle 1200: swipe atakta tha)
+const SWIPE_DIST = 45;   // index feed jaisa halka swipe
+const SWIPE_VEL = 0.35;
 
 const ms = (v) => {
   if (!v) return 0;
@@ -33,10 +33,19 @@ const parse = (id, d, now) => {
     layout: String(d.roomLayout || 'chat').toLowerCase(),
     stars: hostId ? Math.max(0, Number(d.seatStars?.[hostId]) || 0) : 0,
     createdAt: created,
+    // preview (swipe ke beech agle room ka niche/upar ka hissa dikhane ke liye)
+    title: d.title || d.roomName || 'Live',
+    host: d.hostName || d.host || 'User',
+    img: d.cover || d.roomCover || d.hostImg || d.profileImg || d.photoURL || null,
+    avatar: d.hostImg || d.profileImg || d.photoURL || null,
   };
 };
 
-export default function useLiveSwipe({ db, roomId, router, enabled, blockedRef, onBeforeSwitch }) {
+// mode: 'video' -> sirf video live ke beech swipe | 'audio' -> sirf audio (chat + multiguest) live ke beech
+// Video aur audio kabhi mix nahi hote.
+const groupOf = (r) => (r.type === 'video' ? 'video' : 'audio');
+
+export default function useLiveSwipe({ db, roomId, router, enabled, blockedRef, onBeforeSwitch, mode }) {
   const listRef = useRef([]);
   const loadedAtRef = useRef(0);
   const loadingRef = useRef(false);
@@ -85,39 +94,31 @@ export default function useLiveSwipe({ db, roomId, router, enabled, blockedRef, 
 
   useEffect(() => {
     if (!enabled) return undefined;
-    const t = setTimeout(load, 2500); // room khulne ke baad, smooth entry ko na roke
+    const t = setTimeout(load, 1200); // list jaldi ready -> pehla swipe turant chale
     return () => clearTimeout(t);
   }, [enabled, roomId, load]);
 
-  const go = useCallback((dir) => {
-    if (!enabledRef.current) return;
-    const now = Date.now();
-    if (now - lockRef.current < SWITCH_LOCK_MS) return;
-
-    if (now - loadedAtRef.current > STALE_MS) load();
-
+  // dir ke hisaab se agla/pichla SAME-TYPE room dhundo (video<->video, audio<->audio)
+  const findTarget = useCallback((dir) => {
     const blocked = blockedRef?.current;
-    const full = listRef.current;
+    const full = mode ? listRef.current.filter((r) => groupOf(r) === mode || r.id === roomId) : listRef.current;
     const idx = full.findIndex((r) => r.id === roomId);
     const n = full.length;
-    if (!n) return;
-
-    let target = null;
+    if (!n) return null;
     for (let step = 1; step <= n; step++) {
       const i = idx === -1
         ? (dir > 0 ? step - 1 : n - step)
         : ((idx + dir * step) % n + n) % n;
       const r = full[i];
-      if (r && r.id !== roomId && !(r.hostId && blocked && blocked.has(r.hostId))) {
-        target = r;
-        break;
-      }
+      if (r && r.id !== roomId && !(r.hostId && blocked && blocked.has(r.hostId))) return r;
     }
-    if (!target) return;
+    return null;
+  }, [roomId, blockedRef, mode]);
 
+  const open = useCallback((target) => {
+    const now = Date.now();
     lockRef.current = now;
     try { beforeRef.current && beforeRef.current(target); } catch (_) {}
-
     if (target.type === 'video') {
       router.replace({ pathname: '/videolive', params: { id: target.id, role: 'viewer', k: String(now) } });
     } else if (target.layout === 'multiguest') {
@@ -125,20 +126,100 @@ export default function useLiveSwipe({ db, roomId, router, enabled, blockedRef, 
     } else {
       router.replace({ pathname: '/LiveRoom', params: { id: target.id, from: 'alllive', layout: target.layout, k: String(now) } });
     }
-  }, [roomId, router, blockedRef, load]);
+  }, [router]);
+
+  // Button / direct use: bina drag ke seedha switch
+  const go = useCallback((dir) => {
+    if (!enabledRef.current) return;
+    const now = Date.now();
+    if (now - lockRef.current < SWITCH_LOCK_MS) return;
+    if (now - loadedAtRef.current > STALE_MS) load();
+    const target = findTarget(dir);
+    if (target) open(target);
+  }, [load, findTarget, open]);
+
+  // ---------- Finger ke saath chalne wala swipe (index jaisa) ----------
+  const translateY = useRef(new Animated.Value(0)).current;
+  const previewListenerRef = useRef(null);
+  const targetsRef = useRef({ next: null, prev: null });
+  const animatingRef = useRef(false);
+  const startedRef = useRef(false);
+  const H = Dimensions.get('window').height;
+
+  const setPreview = (v) => { try { previewListenerRef.current && previewListenerRef.current(v); } catch (_) {} };
+
+  // room badle (naya screen) to position reset
+  useEffect(() => {
+    translateY.setValue(0);
+    animatingRef.current = false;
+    targetsRef.current = { next: null, prev: null };
+    setPreview({ next: null, prev: null });
+  }, [roomId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const goRef = useRef(go);
   goRef.current = go;
+  const findTargetRef = useRef(findTarget);
+  findTargetRef.current = findTarget;
+  const openRef = useRef(open);
+  openRef.current = open;
 
   const panResponder = useMemo(() => PanResponder.create({
     onMoveShouldSetPanResponder: (_e, g) =>
-      enabledRef.current && Math.abs(g.dy) > 18 && Math.abs(g.dy) > Math.abs(g.dx) * 1.6,
-    onPanResponderTerminationRequest: () => true,
-    onPanResponderRelease: (_e, g) => {
-      if (g.dy < -SWIPE_DIST || g.vy < -SWIPE_VEL) goRef.current(1);       // upar swipe -> next
-      else if (g.dy > SWIPE_DIST || g.vy > SWIPE_VEL) goRef.current(-1);   // neeche swipe -> previous
+      enabledRef.current && !animatingRef.current && Math.abs(g.dy) > 12 && Math.abs(g.dy) > Math.abs(g.dx) * 1.6,
+    onPanResponderGrant: () => {
+      startedRef.current = true;
+      const now = Date.now();
+      if (now - loadedAtRef.current > STALE_MS) load();
+      const next = findTargetRef.current(1);
+      const prev = findTargetRef.current(-1);
+      targetsRef.current = { next, prev };
+      setPreview({ next, prev });
     },
-  }), []);
+    onPanResponderMove: (_e, g) => {
+      if (!startedRef.current) return;
+      const { next, prev } = targetsRef.current;
+      let dy = g.dy - Math.sign(g.dy) * 12;       // dead-zone ka jhatka hatao
+      if (dy < 0 && !next) dy *= 0.25;            // agla room nahi -> halka rubber-band
+      if (dy > 0 && !prev) dy *= 0.25;
+      translateY.setValue(dy);
+    },
+    onPanResponderTerminationRequest: () => false,
+    onPanResponderRelease: (_e, g) => {
+      startedRef.current = false;
+      const { next, prev } = targetsRef.current;
+      const goNext = g.dy < -SWIPE_DIST || g.vy < -SWIPE_VEL;
+      const goPrev = g.dy > SWIPE_DIST || g.vy > SWIPE_VEL;
+      const target = goNext ? next : goPrev ? prev : null;
+      const now = Date.now();
+      if (target && now - lockRef.current >= SWITCH_LOCK_MS) {
+        animatingRef.current = true;
+        Animated.timing(translateY, {
+          toValue: goNext ? -H : H,
+          duration: 170,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }).start(() => {
+          openRef.current(target);
+          // navigation na ho paya to wapas apni jagah
+          setTimeout(() => {
+            if (animatingRef.current) {
+              animatingRef.current = false;
+              translateY.setValue(0);
+              setPreview({ next: null, prev: null });
+            }
+          }, 2500);
+        });
+      } else {
+        Animated.spring(translateY, { toValue: 0, useNativeDriver: true, bounciness: 0, speed: 20 })
+          .start(() => setPreview({ next: null, prev: null }));
+      }
+    },
+    onPanResponderTerminate: () => {
+      startedRef.current = false;
+      Animated.spring(translateY, { toValue: 0, useNativeDriver: true, bounciness: 0, speed: 20 }).start();
+    },
+  }), []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { panHandlers: panResponder.panHandlers, go };
+  const registerPreview = useCallback((fn) => { previewListenerRef.current = fn; }, []);
+  return { panHandlers: panResponder.panHandlers, go, translateY, registerPreview, screenH: H };
 }

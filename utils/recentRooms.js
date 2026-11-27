@@ -143,8 +143,23 @@ async function firestoreFallback(db) {
   return out;
 }
 
+const isGuest = () => {
+  try {
+    const { auth } = require('../app/firebaseConfig');
+    return !(auth && auth.currentUser);
+  } catch (_) {
+    return true;
+  }
+};
+
 async function poll(s, db) {
   if (s.inFlight || !shared || shared !== s) return;
+  // GUEST (bina login): live list server aur Firestore dono login maangte hain -> har 5 sec
+  // ki bekaar (fail hone wali) request mat bhejo. 30 sec me check karo ki login hua ya nahi.
+  if (isGuest()) {
+    schedule(s, db, 30000);
+    return;
+  }
   s.inFlight = true;
   let ok = false;
   let lastStatus = 0;
@@ -199,6 +214,8 @@ export function listenRecentRooms(db, onSnap, onErr) {
   }
   const s = shared;
   s.subs.add(sub);
+  // Guest ke time list nahi aayi thi aur ab login ho gaya -> naya screen khulte hi turant lao
+  if (!s.loaded && !s.inFlight && !isGuest()) schedule(s, db, 0);
   // pehle se loaded data naye subscriber ko turant (async: caller ka unsub variable set ho chuka ho)
   if (s.loaded) {
     setTimeout(() => {

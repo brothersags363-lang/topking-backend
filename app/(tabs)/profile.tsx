@@ -1,6 +1,10 @@
 import { setVideoListCache } from '../../utils/videoListCache';
 import { sortProfileVideos } from '../../utils/pinnedVideos';
+import { fetchUserVideos, createVideoPager, fetchUserVideoTotals } from '../../utils/userVideos';
 import LevelBadge from '../../components/LevelBadge';
+import { SvipTag } from '../../components/SvipBadge';
+import { svipForLevel } from '../../utils/svip';
+import { AvatarFrame } from '../../components/FramedAvatar';
 import AppBottomNav from '../../components/AppBottomNav';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Image as ExpoImage } from 'expo-image';
@@ -18,7 +22,9 @@ import {
   setDoc,
   where,
 } from 'firebase/firestore';
+import { readScreenCache, writeScreenCache } from '../../utils/screenCache';
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ProfileSkeleton } from '../../components/Skeleton';
 import {
   ActivityIndicator,
   Alert,
@@ -197,7 +203,10 @@ export default function ProfileScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [videos, setVideos] = useState([]);
-  const [videosLoaded, setVideosLoaded] = useState(false); // load hone se pehle hint na flash kare
+  const [videosLoaded, setVideosLoaded] = useState(false);
+  const pagerRef = useRef<any>(null);
+  const loadingMoreRef = useRef(false);
+  const [loadingMoreVideos, setLoadingMoreVideos] = useState(false); // load hone se pehle hint na flash kare
   const [likedCount, setLikedCount] = useState(0);
   const [likedMeCount, setLikedMeCount] = useState(0);
   const [userRank, setUserRank] = useState(null);
@@ -250,11 +259,11 @@ export default function ProfileScreen() {
   // ================== DATA LOADERS ==================
 
   // Fast path: header ke liye sirf zaroori fields (user doc + wallet saath me)
-  const fetchCoreProfile = async (uid, prefetchedUserSnap) => {
+  const fetchCoreProfile = async (uid, prefetchedUserSnap, walletPromise) => {
     try {
       const [docSnap, walletSnap] = await Promise.all([
         prefetchedUserSnap ? Promise.resolve(prefetchedUserSnap) : getDoc(doc(db, 'users', uid)),
-        getDoc(doc(db, 'wallets', uid)),
+        walletPromise || getDoc(doc(db, 'wallets', uid)),
       ]);
 
       const wallet = walletSnap.exists() ? walletSnap.data() : {};
@@ -313,17 +322,21 @@ export default function ProfileScreen() {
 
   const loadVideos = async (uid) => {
     try {
-      const snap = await getDocs(query(collection(db, 'all_videos'), where('userId', '==', uid)));
-
-      let totalLikes = 0;
-      let totalViews = 0;
-
-      const list = snap.docs.map((d) => {
-        const data = d.data();
-        totalLikes += Number(data.likes || 0);
-        totalViews += Number(data.views || 0);
-        return { id: d.id, ...data };
-      });
+      // 60 ki limit hatayi: pehle 30, phir neeche scroll par agli 30 (1000+ videos bhi dikhengi).
+      // Totals server par sum (saare videos download nahi hote)
+      pagerRef.current = createVideoPager(uid, 30);
+      const [list, totals] = await Promise.all([
+        pagerRef.current.first(),
+        fetchUserVideoTotals(uid),
+      ]);
+      let totalLikes = totals ? totals.likes : 0;
+      let totalViews = totals ? totals.views : 0;
+      if (!totals) {
+        list.forEach((data) => {
+          totalLikes += Number(data.likes || 0);
+          totalViews += Number(data.views || 0);
+        });
+      }
 
       sortProfileVideos(list); // pinned upar, phir newest
       setVideos(list);
@@ -333,6 +346,25 @@ export default function ProfileScreen() {
     } catch (e) {
       if (__DEV__) console.log(e);
       return { videos: [], totalLikes: 0, totalViews: 0 };
+    }
+  };
+
+  const loadMoreVideos = async () => {
+    const p = pagerRef.current;
+    if (!p || p.done || loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
+    setLoadingMoreVideos(true);
+    try {
+      const list = await p.next();
+      if (list) {
+        sortProfileVideos(list);
+        setVideos(list);
+      }
+    } catch (e) {
+      if (__DEV__) console.log(e);
+    } finally {
+      loadingMoreRef.current = false;
+      setLoadingMoreVideos(false);
     }
   };
 
@@ -436,7 +468,26 @@ export default function ProfileScreen() {
         () => {}
       );
 
+      // INSTANT: pichli baar ka profile phone se turant (spinner nahi), naya neeche se aata hai
       try {
+        const c: any = await readScreenCache('profile_' + user.uid);
+        if (c && c.profileData) {
+          setProfileData((prev) => ({ ...prev, ...c.profileData }));
+          if (Array.isArray(c.videos)) { setVideos(c.videos); setVideosLoaded(true); }
+          if (c.likedMeCount != null) setLikedMeCount(c.likedMeCount);
+          if (c.likedCount != null) setLikedCount(c.likedCount);
+          if (c.userRank != null) setUserRank(c.userRank);
+          if (c.isAdmin) setIsAdmin(true);
+          if (c.hasAgency) setHasAgency(true);
+          if (c.hasStars) setHasStars(true);
+          setLoading(false);
+        }
+      } catch (e) {}
+
+      try {
+        // SPEED: user + wallet EK SAATH (pehle ek ke baad ek = slow net par double wait)
+        const walletPromise = getDoc(doc(db, 'wallets', user.uid));
+        walletPromise.catch(() => {});
         const userSnap = await getDoc(doc(db, 'users', user.uid));
         let core = null;
         let videosPromise = null;
@@ -466,7 +517,7 @@ export default function ProfileScreen() {
           return;
         } else {
           videosPromise = loadVideos(user.uid); // header ke saath parallel
-          core = await fetchCoreProfile(user.uid, userSnap);
+          core = await fetchCoreProfile(user.uid, userSnap, walletPromise);
         }
 
         setLoading(false); // header ready - videos ka wait nahi
@@ -492,6 +543,22 @@ export default function ProfileScreen() {
       if (unsubGifters) unsubGifters();
     };
   }, []);
+
+  // INSTANT OPEN: jo dikh raha hai wo phone me save (agli baar turant khule)
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (loading || !uid || !videosLoaded) return;
+    writeScreenCache('profile_' + uid, {
+      profileData,
+      videos: videos.slice(0, 30),
+      likedMeCount,
+      likedCount,
+      userRank,
+      isAdmin,
+      hasAgency,
+      hasStars,
+    });
+  }, [loading, videosLoaded, profileData, videos, likedMeCount, likedCount, userRank, isAdmin, hasAgency, hasStars]);
 
   // Edit / Followers page se wapas aane par sirf halka refresh (naam, photo, counts)
   useFocusEffect(
@@ -663,6 +730,8 @@ export default function ProfileScreen() {
         <View style={styles.mainInfoSection}>
           <View style={styles.avatarContainer}>
             <FastImage uri={profileData.profileImg} fallback={AVATAR_FALLBACK} style={styles.avatar} />
+            {/* FRAME: apna frame (level / admin / apni choice) - baaki sab jagah jaisa hi */}
+            <AvatarFrame uid={myUid} level={profileData.level} size={80} />
           </View>
 
           <View style={styles.infoRight}>
@@ -677,7 +746,18 @@ export default function ProfileScreen() {
                 size={16}
                 style={{ marginLeft: 5 }}
               />
-              <LevelBadge level={profileData.level || 1} size={10} style={{ marginLeft: 4 }} tappable />
+              {/* Lv 50+ -> sirf SVIP badge (dabane par SVIP page). Usse kam -> level badge. */}
+              {svipForLevel(profileData.level) === 0 && (
+                <LevelBadge level={profileData.level || 1} size={10} style={{ marginLeft: 4 }} tappable />
+              )}
+              {svipForLevel(profileData.level) > 0 && (
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={() => router.push({ pathname: '/svip', params: { n: String(svipForLevel(profileData.level)) } })}
+                >
+                  <SvipTag level={profileData.level} height={18} />
+                </TouchableOpacity>
+              )}
             </View>
 
             <View style={styles.statsRow}>
@@ -806,11 +886,8 @@ export default function ProfileScreen() {
   }, [profileData, likedMeCount, userRank, topGifters, giftUserCount, hasStars, familyShown, familyChecked, activeTab, videos.length, likedCount, push, onTabChange]);
 
   if (loading) {
-    return (
-      <View style={styles.loaderBox}>
-        <ActivityIndicator size="large" color="#FFD700" />
-      </View>
-    );
+    // Spinner ki jagah page ka dhancha (sirf pehli baar; baad me cache se turant khulta hai)
+    return <ProfileSkeleton />;
   }
 
   return (
@@ -880,6 +957,11 @@ export default function ProfileScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#FFD700']} tintColor="#FFD700" />
         }
         ListHeaderComponent={header}
+        onEndReached={loadMoreVideos}
+        onEndReachedThreshold={0.8}
+        ListFooterComponent={
+          loadingMoreVideos ? <ActivityIndicator color="#FFD700" style={{ marginVertical: 18 }} /> : null
+        }
       />
 
       {/* Koi video nahi => "Tap to create your first video" hint */}
@@ -908,8 +990,9 @@ const styles = StyleSheet.create({
   headerRightActions: { flexDirection: 'row', alignItems: 'center', gap: 20 },
   profileHeader: { paddingHorizontal: 16, paddingTop: 5 },
   mainInfoSection: { flexDirection: 'row', alignItems: 'center', marginTop: 10 },
-  avatarContainer: { width: 80, height: 80, borderRadius: 40, justifyContent: 'center', alignItems: 'center' },
-  avatar: { width: 80, height: 80, borderRadius: 30, backgroundColor: '#222' },
+  // frame DP ke bahar ~30px tak failta hai -> side me jagah (frame screen ke kinare se na kate)
+  avatarContainer: { width: 80, height: 80, borderRadius: 40, justifyContent: 'center', alignItems: 'center', marginLeft: 12, marginRight: 14 },
+  avatar: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#222' },
   identityBlock: { marginTop: 10 },
   usernameRow: { flexDirection: 'row', alignItems: 'center' },
   profileName: { fontSize: 18, fontWeight: 'bold', color: '#fff', flexShrink: 1 },

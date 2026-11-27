@@ -15,6 +15,7 @@ import { collection, doc, onSnapshot, query, where } from "firebase/firestore";
 import { useRouter } from "../utils/safeRouter";
 import useBackStep from "../utils/useBackStep";
 import { auth, db } from "./firebaseConfig";
+import { fetchUserVideos } from "../utils/userVideos";
 import { callApi } from "../utils/api";
 
 const GREY_V_IMG = require("../assets/images/grey-v-tick.webp");
@@ -100,13 +101,14 @@ export default function CreatorVerification() {
 
   useEffect(() => {
     if (!uid) return;
-    return onSnapshot(
-      query(collection(db, "all_videos"), where("userId", "==", uid)),
-      (sn) => {
+    let dead = false;
+    fetchUserVideos(uid, 300)
+      .then((list) => {
+        if (dead) return;
         let plays = 0, likes = 0, viral = 0, white = 0;
         const all = [];
-        sn.docs.forEach((d) => {
-          const v = d.data();
+        list.forEach((v) => {
+          const d = { id: v.id };
           const p = Number(v.views || 0);
           plays += p; likes += Number(v.likes || 0);
           if (p >= VIRAL_PLAYS) viral += 1;
@@ -115,9 +117,9 @@ export default function CreatorVerification() {
         });
         all.sort((a, b) => b.views - a.views); // sabse zyada view wale pehle
         setVids({ plays, likes, viral, white, top: all.slice(0, WHITE_NEEDED) });
-      },
-      () => {}
-    );
+      })
+      .catch(() => {});
+    return () => { dead = true; };
   }, [uid]);
 
   // current level: -1 = none, 0 = Verified User, 1 = White, 2 = Grey, 3 = Blue

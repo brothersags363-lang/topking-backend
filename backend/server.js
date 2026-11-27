@@ -6334,6 +6334,18 @@ require("./rewards")({
   rateLimit,
 });
 
+// Google Play Billing - Stars recharge verify (backend/playBilling.js)
+require("./playBilling")({
+  app,
+  db,
+  admin,
+  verifyUser,
+  rateLimit,
+  axios,
+  crypto,
+  cron,
+});
+
 // payments module is optional: server still starts if ./payments.js is absent
 try {
   require("./payments")({

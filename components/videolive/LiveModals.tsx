@@ -1,5 +1,6 @@
 // @ts-nocheck
 import LevelBadge from '../../components/LevelBadge';
+import { UserLabel } from '../../components/live/UserLabel';
 import { fmtPoints } from '../../utils/familyUtils';
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Image, TextInput, Modal, Platform, FlatList, KeyboardAvoidingView, Animated, Share, ScrollView, Switch } from 'react-native';
@@ -234,11 +235,7 @@ export function ViewerListModal({ askKick, audienceArray, audienceSorted, canMod
                       <ExpoImage source={{ uri: item.img || STABLE_AVATAR }} style={styles.pkRowAva} cachePolicy="memory-disk" transition={0} />
                       <View style={{ flex: 1, marginLeft: 12 }}>
                         <View style={{ flexDirection: "row", alignItems: "center" }}>
-                          <Text style={styles.pkRowName} numberOfLines={1}>
-                            {item.name || item.username || "User"}
-                          </Text>
-                          <UserTick uid={item.uid || item.userId || item.senderId || item.id} verified={!!(!!item.verified)} verifiedColor={item.verifiedColor} size={14} />
-                          <LevelBadge level={item.level || 1} size={9} style={{ marginLeft: 6 }} />
+                          <UserLabel level={item.level} name={item.name || item.username || "User"} uid={item.uid || item.userId || item.senderId || item.id} verified={item.verified} verifiedColor={item.verifiedColor} nameStyle={styles.pkRowName} tickSize={14} />
                         </View>
                         {(mods[item.uid] || mutedUsers[item.uid]) && (
                           <Text style={styles.pkRowSub}>
@@ -346,7 +343,7 @@ export function ProfileCardModal({ canModerate, currentUid, goUserProfile, hostI
               <TouchableOpacity activeOpacity={0.85} style={styles.pcAvaWrap} onPress={() => goUserProfile(profileCard)}>
                 <ExpoImage source={{ uri: profileCard.img || STABLE_AVATAR }} style={styles.pcAva} cachePolicy="memory-disk" transition={0} />
                 {(Number(profileCard.level) >= 10 || !!profileCard.uid) && (
-                  <LevelFrame level={Number(profileCard.level)} uid={profileCard.uid} lookup={false} animated style={{ position: "absolute", width: 110, height: 110 }} />
+                  <LevelFrame level={Number(profileCard.level)} uid={profileCard.uid} lookup={false} animated photo={84} style={{ position: "absolute", width: 110, height: 110 }} />
                 )}
               </TouchableOpacity>
 

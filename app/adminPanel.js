@@ -25,6 +25,8 @@ const ITEMS = [
   { label: "Live Access", icon: "radio", route: "/adminLiveAccess", bg: "#e84393", fg: "#fff" },
   { label: "Special Frames", icon: "color-palette", route: "/adminFrames", bg: "#c0392b", fg: "#fff" },
   { label: "Withdrawals", icon: "wallet", route: "/withdrawals", bg: "#FFD700", fg: "#000" },
+  { label: "Payment Proof", icon: "cash", route: "/adminPayments", bg: "#16C784", fg: "#fff" },
+  { label: "Announcement", icon: "megaphone", route: "/adminAnnouncement", bg: "#8B5CF6", fg: "#fff" },
   { label: "Feedback", icon: "chatbox-ellipses", route: "/feedbackAdmin", bg: "#FFD700", fg: "#000" },
   { label: "Profile Details", icon: "people", route: "/profileDetails", bg: "#8e44ad", fg: "#fff" },
   { label: "Reports", icon: "flag", route: "/reportsAdmin", bg: "#e74c3c", fg: "#fff" },

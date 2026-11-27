@@ -7,7 +7,7 @@ import { STABLE_AVATAR, WEEKLY_TARGET_MIN, GIFT_GOLD, width, height } from './co
 import { fmtClock } from './helpers';
 import { styles } from './styles';
 import { timer } from './tickScheduler';
-import CarGiftRide, { isRideGift } from '../live/CarGiftRide';
+import CarGiftRide, { isRideGift, rideTopBelowPopup } from '../live/CarGiftRide';
 
 // Gift button animation (HEAT FIX): pehle loop me 24/7 chalta tha (30 min = lagatar GPU/CPU).
 // Ab 1 baar chalta hai, phir 4 sec rukta hai -> duty cycle ~80% kam.
@@ -232,7 +232,7 @@ export const GiftLayer = memo(forwardRef(function GiftLayer({ comboTop, comboBot
 
   return (
     <>
-    <CarGiftRide ref={rideRef} top={rideTop} />
+    <CarGiftRide ref={rideRef} top={rideTop != null ? rideTop : rideTopBelowPopup(comboTop, comboBottom)} />
     {combos.length ? (
     <View
       pointerEvents="none"

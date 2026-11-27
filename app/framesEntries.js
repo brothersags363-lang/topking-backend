@@ -40,6 +40,7 @@ import {
   FRAME_TIER_LABEL,
   FRAME_IMAGES,
   getTier,
+  FramePreview,
 } from "../components/LevelFrame";
 
 const PLACEHOLDER = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
@@ -47,31 +48,8 @@ const GOLD = "#FFD700";
 
 // avatar + frame ka chhota preview (frame avatar ke upar)
 function AvatarPreview({ uri, frameSource, size = 84 }) {
-  return (
-    <View style={{ width: size, height: size }}>
-      <ExpoImage
-        source={{ uri: uri || PLACEHOLDER }}
-        style={{
-          position: "absolute",
-          top: size * 0.14,
-          left: size * 0.14,
-          width: size * 0.72,
-          height: size * 0.72,
-          borderRadius: size,
-          backgroundColor: "#333",
-        }}
-        contentFit="cover"
-      />
-      {frameSource ? (
-        <ExpoImage
-          source={frameSource}
-          contentFit="contain"
-          autoplay={false}
-          style={{ position: "absolute", width: size, height: size }}
-        />
-      ) : null}
-    </View>
-  );
+  // DP frame ke hole me bilkul beech me (har frame ka hole naap kar - LevelFrame FramePreview)
+  return <FramePreview uri={uri || PLACEHOLDER} source={frameSource} size={size} />;
 }
 
 // ek chunne wala card (frame ya entry)

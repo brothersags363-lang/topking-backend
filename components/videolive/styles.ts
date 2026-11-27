@@ -2,6 +2,12 @@
 import { StyleSheet } from 'react-native';
 import { GUEST_TILE_W, GUEST_TILE_H, pkPanelHFixed, PK_BAR_H, width, height } from './constants';
 
+// upar wale listener chips (TopHeader): DP size, chip chaudai, frame box
+export const TOP_CHIP_AVA = 28;
+const TOP_CHIP_W = 38;
+const TOP_CHIP_TOP = 6;
+const TOP_CHIP_FRAME = Math.round(TOP_CHIP_AVA * 1.35);
+
 export const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#000" },
 
@@ -1238,10 +1244,19 @@ export const styles = StyleSheet.create({
 
   /* ===== TIKI TOP-3 CHIPS (header) ===== */
   topStack: { flexDirection: "row", alignItems: "center" },
-  topChip: { width: 33, height: 44, marginRight: 3, alignItems: "center" },
-  topChipAva: { width: 31, height: 31, borderRadius: 12, borderWidth: 2, backgroundColor: "#2a2b38", marginTop: 4 },
-  topChipCrown: { position: "absolute", top: -4, left: -3, fontSize: 13, transform: [{ rotate: "-20deg" }] },
-  topChipTag: { position: "absolute", bottom: 0, paddingHorizontal: 4, height: 11, borderRadius: 3, justifyContent: "center" },
+  // upar ke 4 listeners: gol DP + frame (frame DP ke bahar failta hai, isliye chip thoda chauda)
+  topChip: { width: TOP_CHIP_W, height: 44, alignItems: "center" },
+  topChipAva: { width: TOP_CHIP_AVA, height: TOP_CHIP_AVA, borderRadius: TOP_CHIP_AVA / 2, borderWidth: 1.5, backgroundColor: "#2a2b38", marginTop: TOP_CHIP_TOP },
+  topChipFrame: {
+    position: "absolute",
+    width: TOP_CHIP_FRAME,
+    height: TOP_CHIP_FRAME,
+    left: TOP_CHIP_W / 2 - TOP_CHIP_FRAME / 2,
+    top: TOP_CHIP_TOP + TOP_CHIP_AVA / 2 - TOP_CHIP_FRAME / 2,
+    zIndex: 2,
+  },
+  topChipCrown: { position: "absolute", top: -4, left: -3, fontSize: 13, transform: [{ rotate: "-20deg" }], zIndex: 3 },
+  topChipTag: { position: "absolute", bottom: 0, paddingHorizontal: 4, height: 11, borderRadius: 3, justifyContent: "center", zIndex: 3 },
   topChipTagTxt: { color: "#fff", fontSize: 7, fontWeight: "900", fontStyle: "italic" },
   viewerCountCircle: {
     minWidth: 30,

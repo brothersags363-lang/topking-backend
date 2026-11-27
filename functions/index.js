@@ -13,6 +13,10 @@ initializeApp();
 Object.assign(exports, require('./notifications'));
 // AUTO TICK: 5 videos x 300 views -> white, 5 videos x 3000 views -> Grey V
 exports.autoCreatorTick = require('./creatorTicks').autoCreatorTick;
+// GALI + GALAT PHOTO/VIDEO FILTER: profile (name/username/bio/DP) aur video post (caption/thumbnail)
+Object.assign(exports, require('./contentModeration'));
+// GUEST FEED: users/{uid} ki sirf safe copy -> publicProfiles/{uid} (bina login wale padh sakein)
+exports.syncPublicProfile = require('./publicProfiles').syncPublicProfile;
 
 const db = getFirestore();
 const REGION = 'us-central1'; // user India me hai -> 'asia-south1' (Mumbai) se kam latency milegi; client me bhi same region set karna

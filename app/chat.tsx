@@ -1,4 +1,7 @@
+import { withDeferredMount } from '../components/DeferredScreen';
 import LevelBadge from '../components/LevelBadge';
+// @ts-ignore (JS file)
+import { peekScreenCache, readScreenCache, writeScreenCache } from "../utils/screenCache";
 import useBackStep from "../utils/useBackStep";
 import { blockIfProfane } from "../utils/guardText";
 // ============================================================================
@@ -779,7 +782,7 @@ const messageKey = (item: any) => String(item.id);
 // ==========================================
 // SCREEN
 // ==========================================
-export default function ChatScreen() {
+function ChatScreen() {
   const router = useRouter();
 
   const params = useLocalSearchParams();
@@ -1005,7 +1008,22 @@ export default function ChatScreen() {
       limit(msgLimit)
     );
 
+    // INSTANT: pichle 30 messages phone se turant (net ka wait nahi). Live data aate hi badal jaate hain.
+    const cacheKey = "chat_" + chatId;
+    let gotLive = false;
+    if (msgLimit === PAGE_SIZE) {
+      const showCached = (c: any) => {
+        if (gotLive || !Array.isArray(c) || !c.length) return;
+        setRawMessages((prev) => (prev.length ? prev : c));
+        setLoadingMessages(false);
+      };
+      const peek = peekScreenCache(cacheKey);
+      if (peek) showCached(peek);
+      else readScreenCache(cacheKey).then(showCached).catch(() => {});
+    }
+
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      gotLive = true;
       // Re-use the old object for every message that did not change, so the
       // memoized rows skip re-rendering (a new message = 1 row, not 40).
       const prevById = prevMsgMapRef.current;
@@ -1027,6 +1045,13 @@ export default function ChatScreen() {
       prevMsgMapRef.current = nextById;
       setRawMessages(list);
       setLoadingMessages(false);
+      // sirf bheje ja chuke messages save (adhure / sending wale nahi)
+      try {
+        writeScreenCache(
+          cacheKey,
+          list.filter((m) => !m.pending).slice(0, 30)
+        );
+      } catch (e) {}
       loadingMoreRef.current = false;
 
       // Mark incoming messages as read (blue ticks on the sender's side)
@@ -3441,3 +3466,6 @@ const styles = StyleSheet.create({
     padding: 6,
   },
 });
+
+// SPEED: tap karte hi page khulta dikhe, bhaari hissa 2 frame baad (components/DeferredScreen.tsx)
+export default withDeferredMount(ChatScreen);

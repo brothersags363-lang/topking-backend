@@ -26,6 +26,10 @@ import {
   runTransaction,
 } from 'firebase/firestore';
 import UserTick, { isFaceVerified } from '../components/UserTick';
+import LevelBadge from '../components/LevelBadge';
+import { SvipTag } from '../components/SvipBadge';
+import { svipForLevel } from '../utils/svip';
+import { getLevelProgress } from '../utils/levelProgress';
 import Image from '../components/FastImage';
 import { useBlockedIds } from '../utils/useBlockedIds';
 
@@ -95,10 +99,15 @@ const loadTopStars = async () => {
   ]);
 
   const ranked = snap.docs
-    .map((d) => ({
-      id: d.id,
-      stars: Math.max(0, ((d.data() as any)[FIELD] || 0) - (base[d.id] ?? floor)),
-    }))
+    .map((d) => {
+      const w: any = d.data();
+      return {
+        id: d.id,
+        stars: Math.max(0, (w[FIELD] || 0) - (base[d.id] ?? floor)),
+        // asli level (wallet se) -> naam ke aage SVIP / level badge
+        level: getLevelProgress(Number(w.totalSpent) || 0, Number(w.level) || 0).level,
+      };
+    })
     .filter((x) => x.stars > 0)
     .sort((a, b) => b.stars - a.stars);
 
@@ -111,6 +120,7 @@ const loadTopStars = async () => {
         return {
           id: r.id,
           stars: r.stars,
+          level: r.level,
           name: d.username || d.name || 'user',
           img: d.profileImg || '',
           verified: !!d.verified,
@@ -168,6 +178,12 @@ const Row = memo(function Row({
           size={14}
           whiteColor="#f8fbff"
         />
+        {/* Lv 50+ -> SVIP badge, usse kam -> level badge (explore / profile jaisa) */}
+        {svipForLevel(item.level) > 0 ? (
+          <SvipTag level={item.level} height={17} style={{ marginLeft: 5 }} />
+        ) : item.level >= 1 ? (
+          <LevelBadge level={item.level} size={9} style={{ marginLeft: 5 }} />
+        ) : null}
       </View>
 
       <View style={s.starsWrap}>

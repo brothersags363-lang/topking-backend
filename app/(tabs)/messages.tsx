@@ -22,6 +22,7 @@ import { useAuthUid } from '../../utils/messages/useAuthUid';
 import { useFriends } from '../../utils/messages/useFriends';
 import { useLiveProfiles } from '../../utils/messages/useLiveProfiles';
 import { useNotifications } from '../../utils/messages/useNotifications';
+import { useAdminInbox } from '../../utils/messages/useAdminInbox';
 
 // ---- helpers: friend / notification se uid nikalna ----
 const friendId = (f: any): string | undefined => f?.uid || f?.userId || f?.friendId || f?.id;
@@ -37,11 +38,14 @@ export default function MessagesPage() {
   useTabBack();
 
   // Messages khulte hi (aur jab tak khula hai, naya aaye tab bhi) bottom icon ka count 0
+  const { adminRows, reloadSeen } = useAdminInbox(uid);
+
   useFocusEffect(
     useCallback(() => {
       markInboxSeen();
+      reloadSeen(); // Announcements screen se wapas aane par unread count turant update
       return () => markInboxSeen();
-    }, [])
+    }, [reloadSeen])
   );
 
   const [tab, setTab] = useState<'chatroom' | 'message'>('chatroom');
@@ -105,7 +109,7 @@ export default function MessagesPage() {
     [notifications, notifList, applyLive]
   );
 
-  const rows = useMemo(() => [...notifRows, ...staticRows], [notifRows, staticRows]);
+  const rows = useMemo(() => [...adminRows, ...notifRows, ...staticRows], [adminRows, notifRows, staticRows]);
 
   const totalUnread = useMemo(
     () =>

@@ -37,6 +37,7 @@ try {
 }
 
 import { auth, db, storage } from "./firebaseConfig";
+import { fetchUserVideos } from "../utils/userVideos";
 import { callApi } from "../utils/api";
 
 /*
@@ -128,21 +129,22 @@ export default function Creator() {
   // ---------- live video stats (all_videos) ----------
   useEffect(() => {
     if (!uid) return;
-    const unsub = onSnapshot(
-      query(collection(db, "all_videos"), where("userId", "==", uid)),
-      (snap) => {
+    // SPEED: live listener hataya (har view par saare videos dubara download hote the) -> 1 baar load
+    let dead = false;
+    fetchUserVideos(uid, 300)
+      .then((list) => {
+        if (dead) return;
         let ok300 = 0; // White Tick: har video par 300+ views
         let ok3000 = 0; // Grey V: har video par 3000+ views
-        snap.docs.forEach((d) => {
-          const v = Number(d.data().views || 0);
+        list.forEach((d) => {
+          const v = Number(d.views || 0);
           if (v >= 300) ok300 += 1;
           if (v >= 3000) ok3000 += 1;
         });
         setStats({ videosWith300: ok300, videosWith3000: ok3000 });
-      },
-      () => {}
-    );
-    return unsub;
+      })
+      .catch(() => {});
+    return () => { dead = true; };
   }, [uid]);
 
   // ---------- hardware back ----------

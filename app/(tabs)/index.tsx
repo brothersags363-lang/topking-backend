@@ -3,6 +3,9 @@ import { checkVideoAction, getVideoLocks } from '../../utils/videoLocks';
 import { notifyNewFollower, notifyVideoLike } from '../../utils/pushNotify';
 import PERF from '../../utils/devicePerf';
 import { fixCdn } from '../../utils/videoSource';
+import { seedProfile, prefetchProfile } from '../../utils/profilePrefetch';
+import { requireLogin } from '../../utils/requireLogin';
+import { FeedSkeleton } from '../../components/Skeleton';
 import warmAhead from '../../utils/warmAhead';
 import React, { memo, useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -20,7 +23,7 @@ import useSwipeTabs from '../../utils/useSwipeTabs';
 import { onAuthStateChanged } from 'firebase/auth';
 import { isFaceVerified } from '../../components/UserTick';
 import { runAfterIdle, auth, AVATAR_FALLBACK, feedKeyExtractor, height } from '../../components/home/feedShared';
-import { waitForAuthUser, loadSeenMap, saveSeenMap, loadLastTop, saveLastTop, shouldCountView, videoPositions, persistResume, loadResume, MY_PROFILE_CACHE_KEY, buildMyProfile, readCachedProfile, saveCachedProfile, loadMyProfile, setFeedCache } from '../../components/home/feedStorage';
+import { waitForAuthUser, loadSeenMap, saveSeenMap, loadLastTop, saveLastTop, shouldCountView, videoPositions, persistResume, loadResume, saveNextUp, loadNextUp, MY_PROFILE_CACHE_KEY, buildMyProfile, readCachedProfile, saveCachedProfile, loadMyProfile, setFeedCache } from '../../components/home/feedStorage';
 import { MAX_FETCH_ROUNDS, getOldestTs, fetchRandomPage, scoreVideo, isRecentlySeen, rankFeed } from '../../components/home/feedRanking';
 import { silenceOthers, feedFocused, setFeedFocused, playActiveNow } from '../../components/home/playerRegistry';
 import { TabGrid } from '../../components/home/TabGrid';
@@ -114,6 +117,8 @@ const [hasMoreVideos, setHasMoreVideos] = useState(true);
 
 const lastVideoDocRef = useRef(null);
 const loadingMoreRef = useRef(false);
+// INSTANT OPEN: pehla load chal raha ho tab load-more na chale (purane session par atak jata)
+const firstLoadPendingRef = useRef(true);
 
 
 const scrollRef=useRef(null);
@@ -782,6 +787,19 @@ useEffect(() => {
   if (videos.length === 0) return;
   if (feedTabRef.current !== 'foryou') return; // grid se khuli list resume me save nahi hogi
   setFeedCache({ videos, index: currentIndex, savedAt: Date.now() });
+  // INSTANT OPEN: agli bina dekhi videos phone me (agli baar app turant khule)
+  try {
+    const now = Date.now();
+    const notSeen = (v) => v && !isRecentlySeen(seenRef.current, v.id, now);
+    const next = videos.slice(currentIndex + 1).filter(notSeen);
+    if (next.length < 8) {
+      const ids = new Set(next.map((v) => v.id));
+      poolRef.current.forEach((v) => {
+        if (next.length < 8 && notSeen(v) && !ids.has(v.id)) { next.push(v); ids.add(v.id); }
+      });
+    }
+    if (next.length) saveNextUp(next);
+  } catch (e) {}
 }, [videos, currentIndex]);
 
 const toVideo = (docItem) => {
@@ -799,6 +817,75 @@ const isAllowedVideo = (data) =>
   data.status !== "blocked" &&
   data.hidden !== true &&
   !blockedRef.current.includes(data.userId);
+
+// ======================================================
+// FOR YOU = SIRF VERIFIED USERS KE VIDEOS
+// Face verify ho chuka ho (faceVerified / faceStatus) ya admin tick (verified) ho.
+// Jinka face verify nahi hua unke videos For You me nahi aate.
+// Har uid ka status 30 min cache hota hai (naye uid par hi read lagta hai, 10 uid ek query me).
+// ======================================================
+const AUTHOR_OK_TTL = 30 * 60 * 1000;
+const authorOkRef = useRef(new Map()); // uid -> { ok, t }
+
+const keepVerifiedAuthors = async (list) => {
+  if (!list || list.length === 0) return [];
+  const now = Date.now();
+  const cache = authorOkRef.current;
+  // GUEST (bina login): users/{uid} private hai (phone, birthday) -> publicProfiles (sirf safe copy) padho.
+  // Cache key me collection bhi, taaki login ke baad guest wala jawab dobara use na ho.
+  const col = auth.currentUser ? "users" : "publicProfiles";
+  const ck = (uid) => col + ":" + uid;
+  const need = [];
+  list.forEach((v) => {
+    const uid = v.userId;
+    if (!uid || need.includes(uid)) return;
+    const c = cache.get(ck(uid));
+    if (!c || now - c.t > AUTHOR_OK_TTL) need.push(uid);
+  });
+
+  if (need.length) {
+    const chunks = [];
+    for (let i = 0; i < need.length; i += 10) chunks.push(need.slice(i, i + 10));
+    await Promise.all(
+      chunks.map(async (chunk) => {
+        try {
+          const snap = await getDocs(
+            query(collection(db, col), where(documentId(), "in", chunk))
+          );
+          const t = Date.now();
+          const found = new Set();
+          snap.forEach((d) => {
+            const u = d.data() || {};
+            found.add(d.id);
+            cache.set(ck(d.id), {
+              ok: isFaceVerified(u) || u.verified === true,
+              t,
+            });
+          });
+          if (col === "publicProfiles" && found.size === 0) {
+            // GUEST FALLBACK: publicProfiles abhi bhari nahi (function / backfill script nahi chali)
+            // -> guest ko khaali feed mat dikhao. 2 min baad dobara check (bhar gayi to verified niyam lagega).
+            chunk.forEach((uid) => cache.set(ck(uid), { ok: true, t: t - AUTHOR_OK_TTL + 2 * 60 * 1000 }));
+            return;
+          }
+          // user record hi nahi mila -> verified nahi
+          chunk.forEach((uid) => {
+            if (!found.has(uid)) cache.set(ck(uid), { ok: false, t });
+          });
+        } catch (e) {
+          if (col === "publicProfiles") {
+            // GUEST FALLBACK: rules abhi publish nahi hue (permission-denied) -> bhi feed khaali nahi
+            const t = Date.now();
+            chunk.forEach((uid) => cache.set(ck(uid), { ok: true, t: t - AUTHOR_OK_TTL + 2 * 60 * 1000 }));
+          }
+          // logged-in user ka read fail: cache nahi karte (agli baar phir try), is round me ye videos nahi dikhte
+        }
+      })
+    );
+  }
+
+  return list.filter((v) => cache.get(ck(v.userId))?.ok === true);
+};
 
 const fetchVideoPage = (cursor) =>
   getDocs(
@@ -830,37 +917,38 @@ const resetFeedState = () => {
   return sessionRef.current;
 };
 
-// Ek page ke docs pool me daalo (duplicate / blocked / hidden skip)
-const ingestSnap = (snap) => {
+// Docs me se naye + allowed videos nikalo, sirf verified authors ke pool me daalo.
+// Return: kitne NAYE docs mile (verified ho ya na ho) -> ensurePool ka "dry" hisaab isi se chalta hai,
+// taaki unverified videos ke pages par bhi aage ke pages padhe jaayein.
+const ingestDocs = async (snap, session) => {
+  const fresh = [];
+  snap.forEach((docItem) => {
+    if (fetchedIdsRef.current.has(docItem.id)) return;
+    fetchedIdsRef.current.add(docItem.id);
+    if (!isAllowedVideo(docItem.data())) return;
+    fresh.push(toVideo(docItem));
+  });
+  const ok = await keepVerifiedAuthors(fresh);
+  if (session !== sessionRef.current) return 0;
+  ok.forEach((v) => poolRef.current.push(v));
+  return fresh.length || 1; // page me naye docs aaye (chahe sab unverified)
+};
+
+// Ek page ke docs pool me daalo (duplicate / blocked / hidden / unverified skip)
+const ingestSnap = async (snap, session) => {
   if (!snap || snap.empty) {
     exhaustedRef.current = true;
     return 0;
   }
   lastVideoDocRef.current = snap.docs[snap.docs.length - 1];
-  let added = 0;
-  snap.forEach((docItem) => {
-    if (fetchedIdsRef.current.has(docItem.id)) return;
-    fetchedIdsRef.current.add(docItem.id);
-    if (!isAllowedVideo(docItem.data())) return;
-    poolRef.current.push(toVideo(docItem));
-    added++;
-  });
   if (snap.docs.length < PAGE_SIZE) exhaustedRef.current = true;
-  return added;
+  return ingestDocs(snap, session);
 };
 
 // Random page ke docs (cursor / exhausted ko touch nahi karta)
-const ingestRandom = (snap) => {
+const ingestRandom = async (snap, session) => {
   if (!snap || snap.empty) return 0;
-  let added = 0;
-  snap.forEach((docItem) => {
-    if (fetchedIdsRef.current.has(docItem.id)) return;
-    fetchedIdsRef.current.add(docItem.id);
-    if (!isAllowedVideo(docItem.data())) return;
-    poolRef.current.push(toVideo(docItem));
-    added++;
-  });
-  return added;
+  return ingestDocs(snap, session);
 };
 
 const countUnseen = () =>
@@ -888,7 +976,7 @@ const ensurePool = (minUnseen, session) => {
         if (exhaustedRef.current) break;
         const snap = await fetchVideoPage(lastVideoDocRef.current);
         if (session !== sessionRef.current) return;
-        added = ingestSnap(snap);
+        added = await ingestSnap(snap, session);
       } else {
         const oldest = await getOldestTs();
         if (session !== sessionRef.current) return;
@@ -897,14 +985,15 @@ const ensurePool = (minUnseen, session) => {
           if (exhaustedRef.current) break;
           const snap = await fetchVideoPage(lastVideoDocRef.current);
           if (session !== sessionRef.current) return;
-          added = ingestSnap(snap);
+          added = await ingestSnap(snap, session);
         } else {
           const [a, b] = await Promise.all([
             fetchRandomPage(oldest).catch(() => null),
             fetchRandomPage(oldest).catch(() => null),
           ]);
           if (session !== sessionRef.current) return;
-          added = ingestRandom(a) + ingestRandom(b);
+          added = (await ingestRandom(a, session)) + (await ingestRandom(b, session));
+          if (session !== sessionRef.current) return;
         }
       }
 
@@ -961,6 +1050,37 @@ useEffect(() => {
       const user = await waitForAuthUser();
       if (cancelled) return;
 
+      // INSTANT OPEN (Instagram jaisa): pichli baar ki agli BINA DEKHI videos turant dikhao,
+      // net / Firestore ka wait kiye bina. Naya feed neeche peeche se judta rehta hai.
+      // (Sirf cold start par; dusri screen se wapas aane par memory wala resume chalta hai.)
+      let warmShown = null;
+      try {
+        const [warmSeen, warmList, memResume] = await Promise.all([
+          loadSeenMap(),
+          loadNextUp(),
+          loadResume(),
+        ]);
+        if (cancelled) return;
+        if (!(memResume && memResume.videos && memResume.videos.length)) {
+          const now = Date.now();
+          const list = warmList.filter(
+            (v) => v.status !== "blocked" && v.hidden !== true && !isRecentlySeen(warmSeen, v.id, now)
+          );
+          if (list.length >= 3) {
+            warmShown = list;
+            seenRef.current = warmSeen;
+            initialIndexRef.current = 0;
+            lastViewableIndexRef.current = 0;
+            lastViewableIdRef.current = list[0].id;
+            setCurrentIndex(0);
+            setActiveVideo(0);
+            setMountIndex(0);
+            setVideos(list);
+            setLoading(false);
+          }
+        }
+      } catch (e) {}
+
       // Sab ek saath -> sabse kam wait
       const [seenMap, blockedIds, lastTop, firstSnap, resume] = await Promise.all([
         loadSeenMap(),
@@ -1002,15 +1122,44 @@ useEffect(() => {
             v.hidden !== true &&
             !blockedIds.includes(v.userId)
         );
-        if (alive.length) {
-          const found = alive.findIndex((v) => v.id === curId);
-          restoredList = alive;
+        const aliveOk = alive.length ? await keepVerifiedAuthors(alive) : [];
+        if (cancelled) return;
+        if (aliveOk.length) {
+          const found = aliveOk.findIndex((v) => v.id === curId);
+          restoredList = aliveOk;
           restoredIdx = found >= 0 ? found : 0;
-          alive.forEach((v) => fetchedIdsRef.current.add(v.id));
+          aliveOk.forEach((v) => fetchedIdsRef.current.add(v.id));
         }
       }
 
-      ingestSnap(firstSnap);
+      if (warmShown && !restoredList) {
+        // Turant dikhi videos dobara feed me na aayein
+        warmShown.forEach((v) => fetchedIdsRef.current.add(v.id));
+        await ingestSnap(firstSnap, session);
+        if (cancelled || session !== sessionRef.current) return;
+        // Blocked user ki video turant wali list me ho to hata do
+        if (blockedIds.length) {
+          // (sirf aage wali; jo abhi chal rahi hai / peeche hai unhe chhedne se video khisak jaati)
+          const cur = currentIndexRef.current || 0;
+          setVideos((prev) => prev.filter((v, i) => i <= cur || !blockedIds.includes(v.userId)));
+        }
+        await ensurePool(NEXT_BATCH_WANT * 2, session);
+        if (cancelled || session !== sessionRef.current) return;
+        const more = pullFromPool(NEXT_BATCH_WANT, videosRef.current);
+        if (more.length) {
+          setVideos((prev) => {
+            const ids = new Set(prev.map((v) => v.id));
+            const fresh = more.filter((v) => !ids.has(v.id));
+            return fresh.length ? [...prev, ...fresh] : prev;
+          });
+        }
+        syncHasMore();
+        ensurePool(NEXT_BATCH_WANT * 2, session).catch(() => {});
+        return;
+      }
+
+      await ingestSnap(firstSnap, session);
+      if (cancelled || session !== sessionRef.current) return;
 
       if (restoredList) {
         initialIndexRef.current = restoredIdx;
@@ -1043,6 +1192,7 @@ useEffect(() => {
     } catch (error) {
       __DEV__ && console.log("Firebase Video Error:", error);
     } finally {
+      firstLoadPendingRef.current = false;
       if (!cancelled) setLoading(false);
     }
   };
@@ -1125,6 +1275,7 @@ useEffect(() => {
 // LOAD MORE (background me, user ke last 4 video par pahunchne se pehle)
 const loadMoreVideos = useCallback(async () => {
   if (feedTabRef.current !== 'foryou') return;
+  if (firstLoadPendingRef.current) return;
   if (loadingMoreRef.current) return;
   if (!hasMoreVideos) return;
 
@@ -1508,10 +1659,7 @@ useEffect(() => {
   const user = auth.currentUser;
 
   if (!user) {
-    Alert.alert(
-      "Login Required",
-      "Please login to like this video."
-    );
+    requireLogin(routerRef.current); // bina login: login page
     return;
   }
 
@@ -1663,7 +1811,7 @@ useEffect(() => {
 const handleFollow = async (targetUserId) => {
   const user = auth.currentUser;
   if (!user) {
-    Alert.alert("Login Required", "Please login to follow.");
+    requireLogin(routerRef.current); // bina login: login page
     return;
   }
   if (user.uid === targetUserId) return;
@@ -1711,6 +1859,7 @@ const handleFollow = async (targetUserId) => {
 
 
 const handleDoubleTapLike = (videoId) => {
+  if (!requireLogin(routerRef.current)) return; // bina login: heart nahi, login page
 
   // Heart animation (tick badalne se popup dobara mount -> animation replay)
   unstable_batchedUpdates(() => {
@@ -1884,10 +2033,12 @@ const saveForYouSnap = () => {
 };
 
 const onTopLive = useCallback(() => {
+  if (!requireLogin(routerRef.current)) return;
   router.push('/all-live');
 }, []);
 
 const onTopDiscover = useCallback(() => {
+  if (!requireLogin(routerRef.current)) return; // bina login sirf For You
   if (feedTabRef.current === 'discover' && showGridRef.current) {
     loadDiscoverGrid(true);
     return;
@@ -1902,6 +2053,7 @@ const onTopDiscover = useCallback(() => {
 }, [loadDiscoverGrid]);
 
 const onTopFollow = useCallback(() => {
+  if (!requireLogin(routerRef.current)) return; // bina login sirf For You
   if (feedTabRef.current === 'follow' && showGridRef.current) {
     loadFollowGrid(true);
     return;
@@ -1974,6 +2126,7 @@ const onGridOpen = useCallback((list, idx) => {
 }, []);
 
 const onGridLiveOpen = useCallback((st) => {
+  if (!requireLogin(routerRef.current)) return;
   if (st.type === 'video') {
     router.push({ pathname: '/videolive', params: { id: st.id, role: 'viewer' } });
   } else if (st.layout === 'multiguest') {
@@ -2019,7 +2172,27 @@ const onItemPress = useCallback((videoId) => {
 const routerRef = useRef(router);
 routerRef.current = router;
 
+// PREFETCH (Instagram jaisa): video 2 sec dekhi -> creator ka profile doc (1 read) peeche se;
+// 6 sec dekhi (user ko pasand aa rahi hai) -> uski pehli 12 videos bhi. Tap karte hi sab tayyar.
+// Sirf login par; ek creator 5 min me ek hi baar (profilePrefetch khud rokta hai).
+useEffect(() => {
+  if (!auth.currentUser || feedTabRef.current !== 'foryou') return;
+  const v = videos[currentIndex];
+  const uid = v && v.userId;
+  if (!uid || uid === auth.currentUser.uid) return;
+  const t1 = setTimeout(() => prefetchProfile(uid, 'user'), 2000);
+  const t2 = setTimeout(() => prefetchProfile(uid, 'videos'), 6000);
+  return () => { clearTimeout(t1); clearTimeout(t2); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [currentIndex, videos[currentIndex]?.userId]);
+
 const onOpenProfile = useCallback((userId) => {
+  if (!requireLogin(routerRef.current)) return;
+  // INSTANT: naam / username / photo feed me pehle se hain -> profile page pehle frame me dikha de
+  try {
+    const v = (videosRef.current || []).find((x) => x && x.userId === userId);
+    if (v) seedProfile(userId, { name: v.userName, username: v.username, profileImg: v.profile });
+  } catch (e) {}
   routerRef.current.push({
     pathname: "/userProfile",
     params: { userId },
@@ -2027,6 +2200,7 @@ const onOpenProfile = useCallback((userId) => {
 }, []);
 
 const onOpenMusic = useCallback((item) => {
+  if (!requireLogin(routerRef.current)) return;
   routerRef.current.push({
     pathname: "/musicDetails",
     params: {
@@ -2043,6 +2217,7 @@ const onOpenMusic = useCallback((item) => {
 // hote hain -- isliye empty dependency array safe hai.
 const commentsOpeningRef = useRef(false);
 const onOpenComments = useCallback((item) => {
+  if (!requireLogin(routerRef.current)) return; // bina login: comments nahi
   // SPEED: pehle checkVideoAction (network) ka intezaar hota tha, tab tak panel
   // nahi khulta tha aur user 3-4 baar click karta tha. Ab panel TURANT khulta hai,
   // lock check peeche chalta hai; lock ho to panel band + message.
@@ -2081,6 +2256,7 @@ const onOpenComments = useCallback((item) => {
 }, []);
 
 const onOpenShare = useCallback((item) => {
+  if (!requireLogin(routerRef.current)) return;
   // SPEED: popup turant, lock check background me
   unstable_batchedUpdates(() => {
     setSelectedShareVideo(item);
@@ -2097,6 +2273,7 @@ const onOpenShare = useCallback((item) => {
 }, []);
 
 const onOpenStar = useCallback((videoId) => {
+  if (!requireLogin(routerRef.current)) return;
   setSelectedVideoId(videoId);
   setShowStarPopup(true);
 }, []);
@@ -2503,7 +2680,6 @@ const renderComment = useCallback(({ item: rawItem }) => {
     replyList={replyList}
     expanded={!!expandedReplies[item.id]}
     currentUid={currentUid}
-    videoId={selectedVideoId}
     onProfile={onCommentProfile}
     onReply={onCommentReply}
     onToggleReplies={onToggleReplies}
@@ -2511,7 +2687,7 @@ const renderComment = useCallback(({ item: rawItem }) => {
     onDeleteReply={onDeleteReply}
   />
   );
-}, [replies, expandedReplies, currentUid, selectedVideoId, myName, myPhoto, onCommentProfile, onCommentReply,
+}, [replies, expandedReplies, currentUid, myName, myPhoto, onCommentProfile, onCommentReply,
     onToggleReplies, onDeleteComment, onDeleteReply]);
 
 
@@ -2783,7 +2959,7 @@ const renderItem = useCallback(({ item, index }) => {
 ]);
 
 
-  if (loading) return <View style={styles.loadingBox}><ActivityIndicator size="large" color="#f1c40f" /></View>;
+  if (loading) return <FeedSkeleton />; // spinner ki jagah feed ka dhancha
 
   return (
     <View style={styles.fullScreenOverlay} onLayout={onRootLayout} {...swipeTabs}>
@@ -2884,4 +3060,3 @@ disableIntervalMomentum={true}
     </View>
   );
 }
-

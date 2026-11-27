@@ -11,10 +11,12 @@
 //   - Kuch fail ho to ignore -> video net se chalti rahegi
 // =====================================================================
 import * as FileSystem from 'expo-file-system/legacy';
+import NET from './netQuality';
 
 const DIR = (FileSystem.cacheDirectory || '') + 'feedvid/';
 const MAX_BYTES = 15 * 1024 * 1024;
-const MAX_FILES = 12;
+const MAX_BYTES_CELL = 6 * 1024 * 1024; // mobile data par sirf chhoti (480p) files
+const MAX_FILES = 20;
 
 const done = new Map(); // id -> file:// uri (poori download)
 let pending = [];       // [{ id, uri }]
@@ -29,6 +31,28 @@ let sinceClean = 0;
 const safe = (id) => String(id).replace(/[^a-zA-Z0-9_-]/g, '_');
 
 export const getLocalVideo = (id) => (id ? done.get(id) : undefined);
+
+// APP KHULTE HI: pichli baar jo videos poori download ho chuki thin unhe yaad karo.
+// (Pehle ye list sirf memory me thi -> app band karte hi bhool jaata tha aur wahi
+// video dobara net se aati thi.) Ab phone me padi file se turant chalti hai.
+let restored = false;
+async function restoreIndex() {
+  if (restored || !DIR) return;
+  restored = true;
+  try {
+    const info = await FileSystem.getInfoAsync(DIR);
+    if (!info.exists) return;
+    dirReady = true;
+    const names = await FileSystem.readDirectoryAsync(DIR);
+    for (const n of names) {
+      if (!n.endsWith('.mp4')) continue;
+      const id = n.slice(0, -4);
+      // safe() ne id me sirf [a-zA-Z0-9_-] rakhe the; Firestore ids bhi yahi hote hain
+      if (id && !done.has(id)) done.set(id, DIR + n);
+    }
+  } catch (e) {}
+}
+restoreIndex();
 
 async function ensureDir() {
   if (dirReady || !DIR) return;
@@ -74,7 +98,7 @@ async function downloadOne({ id, uri }) {
   if (info.exists && info.size > 1024) { done.set(id, final); return; }
 
   const size = await sizeOf(uri);
-  if (size > MAX_BYTES) return;
+  if (size > (NET.isCellular() ? MAX_BYTES_CELL : MAX_BYTES)) return;
 
   const part = base + '.part';
   activeRatio = 0;
@@ -87,6 +111,7 @@ async function downloadOne({ id, uri }) {
     activeCancel = () => resolve(null);
   });
   activeDl = dl;
+  const t0 = Date.now();
   let r = null;
   try {
     // race: cancel hote hi pump() aage badh jaye (promise atak kar pump ko na roke)
@@ -98,6 +123,11 @@ async function downloadOne({ id, uri }) {
     await FileSystem.deleteAsync(part, { idempotent: true });
     return;
   }
+  // NET METER: poori file kitni der me aayi -> asli speed
+  try {
+    const got = size || (await FileSystem.getInfoAsync(part)).size || 0;
+    NET.addSample(got, Date.now() - t0);
+  } catch (e) {}
   await FileSystem.moveAsync({ from: part, to: final });
   done.set(id, final);
 }

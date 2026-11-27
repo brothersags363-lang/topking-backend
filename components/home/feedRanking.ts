@@ -140,15 +140,12 @@ export const rankFeed = (
   const queueLimit = need + RANK_LOOKAHEAD * 2;
   if (queue.length > queueLimit) queue.length = queueLimit;
 
-  // Pichli baar ka top video is baar top par nahi -> 4th position par
-  if (
-    lastTopId &&
-    previous.length === 0 &&
-    queue.length > 1 &&
-    queue[0].id === lastTopId
-  ) {
-    const first = queue.shift();
-    queue.splice(Math.min(3, queue.length), 0, first);
+  // Pichli baar ka top video is baar ke pehle batch me bilkul nahi aayega
+  // (pehle 4th position par aata tha). Pool me rehta hai, par dekha ja chuka hone se
+  // 3 din tak feed me nahi aata.
+  if (lastTopId && previous.length === 0 && queue.length > 1) {
+    const li = queue.findIndex((v) => v.id === lastTopId);
+    if (li !== -1) queue.splice(li, 1);
   }
 
   const keyOf = (v) => v.userId || `video_${v.id}`;

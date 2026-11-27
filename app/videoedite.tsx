@@ -2,7 +2,9 @@ import { blockIfProfane } from "../utils/guardText";
 import { notifyVideoLike } from "../utils/pushNotify";
 import StarToastView from "../utils/StarToastView";
 import { rewardShare } from "../utils/shareReward";
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import PERF from '../utils/devicePerf';
+import { pickVideoUri, isHlsUri, fixCdn } from '../utils/videoSource';
 import { Image as ExpoImage } from 'expo-image';
 
 import {
@@ -114,27 +116,46 @@ const VerifiedBadge = ({ color, size = 18, verified = true, uid }: any) =>
 
 /* ---------------- Single video player ---------------- */
 
+// SPEED FIX (pehle): har item ka poora player original (full quality) video ek saath load
+// karta tha, bina cache / buffer setting ke -> 3-5 bhaari videos ek saath download = sab atakti thin.
+// Ab feed jaisa:
+//   - quality net ke hisaab se (720 / 480 / 360, HLS ho to wahi)  -> pickVideoUri + PERF
+//   - video phone me cache (dobara dekhne / loop par net nahi)
+//   - chalti video = bada buffer, agli = chhota
+//   - pehla frame aane tak poster (kaala screen nahi)
+//   - net jaane par khud dobara try
 const VideoPlayerItem = React.memo(
-  ({ uri, active }) => {
+  ({ uri, thumbnail, active }) => {
     const [isLoading, setIsLoading] = useState(false);
     const [hasError, setHasError] = useState(false);
+    const [ready, setReady] = useState(false);
 
-    const player = useVideoPlayer(uri, (p) => {
+    const source = useMemo(() => ({ uri, useCaching: !isHlsUri(uri) }), [uri]);
+
+    const player = useVideoPlayer(source, (p) => {
       p.loop = true;
       p.muted = true;
+      try { p.bufferOptions = PERF.cfg().buffers.near; } catch (e) {}
     });
+
+    useEffect(() => {
+      if (!player) return;
+      try {
+        const B = PERF.cfg().buffers;
+        player.bufferOptions = active ? B.active : B.near;
+      } catch (e) {}
+    }, [active, player]);
 
     useEffect(() => {
       if (!player) return;
 
       if (active) {
         setHasError(false);
-        setIsLoading(true);
+        setIsLoading(player.status !== 'readyToPlay');
         try {
           player.muted = false;
           player.play();
         } catch (error) {
-          console.log('VIDEO PLAY ERROR =', error);
           setIsLoading(false);
           setHasError(true);
         }
@@ -145,9 +166,7 @@ const VideoPlayerItem = React.memo(
         try {
           player.pause();
           player.muted = true;
-        } catch (error) {
-          console.log('VIDEO PAUSE ERROR =', error);
-        }
+        } catch (error) {}
       }
     }, [active, player]);
 
@@ -156,7 +175,7 @@ const VideoPlayerItem = React.memo(
 
       const statusSubscription = player.addListener(
         'statusChange',
-        ({ status, error }) => {
+        ({ status }) => {
           if (!active) {
             setIsLoading(false);
             return;
@@ -167,7 +186,6 @@ const VideoPlayerItem = React.memo(
             setIsLoading(false);
             setHasError(false);
           } else if (status === 'error') {
-            console.log('VIDEO ERROR =', error);
             setIsLoading(false);
             setHasError(true);
           }
@@ -177,6 +195,7 @@ const VideoPlayerItem = React.memo(
       const playingSubscription = player.addListener(
         'playingChange',
         ({ isPlaying }) => {
+          if (isPlaying) setReady(true);
           if (!active) {
             setIsLoading(false);
             return;
@@ -194,6 +213,40 @@ const VideoPlayerItem = React.memo(
       };
     }, [player, active]);
 
+    // Chalte-chalte ruki = net kamzor -> agli videos halki quality
+    const wasStalledRef = useRef(false);
+    useEffect(() => {
+      const stalled = active && ready && isLoading && !hasError;
+      if (stalled && !wasStalledRef.current) {
+        try { PERF.reportStall(); } catch (e) {}
+      }
+      wasStalledRef.current = stalled;
+    }, [active, ready, isLoading, hasError]);
+
+    // Net gaya / aaya: khud dobara try (1.5s, 3s, 6s, phir har 8s)
+    const retryRef = useRef(0);
+    useEffect(() => {
+      if (!hasError) { retryRef.current = 0; return; }
+      if (!active || !player) return;
+      const n = retryRef.current++;
+      const delay = Math.min(8000, 1500 * Math.pow(2, n));
+      const t = setTimeout(() => {
+        try {
+          const r = typeof player.replaceAsync === 'function'
+            ? player.replaceAsync(source)
+            : player.replace(source);
+          Promise.resolve(r)
+            .then(() => {
+              setHasError(false);
+              setIsLoading(true);
+              try { player.muted = false; player.play(); } catch (e) {}
+            })
+            .catch(() => {});
+        } catch (e) {}
+      }, delay);
+      return () => clearTimeout(t);
+    }, [hasError, active, player, source]);
+
     return (
       <View style={{ width: '100%', height: '100%', backgroundColor: '#000' }}>
         <VideoView
@@ -204,7 +257,19 @@ const VideoPlayerItem = React.memo(
           allowsFullscreen={false}
           allowsPictureInPicture={false}
           showsTimecodes={false}
+          onFirstFrameRender={() => setReady(true)}
         />
+
+        {!ready && !!thumbnail && (
+          <ExpoImage
+            source={fixCdn(thumbnail)}
+            style={[styles.video, { position: 'absolute', top: 0, left: 0 }]}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            transition={0}
+            pointerEvents="none"
+          />
+        )}
 
         {active && isLoading && !hasError && (
           <View style={styles.videoLoading} pointerEvents="none">
@@ -215,13 +280,14 @@ const VideoPlayerItem = React.memo(
         {active && hasError && (
           <View style={styles.videoError} pointerEvents="none">
             <Ionicons name="cloud-offline-outline" size={42} color="#fff" />
-            <Text style={styles.loadingText}>Video load nahi ho pa raha</Text>
+            <Text style={styles.loadingText}>Net dhundh raha hai...</Text>
           </View>
         )}
       </View>
     );
   },
-  (prev, next) => prev.uri === next.uri && prev.active === next.active
+  (prev, next) =>
+    prev.uri === next.uri && prev.active === next.active && prev.thumbnail === next.thumbnail
 );
 
 /* ---------------- Main screen ---------------- */
@@ -1034,11 +1100,25 @@ export default function App() {
   const renderVideo = React.useCallback(
     ({ item, index: itemIndex }) => (
       <View style={styles.videoContainer}>
-        <VideoPlayerItem
-          key={item.id}
-          uri={item.videoUrl || item.video}
-          active={screenFocused && itemIndex === activeVideo}
-        />
+        {/* Sirf chalti + agli video ka asli player; baaki par sirf poster (kam download, kam garmi) */}
+        {itemIndex === activeVideo || itemIndex === activeVideo + 1 ? (
+          <VideoPlayerItem
+            key={item.id}
+            uri={pickVideoUri(item, PERF.quality())}
+            thumbnail={item.thumbnail}
+            active={screenFocused && itemIndex === activeVideo}
+          />
+        ) : item.thumbnail ? (
+          <ExpoImage
+            source={fixCdn(item.thumbnail)}
+            style={styles.video}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            transition={0}
+          />
+        ) : (
+          <View style={[styles.video, { backgroundColor: '#000' }]} />
+        )}
 
         {starAnimationVideoId === item.id && (
           <View style={styles.starOverlay} pointerEvents="none">

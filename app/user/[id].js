@@ -22,6 +22,7 @@ import { useRouter } from '../../utils/safeRouter';
 
 // FIREBASE
 import { db } from '../firebaseConfig';
+import { fetchUserVideos } from '../../utils/userVideos';
 import { AvatarFrame } from '../../components/FramedAvatar';
 import {
   doc,
@@ -76,19 +77,7 @@ export default function UserPage() {
         setUserData(userSnap.data());
 
         // Fetch Videos
-        const vQuery = query(
-          collection(db, 'all_videos'),
-          where('userId', '==', id)
-        );
-
-        const vSnap = await getDocs(vQuery);
-
-        setUserVideos(
-          vSnap.docs.map((d) => ({
-            id: d.id,
-            ...d.data(),
-          }))
-        );
+        setUserVideos(await fetchUserVideos(id, 60));
       } else {
         Alert.alert('Error', 'User nahi mila!');
       }
@@ -159,8 +148,8 @@ export default function UserPage() {
                     style={styles.avatar}
                   />
                   {/* FRAME: is user ka frame */}
-                  <View pointerEvents="none" style={{ position: 'absolute', top: -2, left: -2 }}>
-                    <AvatarFrame uid={id} size={90} ratio={1.3} animated />
+                  <View pointerEvents="none" style={{ position: 'absolute', top: 5, left: 5 }}>
+                    <AvatarFrame uid={id} size={80} animated />
                   </View>
                 </View>
 

@@ -21,33 +21,9 @@ try {
   Device = null;
 }
 
-// Mobile data par kam preload (data bachta hai), WiFi par poora.
-// Optional: npx expo install expo-network (+ naya build). Na ho to kuch nahi badalta.
-let Network = null;
-try {
-  Network = require('expo-network');
-} catch (e) {
-  Network = null;
-}
-let onCellular = false;
-const refreshNet = () => {
-  try {
-    if (!Network || typeof Network.getNetworkStateAsync !== 'function') return;
-    Network.getNetworkStateAsync()
-      .then((st) => {
-        onCellular = !!st && st.type === Network.NetworkStateType.CELLULAR;
-      })
-      .catch(() => {});
-  } catch (e) {}
-};
-refreshNet();
-try {
-  if (Network && typeof Network.addNetworkStateListener === 'function') {
-    Network.addNetworkStateListener((st) => {
-      onCellular = !!st && st.type === Network.NetworkStateType.CELLULAR;
-    });
-  }
-} catch (e) {}
+// Net ki asli speed + WiFi/data: netQuality.js (speed khud naapta hai).
+// expo-network ab package.json me hai (naye build ke baad WiFi/data bhi pata chalta hai).
+import NET from './netQuality';
 
 const MB = 1024 * 1024;
 const mk = (maxMB, fwdSec, minBuf = 1) => ({
@@ -87,9 +63,11 @@ const CFG = {
     buffers: { active: mk(24, 18, 1.5), near: mk(8, 8), preload: mk(3, 3) },
   },
   // Naya / tez phone: current + agle 2 videos ready.
+  // HEAT FIX: pehle ahead 2 (3-4 decoder ek saath = phone garam). Ab 1; uske aage ki
+  // videos WiFi par poori phone me download hoti hain (decoder nahi) -> phir bhi turant chalti hain.
   high: {
     next: true,
-    ahead: 2,
+    ahead: 1,
     listWindow: 3,
     buffers: { active: mk(32, 24, 1.5), near: mk(10, 10), preload: mk(4, 4) },
   },
@@ -171,22 +149,69 @@ function reportStall() {
   if (stalls.length >= 5 && now - lastDowngradeAt > 120000) downgrade();
 }
 
-// Mobile data par 'high' ko 'mid' maano (preload 2 video tak); WiFi par jaisa tha waisa.
-const effective = () => (onCellular && current === 'high' ? 'mid' : current);
+// Mobile data par 'high' ko 'mid' maano (chhote buffer); WiFi par jaisa tha waisa.
+const effective = () => (NET.isCellular() && current === 'high' ? 'mid' : current);
+
+// KAMZOR NET: active video ko poora net do. Agle (preload) videos ka buffer bahut chhota,
+// active ka aage ka buffer bada, aur rukne ke baad 2.5 sec bhar ke hi chalao
+// (warna 0.5 sec chala, phir ruka, phir chala = jhatke).
+const WEAK_BUFFERS = {
+  poor: { active: mk(16, 30, 2.5), near: mk(2, 3), preload: mk(1, 2) },
+  bad: { active: mk(12, 40, 3), near: mk(1, 2), preload: mk(1, 1) },
+};
+
+const _cfgCache = new Map();
+function cfg() {
+  const t = effective();
+  let n = NET.level();
+  if (n === 'offline') n = 'bad';
+  const key = t + '|' + n;
+  let c = _cfgCache.get(key);
+  if (c) return c;
+  const base = CFG[t];
+  if (n === 'poor' || n === 'bad') {
+    // sirf agla 1 video taiyar (ahead 0 -> lead 1), baaki bandwidth active ki
+    c = { ...base, ahead: 0, buffers: WEAK_BUFFERS[n] };
+  } else {
+    c = base;
+  }
+  _cfgCache.set(key, c);
+  return c;
+}
+
+// Kaunsi quality: net ki naapi hui speed + phone dono dekh ke.
+//   bad (<0.7 Mbps)  -> 360p
+//   poor (<1.6 Mbps) -> 480p
+//   ok (<3 Mbps)     -> mobile data par 480p, WiFi par 720p
+//   good             -> 720p (weak phone par 480p)
+// Har video ki quality pehli baar chalne par pakki hoti hai; net sudhre to AGLE videos 720p.
+function quality() {
+  const t = effective();
+  const n = NET.level();
+  if (n === 'bad' || n === 'offline' || t === 'min') return 360;
+  if (n === 'poor' || t === 'low') return 480;
+  if (n === 'ok' && NET.isCellular()) return 480;
+  return 720;
+}
+
+// Active video chalte-chalte ruka: net ko bhi batao (quality turant agle video se kam),
+// aur phone tier ka purana hisaab bhi chalta rahe.
+// Phone ka tier sirf tab giro jab net achha ho fir bhi atke (tab phone hi kamzor hai).
+// Kamzor net ki wajah se atakne par phone tier 1 din ke liye neeche nahi jata.
+function reportStallBoth() {
+  let netOk = true;
+  try { netOk = !NET.isWeak(); } catch (e) {}
+  if (netOk) reportStall();
+  try { NET.reportStall(); } catch (e) {}
+}
 
 export default {
-  cfg: () => CFG[effective()],
+  cfg,
   tier: () => effective(),
-  cellular: () => onCellular,
-  // 480p chalao? weak phone / slow net (atakna) / mobile data par haan.
-  // Kaunsi quality: 360 (bahut slow / weak), 480 (mobile data / weak phone), 720 (WiFi + achha phone).
-  // Atakne par tier khud neeche aata hai -> quality bhi khud neeche (720 -> 480 -> 360).
-  quality: () => {
-    const t = effective();
-    if (t === 'min') return 360;
-    if (onCellular || t === 'low') return 480;
-    return 720;
-  },
-  lowQuality: () => onCellular || current === 'min' || current === 'low',
-  reportStall,
+  cellular: () => NET.isCellular(),
+  net: () => NET.level(),
+  quality,
+  lowQuality: () => quality() < 720,
+  reportStall: reportStallBoth,
+  reportStartup: (ms) => { try { NET.reportStartup(ms); } catch (e) {} },
 };

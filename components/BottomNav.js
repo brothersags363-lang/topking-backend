@@ -9,6 +9,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { usePathname } from 'expo-router';
 import { useRouter } from '../utils/safeRouter';
+import { requireLogin } from '../utils/requireLogin';
 import { auth } from "../app/firebaseConfig";
 
 const ACTIVE = '#3498db';
@@ -23,9 +24,9 @@ function BottomNav() {
   const onHome = pathname === '/' || pathname === '/follow' || pathname === '/discover';
 
   const goHome = useCallback(() => { if (pathname !== '/') router.replace('/'); }, [router, pathname]);
-  const goSearch = useCallback(() => router.replace('/explore'), [router]);
-  const goCamera = useCallback(() => router.push('/camera'), [router]);
-  const goMessages = useCallback(() => router.replace('/messages'), [router]);
+  const goSearch = useCallback(() => { if (requireLogin(router)) router.replace('/explore'); }, [router]);
+  const goCamera = useCallback(() => { if (requireLogin(router)) router.push('/camera'); }, [router]);
+  const goMessages = useCallback(() => { if (requireLogin(router)) router.replace('/messages'); }, [router]);
   const goProfile = useCallback(() => {
     if (!auth.currentUser) {
       router.push('/login');

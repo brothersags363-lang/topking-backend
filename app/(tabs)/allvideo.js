@@ -387,6 +387,51 @@ const PlayerView = React.memo(
       };
     }, [player, active]);
 
+    // BUFFER FIX: pehle chalti (active) video ko bhi chhota 'near' (preload) buffer milta tha ->
+    // thoda sa net girte hi video ruk jaati thi. Ab active = bada buffer, baaki = chhota.
+    useEffect(() => {
+      if (!player) return;
+      try {
+        const B = PERF.cfg().buffers;
+        player.bufferOptions = active ? B.active : B.near;
+      } catch (e) {}
+    }, [active, player]);
+
+    // Chalte-chalte ruki (pehla frame aa chuka tha) = net kamzor -> agli videos halki quality
+    const wasStalledRef = useRef(false);
+    useEffect(() => {
+      const stalled = active && ready && isLoading && !hasError;
+      if (stalled && !wasStalledRef.current) {
+        try { PERF.reportStall(); } catch (e) {}
+      }
+      wasStalledRef.current = stalled;
+    }, [active, ready, isLoading, hasError]);
+
+    // NET GAYA / AAYA: pehle error ke baad video hamesha ke liye ruki rehti thi.
+    // Ab khud dobara try: 1.5s, 3s, 6s, phir har 8s (sirf chalti video ke liye).
+    const retryRef = useRef(0);
+    useEffect(() => {
+      if (!hasError) { retryRef.current = 0; return; }
+      if (!active || !focused || !player) return;
+      const n = retryRef.current++;
+      const delay = Math.min(8000, 1500 * Math.pow(2, n));
+      const t = setTimeout(() => {
+        try {
+          const r = typeof player.replaceAsync === 'function'
+            ? player.replaceAsync(source)
+            : player.replace(source);
+          Promise.resolve(r)
+            .then(() => {
+              setHasError(false);
+              setIsLoading(true);
+              if (!paused) { try { player.muted = false; player.play(); } catch (e) {} }
+            })
+            .catch(() => {});
+        } catch (e) {}
+      }, delay);
+      return () => clearTimeout(t);
+    }, [hasError, active, focused, paused, player, source]);
+
     const onFirstFrameRender = useCallback(() => setReady(true), []);
 
     return (

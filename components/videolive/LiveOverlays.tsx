@@ -12,7 +12,7 @@ import { GiftButtonLottie, WeeklyMinutesPill, MatchTimer, ChatBoxInput } from '.
 import { PkTimerPill, PkGlovesVs, PkCenterTrophy, PkPanelResult, PkFinalCountdown } from './PkWidgets';
 import { PkLoserPunish } from './PkLoserPunish';
 import { SEAT_COL, SEAT_BADGE, PkSeats, PkWaiting, PkTicker } from './PkSeats';
-import { styles } from './styles';
+import { styles, TOP_CHIP_AVA } from './styles';
 
 export function BackgroundStage({ camFrontRef, hostImg, hostRemoteUid, hostVideoOff, isHost, mainVideoArea, myResult, oppRemoteUid, oppResult, oppRoom, pausedOverlay, pk, pkActive, pkBarAnim, pkBarTop, pkConn, pkEnded, pkPanelH, pkPanelTop, pkPanelW, pkSideAnim, showLocalVideo, showPk, showRemoteVideo, shownMy, shownOpp, videoOff }: any) {
   return (
@@ -312,7 +312,7 @@ export function TopHeader({ currentUid, followBusy, headerFive, hostId, hostImg,
             <TouchableOpacity activeOpacity={0.85} onPress={openHostCard} style={styles.hostAvatarContainer}>
               <ExpoImage source={{ uri: hostImg }} style={styles.hostAvatarImg} cachePolicy="memory-disk" transition={0} />
               {(hostLevel >= 10 || !!hostId) && (
-                <LevelFrame level={hostLevel} uid={hostId} lookup={false} animated={false} style={styles.hostLevelFrame} />
+                <LevelFrame level={hostLevel} uid={hostId} lookup={false} animated={false} photo={34} style={styles.hostLevelFrame} />
               )}
             </TouchableOpacity>
 
@@ -357,7 +357,15 @@ export function TopHeader({ currentUid, followBusy, headerFive, hostId, hostImg,
                 >
                   <Image
                     source={{ uri: u.img || STABLE_AVATAR }}
-                    style={[styles.topChipAva, { borderColor: u.isGifter && i < 3 ? SEAT_COL[i] : "#fff" }]}
+                    style={[styles.topChipAva, { borderColor: u.isGifter && i < 3 ? SEAT_COL[i] : "rgba(255,255,255,0.85)" }]}
+                  />
+                  {/* FRAME: har listener ka apna frame (level / SVIP / admin) - baaki app jaisa.
+                      uid se asli level apne aap aata hai (gifter list me level na ho tab bhi frame dikhe). */}
+                  <LevelFrame
+                    uid={u.uid}
+                    level={u.level}
+                    photo={TOP_CHIP_AVA}
+                    style={styles.topChipFrame}
                   />
                   {u.isGifter && i < 3 && (
                     <>

@@ -1,6 +1,6 @@
 // Messages screen - types, static content, helpers (koi UI nahi, isliye halka)
 
-export type RowType = 'followers' | 'comments' | 'likes' | 'assistant' | 'official' | 'system';
+export type RowType = 'followers' | 'comments' | 'likes' | 'assistant' | 'official' | 'system' | 'payment' | 'announcement';
 
 export type MessageRow = {
   id: string;

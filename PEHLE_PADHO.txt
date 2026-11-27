@@ -1,0 +1,25 @@
+ANDROID BUILD - EK COMMAND
+==========================
+1) Is zip ki files apne project folder (D:\app.js project\topking) me
+   copy karo (Yes to all):
+     build-android.ps1
+     scripts\fix-android.js
+     plugins\withMedia3Pin.js
+     plugins\withLargeHeap.js
+
+2) Har baar APK banana ho to project folder me sirf ye chalao:
+     powershell -ExecutionPolicy Bypass -File .\build-android.ps1
+
+   Ye khud: app.json plugins + ProGuard rules, BOM fix, .easignore,
+   backend/constants sync, prebuild, Media3 check, aur APK build karega.
+
+3) APK:  android\app\build\outputs\apk\release\app-release.apk
+
+4) Server (Render) update karna ho to (script backend/constants pehle hi
+   sync kar deti hai):
+     git add -A
+     git commit -m "update"
+     git push origin main
+
+5) EAS se build karna ho to pehle:  node scripts/fix-android.js
+   phir:  eas build --profile development --platform android

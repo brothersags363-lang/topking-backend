@@ -18,6 +18,7 @@ import {
 } from 'react-native';
 
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { useLocalSearchParams } from 'expo-router';
 import { useRouter } from '../utils/safeRouter';
@@ -106,6 +107,8 @@ export default function PostPage() {
   
 
   const router = useRouter();
+  // Android neeche ke buttons (back/home) ke upar Post Now rakhne ke liye
+  const insets = useSafeAreaInsets();
 
 const navigation = useNavigation();
 
@@ -513,7 +516,10 @@ useEffect(() => {
     <SafeAreaView style={styles.container}>
       <StatusBar backgroundColor="#151515" barStyle="light-content" />
 
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={{ flex: 1, paddingTop: insets.top }}
+      >
 
         {/* HEADER: < Post */}
         <View style={styles.header}>
@@ -653,7 +659,7 @@ useEffect(() => {
         </ScrollView>
 
         {/* BOTTOM: Drafts | Post Now */}
-        <View style={styles.bottomBar}>
+        <View style={[styles.bottomBar, { paddingBottom: 14 + insets.bottom }]}>
           <TouchableOpacity
             style={styles.draftBtn}
             onPress={handleSaveDraft}
@@ -802,7 +808,7 @@ useEffect(() => {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#151515' },
   header: {
-    height: 56, marginTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) : 0,
+    height: 56,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 8,
   },
   iconBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },

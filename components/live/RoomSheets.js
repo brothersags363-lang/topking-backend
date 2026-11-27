@@ -7,6 +7,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import LevelFrame from '../LevelFrame';
 import { T } from './liveTheme';
 import UserTick from '../UserTick';
+import { UserLabel } from './UserLabel';
 
 const AVATAR = 'https://avatar.iran.liara.run/public/65';
 
@@ -42,14 +43,13 @@ const ViewerRow = memo(({ user, canKick, onKick, onPressUser }) => (
     <View style={s.avaWrap}>
       <Image source={{ uri: user.img || user.userImg || AVATAR }} style={s.ava} />
       {((user.level || 0) >= 30 || !!(user.uid || user.userId)) && (
-        <LevelFrame level={user.level} uid={user.uid || user.userId} lookup={false} animated={false}
+        <LevelFrame level={user.level} uid={user.uid || user.userId} lookup={false} animated={false} photo={40}
           style={{ position: 'absolute', width: 52, height: 52, top: -6, left: -6 }} />
       )}
     </View>
     <View style={{ flex: 1, marginLeft: 12 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-        <Text numberOfLines={1} style={s.name}>{user.name || user.userName || user.senderName || 'User'}</Text>
-        <Verified user={user} />
+        <UserLabel level={user.level} name={user.name || user.userName || user.senderName || 'User'} uid={user.uid || user.userId} verified={user.verified} verifiedColor={user.verifiedColor} nameStyle={s.name} />
       </View>
       <Text style={s.sub}>LV {user.level || 1}</Text>
     </View>

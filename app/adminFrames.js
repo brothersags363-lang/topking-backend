@@ -18,32 +18,18 @@ import { useRouter } from "../utils/safeRouter";
 import { callApi } from "../utils/api";
 import useIsAdmin from "./useIsAdmin";
 import { ADMIN_FRAMES, ADMIN_FRAME_KEYS, setAdminFrameLocal, refreshAdminFrameMap } from "../components/adminFrames";
+import { FramePreview } from "../components/LevelFrame";
 
 const PLACEHOLDER = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png";
 
 // Avatar ke upar frame ka preview
 const AvatarWithFrame = ({ uri, frame, size = 50 }) => (
   <View style={{ width: size, height: size, marginRight: 14 }}>
-    <Image
-      source={{ uri: uri || PLACEHOLDER }}
-      style={{
-        position: "absolute",
-        top: size * 0.14,
-        left: size * 0.14,
-        width: size * 0.72,
-        height: size * 0.72,
-        borderRadius: size,
-        backgroundColor: "#333",
-      }}
+    <FramePreview
+      uri={uri || PLACEHOLDER}
+      source={frame && ADMIN_FRAMES[frame] ? ADMIN_FRAMES[frame].still || ADMIN_FRAMES[frame].img : null}
+      size={size}
     />
-    {frame && ADMIN_FRAMES[frame] ? (
-      <ExpoImage
-        source={ADMIN_FRAMES[frame].still || ADMIN_FRAMES[frame].img}
-        contentFit="contain"
-        autoplay={false}
-        style={{ position: "absolute", width: size, height: size }}
-      />
-    ) : null}
   </View>
 );
 

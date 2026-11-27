@@ -142,22 +142,11 @@ export const videoPositions: Record<string, number> = {};
 export let feedCache: any = null;
 export const setFeedCache = (c: any) => { feedCache = c; };
 
-export const persistResume = async () => {
-  try {
-    if (!feedCache || !feedCache.videos || feedCache.videos.length === 0) return;
-    const start = Math.max(0, feedCache.index - 1);
-    const slice = feedCache.videos.slice(start, start + 30);
-    const idx = feedCache.index - start;
-    const curId = feedCache.videos[feedCache.index]?.id;
-    const payload = JSON.stringify({
-      videos: slice,
-      index: idx,
-      position: curId ? videoPositions[curId] || 0 : 0,
-      savedAt: Date.now(),
-    });
-    await AsyncStorage.setItem(resumeStorageKey(), payload);
-  } catch (e) {}
-};
+// NOTE: Ab app band karke (cold start) dobara kholne par PURANA feed / video wapas nahi aata --
+// jo video pichli baar upar tha wo dubara nahi dikhta, naya feed milta hai.
+// Resume sirf tab hota hai jab app chal rahi ho aur user dusri screen se wapas feed par aaye
+// (feedCache, memory me). Isliye phone me resume save/load band hai (speed bhi badhti hai).
+export const persistResume = async () => {};
 
 export const loadResume = async () => {
   if (
@@ -168,23 +157,46 @@ export const loadResume = async () => {
   ) {
     return feedCache;
   }
+  return null;
+};
+
+// ==========================
+// INSTANT OPEN (Instagram jaisa): agli BINA DEKHI videos phone me
+// ==========================
+// App band karne se pehle feed me jo agli videos line me thin (user ne abhi dekhi nahi),
+// unki list phone me rakhi jaati hai. Agli baar app khulte hi wahi turant dikhti hain
+// (spinner / slow net ka wait nahi), aur naya feed peeche se aata rehta hai.
+// Purani dekhi hui video wapas nahi aati (sirf unseen save hoti hain).
+// Inme se kai videos pehle se phone me download ho chuki hoti hain -> net ke bina bhi chalti hain.
+export const NEXTUP_TTL_MS = 12 * 60 * 60 * 1000; // 12 ghante
+export const NEXTUP_MAX = 8;
+export const nextUpStorageKey = () => `feed_nextup_v1_${keyUid()}`;
+
+let nextUpTimer: any = null;
+export const saveNextUp = (list: any[]) => {
+  if (nextUpTimer) clearTimeout(nextUpTimer);
+  // scroll ke beech har swipe par disk write nahi -> 1.5 sec ruk ke ek baar
+  nextUpTimer = setTimeout(() => {
+    nextUpTimer = null;
+    try {
+      const videos = (list || []).filter((v) => v && v.id).slice(0, NEXTUP_MAX);
+      AsyncStorage.setItem(
+        nextUpStorageKey(),
+        JSON.stringify({ t: Date.now(), videos })
+      ).catch(() => {});
+    } catch (e) {}
+  }, 1500);
+};
+
+export const loadNextUp = async () => {
   try {
-    const raw = await AsyncStorage.getItem(resumeStorageKey());
-    if (!raw) return null;
-    const saved = JSON.parse(raw);
-    if (
-      !saved ||
-      !saved.videos ||
-      saved.videos.length === 0 ||
-      Date.now() - saved.savedAt > RESUME_TTL_MS
-    ) {
-      return null;
-    }
-    const curId = saved.videos[saved.index]?.id;
-    if (curId && saved.position > 0.5) videoPositions[curId] = saved.position;
-    return saved;
+    const raw = await AsyncStorage.getItem(nextUpStorageKey());
+    if (!raw) return [];
+    const o = JSON.parse(raw);
+    if (!o || !Array.isArray(o.videos) || Date.now() - Number(o.t) > NEXTUP_TTL_MS) return [];
+    return o.videos.filter((v) => v && v.id);
   } catch (e) {
-    return null;
+    return [];
   }
 };
 

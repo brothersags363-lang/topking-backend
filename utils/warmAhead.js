@@ -8,14 +8,16 @@
 //   - Agle 10 videos ke thumbnail (poster) phone me pehle se rakh leta hai
 //   - Ek baar me sirf EK request, user scroll kare to purani request turant band
 //   - Active video ko pehle bandwidth milta hai (scroll settle ke 1.5 sec baad shuru)
-//   - Mobile data par sirf 3 video (480p), WiFi par 8
-//   - Weak phone / bahut slow net (tier 'min') par band
+//   - Net ki ASLI speed (netQuality.js) dekh ke: kamzor net / mobile data par poori
+//     downloads band, sirf chhota warm -> saara net chalti video ko
+//   - Weak phone (tier 'min') ya offline par band
 // Kuch bhi fail ho to chup-chap ignore -> feed par koi asar nahi.
 // =====================================================================
 import { Image as ExpoImage } from 'expo-image';
 import PERF from './devicePerf';
 import { pickVideoUri, isHlsUri, fixCdn } from './videoSource';
 import { downloadAhead, stopDownloadAhead } from './videoCache';
+import NET from './netQuality';
 
 // Active + agle (mounted) video ko pehle net milna chahiye -> background kaam 2.5 sec baad shuru.
 // (Pehle 1.5 sec tha: bada download active video ke buffer se ladta tha = atakna.)
@@ -44,9 +46,12 @@ function cancelAll() {
 }
 
 async function warmOne(uri, bytes, signal) {
+  const t0 = Date.now();
   const res = await fetch(uri, { headers: { Range: `bytes=0-${bytes - 1}` }, signal });
   // Body padho taaki connection poora data le (aur chhoda ja sake)
-  await res.arrayBuffer();
+  const buf = await res.arrayBuffer();
+  // NET METER: is chhoti request ki speed -> net kitna tez hai
+  try { NET.addSample(buf ? buf.byteLength : 0, Date.now() - t0); } catch (e) {}
 }
 
 // videos = feed ki poori list, index = abhi dikh rahi video ka number
@@ -54,6 +59,7 @@ export default function warmAhead(videos, index) {
   try {
     cancelAll();
     if (!Array.isArray(videos) || typeof index !== 'number' || PERF.tier() === 'min') return;
+    if (NET.isOffline()) return; // net hi nahi -> kuch mat mangao
 
     // 1) Thumbnails (sasta, turant) -> scroll par poster foran dikhe
     const thumbs = [];
@@ -67,41 +73,57 @@ export default function warmAhead(videos, index) {
     const my = runId;
     timer = setTimeout(async () => {
       const cellular = PERF.cellular();
+      const net = NET.level();
       const low = PERF.quality();
       const bytes = low <= 360 ? 300 * 1024 : low <= 480 ? 450 * 1024 : 1024 * 1024;
 
-      // (a) Sirf wo video jo ABHI mount nahi hai par agli swipe ke baad mount hoga: shuru ka hissa
-      // CDN par garam. (+1/+lead pehle se player me load ho rahe hain -- unki dobara request
-      // sirf bandwidth doguni karti thi.)
       const cfg = PERF.cfg();
       const lead = Math.max(cfg.ahead, cfg.next ? 1 : 0);
+
+      // (a) Agli swipe ke baad mount hone wali video (lead+1) ka sirf SHURU CDN par garam.
+      // Isi chhoti request se net ki speed bhi naapi jaati hai.
+      // Bahut kamzor net (bad) par ye bhi chhota (sirf speed naapne layak).
       const list = [];
-      for (let i = index + lead + 1; i <= index + lead + 1 && i < videos.length; i++) {
-        const uri = pickVideoUri(videos[i], low, true);
+      const warmBytes = net === 'bad' ? 96 * 1024 : bytes;
+      const wi = index + lead + 1;
+      if (wi < videos.length) {
+        const uri = pickVideoUri(videos[wi], low, true);
         if (uri && !isHlsUri(uri) && !uri.startsWith('file:') && !warmed.has(uri)) list.push(uri);
       }
 
-      // (b) Uske aage (+3..): POORI video phone me utaro -> mount hote hi file se turant chale
-      //     WiFi par 3, mobile data par sirf 1 (kam download = active video ko zyada net)
+      for (const uri of list) {
+        if (my !== runId) return; // user ne scroll kar diya
+        ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+        try {
+          await warmOne(uri, warmBytes, ctrl ? ctrl.signal : undefined);
+          remember(warmed, uri);
+        } catch (e) {
+          break; // abort / net error: baaki chhod do
+        }
+      }
+      if (my !== runId) return;
+
+      // Speed naapne ke BAAD faisla (net abhi kaisa hai)
+      const net2 = NET.level();
+      // (b) POORI video phone me utaro (mount hote hi file se turant chale, net ruke tab bhi).
+      //   - WiFi + achha net: lead ke aage ki 3 videos
+      //   - Mobile data + bahut achha net: sirf 1
+      //   - Kamzor net (poor/bad) ya data + normal net: BILKUL nahi -> saara net active video ko
+      //     (pehle mobile data pehchaan hi nahi hota tha, isliye data par bhi 3 poori videos
+      //      background me utarti thin aur chalti video atakti thi)
+      const fullCount =
+        net2 === 'good' ? (cellular ? 1 : 3) : net2 === 'ok' && !cellular ? 2 : 0;
       const jobs = [];
-      const to = index + (cellular ? 3 : 5);
-      for (let i = index + 3; i <= to && i < videos.length; i++) {
+      const from = index + lead + 1;
+      for (let i = from; i < from + fullCount && i < videos.length; i++) {
         const uri = pickVideoUri(videos[i], low, true);
         if (videos[i] && videos[i].id && uri && !isHlsUri(uri) && !uri.startsWith('file:')) {
           jobs.push({ id: videos[i].id, uri });
         }
       }
+
+      // Range warm ke BAAD poori downloads (ek saath do request net ko baant deti thin)
       downloadAhead(jobs);
-      for (const uri of list) {
-        if (my !== runId) return; // user ne scroll kar diya
-        ctrl = typeof AbortController === 'function' ? new AbortController() : null;
-        try {
-          await warmOne(uri, bytes, ctrl ? ctrl.signal : undefined);
-          remember(warmed, uri);
-        } catch (e) {
-          return; // abort / net error: baaki chhod do
-        }
-      }
     }, START_DELAY_MS);
   } catch (e) {}
 }

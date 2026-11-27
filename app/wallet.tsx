@@ -1,4 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+// @ts-ignore (JS file)
+import { peekScreenCache, readScreenCache, writeScreenCache } from '../utils/screenCache';
 import {
   View,
   Text,
@@ -13,9 +15,11 @@ import {
   Modal,
   Image,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { scopedBackHandler } from '../utils/scopedBack';
 import { Ionicons } from '@expo/vector-icons';
+import { useIAP, ErrorCode } from 'expo-iap';
 import { useRouter } from '../utils/safeRouter';
 
 
@@ -87,13 +91,33 @@ const liveStatus = (item: any) => {
   return raw === "Success" || raw === "Completed" ? "Completed" : raw;
 };
 
-  const [stars, setStars] = useState(0);
+  // INSTANT: pichla balance turant (pehle 0 dikhta tha, phir asli number). Live data aate hi badal jaata hai.
+  const walletKey = 'wallet_' + (auth.currentUser?.uid || 'x');
+  const w0: any = peekScreenCache(walletKey) || {};
+  const [stars, setStars] = useState(w0.stars || 0);
 
-const [receivedStars, setReceivedStars] = useState(0);
+const [receivedStars, setReceivedStars] = useState(w0.receivedStars || 0);
 
-const [earnings, setEarnings] = useState(0);
+const [earnings, setEarnings] = useState(w0.earnings || 0);
 
-const [level, setLevel] = useState(1);
+const [level, setLevel] = useState(w0.level || 1);
+
+const walletLiveRef = useRef(false);
+useEffect(() => {
+  if (peekScreenCache(walletKey)) return;
+  let gotLive = false;
+  readScreenCache(walletKey)
+    .then((c: any) => {
+      if (!c || gotLive || walletLiveRef.current) return;
+      setStars((p) => p || c.stars || 0);
+      setReceivedStars((p) => p || c.receivedStars || 0);
+      setEarnings((p) => p || c.earnings || 0);
+      setLevel((p) => (p > 1 ? p : c.level || 1));
+    })
+    .catch(() => {});
+  return () => { gotLive = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
 
 const [showHistory, setShowHistory] = useState(false);
 const [purchaseHistory, setPurchaseHistory] = useState([]);
@@ -119,14 +143,15 @@ doc(db,"wallets",uid),
 
 (snapshot)=>{
 
-console.log(
-"WALLET UPDATED",
-snapshot.data()
-);
-
-
-
 if (snapshot.exists()) {
+walletLiveRef.current = true;
+const wd = snapshot.data();
+writeScreenCache('wallet_' + uid, {
+  stars: wd.stars || 0,
+  receivedStars: wd.receivedStars || 0,
+  earnings: wd.earnings || 0,
+  level: wd.level || 1,
+});
 
 setStars(snapshot.data().stars || 0);
 
@@ -343,11 +368,123 @@ const [selectedPkg, setSelectedPkg] = useState(null);
 const [utr, setUtr] = useState("");
 const [submittingPay, setSubmittingPay] = useState(false);
 
-// Recharge band hai: koi bhi package par click kare to ye message dikhega
-const RECHARGE_BLOCK_MSG = "Retry";
+// =========================
+// GOOGLE PLAY BILLING RECHARGE
+// =========================
+// price -> Play Console Product ID (backend/playBilling.js ke PRODUCTS jaise)
+const SKU_BY_PRICE = {
+  "15": "stars_120",
+  "100": "stars_800",
+  "500": "stars_4000",
+  "2500": "stars_20000",
+  "5000": "stars_40000",
+  "10000": "stars_80000",
+};
+const ALL_SKUS = Object.values(SKU_BY_PRICE);
+const [buying, setBuying] = useState(false);
+const handledTokens = useRef(new Set());
 
-const buyStars = (stars, price) => {
-  alert(RECHARGE_BLOCK_MSG);
+// Server se verify -> stars add -> phir Google ko "finish" (consume)
+const verifyAndFinish = async (purchase, silent) => {
+  const token = purchase?.purchaseToken;
+  if (!token || handledTokens.current.has(token)) return;
+  if (purchase.purchaseState === "pending") {
+    if (!silent) alert("Payment pending hai ⏳ Complete hote hi Stars add ho jayenge.");
+    return;
+  }
+  handledTokens.current.add(token);
+  try {
+    const idToken = await auth.currentUser?.getIdToken();
+    if (!idToken) throw new Error("NO_LOGIN");
+    const res = await fetch(`${BACKEND}/play/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+      body: JSON.stringify({ productId: purchase.productId, purchaseToken: token }),
+    });
+    const data = await res.json().catch(() => null);
+
+    if (data?.success) {
+      try {
+        await finishTransaction({ purchase, isConsumable: true });
+      } catch (_) {} // server pehle hi consume kar chuka ho to error aata hai - theek hai
+      if (!data.alreadyCredited) alert(`Recharge successful ✅ ${data.stars} Stars add ho gaye`);
+      return;
+    }
+    handledTokens.current.delete(token); // dobara try ho sake
+    if (data?.pending) {
+      if (!silent) alert("Payment pending hai ⏳ Complete hote hi Stars add ho jayenge.");
+    } else if (!silent) {
+      alert(data?.error || "Stars add nahi ho paye. App dobara kholo, apne aap add ho jayenge.");
+    }
+  } catch (e) {
+    handledTokens.current.delete(token);
+    if (!silent) alert("Network error. App dobara kholne par Stars apne aap add ho jayenge.");
+  } finally {
+    setBuying(false);
+  }
+};
+
+const {
+  connected: iapConnected,
+  products: iapProducts,
+  fetchProducts,
+  requestPurchase,
+  finishTransaction,
+  availablePurchases,
+  getAvailablePurchases,
+} = useIAP({
+  onPurchaseSuccess: (purchase) => verifyAndFinish(purchase, false),
+  onPurchaseError: (error) => {
+    setBuying(false);
+    if (error?.code === ErrorCode.UserCancelled) return;
+    alert(error?.message || "Payment nahi ho paya, dobara try karo");
+  },
+});
+
+// Store connect hote hi products laao + adhoori (paid but not credited) purchases poori karo
+useEffect(() => {
+  if (!iapConnected || Platform.OS !== "android") return;
+  fetchProducts({ skus: ALL_SKUS, type: "in-app" }).catch((e) => console.log("IAP PRODUCTS ERROR", e));
+  getAvailablePurchases().catch(() => {});
+}, [iapConnected]);
+
+useEffect(() => {
+  (availablePurchases || [])
+    .filter((p) => ALL_SKUS.includes(p.productId))
+    .forEach((p) => verifyAndFinish(p, true));
+}, [availablePurchases]);
+
+const priceLabel = (price) => {
+  const sku = SKU_BY_PRICE[String(price)];
+  const prod = (iapProducts || []).find((x) => x.id === sku);
+  return prod?.displayPrice || `₹${price}`;
+};
+
+const buyStars = async (stars, price) => {
+  if (buying) return;
+  if (Platform.OS !== "android") return alert("Recharge abhi sirf Android app me hai");
+  const sku = SKU_BY_PRICE[String(price)];
+  const uid = auth.currentUser?.uid;
+  if (!uid) return alert("Please login again");
+  if (!iapConnected) return alert("Google Play se connect ho raha hai, 2 second baad try karo");
+  if (!(iapProducts || []).some((x) => x.id === sku)) {
+    fetchProducts({ skus: ALL_SKUS, type: "in-app" }).catch(() => {});
+    return alert("Ye pack abhi load nahi hua. Thodi der baad try karo.");
+  }
+  try {
+    setBuying(true);
+    await requestPurchase({
+      request: {
+        google: { skus: [sku], obfuscatedAccountId: uid },
+        android: { skus: [sku], obfuscatedAccountIdAndroid: uid },
+      },
+      type: "in-app",
+    });
+    // Result onPurchaseSuccess / onPurchaseError me aata hai
+  } catch (e) {
+    setBuying(false);
+    console.log("IAP BUY ERROR", e);
+  }
 };
 
 const submitRecharge = async () => {
@@ -870,13 +1007,14 @@ const sendGift = async () => {
         </View>
 
         <TouchableOpacity
-          style={styles.buyBtn}
+          style={[styles.buyBtn, buying && { opacity: 0.6 }]}
+          disabled={buying}
           onPress={() =>
             buyStars(item.stars, item.price)
           }
         >
           <Text style={styles.buyText}>
-            ₹{item.price}
+            {buying ? "..." : priceLabel(item.price)}
           </Text>
         </TouchableOpacity>
 

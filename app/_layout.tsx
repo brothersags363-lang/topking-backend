@@ -1,6 +1,8 @@
+// SPEED: release build me console.log band (sabse pehle, taaki baaki imports ke logs bhi band hon)
+import '../utils/silenceLogs';
 import { Stack, usePathname, useGlobalSearchParams } from 'expo-router';
 import { useRouter } from '../utils/safeRouter';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, AppState, BackHandler, Linking, Platform, View, Text, TouchableOpacity } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -17,6 +19,8 @@ import * as Notifications from 'expo-notifications';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore';
 
+import { Image as ExpoImage } from 'expo-image';
+import { AVATAR_FALLBACK } from '../utils/profileHelpers';
 import LiveMiniPlayer from '../components/LiveMiniPlayer';
 import ScreenDepthGate from '../components/ScreenDepthGate';
 import { LiveProvider } from '../context/LiveContext';
@@ -24,6 +28,8 @@ import { API_BASE, registerDevice } from '../utils/api';
 import { onDeviceBanned } from '../utils/deviceId';
 import { startKeepWarm } from '../utils/warmBackend';
 import { setCurrentPath } from '../utils/scopedBack';
+// @ts-ignore (JS file)
+import { GUEST_ALLOWED } from '../utils/requireLogin';
 import { auth, db, getFCMToken } from './firebaseConfig';
 
 
@@ -101,7 +107,40 @@ function RouteTracker({ currentRef, pathRef }: { currentRef: any; pathRef: any }
 }
 
 
+// AUTH GATE: bina login sirf For You feed (aur login page). Kisi bhi aur page par
+// (button, notification, share link, kuch bhi) bina login pahunche to login page.
+function AuthGate() {
+  const pathname = usePathname();
+  const router = useRouter();
+  const [authReady, setAuthReady] = useState(false);
+  const [hasUser, setHasUser] = useState(!!auth.currentUser);
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setHasUser(!!u);
+      setAuthReady(true);
+    });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    if (!authReady || hasUser) return;
+    const p = pathname || '/';
+    if (GUEST_ALLOWED.includes(p)) return;
+    try { router.replace('/login' as any); } catch (e) {}
+  }, [authReady, hasUser, pathname]);
+
+  return null;
+}
+
+
 export default function RootLayout() {
+  // SPEED: jinki photo nahi unki default photo (flaticon) app khulte hi ek baar phone me.
+  // Pehle har list / comment / chat me pehli baar net se aati thi (slow net par khaali gola).
+  useEffect(() => {
+    try { ExpoImage.prefetch([AVATAR_FALLBACK], 'memory-disk').catch(() => {}); } catch (e) {}
+  }, []);
+
 
   const router = useRouter();
 
@@ -336,6 +375,13 @@ export default function RootLayout() {
       <Stack
         screenOptions={{
           headerShown: false,
+          // SPEED: Instagram (Android) jaisi tez right-se-slide animation
+          animation: 'slide_from_right',
+          animationDuration: 220,
+          // SPEED: neeche wali (chhupi) screens re-render nahi hoti (jaise feed / profile jab
+          // aap chat ya live me ho). Listener / audio chalte rehte hain, sirf screen ka
+          // dobara banna wapas aane tak ruk jaata hai. Tabs me ye pehle se tha.
+          freezeOnBlur: true,
         }}
         // Sirf upar ki 3 screens mounted; neeche wali unload (live/editor protected)
         screenLayout={({ route, children }: any) => (
@@ -344,6 +390,8 @@ export default function RootLayout() {
       />
 
       <RouteTracker currentRef={currentRef} pathRef={pathRef} />
+
+      <AuthGate />
 
       <LiveMiniPlayer />
 

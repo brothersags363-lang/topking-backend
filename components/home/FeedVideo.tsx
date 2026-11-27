@@ -158,14 +158,63 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
     return () => clearTimeout(t); // user turant wapas aaya to reset nahi
   }, [isCurrent, player, videoId]);
 
+  // NET METER: active hone ke baad pehla frame aane me kitna time laga.
+  // Bar-bar 2.5 sec se zyada laga to net kamzor maana jata hai -> agle videos halki quality me.
+  const activeAtRef = useRef(0);
+  const readyRef = useRef(false);
+  useEffect(() => {
+    if (active && !readyRef.current) activeAtRef.current = Date.now();
+    else if (!active) activeAtRef.current = 0;
+  }, [active]);
+  const onFirstFrame = () => {
+    readyRef.current = true;
+    if (activeAtRef.current) {
+      try { PERF.reportStartup(Date.now() - activeAtRef.current); } catch (e) {}
+      activeAtRef.current = 0;
+    }
+    setReady(true);
+  };
+
   // Buffering ho rahi ho to chhota spinner dikhao (frozen frame nahi lagega)
   const { status } = useEvent(player, 'statusChange', { status: player.status });
+  // chalte-chalte ruka (pehla frame aa chuka tha) = asli "atakna"
   const isBuffering = active && ready && status === 'loading';
 
-  // Atakna ginte hain: bar-bar ho to PERF khud ek tier neeche kar deta hai (weak phone / slow net).
+  // Atakna ginte hain: bar-bar ho to net "kamzor" maana jata hai -> agle videos halki quality.
   useEffect(() => {
     if (isBuffering) PERF.reportStall();
   }, [isBuffering]);
+
+  // NET GAYA / AAYA: pehle video 'error' me hamesha ke liye atak jaati thi (net wapas aane par
+  // bhi kaala/ruka). Ab active video khud dobara try karti hai: 1.5s, 3s, 6s, phir har 8s.
+  const retryRef = useRef(0);
+  useEffect(() => {
+    if (status === 'readyToPlay') retryRef.current = 0;
+    if (status !== 'error' || !active) return;
+    const n = retryRef.current++;
+    const delay = Math.min(8000, 1500 * Math.pow(2, n));
+    const t = setTimeout(() => {
+      try {
+        const r = typeof player.replaceAsync === 'function'
+          ? player.replaceAsync(source)
+          : player.replace(source);
+        Promise.resolve(r)
+          .then(() => { if (feedFocused) { try { player.muted = false; player.play(); } catch (e) {} } })
+          .catch(() => {});
+      } catch (e) {}
+    }, delay);
+    return () => clearTimeout(t);
+  }, [status, active, player, source]);
+
+  // Spinner: active video load ho rahi ho (pehli baar bhi) ya dobara try ho rahi ho.
+  // 500ms ruk ke dikhao -> jaldi load ho jaye to spinner flash nahi hota.
+  const wantSpin = active && (status === 'loading' || status === 'error');
+  const [showSpin, setShowSpin] = useState(false);
+  useEffect(() => {
+    if (!wantSpin) { setShowSpin(false); return; }
+    const t = setTimeout(() => setShowSpin(true), 500);
+    return () => clearTimeout(t);
+  }, [wantSpin]);
 
   return (
     <>
@@ -179,12 +228,12 @@ function FeedVideo({ uri, active, thumbnail, near, videoId, isCurrent }) {
         // Android: SurfaceView scroll me black flash deta hai -> TextureView
         surfaceType="textureView"
         useExoShutter={false}
-        onFirstFrameRender={() => setReady(true)}
+        onFirstFrameRender={onFirstFrame}
       />
       {!ready && thumbnail ? (
         <ExpoImage source={fixCdn(thumbnail)} style={StyleSheet.absoluteFill} contentFit="cover" cachePolicy="memory-disk" priority="high" transition={0} pointerEvents="none" />
       ) : null}
-      {isBuffering ? (
+      {showSpin ? (
         <View style={styles.bufferSpinner} pointerEvents="none">
           <ActivityIndicator size="small" color="#ffffff" />
         </View>

@@ -1,4 +1,7 @@
 import SharedLevelBadge from '../../components/LevelBadge';
+import { SvipTag } from '../../components/SvipBadge';
+import { svipForLevel } from '../../utils/svip';
+import { getLevelProgress } from '../../utils/levelProgress';
 import React, {
   memo,
   useCallback,
@@ -632,7 +635,11 @@ const searchAccounts = async (term: string) => {
           level = 1;
           try {
             const walletSnap = await getDoc(doc(db, 'wallets', u.id));
-            if (walletSnap.exists()) level = walletSnap.data().level || 1;
+            if (walletSnap.exists()) {
+              const w: any = walletSnap.data();
+              // asli level (totalSpent se) - SVIP badge sahi dikhe
+              level = getLevelProgress(Number(w.totalSpent) || 0, Number(w.level) || 0).level || 1;
+            }
             levelCache.set(u.id, level as number);
           } catch (e) {}
         }
@@ -732,7 +739,12 @@ const UserCard = memo(function UserCard({
 
           <UserTick uid={item.id} verified={item.verified} verifiedColor={item.verifiedColor} faceVerified={item.faceVerified} size={16} whiteColor="#f8fbff" />
 
-          <LevelBadge level={item.level} iconSize={12} fontSize={11} />
+          {/* Lv 50+ -> sirf SVIP badge, usse kam -> level badge (profile jaisa) */}
+          {svipForLevel(item.level) > 0 ? (
+            <SvipTag level={item.level} height={17} style={{ marginLeft: 6 }} />
+          ) : (
+            <LevelBadge level={item.level} iconSize={12} fontSize={11} />
+          )}
         </View>
 
         <Text style={styles.userSub}>{item.name || 'User'}</Text>

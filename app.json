@@ -90,6 +90,7 @@
         }
       ],
       "expo-web-browser",
+      "expo-iap",
       "@react-native-google-signin/google-signin",
       [
         "expo-audio",
@@ -108,7 +109,8 @@
         {
           "android": {
             "enableProguardInReleaseBuilds": true,
-            "enableShrinkResourcesInReleaseBuilds": true
+            "enableShrinkResourcesInReleaseBuilds": true,
+            "kotlinVersion": "2.2.0"
           }
         }
       ],

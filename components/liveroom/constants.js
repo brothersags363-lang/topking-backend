@@ -1,4 +1,5 @@
 import { Dimensions } from 'react-native';
+import { framePhoto } from '../LevelFrame';
 
 export const { width, height } = Dimensions.get('window');
 // ===== HAR MOBILE PE SAME LOOK =====
@@ -70,12 +71,12 @@ export const SEAT_FRAME_OFFSET = -(SEAT_FRAME_SIZE - SEAT_SIZE) / 2;
 // Frame bada/chhota karna ho to sirf SEAT_FRAME_SCALE badlo, sab jagah ek saath badlega.
 // Seat frame ka style EK baar bana kar rakha: bolne (speaking) par seat re-render hota hai,
 // naya style object banta to frame bhi re-render hota. Ab frame bina chhede chalta rehta hai.
-export const SEAT_FRAME_STYLE = { position: 'absolute', width: SEAT_FRAME_SIZE, height: SEAT_FRAME_SIZE, top: SEAT_FRAME_OFFSET, left: SEAT_FRAME_OFFSET, zIndex: 10 };
+export const SEAT_FRAME_STYLE = framePhoto({ position: 'absolute', width: SEAT_FRAME_SIZE, height: SEAT_FRAME_SIZE, top: SEAT_FRAME_OFFSET, left: SEAT_FRAME_OFFSET, zIndex: 10 }, SEAT_SIZE);
 export const FRAME_SCALE = SEAT_FRAME_SCALE;
 export const frameBox = (photoSize, container = photoSize) => {
   const size = Math.round(photoSize * FRAME_SCALE);
   const off = (container - size) / 2;
-  return { position: 'absolute', width: size, height: size, top: off, left: off, zIndex: 10 };
+  return framePhoto({ position: 'absolute', width: size, height: size, top: off, left: off, zIndex: 10 }, photoSize);
 };
 export const FRAME_CHAT22 = frameBox(22);
 export const FRAME_CHAT36 = frameBox(36, 42);
