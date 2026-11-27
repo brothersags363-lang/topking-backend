@@ -47,6 +47,7 @@ const BEAUTY = [
   { id: "clarity",  label: "Clarity",      icon: "contrast-outline",   live: true,  def: 0 },
   { id: "blush",    label: "Blush",        icon: "rose-outline",       live: true,  def: 0 },
   { id: "lipstick", label: "Lipstick",     icon: "color-wand-outline", live: true,  def: 0 },
+  { id: "kajal",    label: "Kajal",        icon: "eye",                live: true,  def: 0 },
   { id: "bright",   label: "Dark circles", icon: "eye-outline",        live: true,  def: 0 },
   { id: "slim",     label: "Slimming",     icon: "body-outline",       live: false, def: 0 },
   { id: "eyes",     label: "Eyes+",        icon: "eye-outline",        live: false, def: 0 },
@@ -55,6 +56,7 @@ const BEAUTY = [
   { id: "contour",  label: "Contour",      icon: "ellipse-outline",    live: false, def: 0 },
   { id: "teeth",    label: "Whiten Teeth", icon: "sparkles-outline",   live: false, def: 0 },
 ];
+const DEFAULT_LIP = "#d10f2e";
 const BEAUTY_LIVE_IDS = BEAUTY.filter((b) => b.live).map((b) => b.id);
 const defaultBeauty = () => {
   const o = {};
@@ -64,16 +66,21 @@ const defaultBeauty = () => {
 
 // Beauty values (0..100) -> extra filter params, merged into the
 // selected colour filter so the server renders everything in ONE pass.
-function beautyToFilterParams(beauty) {
+function beautyToFilterParams(beauty, skinOnly) {
   const b = beauty || {};
   const v = (id) => clamp(num(b[id], 0), 0, 100) / 100;
+  // Server: softening / whitening / dark-circles sirf SKIN par lagte hain
+  // (beautySkinFilter), isliye poori frame wale params se hata do.
+  if (skinOnly) {
+    return { smooth: 0, b: 0, fade: 0, glow: 0, sharp: v("clarity") * 0.8, blush: 0 };
+  }
   return {
     smooth: v("soft") * 0.9,
     b: v("white") * 0.06 + v("bright") * 0.03,
     fade: v("bright") * 0.04,
     glow: v("white") * 0.25,
     sharp: v("clarity") * 0.8,
-    blush: v("blush") * 0.8 + v("lipstick") * 0.5,
+    blush: v("blush") * 0.6 + v("lipstick") * 0.25,
   };
 }
 
@@ -185,6 +192,7 @@ function parseFx(input) {
     speed,
     intensity: Math.round(clamp(num(o.intensity, 100), 0, 100)),
     beauty,
+    lipColor: /^#[0-9a-fA-F]{6}$/.test(o.lipColor) ? o.lipColor.toLowerCase() : DEFAULT_LIP,
     motion: EFFECT_IDS.includes(o.motion) ? o.motion : "none",
     musicStart: r3(clamp(num(o.musicStart, 0), 0, 600)),
     keep,
@@ -211,6 +219,7 @@ function stringifyFx(fx) {
   if (Object.keys(f.beauty).length) o.beauty = f.beauty;
   if (f.motion !== "none") o.motion = f.motion;
   if (f.musicStart > 0) o.musicStart = f.musicStart;
+  if (f.lipColor !== DEFAULT_LIP && f.beauty.lipstick) o.lipColor = f.lipColor;
   if (f.keep.length) o.keep = f.keep;
   if (f.ranges.length) o.ranges = f.ranges;
   if (f.sticker !== "none") o.sticker = f.sticker;
@@ -284,12 +293,12 @@ function motionFilter(id, W, H) {
 // ---------------------------------------------------------------------
 // Used by the preview overlay (toOverlay) and the server (toFfmpegChain)
 // so both always agree. Returns null when nothing should be applied.
-function composeFilter(filterId, fx) {
+function composeFilter(filterId, fx, opts) {
   const LIB = require("./filterLibrary");
   const f = parseFx(fx);
   const base = filterId && filterId !== "none" ? LIB.get(filterId) : null;
   const scaled = base ? LIB.scaleFilter(base, f.intensity / 100) : null;
-  const bp = beautyToFilterParams(f.beauty);
+  const bp = beautyToFilterParams(f.beauty, opts && opts.skinOnly);
   const hasBeauty = Object.values(bp).some((v) => v > 0);
   if (!scaled && !hasBeauty) return null;
   const out = { ...(scaled || {}) };
@@ -416,7 +425,141 @@ function graffitiToAss(strokes, W, H) {
     `[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n` + lines.join("\n") + "\n";
 }
 
+// ---------------------------------------------------------------------
+// SKIN-ONLY BEAUTY (server): skin mask from colour (YCbCr range works for
+// light AND dark skin), mask made at 1/4 size (fast), then smoothing +
+// brightening merged only where the mask is skin. Background, hair,
+// clothes stay sharp.
+// ---------------------------------------------------------------------
+function beautySkinFilter(beauty, W, H) {
+  const b = beauty || {};
+  const v = (id) => clamp(num(b[id], 0), 0, 100) / 100;
+  const soft = v("soft");
+  const white = v("white");
+  const bright = v("bright");
+  if (soft <= 0 && white <= 0 && bright <= 0) return "";
+  W = Math.max(2, Math.floor((W || 720) / 2) * 2);
+  H = Math.max(2, Math.floor((H || 1280) / 2) * 2);
+  const work = [];
+  if (soft > 0) {
+    work.push(`smartblur=lr=${r3(2 + 3 * soft)}:ls=${r3(0.3 + 0.7 * soft)}:lt=-${Math.round(1 + 4 * soft)}`);
+  }
+  if (white > 0 || bright > 0) {
+    work.push(`eq=brightness=${r3(0.1 * white + 0.04 * bright)}:gamma=${r3(1 + 0.35 * white + 0.15 * bright)}`);
+  }
+  const mw = Math.max(2, Math.floor(W / 8) * 2);
+  const mh = Math.max(2, Math.floor(H / 8) * 2);
+  return `split=3[bo][bs][bm];[bs]${work.join(",")}[bf];` +
+    `[bm]scale=${mw}:${mh},format=yuv444p,` +
+    `geq=lum='255*between(cb(X\\,Y)\\,77\\,127)*between(cr(X\\,Y)\\,133\\,173)':cb=128:cr=128,` +
+    `format=yuv420p,gblur=sigma=1.5,scale=${W}:${H}[bk];[bo][bf][bk]maskedmerge=planes=1`;
+}
+
+// ---------------------------------------------------------------------
+// MAKEUP (server): lipstick / kajal / blush WITHOUT face tracking.
+//  - lips  = pixels clearly REDDER than the skin around them, inside a face
+//  - eyes  = pixels clearly DARKER than the skin around them, inside a face
+//  - blush = gentle rosy tint on skin
+// Masks are computed at 1/4 size (fast) and only "near skin" areas count,
+// so red clothes / walls are not painted.
+// ---------------------------------------------------------------------
+const hexRgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+
+function makeupFilter(beauty, lipColor, W, H) {
+  const b = beauty || {};
+  const v = (id) => clamp(num(b[id], 0), 0, 100) / 100;
+  const lips = v("lipstick");
+  const kajal = v("kajal");
+  const blush = v("blush");
+  if (lips <= 0 && kajal <= 0 && blush <= 0) return "";
+  W = Math.max(2, Math.floor((W || 720) / 2) * 2);
+  H = Math.max(2, Math.floor((H || 1280) / 2) * 2);
+  const mw = Math.max(2, Math.floor(W / 8) * 2);
+  const mh = Math.max(2, Math.floor(H / 8) * 2);
+  const R = r3(Math.max(2, mh / 1280 * 4 * 28 / 4)); // ~14px at 720p, in mask pixels
+  const RL = r3(R * 1.8); // lips: wider ring so the lips don't hide in their own average
+  const skinExpr = "255*between(cb(X\\,Y)\\,77\\,127)*between(cr(X\\,Y)\\,133\\,173)";
+  const up = (lbl, out, k) =>
+    `[${lbl}]scale=${W}:${H},gblur=sigma=1.2,lut=y='clip(val*${r3(k)}\\,0\\,255)',format=gbrp[${out}]`;
+
+  const g = [];
+  const parts = [];
+  // base + low-res analysis copy
+  g.push(`split=2[mkb][mka]`);
+  g.push(`[mka]scale=${mw}:${mh},format=yuv444p,split=3[mk1][mk2][mk3]`);
+  // skin mask S
+  g.push(`[mk1]geq=lum='${skinExpr}':cb=128:cr=128,format=gray,split=5[mks][mksn][mksc][mksy][mksb]`);
+  // blurred S (= how much skin is around) -> used as weight + "inside face"
+  g.push(`[mksb]split=2[mksb1][mksb2];[mksb1]gblur=sigma=${RL}[mkSb1];[mksb2]gblur=sigma=${R},split=2[mkSb2][mkSb3]`);
+  g.push(`[mksn]gblur=sigma=${R},lut=y='clip((val-150)*4\\,0\\,255)',split=2[mkn1][mkn2]`);
+  // lips: red-ness (Cr) clearly above the SKIN-weighted local mean
+  g.push(`[mk2]extractplanes=v,split=2[mkc][mkc2]`);
+  g.push(`[mkc2][mksc]blend=all_expr='A*B/255',gblur=sigma=${RL}[mkcw]`);
+  g.push(`[mkcw][mkSb1]blend=all_expr='if(gt(B\\,8)\\,A*255/B\\,255)'[mkcm]`);
+  g.push(`[mkc][mkcm]blend=all_expr='clip((A-B-2)*80\\,0\\,255)',gblur=sigma=0.7,lut=y='clip((val-50)*1.4\\,0\\,255)'[mkl0];[mkl0][mkn1]blend=all_mode=multiply[mkl]`);
+  // eyes: brightness clearly below the SKIN-weighted local mean
+  g.push(`[mk3]extractplanes=y,split=2[mky][mky2]`);
+  g.push(`[mky2][mksy]blend=all_expr='A*B/255',gblur=sigma=${R}[mkyw]`);
+  g.push(`[mkyw][mkSb2]blend=all_expr='if(gt(B\\,8)\\,A*255/B\\,0)'[mkym]`);
+  g.push(`[mky][mkym]blend=all_expr='clip((B-A-25)*8\\,0\\,255)'[mke0];[mke0][mkn2]blend=all_mode=multiply[mke]`);
+  g.push(`[mkSb3]nullsink`);
+
+  g.push(`[mkb]format=gbrp,split=4[mkx][mkbl][mkli][mkka]`);
+  let cur = "mkx";
+  if (blush > 0) {
+    g.push(up("mks", "mkms", 0.4 * blush));
+    g.push(`[mkbl]colorbalance=rm=0.14:gm=-0.04:bm=0.03:rs=0.06[mkbb]`);
+    g.push(`[${cur}][mkbb][mkms]maskedmerge[mko1]`);
+    cur = "mko1";
+  } else g.push(`[mkbl]nullsink`, `[mks]nullsink`);
+  if (lips > 0) {
+    const [lr, lg, lb] = hexRgb(lipColor || DEFAULT_LIP);
+    const k = 1.5;
+    g.push(up("mkl", "mkml", 0.95 * lips));
+    // lip colour + lift (dark skin par bhi lipstick saaf dikhe)
+    g.push(
+      `[mkli]colorchannelmixer=rr=${r3(lr * k)}:gg=${r3(lg * k)}:bb=${r3(lb * k)}:rg=${r3(lr * 0.25)},` +
+      `curves=r='0/${r3(0.22 * lr)} 0.5/${r3(Math.min(1, 0.5 + 0.25 * lr))} 1/1':` +
+      `g='0/${r3(0.06 * lg)} 1/1':b='0/${r3(0.08 * lb)} 1/1'[mklb]`
+    );
+    g.push(`[${cur}][mklb][mkml]maskedmerge[mko2]`);
+    cur = "mko2";
+  } else g.push(`[mkli]nullsink`, `[mkl]nullsink`);
+  if (kajal > 0) {
+    g.push(up("mke", "mkme", 0.9 * kajal));
+    g.push(`[mkka]curves=all='0/0 0.35/0.18 0.7/0.55 1/0.9'[mkkb]`);
+    g.push(`[${cur}][mkkb][mkme]maskedmerge[mko3]`);
+    cur = "mko3";
+  } else g.push(`[mkka]nullsink`, `[mke]nullsink`);
+  g.push(`[${cur}]format=yuv420p`);
+  parts.push(g.join(";"));
+  return parts.join("");
+}
+
+// Live camera shader params (components/camera/BeautyCamera.js):
+// colour filter + strength -> simple contrast/brightness/saturation/tint
+function liveColorParams(filterId, fx) {
+  const f = composeFilter(filterId, { ...parseFx(fx), beauty: {} });
+  if (!f) return { contrast: 1, bright: 0, sat: 1, fade: 0, gain: 1, tint: [0, 0, 0] };
+  const sh = f.sh || [0, 0, 0];
+  const hi = f.hi || [0, 0, 0];
+  const bl = f.blush || 0;
+  const tint = [0, 1, 2].map((i) => r3((sh[i] + hi[i]) * 0.6 + (i === 0 ? bl * 0.03 : 0)));
+  return {
+    contrast: r3(f.c == null ? 1 : f.c),
+    bright: r3((f.b || 0) + (f.glow || 0) * 0.04),
+    sat: r3(f.bw ? 0 : f.s == null ? 1 : f.s),
+    fade: r3(f.fade || 0),
+    gain: r3(f.gain || 1),
+    tint,
+  };
+}
+
 module.exports = {
+  makeupFilter,
+  DEFAULT_LIP,
+  beautySkinFilter,
+  liveColorParams,
   STICKERS,
   STICKER_IDS,
   keptSeconds,

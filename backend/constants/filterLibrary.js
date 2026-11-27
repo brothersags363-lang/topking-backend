@@ -51,6 +51,18 @@ const FILTERS = [
   { id: "softskin", cat: "Portrait",    label: "Soft Skin",    icon: "water-outline",    smooth: 0.9, glow: 0.2, b: 0.03, c: 0.97 },
   { id: "barbie", cat: "Portrait",      label: "Barbie",       icon: "heart-circle-outline", smooth: 0.6, blush: 0.6, glow: 0.3, b: 0.05, s: 1.2, sh: [0.06, 0, 0.08], hi: [0.1, 0.03, 0.08] },
   { id: "hotred", cat: "Vibes",      label: "Hot Red",      icon: "flame-outline",    smooth: 0.5, blush: 1, c: 1.1, s: 1.25, vig: 0.2, hi: [0.05, 0, 0.01] },
+  // ---- GLAM looks (ladkiyon ke makeup filters) ----
+  // `look` = beauty preset jo filter chunte hi lag jata hai:
+  // lipstick (sirf hoth), kajal (aankh), blush, smooth, whitening.
+  { id: "hotlips",     cat: "Glam", label: "Hot Lips",     icon: "heart",            s: 1.08, c: 1.04, hi: [0.02, 0, 0.01],
+    look: { lipColor: "#d10f2e", beauty: { soft: 50, white: 25, lipstick: 85, kajal: 30, blush: 20 } } },
+  { id: "pinkglow",    cat: "Glam", label: "Pink Glow",    icon: "flower-outline",   s: 1.05, glow: 0.15, hi: [0.04, 0, 0.03],
+    look: { lipColor: "#ff4f8b", beauty: { soft: 60, white: 40, lipstick: 55, blush: 55 } } },
+  { id: "glamdoll",    cat: "Glam", label: "Glam Doll",    icon: "diamond-outline",  c: 1.08, s: 1.1, vig: 0.05,
+    look: { lipColor: "#a0001e", beauty: { soft: 70, white: 45, lipstick: 90, kajal: 60, blush: 30 } } },
+  { id: "naturalglow", cat: "Glam", label: "Natural Glow", icon: "leaf-outline",     b: 0.02,
+    look: { lipColor: "#c0606a", beauty: { soft: 40, white: 20, lipstick: 35, blush: 15 } } },
+
   // ---- Portrait pack (camera "Beauty > Filter > Portrait") ----
   { id: "cherry",      cat: "Portrait", label: "Cherry",     icon: "heart-outline",    smooth: 0.55, blush: 0.55, glow: 0.2, b: 0.03, s: 1.12, sh: [0.03, 0, 0.02], hi: [0.07, 0.01, 0.03] },
   { id: "chocolate",   cat: "Portrait", label: "Chocolate",  icon: "cafe-outline",     smooth: 0.4, c: 1.08, s: 0.95, gam: [0.97, 1, 1.05], sh: [0.04, 0.02, -0.01], hi: [0.06, 0.03, -0.02] },
@@ -83,7 +95,7 @@ const n = (v, d = 3) => Number(v.toFixed(d));
 // ---------------------------------------------------------------------
 // CATEGORIES + INTENSITY (camera "Filter" sheet: Portrait/Scenery/...)
 // ---------------------------------------------------------------------
-const CATEGORIES = ["Portrait", "Scenery", "Food", "Style", "Vibes"];
+const CATEGORIES = ["Glam", "Portrait", "Scenery", "Food", "Style", "Vibes"];
 const byCategory = (cat) => FILTERS.filter((f) => (f.cat || "Vibes") === cat);
 
 // Scale a filter towards "original" by k (0..1). 1 = full filter,
