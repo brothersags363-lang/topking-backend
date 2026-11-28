@@ -29,13 +29,14 @@ module.exports = function mountPlayBilling({ app, db, admin, verifyUser, rateLim
   const API = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/" + encodeURIComponent(PACKAGE);
 
   // Play Console me yahi Product ID banana (In-app products > Create product)
+  // price = Play Console ka INR price (GST + Google fee ke baad bhi purana budget bache)
   const PRODUCTS = {
-    stars_120: { stars: 120, price: 15 },
-    stars_800: { stars: 800, price: 100 },
-    stars_4000: { stars: 4000, price: 500 },
-    stars_20000: { stars: 20000, price: 2500 },
-    stars_40000: { stars: 40000, price: 5000 },
-    stars_80000: { stars: 80000, price: 10000 },
+    stars_120: { stars: 120, price: 20 },
+    stars_800: { stars: 800, price: 140 },
+    stars_4000: { stars: 4000, price: 700 },
+    stars_20000: { stars: 20000, price: 3500 },
+    stars_40000: { stars: 40000, price: 7000 },
+    stars_80000: { stars: 80000, price: 14000 },
   };
 
   const PURCHASES = "playPurchases";
